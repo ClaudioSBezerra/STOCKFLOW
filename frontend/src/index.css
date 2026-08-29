@@ -1,0 +1,104 @@
+@import 'tailwindcss';
+
+/*
+ * Tokens traduzidos literalmente de
+ * _bmad-output/planning-artifacts/ux-designs/ux-stockflow-2026-08-29/DESIGN.md
+ * (colors, typography, spacing, rounded). Não adicionar cor/tamanho/raio
+ * novo aqui fora do que o DESIGN.md define — variáveis auxiliares exigidas
+ * pelos primitivos shadcn (popover, muted, input, ring, card-foreground,
+ * secondary-foreground) são derivadas dos tokens acima via color-mix ou
+ * reaproveitando o mesmo valor, nunca um hex novo.
+ */
+@theme {
+  /* Colors — DESIGN.md `colors` */
+  --color-primary: #e62019;
+  --color-primary-foreground: #ffffff;
+  --color-accent: #16a249;
+  --color-accent-foreground: #ffffff;
+  --color-destructive: #ef4343;
+  --color-destructive-foreground: #ffffff;
+  --color-background: #f9fafb;
+  --color-foreground: #0f1729;
+  --color-card: #ffffff;
+  --color-card-foreground: var(--color-foreground);
+  --color-secondary: #f1f5f9;
+  --color-secondary-foreground: var(--color-foreground);
+  --color-border: #e1e7ef;
+  --color-success: #16a249;
+  --color-warning: #f59f0a;
+  --color-info: #0da2e7;
+  --color-text-on-tint-success: #166534;
+  --color-text-on-tint-warning: #92400e;
+  --color-text-on-tint-info: #075985;
+  --color-text-on-tint-destructive: #b91c1c;
+
+  /* Derivadas dos tokens acima — exigidas pelos primitivos shadcn */
+  --color-popover: var(--color-card);
+  --color-popover-foreground: var(--color-foreground);
+  --color-muted: var(--color-secondary);
+  --color-muted-foreground: color-mix(
+    in oklab,
+    var(--color-foreground) 60%,
+    transparent
+  );
+  --color-input: var(--color-border);
+  --color-ring: var(--color-primary);
+
+  /* Typography — DESIGN.md `typography` */
+  --font-sans: Inter, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  --text-heading-lg: 30px;
+  --text-heading-lg--line-height: 1.2;
+  --text-heading-lg--letter-spacing: -0.01em;
+  --text-heading-lg--font-weight: 700;
+
+  --text-heading-md: 24px;
+  --text-heading-md--line-height: 1.25;
+  --text-heading-md--font-weight: 700;
+
+  --text-body: 14px;
+  --text-body--line-height: 1.5;
+  --text-body--font-weight: 400;
+
+  --text-label: 12px;
+  --text-label--line-height: 1.4;
+  --text-label--font-weight: 500;
+
+  --text-code: 13px;
+  --text-code--font-weight: 400;
+
+  /* Rounded — DESIGN.md `rounded` */
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius: 12px;
+  --radius-full: 9999px;
+
+  /* Spacing — DESIGN.md `spacing` */
+  --spacing-rail-width: 56px;
+  --spacing-bottom-nav-height: 56px;
+  --spacing-fab-size: 56px;
+  --spacing-fab-offset-mobile: 72px;
+  --spacing-fab-margin: 16px;
+  --spacing-sidenav-width: 224px;
+  --spacing-touch-target-min: 48px;
+}
+
+@layer base {
+  body {
+    @apply bg-background text-foreground font-sans;
+  }
+}
+
+@layer components {
+  /*
+   * DESIGN.md `components.nav-item-active`: fundo primary a 10%, ícone/texto
+   * em primary sólido — aplicado ao item de navegação da rota atual (rail e
+   * bottom nav).
+   */
+  .nav-item-active {
+    background-color: color-mix(in oklab, var(--color-primary) 10%, transparent);
+    color: var(--color-primary);
+  }
+}

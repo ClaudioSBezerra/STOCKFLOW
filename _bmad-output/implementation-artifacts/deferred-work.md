@@ -53,3 +53,83 @@ source_spec: `spec-1-1-bootstrap-do-primeiro-adm-e-fundacao-do-backend.md`
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260829-150733-63a0; this entry preserves the lingering recommendation for a deliberate later review.
 status: open
+
+### DW-8: `next-themes` está instalado e `sonner.tsx` chama `useTheme()`, mas nenhum `ThemeProvider` é montado em `main.tsx`/`App.tsx` e `index.css` só define tokens de tema claro — a capacidade de dark mode ex
+origin: spec-deferred b13d40f0abcc
+location: frontend/src/components/ui/sonner.tsx
+source_spec: `spec-1-2-fundacao-do-shell-de-navegacao-e-design-tokens.md`
+severity: low
+reason: `DESIGN.md` não define nenhuma paleta escura (produto utilitário, sem requisito de dark mode); `frontend/src/main.tsx` e `App.tsx` não importam `ThemeProvider`. Decisão de produto sobre dark mode está fora do escopo desta story.
+status: open
+
+### DW-9: O serviço `web` do `docker-compose.yml` (Nginx) não tem headers de cache/segurança (`Cache-Control`, `X-Content-Type-Options` etc.) nem roda como usuário não-root, ao contrário do cuidado já aplicado
+origin: spec-deferred 160c370f38c8
+location: frontend/nginx.conf, frontend/Dockerfile
+source_spec: `spec-1-2-fundacao-do-shell-de-navegacao-e-design-tokens.md`
+severity: low
+reason: `frontend/nginx.conf` só define `try_files` para fallback de SPA; `frontend/Dockerfile` não define `USER` na etapa `nginx:alpine` final. Hardening de produção é um item de AD-16 (envelope operacional), não uma AC desta story.
+status: open
+
+### DW-10: Os testes que verificam breakpoint responsivo (rail vs. bottom nav) e alvo de toque de 48px checam a presença das classes Tailwind (`md:flex`, `min-h-touch-target-min`) em vez do layout/tamanho comput
+origin: spec-deferred f2b582bc371f
+location: frontend/src/components/shell/AppShell.test.tsx
+source_spec: `spec-1-2-fundacao-do-shell-de-navegacao-e-design-tokens.md`
+severity: medium
+reason: `frontend/src/components/shell/AppShell.test.tsx` e `ConfirmDialog.test.tsx` usam `element.className.toContain(...)`: prova que a classe certa foi escrita, não que o navegador de fato esconde/mostra os elementos nos breakpoints certos. Resolver isso exigiria infraestrutura de teste em navegador real (Playwright), que não existe em nenhuma story deste projeto ainda.
+status: open
+
+### DW-11: `frontend/.npmrc` define `legacy-peer-deps=true` para todo o projeto, mascarando qualquer conflito real de peer dependency entre React 19.2/TypeScript 7.0/Vite 8.0 (deliberadamente à frente do ecossis
+origin: spec-deferred a271140e10ff
+location: frontend/.npmrc
+source_spec: `spec-1-2-fundacao-do-shell-de-navegacao-e-design-tokens.md`
+severity: medium
+reason: `npm install` sem essa flag falha por causa de `@vitejs/plugin-react` e outros pacotes com peer range desatualizado para as versões pinadas. Trade-off inerente à decisão de arquitetura de usar versões de ponta, não uma escolha desta story.
+status: open
+
+### DW-12: Não há pipeline de CI que rode `npm run build`/`lint`/`test` do frontend automaticamente — mesmo gap já registrado para o backend na Story 1.1 (DW-1), agora também presente no frontend.
+origin: spec-deferred 8619f8c4b8e1
+location: .github/workflows (inexistente)
+source_spec: `spec-1-2-fundacao-do-shell-de-navegacao-e-design-tokens.md`
+severity: low
+reason: Não existe `.github/workflows` no repositório. Configurar CI/CD é AD-16 (envelope operacional de todo o projeto), não uma AC desta story.
+status: open
+
+### DW-13: Não há README (ou doc equivalente) explicando como rodar o `frontend/` localmente (`npm run dev`) ou o novo serviço `web` do `docker-compose.yml` (porta `8081:80`) — mesmo gap já registrado para o bac
+origin: spec-deferred 902e8c13d3de
+location: README.md (inexistente)
+source_spec: `spec-1-2-fundacao-do-shell-de-navegacao-e-design-tokens.md`
+severity: low
+reason: Não existe `README.md` no repositório documentando nenhum dos dois stacks (backend ou frontend).
+status: open
+
+### DW-14: Não há checagem automatizada de acessibilidade (ex. `axe-core`/ `jest-axe`) apesar do `AppShell` compor ARIA não trivial (dois `<nav>` com o mesmo `aria-label`, `Tooltip`/`Sheet`/`DropdownMenu`) — os
+origin: spec-deferred f342af664dd2
+location: frontend/src/components/shell/AppShell.test.tsx
+source_spec: `spec-1-2-fundacao-do-shell-de-navegacao-e-design-tokens.md`
+severity: low
+reason: `frontend/package.json` não inclui `jest-axe`/`@axe-core/react` nem equivalente para Vitest. Nenhuma AC desta story exige verificação automatizada de acessibilidade além do que já está coberto por `@testing-library` (papéis/nomes acessíveis).
+status: open
+
+### DW-15: `frontend/nginx.conf`'s `try_files $uri $uri/ /index.html;` faz fallback para o SPA em qualquer requisição não encontrada, incluindo assets estáticos com hash (JS/CSS) — uma requisição para um asset o
+origin: spec-deferred 498b57af2462
+location: frontend/nginx.conf
+source_spec: `spec-1-2-fundacao-do-shell-de-navegacao-e-design-tokens.md`
+severity: low
+reason: `frontend/nginx.conf` não tem um `location` separado para assets estáticos com `try_files $uri =404;`. Mesmo tema do item já registrado sobre hardening de produção do Nginx (headers de cache/segurança, usuário não-root) — AD-16 (envelope operacional), não uma AC desta story.
+status: open
+
+### DW-16: `sonner.tsx` (Toaster global) só passa `--normal-bg`/`--normal-text`/ `--normal-border`/`--border-radius` como CSS custom properties; nenhuma das variáveis por-tipo do `sonner` (`--success-bg`, `--err
+origin: spec-deferred a4a72f3a1b61
+location: frontend/src/components/ui/sonner.tsx
+source_spec: `spec-1-2-fundacao-do-shell-de-navegacao-e-design-tokens.md`
+severity: low
+reason: `frontend/src/components/ui/sonner.tsx`'s `style` prop no `<Sonner>` só popula as 4 variáveis genéricas do `sonner`. Nenhuma AC desta story exige toasts com cor por tipo — AC1 só exige que os tokens fiquem "disponíveis nas classes Tailwind geradas", não que todo consumidor gerado pelo `shadcn` já os utilize (mesmo padrão do item de dark mode acima: capacidade presente, não conectada).
+status: open
+
+### DW-17: Follow-up review still recommended for 1-2-fundação-do-shell-de-navegação-e-design-tokens after the damping cap was spent
+origin: review-budget-followup
+location: n/a
+source_spec: `spec-1-2-fundacao-do-shell-de-navegacao-e-design-tokens.md`
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260829-164557-1d23; this entry preserves the lingering recommendation for a deliberate later review.
+status: open
