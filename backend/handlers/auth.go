@@ -1,6 +1,7 @@
-// Package handlers implementa a fronteira HTTP de autenticação (Story 1.3):
-// decodifica/serializa JSON, mapeia erros de `services/` para o envelope de
-// erro fixo (AD-14), e nunca contém regra de negócio própria.
+// Package handlers implementa a fronteira HTTP de autenticação: Story 1.3
+// (cadastro/verificação de e-mail) e Story 1.4 (login, refresh de sessão e
+// `/me`) — decodifica/serializa JSON, mapeia erros de `services/` para o
+// envelope de erro fixo (AD-14), e nunca contém regra de negócio própria.
 package handlers
 
 import (
@@ -9,7 +10,9 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
+	"stockflow/backend/middleware"
 	"stockflow/backend/services"
 )
 
@@ -104,5 +107,193 @@ func VerificarEmailHandler(db *sql.DB) http.HandlerFunc {
 			slog.Error("falha ao verificar e-mail", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao verificar e-mail")
 		}
+	}
+}
+
+// authRequestMaxBytes limita o corpo aceito por POST /api/auth/login — mesma
+// justificativa de cadastroRequestMaxBytes: rota pública e não autenticada.
+const authRequestMaxBytes = 64 * 1024
+
+// refreshTokenCookieName/refreshTokenCookiePath são compartilhados por
+// LoginHandler e RefreshHandler (setar o cookie) e por RefreshHandler (lê-lo
+// de volta) — o Path restrito a /api/auth (AD-6) garante que o navegador só
+// anexa esse cookie nas próprias rotas de sessão, nunca em toda a API.
+const (
+	refreshTokenCookieName = "refresh_token"
+	refreshTokenCookiePath = "/api/auth"
+)
+
+// usuarioResposta é o formato de usuário devolvido em POST /api/auth/login e
+// GET /api/auth/me.
+type usuarioResposta struct {
+	ID    string `json:"id"`
+	Nome  string `json:"nome"`
+	Email string `json:"email"`
+	Papel string `json:"papel"`
+}
+
+// cookieEhSeguro decide a flag Secure do cookie de refresh (AD-6): true
+// quando a requisição chegou via TLS direto, ou via proxy reverso que
+// declarou `X-Forwarded-Proto: https` (caso do compose/produção atrás de um
+// proxy) — nunca setado incondicionalmente, para não quebrar o
+// desenvolvimento local em HTTP puro.
+func cookieEhSeguro(r *http.Request) bool {
+	return r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
+}
+
+// setRefreshCookie grava o refresh token rotacionado como cookie HttpOnly
+// (AD-6): Path restrito a /api/auth, SameSite=Lax, Secure condicional, e
+// Max-Age igual ao TTL restante da sessão em segundos.
+func setRefreshCookie(w http.ResponseWriter, r *http.Request, token string, expiraEm time.Time) {
+	maxAge := int(time.Until(expiraEm).Seconds())
+	if maxAge < 0 {
+		maxAge = 0
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     refreshTokenCookieName,
+		Value:    token,
+		Path:     refreshTokenCookiePath,
+		HttpOnly: true,
+		Secure:   cookieEhSeguro(r),
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   maxAge,
+	})
+}
+
+// clearRefreshCookie limpa o cookie de refresh (Max-Age=0, AD-6) — usado
+// sempre que RefreshHandler rejeita o token apresentado (ausente, expirado,
+// revogado ou inexistente), para que o navegador nunca reapresente um
+// refresh token já sabidamente inválido.
+func clearRefreshCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     refreshTokenCookieName,
+		Value:    "",
+		Path:     refreshTokenCookiePath,
+		HttpOnly: true,
+		Secure:   cookieEhSeguro(r),
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1, // negativo == "Max-Age: 0" no header (net/http), i.e. apaga o cookie agora.
+	})
+}
+
+// loginRequest é o payload aceito por POST /api/auth/login.
+type loginRequest struct {
+	Email string `json:"email"`
+	Senha string `json:"senha"`
+}
+
+// LoginHandler expõe POST /api/auth/login (Story 1.4, AD-6): valida
+// e-mail/senha, e em caso de sucesso emite o access JWT no corpo da resposta
+// e o refresh token em cookie HttpOnly. Todo cenário de credencial inválida
+// (senha errada, e-mail inexistente, e-mail não verificado, conta
+// desativada, conta só-SSO) devolve a MESMA resposta 401 INVALID_CREDENTIALS
+// — nunca revela qual condição falhou nem se o e-mail existe.
+func LoginHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
+
+		var req loginRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "payload inválido")
+			return
+		}
+
+		usuarioID, err := services.Login(db, req.Email, req.Senha)
+		switch {
+		case err == nil:
+			// segue abaixo
+		case errors.Is(err, services.ErrLoginValidacao):
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "e-mail e senha são obrigatórios")
+			return
+		case errors.Is(err, services.ErrCredenciaisInvalidas):
+			escreverErro(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "E-mail ou senha inválidos.")
+			return
+		default:
+			slog.Error("falha ao processar login", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao processar login")
+			return
+		}
+
+		accessToken, refreshToken, expiraRefresh, err := services.EmitirSessao(db, jwtSecret, usuarioID)
+		if err != nil {
+			slog.Error("falha ao emitir sessão", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao emitir sessão")
+			return
+		}
+
+		usuario, err := services.BuscarUsuarioSessao(db, usuarioID)
+		if err != nil {
+			slog.Error("falha ao carregar usuário recém-autenticado", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao processar login")
+			return
+		}
+
+		setRefreshCookie(w, r, refreshToken, expiraRefresh)
+		escreverJSON(w, http.StatusOK, map[string]any{
+			"token": accessToken,
+			"usuario": usuarioResposta{
+				ID:    usuario.ID,
+				Nome:  usuario.Nome,
+				Email: usuario.Email,
+				Papel: usuario.Papel,
+			},
+		})
+	}
+}
+
+// RefreshHandler expõe POST /api/auth/refresh (Story 1.4, AD-6): lê o
+// cookie de refresh, rotaciona a sessão (RenovarSessao) e devolve um novo
+// access token + cookie. Cookie ausente/expirado/revogado/inexistente
+// resultam todos em 401 TOKEN_EXPIRED com o cookie limpo — o cliente
+// precisa logar novamente.
+func RefreshHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie(refreshTokenCookieName)
+		if err != nil {
+			clearRefreshCookie(w, r)
+			escreverErro(w, http.StatusUnauthorized, "TOKEN_EXPIRED", "sessão expirada, faça login novamente")
+			return
+		}
+
+		novoAccess, novoRefresh, expiraRefresh, err := services.RenovarSessao(db, jwtSecret, cookie.Value)
+		switch {
+		case err == nil:
+			// segue abaixo
+		case errors.Is(err, services.ErrSessaoInvalida):
+			clearRefreshCookie(w, r)
+			escreverErro(w, http.StatusUnauthorized, "TOKEN_EXPIRED", "sessão expirada, faça login novamente")
+			return
+		default:
+			slog.Error("falha ao renovar sessão", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao renovar sessão")
+			return
+		}
+
+		// expiraRefresh é o prazo EFETIVAMENTE persistido por RenovarSessao, não
+		// um recálculo local — evita que o cookie divirja do valor gravado em
+		// `sessoes` pelo tempo do round-trip ao banco (mesmo padrão de
+		// LoginHandler/EmitirSessao acima).
+		setRefreshCookie(w, r, novoRefresh, expiraRefresh)
+		escreverJSON(w, http.StatusOK, map[string]string{"token": novoAccess})
+	}
+}
+
+// MeHandler expõe GET /api/auth/me, sempre registrado atrás de
+// middleware.RequireAuth (main.go): devolve o usuário já resolvido pelo
+// middleware a partir do Postgres — nunca do claim do JWT.
+func MeHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		usuario, ok := middleware.UsuarioDaSessao(r.Context())
+		if !ok {
+			slog.Error("MeHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+		escreverJSON(w, http.StatusOK, usuarioResposta{
+			ID:    usuario.ID,
+			Nome:  usuario.Nome,
+			Email: usuario.Email,
+			Papel: usuario.Papel,
+		})
 	}
 }

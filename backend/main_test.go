@@ -187,7 +187,8 @@ func TestRunMigrations_UniqueAdminIndex(t *testing.T) {
 func TestNewMux_RegistraRotasDeAutenticacao(t *testing.T) {
 	db := testDB(t)
 	emailCfg := services.CarregarEmailConfig()
-	mux := newMux(db, emailCfg)
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	mux := newMux(db, emailCfg, jwtSecret)
 
 	casos := []struct {
 		nome         string
@@ -214,6 +215,25 @@ func TestNewMux_RegistraRotasDeAutenticacao(t *testing.T) {
 			metodo:       http.MethodGet,
 			caminho:      "/api/health",
 			statusQuerAo: http.StatusOK,
+		},
+		{
+			nome:         "login com payload invalido chega no LoginHandler",
+			metodo:       http.MethodPost,
+			caminho:      "/api/auth/login",
+			corpo:        `{isto nao e json`,
+			statusQuerAo: http.StatusBadRequest,
+		},
+		{
+			nome:         "refresh sem cookie chega no RefreshHandler",
+			metodo:       http.MethodPost,
+			caminho:      "/api/auth/refresh",
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
+			nome:         "me sem token chega no RequireAuth",
+			metodo:       http.MethodGet,
+			caminho:      "/api/auth/me",
+			statusQuerAo: http.StatusUnauthorized,
 		},
 	}
 	for _, c := range casos {

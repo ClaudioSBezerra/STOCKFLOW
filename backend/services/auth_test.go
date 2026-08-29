@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
@@ -485,5 +486,373 @@ func TestNormalizeEmail(t *testing.T) {
 		if got := normalizeEmail(in); got != want {
 			t.Errorf("normalizeEmail(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// testJWTSecret é o segredo usado para assinar/validar tokens de sessão
+// nesta suíte — mesmo padrão de testEmailCfg acima.
+var testJWTSecret = []byte("segredo-de-teste-nao-usar-em-producao")
+
+// criarUsuarioParaLogin insere uma linha diretamente em usuarios (sem passar
+// por Cadastrar, que sempre cria email_verificado=false) para poder exercitar
+// livremente todas as combinações de ativo/email_verificado/senha_hash da I/O
+// Matrix de login. senha vazia grava senha_hash NULL (conta só-SSO).
+func criarUsuarioParaLogin(t *testing.T, db *sql.DB, email, senha string, ativo, emailVerificado bool) string {
+	t.Helper()
+
+	var senhaHash sql.NullString
+	if senha != "" {
+		hash, err := bcrypt.GenerateFromPassword([]byte(senha), bcrypt.DefaultCost)
+		if err != nil {
+			t.Fatalf("falha ao gerar hash de senha de teste: %v", err)
+		}
+		senhaHash = sql.NullString{String: string(hash), Valid: true}
+	}
+
+	var id string
+	const insert = `
+		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
+		VALUES ('Usuário Teste', $1, $2, 'usuario', $3, $4)
+		RETURNING id`
+	if err := db.QueryRow(insert, email, senhaHash, emailVerificado, ativo).Scan(&id); err != nil {
+		t.Fatalf("falha ao criar usuario de teste: %v", err)
+	}
+	return id
+}
+
+// TestLogin_Sucesso prova o cenário "Login válido" da I/O Matrix: conta
+// ativa, e-mail verificado e senha correta devolvem o id do usuário sem
+// erro.
+func TestLogin_Sucesso(t *testing.T) {
+	db := testDB(t)
+	id := criarUsuarioParaLogin(t, db, "login-ok@empresa.com", "senha-123456", true, true)
+
+	got, err := Login(db, "Login-OK@Empresa.com", "senha-123456")
+	if err != nil {
+		t.Fatalf("Login retornou erro inesperado: %v", err)
+	}
+	if got != id {
+		t.Errorf("usuarioID = %q, want %q", got, id)
+	}
+}
+
+// TestLogin_CredenciaisInvalidas prova que TODOS os cenários malsucedidos da
+// I/O Matrix (senha errada, e-mail inexistente, e-mail não verificado, conta
+// desativada, conta só-SSO) devolvem exatamente ErrCredenciaisInvalidas —
+// nunca um erro que permita distinguir qual condição falhou.
+func TestLogin_CredenciaisInvalidas(t *testing.T) {
+	db := testDB(t)
+
+	criarUsuarioParaLogin(t, db, "senha-errada@empresa.com", "senha-correta", true, true)
+	criarUsuarioParaLogin(t, db, "nao-verificado@empresa.com", "senha-123456", true, false)
+	criarUsuarioParaLogin(t, db, "desativado@empresa.com", "senha-123456", false, true)
+	criarUsuarioParaLogin(t, db, "so-sso@empresa.com", "", true, true)
+
+	casos := []struct {
+		nome, email, senha string
+	}{
+		{"senha incorreta", "senha-errada@empresa.com", "senha-incorreta"},
+		{"e-mail inexistente", "nunca-existiu@empresa.com", "qualquer-senha"},
+		{"e-mail não verificado", "nao-verificado@empresa.com", "senha-123456"},
+		{"conta desativada", "desativado@empresa.com", "senha-123456"},
+		{"conta só-SSO (senha_hash nulo)", "so-sso@empresa.com", "qualquer-senha"},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			_, err := Login(db, c.email, c.senha)
+			if !errors.Is(err, ErrCredenciaisInvalidas) {
+				t.Fatalf("erro = %v, want ErrCredenciaisInvalidas", err)
+			}
+		})
+	}
+}
+
+// TestLogin_CampoObrigatorioAusente prova o cenário "Campo obrigatório
+// ausente" da I/O Matrix: e-mail ou senha em branco retornam
+// ErrLoginValidacao (400 VALIDATION_ERROR na fronteira HTTP).
+func TestLogin_CampoObrigatorioAusente(t *testing.T) {
+	db := testDB(t)
+
+	casos := []struct{ email, senha string }{
+		{"", "senha-123456"},
+		{"   ", "senha-123456"},
+		{"alguem@empresa.com", ""},
+		{"alguem@empresa.com", "   "},
+	}
+	for _, c := range casos {
+		t.Run(fmt.Sprintf("email=%q senha=%q", c.email, c.senha), func(t *testing.T) {
+			_, err := Login(db, c.email, c.senha)
+			if !errors.Is(err, ErrLoginValidacao) {
+				t.Fatalf("erro = %v, want ErrLoginValidacao", err)
+			}
+		})
+	}
+}
+
+// TestEmitirSessao_EmiteAccessTokenEPersisteRefresh prova a AC principal
+// desta story: EmitirSessao devolve um access JWT válido (sub=usuarioID,
+// exp ~30min) e persiste uma linha em `sessoes` com o refresh token, TTL de
+// ~2h e revogado_em nulo.
+func TestEmitirSessao_EmiteAccessTokenEPersisteRefresh(t *testing.T) {
+	db := testDB(t)
+	usuarioID := criarUsuarioParaLogin(t, db, "sessao@empresa.com", "senha-123456", true, true)
+
+	accessToken, refreshToken, expiraRefresh, err := EmitirSessao(db, testJWTSecret, usuarioID)
+	if err != nil {
+		t.Fatalf("EmitirSessao retornou erro inesperado: %v", err)
+	}
+	if accessToken == "" || refreshToken == "" {
+		t.Fatal("accessToken/refreshToken vazios")
+	}
+
+	claims := &jwt.RegisteredClaims{}
+	parsed, err := jwt.ParseWithClaims(accessToken, claims, func(*jwt.Token) (any, error) { return testJWTSecret, nil })
+	if err != nil || !parsed.Valid {
+		t.Fatalf("access token inválido: %v", err)
+	}
+	if claims.Subject != usuarioID {
+		t.Errorf("claim sub = %q, want %q", claims.Subject, usuarioID)
+	}
+	wantExpira := time.Now().UTC().Add(accessTokenExpiracao)
+	if diff := wantExpira.Sub(claims.ExpiresAt.Time); diff < 0 || diff > time.Minute {
+		t.Errorf("access token exp = %v, want ~30min a partir de agora (diff=%v)", claims.ExpiresAt.Time, diff)
+	}
+
+	var dbRefreshToken string
+	var dbExpiraEm time.Time
+	var dbRevogadoEm sql.NullTime
+	var dbUsuarioID string
+	err = db.QueryRow(`SELECT usuario_id, refresh_token, expira_em, revogado_em FROM sessoes WHERE refresh_token = $1`, refreshToken).
+		Scan(&dbUsuarioID, &dbRefreshToken, &dbExpiraEm, &dbRevogadoEm)
+	if err != nil {
+		t.Fatalf("falha ao ler sessão persistida: %v", err)
+	}
+	if dbUsuarioID != usuarioID {
+		t.Errorf("sessoes.usuario_id = %q, want %q", dbUsuarioID, usuarioID)
+	}
+	if dbRevogadoEm.Valid {
+		t.Error("sessoes.revogado_em já preenchido em sessão recém-criada")
+	}
+	if diff := expiraRefresh.Sub(dbExpiraEm); diff < -time.Second || diff > time.Second {
+		t.Errorf("expiraRefresh retornado (%v) difere do persistido (%v)", expiraRefresh, dbExpiraEm)
+	}
+	wantExpiraRefresh := time.Now().UTC().Add(RefreshTokenExpiracao)
+	if diff := wantExpiraRefresh.Sub(dbExpiraEm); diff < 0 || diff > time.Minute {
+		t.Errorf("sessoes.expira_em = %v, want ~2h a partir de agora (diff=%v)", dbExpiraEm, diff)
+	}
+}
+
+// TestRenovarSessao_Sucesso prova o cenário "Refresh válido" da I/O Matrix:
+// a linha antiga é marcada revogada e uma nova é inserida na mesma
+// transação, com um novo access token válido para o mesmo usuário.
+func TestRenovarSessao_Sucesso(t *testing.T) {
+	db := testDB(t)
+	usuarioID := criarUsuarioParaLogin(t, db, "renovar-ok@empresa.com", "senha-123456", true, true)
+	_, refreshToken, _, err := EmitirSessao(db, testJWTSecret, usuarioID)
+	if err != nil {
+		t.Fatalf("EmitirSessao falhou: %v", err)
+	}
+
+	novoAccess, novoRefresh, novoExpiraRefresh, err := RenovarSessao(db, testJWTSecret, refreshToken)
+	if err != nil {
+		t.Fatalf("RenovarSessao retornou erro inesperado: %v", err)
+	}
+	if novoAccess == "" || novoRefresh == "" {
+		t.Fatal("novoAccess/novoRefresh vazios")
+	}
+	if novoRefresh == refreshToken {
+		t.Error("novoRefresh igual ao token antigo — rotação não aconteceu")
+	}
+
+	var revogadoEm sql.NullTime
+	if err := db.QueryRow(`SELECT revogado_em FROM sessoes WHERE refresh_token = $1`, refreshToken).Scan(&revogadoEm); err != nil {
+		t.Fatalf("falha ao reler sessão antiga: %v", err)
+	}
+	if !revogadoEm.Valid {
+		t.Error("sessão antiga não marcada como revogada após rotação")
+	}
+
+	var novoUsuarioID string
+	var novoRevogadoEm sql.NullTime
+	var novoExpiraEmDB time.Time
+	if err := db.QueryRow(`SELECT usuario_id, revogado_em, expira_em FROM sessoes WHERE refresh_token = $1`, novoRefresh).Scan(&novoUsuarioID, &novoRevogadoEm, &novoExpiraEmDB); err != nil {
+		t.Fatalf("falha ao ler nova sessão: %v", err)
+	}
+	if novoUsuarioID != usuarioID {
+		t.Errorf("nova sessão: usuario_id = %q, want %q", novoUsuarioID, usuarioID)
+	}
+	if novoRevogadoEm.Valid {
+		t.Error("nova sessão já nasce revogada")
+	}
+	// novoExpiraRefresh (devolvido por RenovarSessao) precisa ser o MESMO
+	// instante persistido em sessoes.expira_em — é exatamente esse contrato que
+	// permite ao chamador HTTP (RefreshHandler) montar o cookie com o valor
+	// realmente gravado, em vez de recalcular a partir de RefreshTokenExpiracao
+	// e arriscar divergir pelo tempo do round-trip ao banco.
+	if diff := novoExpiraRefresh.Sub(novoExpiraEmDB); diff < -time.Second || diff > time.Second {
+		t.Errorf("novoExpiraRefresh retornado (%v) difere do persistido (%v)", novoExpiraRefresh, novoExpiraEmDB)
+	}
+
+	claims := &jwt.RegisteredClaims{}
+	parsed, err := jwt.ParseWithClaims(novoAccess, claims, func(*jwt.Token) (any, error) { return testJWTSecret, nil })
+	if err != nil || !parsed.Valid || claims.Subject != usuarioID {
+		t.Fatalf("novo access token inválido ou sub incorreto: err=%v sub=%q", err, claims.Subject)
+	}
+}
+
+// TestRenovarSessao_TokenInexistenteOuVazio prova que um token que nunca
+// existiu, ou uma string vazia (cookie ausente repassado como valor vazio
+// pelo handler), retornam ErrSessaoInvalida.
+func TestRenovarSessao_TokenInexistenteOuVazio(t *testing.T) {
+	db := testDB(t)
+
+	for _, token := range []string{"token-que-nunca-existiu", ""} {
+		t.Run(fmt.Sprintf("token=%q", token), func(t *testing.T) {
+			_, _, _, err := RenovarSessao(db, testJWTSecret, token)
+			if !errors.Is(err, ErrSessaoInvalida) {
+				t.Fatalf("erro = %v, want ErrSessaoInvalida", err)
+			}
+		})
+	}
+}
+
+// TestRenovarSessao_TokenExpirado prova o cenário "Refresh ausente/expirado/
+// revogado" da I/O Matrix para o caso de expiração: expira_em no passado
+// retorna ErrSessaoInvalida e não revoga a linha (nada a rotacionar).
+func TestRenovarSessao_TokenExpirado(t *testing.T) {
+	db := testDB(t)
+	usuarioID := criarUsuarioParaLogin(t, db, "renovar-expirado@empresa.com", "senha-123456", true, true)
+	_, refreshToken, _, err := EmitirSessao(db, testJWTSecret, usuarioID)
+	if err != nil {
+		t.Fatalf("EmitirSessao falhou: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE sessoes SET expira_em = now() - interval '1 hour' WHERE refresh_token = $1`, refreshToken); err != nil {
+		t.Fatalf("falha ao forçar expiração: %v", err)
+	}
+
+	_, _, _, err = RenovarSessao(db, testJWTSecret, refreshToken)
+	if !errors.Is(err, ErrSessaoInvalida) {
+		t.Fatalf("erro = %v, want ErrSessaoInvalida", err)
+	}
+}
+
+// TestRenovarSessao_TokenJaRevogado prova o mesmo cenário para uma sessão já
+// rotacionada: reapresentar o refresh token antigo depois de uma rotação
+// bem-sucedida deve falhar, nunca reexecutar o efeito (idempotência, mesmo
+// espírito de TestVerificarEmail_LinkJaUsado).
+func TestRenovarSessao_TokenJaRevogado(t *testing.T) {
+	db := testDB(t)
+	usuarioID := criarUsuarioParaLogin(t, db, "renovar-revogado@empresa.com", "senha-123456", true, true)
+	_, refreshToken, _, err := EmitirSessao(db, testJWTSecret, usuarioID)
+	if err != nil {
+		t.Fatalf("EmitirSessao falhou: %v", err)
+	}
+	if _, _, _, err := RenovarSessao(db, testJWTSecret, refreshToken); err != nil {
+		t.Fatalf("primeira renovação falhou: %v", err)
+	}
+
+	_, _, _, err = RenovarSessao(db, testJWTSecret, refreshToken)
+	if !errors.Is(err, ErrSessaoInvalida) {
+		t.Fatalf("segunda renovação: erro = %v, want ErrSessaoInvalida", err)
+	}
+}
+
+// TestRenovarSessao_Concorrente prova o backstop de correção contra a
+// corrida real fechada pela condição do UPDATE...RETURNING de RenovarSessao
+// (`revogado_em IS NULL AND expira_em > now()`): duas chamadas concorrentes
+// para o MESMO refresh token só podem ter exatamente uma vencedora. Mesmo
+// padrão de TestVerificarEmail_Concorrente.
+func TestRenovarSessao_Concorrente(t *testing.T) {
+	db := testDB(t)
+	usuarioID := criarUsuarioParaLogin(t, db, "renovar-concorrente@empresa.com", "senha-123456", true, true)
+	_, refreshToken, _, err := EmitirSessao(db, testJWTSecret, usuarioID)
+	if err != nil {
+		t.Fatalf("EmitirSessao falhou: %v", err)
+	}
+
+	const n = 2
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, _, _, errs[i] = RenovarSessao(db, testJWTSecret, refreshToken)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	var successCount, invalidCount int
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			successCount++
+		case errors.Is(err, ErrSessaoInvalida):
+			invalidCount++
+		default:
+			t.Fatalf("erro inesperado em execução concorrente: %v", err)
+		}
+	}
+	if successCount != 1 {
+		t.Errorf("successCount = %d, want 1", successCount)
+	}
+	if invalidCount != n-1 {
+		t.Errorf("invalidCount = %d, want %d", invalidCount, n-1)
+	}
+}
+
+// TestBuscarUsuarioSessao_Sucesso prova que o middleware resolve o usuário a
+// partir do Postgres com todos os campos exigidos pelo contrato (AD-6).
+func TestBuscarUsuarioSessao_Sucesso(t *testing.T) {
+	db := testDB(t)
+	usuarioID := criarUsuarioParaLogin(t, db, "buscar-sessao@empresa.com", "senha-123456", true, true)
+
+	u, err := BuscarUsuarioSessao(db, usuarioID)
+	if err != nil {
+		t.Fatalf("BuscarUsuarioSessao retornou erro inesperado: %v", err)
+	}
+	if u.ID != usuarioID {
+		t.Errorf("ID = %q, want %q", u.ID, usuarioID)
+	}
+	if u.Email != "buscar-sessao@empresa.com" {
+		t.Errorf("Email = %q, want %q", u.Email, "buscar-sessao@empresa.com")
+	}
+	if u.Papel != "usuario" {
+		t.Errorf("Papel = %q, want %q", u.Papel, "usuario")
+	}
+	if !u.Ativo {
+		t.Error("Ativo = false, want true")
+	}
+}
+
+// TestBuscarUsuarioSessao_NaoEncontrado prova o caso consumido pelo
+// middleware para decidir SESSION_REVOKED: um id que não existe mais (ex.
+// conta removida) retorna ErrUsuarioSessaoNaoEncontrado.
+func TestBuscarUsuarioSessao_NaoEncontrado(t *testing.T) {
+	db := testDB(t)
+
+	_, err := BuscarUsuarioSessao(db, "00000000-0000-0000-0000-000000000000")
+	if !errors.Is(err, ErrUsuarioSessaoNaoEncontrado) {
+		t.Fatalf("erro = %v, want ErrUsuarioSessaoNaoEncontrado", err)
+	}
+}
+
+// TestBuscarUsuarioSessao_ContaDesativada prova que o campo Ativo reflete o
+// estado atual do banco — a decisão de revogar acesso (SESSION_REVOKED) cabe
+// ao middleware, que consulta este campo, nunca ao claim do JWT.
+func TestBuscarUsuarioSessao_ContaDesativada(t *testing.T) {
+	db := testDB(t)
+	usuarioID := criarUsuarioParaLogin(t, db, "desativado-sessao@empresa.com", "senha-123456", false, true)
+
+	u, err := BuscarUsuarioSessao(db, usuarioID)
+	if err != nil {
+		t.Fatalf("BuscarUsuarioSessao retornou erro inesperado: %v", err)
+	}
+	if u.Ativo {
+		t.Error("Ativo = true, want false")
 	}
 }

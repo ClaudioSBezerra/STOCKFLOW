@@ -21,6 +21,9 @@ services:
     environment:
       DATABASE_URL: postgres://stockflow:stockflow@db:5432/stockflow?sslmode=disable
       PORT: '8080'
+      # Valor de desenvolvimento explícito (Story 1.4, AD-6) — nunca usado em
+      # produção; cada ambiente real deve definir o próprio segredo.
+      JWT_SECRET: dev-jwt-secret-nao-usar-em-producao
     ports:
       - '8080:8080'
     depends_on:

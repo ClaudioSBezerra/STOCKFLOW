@@ -4,7 +4,7 @@
 // accepts HTTP traffic against a schema that failed to migrate), starts the
 // e-mail outbox worker (services.IniciarWorkerEmail), and then serves the
 // liveness endpoint plus the public authentication routes (cadastro e
-// verificação de e-mail — Story 1.3).
+// verificação de e-mail — Story 1.3; login, refresh e /me — Story 1.4).
 package main
 
 import (
@@ -27,6 +27,7 @@ import (
 	_ "github.com/lib/pq"
 
 	"stockflow/backend/handlers"
+	"stockflow/backend/middleware"
 	"stockflow/backend/services"
 )
 
@@ -44,6 +45,15 @@ func main() {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		slog.Error("DATABASE_URL não definido")
+		os.Exit(1)
+	}
+
+	// JWT_SECRET assina os access tokens de sessão (Story 1.4, AD-6) — mesmo
+	// tratamento fail-fast já aplicado acima a DATABASE_URL: o processo nunca
+	// sobe capaz de emitir/validar sessão sem um segredo configurado.
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		slog.Error("JWT_SECRET não definido")
 		os.Exit(1)
 	}
 
@@ -80,7 +90,7 @@ func main() {
 	pararWorkerEmail := services.IniciarWorkerEmail(db, emailCfg, services.IntervaloPollingEmail)
 	defer pararWorkerEmail()
 
-	mux := newMux(db, emailCfg)
+	mux := newMux(db, emailCfg, []byte(jwtSecret))
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -171,11 +181,14 @@ func runMigrations(db *sql.DB) error {
 // testes possam despachar requisições através do mux real (mesmos padrões de
 // método+rota registrados em produção), em vez de chamar cada handler
 // diretamente e nunca exercitar o registro em si.
-func newMux(db *sql.DB, emailCfg services.EmailConfig) *http.ServeMux {
+func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", healthHandler(db))
 	mux.HandleFunc("POST /api/auth/cadastro", handlers.CadastroHandler(db, emailCfg))
 	mux.HandleFunc("GET /api/auth/verificar-email", handlers.VerificarEmailHandler(db))
+	mux.HandleFunc("POST /api/auth/login", handlers.LoginHandler(db, jwtSecret))
+	mux.HandleFunc("POST /api/auth/refresh", handlers.RefreshHandler(db, jwtSecret))
+	mux.HandleFunc("GET /api/auth/me", middleware.RequireAuth(db, jwtSecret)(handlers.MeHandler()))
 	return mux
 }
 

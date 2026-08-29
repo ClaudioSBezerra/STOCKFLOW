@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"crypto/tls"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -16,7 +17,9 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/lib/pq"
+	"golang.org/x/crypto/bcrypt"
 
+	"stockflow/backend/middleware"
 	"stockflow/backend/services"
 )
 
@@ -320,5 +323,591 @@ func TestVerificarEmailHandler_TokenJaUsado(t *testing.T) {
 	env := decodeErro(t, w.Body.Bytes())
 	if env.Error.Code != "TOKEN_EXPIRED" {
 		t.Errorf("code = %q, want %q", env.Error.Code, "TOKEN_EXPIRED")
+	}
+}
+
+// testJWTSecret é o segredo usado para assinar/validar tokens de sessão
+// nesta suíte — mesmo padrão de testEmailCfg acima.
+var testJWTSecret = []byte("segredo-de-teste-nao-usar-em-producao")
+
+// criarUsuarioLogin insere uma conta ativa/verificada com senha conhecida
+// diretamente em usuarios — services.Cadastrar sempre cria
+// email_verificado=false, então não serve para exercitar o caminho feliz de
+// login sem um passo extra de verificação.
+func criarUsuarioLogin(t *testing.T, db *sql.DB, email, senha string) string {
+	t.Helper()
+	hash, err := bcrypt.GenerateFromPassword([]byte(senha), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("falha ao gerar hash de senha de teste: %v", err)
+	}
+	var id string
+	const insert = `
+		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
+		VALUES ('Usuário Teste', $1, $2, 'usuario', true, true)
+		RETURNING id`
+	if err := db.QueryRow(insert, email, string(hash)).Scan(&id); err != nil {
+		t.Fatalf("falha ao criar usuario de teste: %v", err)
+	}
+	return id
+}
+
+// criarUsuarioLoginComEstado é a variante de criarUsuarioLogin com controle
+// total sobre ativo/emailVerificado/senha (senha vazia grava senha_hash
+// NULL, conta só-SSO) — necessária para provar na fronteira HTTP os 3
+// sub-casos de "credenciais inválidas" que criarUsuarioLogin (sempre
+// ativo=true/email_verificado=true) não alcança.
+func criarUsuarioLoginComEstado(t *testing.T, db *sql.DB, email, senha string, ativo, emailVerificado bool) string {
+	t.Helper()
+	var senhaHash sql.NullString
+	if senha != "" {
+		hash, err := bcrypt.GenerateFromPassword([]byte(senha), bcrypt.DefaultCost)
+		if err != nil {
+			t.Fatalf("falha ao gerar hash de senha de teste: %v", err)
+		}
+		senhaHash = sql.NullString{String: string(hash), Valid: true}
+	}
+	var id string
+	const insert = `
+		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
+		VALUES ('Usuário Teste', $1, $2, 'usuario', $3, $4)
+		RETURNING id`
+	if err := db.QueryRow(insert, email, senhaHash, emailVerificado, ativo).Scan(&id); err != nil {
+		t.Fatalf("falha ao criar usuario de teste: %v", err)
+	}
+	return id
+}
+
+func postLogin(db *sql.DB, jsonBody string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	LoginHandler(db, testJWTSecret)(w, req)
+	return w
+}
+
+// refreshCookieDoResultado extrai o Set-Cookie de nome refresh_token de uma
+// resposta gravada — usado para encadear login->refresh nos testes abaixo.
+func refreshCookieDoResultado(t *testing.T, w *httptest.ResponseRecorder) *http.Cookie {
+	t.Helper()
+	res := w.Result()
+	for _, c := range res.Cookies() {
+		if c.Name == refreshTokenCookieName {
+			return c
+		}
+	}
+	t.Fatal("cookie refresh_token não encontrado na resposta")
+	return nil
+}
+
+func postRefresh(db *sql.DB, cookie *http.Cookie) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
+	if cookie != nil {
+		req.AddCookie(cookie)
+	}
+	w := httptest.NewRecorder()
+	RefreshHandler(db, testJWTSecret)(w, req)
+	return w
+}
+
+// getMe despacha através da MESMA composição usada em produção
+// (main.go: middleware.RequireAuth(db, jwtSecret)(handlers.MeHandler())) —
+// nunca chama MeHandler isoladamente, para provar o contrato real da rota.
+func getMe(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	middleware.RequireAuth(db, testJWTSecret)(MeHandler())(w, req)
+	return w
+}
+
+// TestLoginHandler_Sucesso prova o cenário "Login válido" na fronteira HTTP
+// (Story 1.4): 200, corpo com token+usuario, e cookie refresh_token
+// HttpOnly/Path=/api/auth/SameSite=Lax setado.
+func TestLoginHandler_Sucesso(t *testing.T) {
+	db := testDB(t)
+	usuarioID := criarUsuarioLogin(t, db, "login-handler-ok@empresa.com", "senha-123456")
+
+	w := postLogin(db, `{"email":"Login-Handler-OK@Empresa.com","senha":"senha-123456"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var body struct {
+		Token   string `json:"token"`
+		Usuario struct {
+			ID    string `json:"id"`
+			Nome  string `json:"nome"`
+			Email string `json:"email"`
+			Papel string `json:"papel"`
+		} `json:"usuario"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("falha ao decodificar corpo: %v (body=%s)", err, w.Body.String())
+	}
+	if body.Token == "" {
+		t.Error("token vazio")
+	}
+	if body.Usuario.ID != usuarioID {
+		t.Errorf("usuario.id = %q, want %q", body.Usuario.ID, usuarioID)
+	}
+	if body.Usuario.Email != "login-handler-ok@empresa.com" {
+		t.Errorf("usuario.email = %q, want %q", body.Usuario.Email, "login-handler-ok@empresa.com")
+	}
+	if body.Usuario.Papel != "usuario" {
+		t.Errorf("usuario.papel = %q, want %q", body.Usuario.Papel, "usuario")
+	}
+
+	cookie := refreshCookieDoResultado(t, w)
+	if cookie.Value == "" {
+		t.Error("cookie refresh_token com valor vazio")
+	}
+	if !cookie.HttpOnly {
+		t.Error("cookie refresh_token não é HttpOnly")
+	}
+	if cookie.Path != "/api/auth" {
+		t.Errorf("cookie Path = %q, want %q", cookie.Path, "/api/auth")
+	}
+	if cookie.SameSite != http.SameSiteLaxMode {
+		t.Errorf("cookie SameSite = %v, want SameSiteLaxMode", cookie.SameSite)
+	}
+	// postLogin monta uma requisição HTTP simples (sem req.TLS nem
+	// X-Forwarded-Proto) — cookieEhSeguro deve devolver false aqui. O caminho
+	// Secure=true (TLS direto ou proxy HTTPS) é coberto por
+	// TestLoginHandler_CookieSecure abaixo.
+	if cookie.Secure {
+		t.Error("cookie refresh_token Secure = true em requisição HTTP simples, want false")
+	}
+	// Max-Age precisa refletir o TTL real da sessão emitida (services.
+	// RefreshTokenExpiracao) — sem esta asserção, uma regressão que zerasse ou
+	// invertesse o cálculo do Max-Age passaria despercebida (só os testes de
+	// cookie LIMPO checam MaxAge hoje).
+	if cookie.MaxAge <= 0 {
+		t.Errorf("cookie MaxAge = %d, want > 0", cookie.MaxAge)
+	}
+	wantMaxAge := int(services.RefreshTokenExpiracao.Seconds())
+	if diff := wantMaxAge - cookie.MaxAge; diff < -60 || diff > 60 {
+		t.Errorf("cookie MaxAge = %d, want ~%d (dentro de 60s)", cookie.MaxAge, wantMaxAge)
+	}
+
+	var count int
+	if err := db.QueryRow(`SELECT count(*) FROM sessoes WHERE usuario_id = $1 AND refresh_token = $2`, usuarioID, cookie.Value).Scan(&count); err != nil {
+		t.Fatalf("falha ao consultar sessoes: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("linhas em sessoes para o refresh emitido = %d, want 1", count)
+	}
+}
+
+// TestLoginHandler_CookieSecure prova as duas pontas de cookieEhSeguro que
+// TestLoginHandler_Sucesso não cobre (ele só exercita o caminho HTTP simples):
+// Secure=true quando a requisição chega via TLS direto (req.TLS setado) ou
+// atrás de um proxy reverso que declara X-Forwarded-Proto: https — sem este
+// teste, uma regressão em cookieEhSeguro (lógica invertida ou valor fixo)
+// passaria despercebida, já que nenhum teste existente seta req.TLS nem esse
+// header.
+func TestLoginHandler_CookieSecure(t *testing.T) {
+	casos := []struct {
+		nome       string
+		email      string
+		configurar func(r *http.Request)
+	}{
+		{
+			nome:       "TLS direto",
+			email:      "cookie-secure-tls@empresa.com",
+			configurar: func(r *http.Request) { r.TLS = &tls.ConnectionState{} },
+		},
+		{
+			nome:       "proxy com X-Forwarded-Proto https",
+			email:      "cookie-secure-proxy@empresa.com",
+			configurar: func(r *http.Request) { r.Header.Set("X-Forwarded-Proto", "https") },
+		},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			db := testDB(t)
+			criarUsuarioLogin(t, db, c.email, "senha-123456")
+
+			req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"email":"`+c.email+`","senha":"senha-123456"}`))
+			req.Header.Set("Content-Type", "application/json")
+			c.configurar(req)
+			w := httptest.NewRecorder()
+			LoginHandler(db, testJWTSecret)(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+			}
+			cookie := refreshCookieDoResultado(t, w)
+			if !cookie.Secure {
+				t.Error("cookie refresh_token Secure = false, want true")
+			}
+		})
+	}
+}
+
+// TestLoginHandler_CredenciaisInvalidas prova o envelope 401
+// INVALID_CREDENTIALS (I/O Matrix) para senha errada e e-mail inexistente —
+// a MESMA mensagem genérica para os dois casos.
+func TestLoginHandler_CredenciaisInvalidas(t *testing.T) {
+	db := testDB(t)
+	criarUsuarioLogin(t, db, "login-handler-senha-errada@empresa.com", "senha-correta")
+	criarUsuarioLoginComEstado(t, db, "login-handler-nao-verificado@empresa.com", "senha-123456", true, false)
+	criarUsuarioLoginComEstado(t, db, "login-handler-desativado@empresa.com", "senha-123456", false, true)
+	criarUsuarioLoginComEstado(t, db, "login-handler-so-sso@empresa.com", "", true, true)
+
+	casos := []struct {
+		nome, jsonBody string
+	}{
+		{"senha incorreta", `{"email":"login-handler-senha-errada@empresa.com","senha":"senha-incorreta"}`},
+		{"e-mail inexistente", `{"email":"nunca-existiu-handler@empresa.com","senha":"qualquer-senha"}`},
+		{"e-mail não verificado", `{"email":"login-handler-nao-verificado@empresa.com","senha":"senha-123456"}`},
+		{"conta desativada", `{"email":"login-handler-desativado@empresa.com","senha":"senha-123456"}`},
+		{"conta só-SSO (senha_hash nulo)", `{"email":"login-handler-so-sso@empresa.com","senha":"qualquer-senha"}`},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			w := postLogin(db, c.jsonBody)
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+			}
+			env := decodeErro(t, w.Body.Bytes())
+			if env.Error.Code != "INVALID_CREDENTIALS" {
+				t.Errorf("code = %q, want %q", env.Error.Code, "INVALID_CREDENTIALS")
+			}
+			if env.Error.Message != "E-mail ou senha inválidos." {
+				t.Errorf("message = %q, want %q", env.Error.Message, "E-mail ou senha inválidos.")
+			}
+		})
+	}
+}
+
+// TestLoginHandler_CampoObrigatorioAusente prova o envelope 400
+// VALIDATION_ERROR (I/O Matrix) quando e-mail ou senha vêm em branco.
+func TestLoginHandler_CampoObrigatorioAusente(t *testing.T) {
+	db := testDB(t)
+
+	w := postLogin(db, `{"email":"","senha":"senha-123456"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "VALIDATION_ERROR" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "VALIDATION_ERROR")
+	}
+}
+
+// TestLoginHandler_PayloadInvalido prova que um corpo que nem sequer é JSON
+// válido retorna 400 VALIDATION_ERROR, nunca 500 — mesmo precedente de
+// TestCadastroHandler_PayloadInvalido.
+func TestLoginHandler_PayloadInvalido(t *testing.T) {
+	db := testDB(t)
+
+	w := postLogin(db, `{isto nao e json`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "VALIDATION_ERROR" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "VALIDATION_ERROR")
+	}
+}
+
+// TestLoginHandler_CorpoMuitoGrande prova que authRequestMaxBytes (64KB)
+// rejeita um corpo maior antes mesmo de tentar decodificar — mesmo teste que
+// TestCadastroHandler_CorpoMuitoGrande já prova para /api/auth/cadastro; sem
+// esta cobertura, o limite em /api/auth/login poderia ser removido ou
+// desalinhado silenciosamente.
+func TestLoginHandler_CorpoMuitoGrande(t *testing.T) {
+	db := testDB(t)
+
+	senhaGigante := strings.Repeat("a", 70*1024)
+	w := postLogin(db, `{"email":"grande@empresa.com","senha":"`+senhaGigante+`"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "VALIDATION_ERROR" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "VALIDATION_ERROR")
+	}
+}
+
+// TestRefreshHandler_Sucesso prova o cenário "Refresh válido" na fronteira
+// HTTP: a partir do cookie devolvido por um login real, RefreshHandler
+// devolve 200, um novo access token e um novo cookie rotacionado.
+func TestRefreshHandler_Sucesso(t *testing.T) {
+	db := testDB(t)
+	criarUsuarioLogin(t, db, "refresh-handler-ok@empresa.com", "senha-123456")
+
+	wLogin := postLogin(db, `{"email":"refresh-handler-ok@empresa.com","senha":"senha-123456"}`)
+	if wLogin.Code != http.StatusOK {
+		t.Fatalf("login: status = %d, want %d", wLogin.Code, http.StatusOK)
+	}
+	cookieAntigo := refreshCookieDoResultado(t, wLogin)
+
+	w := postRefresh(db, cookieAntigo)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var body struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("falha ao decodificar corpo: %v", err)
+	}
+	if body.Token == "" {
+		t.Error("token vazio")
+	}
+
+	cookieNovo := refreshCookieDoResultado(t, w)
+	if cookieNovo.Value == "" || cookieNovo.Value == cookieAntigo.Value {
+		t.Errorf("cookie refresh_token novo (%q) deveria ser diferente do antigo (%q)", cookieNovo.Value, cookieAntigo.Value)
+	}
+	// Mesma asserção de Max-Age de TestLoginHandler_Sucesso: o caminho de
+	// sucesso do refresh nunca era coberto por MaxAge, só os cenários de
+	// cookie LIMPO (TestRefreshHandler_CookieAusente/CookieInvalidoOuExpirado)
+	// — uma regressão que fizesse RefreshHandler recalcular um Max-Age
+	// divergente do prazo persistido passaria despercebida sem isto.
+	if cookieNovo.MaxAge <= 0 {
+		t.Errorf("cookie MaxAge = %d, want > 0", cookieNovo.MaxAge)
+	}
+	wantMaxAge := int(services.RefreshTokenExpiracao.Seconds())
+	if diff := wantMaxAge - cookieNovo.MaxAge; diff < -60 || diff > 60 {
+		t.Errorf("cookie MaxAge = %d, want ~%d (dentro de 60s)", cookieNovo.MaxAge, wantMaxAge)
+	}
+}
+
+// TestRefreshHandler_CookieAusente prova o cenário "Refresh ausente" da I/O
+// Matrix: sem cookie, 401 TOKEN_EXPIRED e o cookie é limpo (Max-Age <= 0) na
+// resposta.
+func TestRefreshHandler_CookieAusente(t *testing.T) {
+	db := testDB(t)
+
+	w := postRefresh(db, nil)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "TOKEN_EXPIRED" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "TOKEN_EXPIRED")
+	}
+	cookie := refreshCookieDoResultado(t, w)
+	if cookie.MaxAge > 0 {
+		t.Errorf("cookie MaxAge = %d, want <= 0 (limpo)", cookie.MaxAge)
+	}
+}
+
+// TestRefreshHandler_CookieInvalidoOuExpirado prova o mesmo cenário para um
+// valor de cookie que nunca existiu em `sessoes`.
+func TestRefreshHandler_CookieInvalidoOuExpirado(t *testing.T) {
+	db := testDB(t)
+
+	w := postRefresh(db, &http.Cookie{Name: refreshTokenCookieName, Value: "token-que-nunca-existiu"})
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "TOKEN_EXPIRED" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "TOKEN_EXPIRED")
+	}
+	cookie := refreshCookieDoResultado(t, w)
+	if cookie.MaxAge > 0 {
+		t.Errorf("cookie MaxAge = %d, want <= 0 (limpo)", cookie.MaxAge)
+	}
+}
+
+// TestRefreshHandler_CookieLimpoSecure prova que o cookie de refresh LIMPO
+// (clearRefreshCookie, disparado quando RefreshHandler rejeita o token
+// apresentado) também respeita cookieEhSeguro — mesmo comportamento já
+// provado para o cookie de SUCESSO por TestLoginHandler_CookieSecure, mas
+// nunca antes exercitado no caminho de limpeza: TestRefreshHandler_
+// CookieAusente/CookieInvalidoOuExpirado só rodam sobre HTTP simples e nunca
+// leem Secure/SameSite, então uma regressão que desacoplasse
+// clearRefreshCookie de cookieEhSeguro (ex. hardcode Secure=false) passaria
+// despercebida.
+func TestRefreshHandler_CookieLimpoSecure(t *testing.T) {
+	casos := []struct {
+		nome       string
+		configurar func(r *http.Request)
+	}{
+		{
+			nome:       "TLS direto",
+			configurar: func(r *http.Request) { r.TLS = &tls.ConnectionState{} },
+		},
+		{
+			nome:       "proxy com X-Forwarded-Proto https",
+			configurar: func(r *http.Request) { r.Header.Set("X-Forwarded-Proto", "https") },
+		},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			db := testDB(t)
+			req := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
+			c.configurar(req)
+			w := httptest.NewRecorder()
+			RefreshHandler(db, testJWTSecret)(w, req)
+
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+			}
+			cookie := refreshCookieDoResultado(t, w)
+			if !cookie.Secure {
+				t.Error("cookie refresh_token limpo Secure = false, want true")
+			}
+			if cookie.SameSite != http.SameSiteLaxMode {
+				t.Errorf("cookie SameSite = %v, want SameSiteLaxMode", cookie.SameSite)
+			}
+			if cookie.MaxAge > 0 {
+				t.Errorf("cookie MaxAge = %d, want <= 0 (limpo)", cookie.MaxAge)
+			}
+		})
+	}
+}
+
+// TestRefreshHandler_TokenExpirado prova, na fronteira HTTP, o sub-caso
+// "token expirado" da I/O Matrix de refresh — já provado a nível de serviço
+// por services.TestRenovarSessao_TokenExpirado, mas nunca antes através de
+// RefreshHandler/postRefresh.
+func TestRefreshHandler_TokenExpirado(t *testing.T) {
+	db := testDB(t)
+	criarUsuarioLogin(t, db, "refresh-handler-expirado@empresa.com", "senha-123456")
+
+	wLogin := postLogin(db, `{"email":"refresh-handler-expirado@empresa.com","senha":"senha-123456"}`)
+	if wLogin.Code != http.StatusOK {
+		t.Fatalf("login: status = %d, want %d", wLogin.Code, http.StatusOK)
+	}
+	cookie := refreshCookieDoResultado(t, wLogin)
+
+	if _, err := db.Exec(`UPDATE sessoes SET expira_em = now() - interval '1 hour' WHERE refresh_token = $1`, cookie.Value); err != nil {
+		t.Fatalf("falha ao forçar expiração: %v", err)
+	}
+
+	w := postRefresh(db, cookie)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "TOKEN_EXPIRED" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "TOKEN_EXPIRED")
+	}
+}
+
+// TestRefreshHandler_TokenJaRevogado prova, na fronteira HTTP, o sub-caso
+// "token já revogado" da I/O Matrix de refresh — já provado a nível de
+// serviço por services.TestRenovarSessao_TokenJaRevogado, mas nunca antes
+// através de RefreshHandler/postRefresh: reapresentar o refresh token antigo
+// depois de uma rotação bem-sucedida deve falhar.
+func TestRefreshHandler_TokenJaRevogado(t *testing.T) {
+	db := testDB(t)
+	criarUsuarioLogin(t, db, "refresh-handler-revogado@empresa.com", "senha-123456")
+
+	wLogin := postLogin(db, `{"email":"refresh-handler-revogado@empresa.com","senha":"senha-123456"}`)
+	if wLogin.Code != http.StatusOK {
+		t.Fatalf("login: status = %d, want %d", wLogin.Code, http.StatusOK)
+	}
+	cookieAntigo := refreshCookieDoResultado(t, wLogin)
+
+	if w := postRefresh(db, cookieAntigo); w.Code != http.StatusOK {
+		t.Fatalf("primeira renovação: status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	w := postRefresh(db, cookieAntigo)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("segunda renovação: status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "TOKEN_EXPIRED" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "TOKEN_EXPIRED")
+	}
+}
+
+// TestMeHandler_Sucesso prova GET /api/auth/me através da MESMA composição
+// usada em produção: um access token válido de login real devolve
+// id/nome/email/papel do usuário.
+func TestMeHandler_Sucesso(t *testing.T) {
+	db := testDB(t)
+	usuarioID := criarUsuarioLogin(t, db, "me-handler-ok@empresa.com", "senha-123456")
+
+	wLogin := postLogin(db, `{"email":"me-handler-ok@empresa.com","senha":"senha-123456"}`)
+	if wLogin.Code != http.StatusOK {
+		t.Fatalf("login: status = %d, want %d", wLogin.Code, http.StatusOK)
+	}
+	var loginBody struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(wLogin.Body.Bytes(), &loginBody); err != nil {
+		t.Fatalf("falha ao decodificar corpo do login: %v", err)
+	}
+
+	w := getMe(db, "Bearer "+loginBody.Token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+	var body struct {
+		ID    string `json:"id"`
+		Nome  string `json:"nome"`
+		Email string `json:"email"`
+		Papel string `json:"papel"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("falha ao decodificar corpo: %v", err)
+	}
+	if body.ID != usuarioID {
+		t.Errorf("id = %q, want %q", body.ID, usuarioID)
+	}
+	if body.Email != "me-handler-ok@empresa.com" {
+		t.Errorf("email = %q, want %q", body.Email, "me-handler-ok@empresa.com")
+	}
+	if body.Papel != "usuario" {
+		t.Errorf("papel = %q, want %q", body.Papel, "usuario")
+	}
+}
+
+// TestMeHandler_SemToken prova o cenário "GET /api/auth/me sem token" da I/O
+// Matrix: 401 TOKEN_EXPIRED.
+func TestMeHandler_SemToken(t *testing.T) {
+	db := testDB(t)
+
+	w := getMe(db, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "TOKEN_EXPIRED" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "TOKEN_EXPIRED")
+	}
+}
+
+// TestMeHandler_ContaDesativadaAposEmissao prova a AC principal da Story
+// 1.4: um token de acesso ainda válido, para uma conta desativada entre a
+// emissão e o uso, é rejeitado com 401 SESSION_REVOKED — provado através da
+// composição real (main.go), não chamando o middleware isoladamente.
+func TestMeHandler_ContaDesativadaAposEmissao(t *testing.T) {
+	db := testDB(t)
+	usuarioID := criarUsuarioLogin(t, db, "me-handler-desativado@empresa.com", "senha-123456")
+
+	wLogin := postLogin(db, `{"email":"me-handler-desativado@empresa.com","senha":"senha-123456"}`)
+	if wLogin.Code != http.StatusOK {
+		t.Fatalf("login: status = %d, want %d", wLogin.Code, http.StatusOK)
+	}
+	var loginBody struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(wLogin.Body.Bytes(), &loginBody); err != nil {
+		t.Fatalf("falha ao decodificar corpo do login: %v", err)
+	}
+
+	if _, err := db.Exec(`UPDATE usuarios SET ativo = false WHERE id = $1`, usuarioID); err != nil {
+		t.Fatalf("falha ao desativar conta: %v", err)
+	}
+
+	w := getMe(db, "Bearer "+loginBody.Token)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "SESSION_REVOKED" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "SESSION_REVOKED")
 	}
 }

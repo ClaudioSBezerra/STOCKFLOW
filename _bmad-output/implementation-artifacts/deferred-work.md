@@ -173,3 +173,19 @@ source_spec: `spec-1-3-autocadastro-com-verificacao-de-e-mail.md`
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260829-175442-6327; this entry preserves the lingering recommendation for a deliberate later review.
 status: open
+
+### DW-23: Duplicação de `erroEnvelope`/`erroDetalhe`/`escreverErro` entre `backend/middleware/auth.go` e `backend/handlers/auth.go`, criada deliberadamente para evitar um ciclo de import entre os dois pacotes.
+origin: spec-deferred fa03231fb145
+location: backend/middleware/auth.go:35, backend/handlers/auth.go:17
+source_spec: `spec-1-4-login-por-e-mail-e-senha.md`
+severity: low
+reason: middleware/auth.go define seu próprio erroEnvelope/erroDetalhe/escreverErro idênticos aos de handlers/auth.go porque middleware nunca pode importar handlers (a composição RequireAuth(handlers.MeHandler()) acontece em main.go, na direção oposta). Uma extração para um pacote de baixo nível compartilhado (ex. apperror) removeria a duplicação, mas é uma mudança estrutural maior que um patch trivial desta passagem — mesmo padrão já usado para a duplicação de testDB() entre três arquivos na Story 1.3.
+status: open
+
+### DW-24: Duplicação de helpers de teste ("inserir usuário direto em `usuarios` com controle de estado" e `testJWTSecret`) entre `backend/handlers/auth_test.go`, `backend/middleware/auth_test.go` e `backend/ser
+origin: spec-deferred ebd706af62c3
+location: backend/handlers/auth_test.go:337-380, backend/middleware/auth_test.go:1018-1035, backend/services/auth_test.go:500-521
+source_spec: `spec-1-4-login-por-e-mail-e-senha.md`
+severity: low
+reason: criarUsuarioLogin/criarUsuarioLoginComEstado (handlers), criarUsuario (middleware) e criarUsuarioParaLogin (services) são três variações quase idênticas do mesmo helper, e testJWTSecret é redeclarado verbatim nos três arquivos — mesmo padrão de duplicação já deferido para testDB() na Story 1.3 (arquivos de teste em pacotes Go diferentes não podem compartilhar um helper não-exportado sem um pacote de suporte de teste dedicado, mudança estrutural maior que um patch trivial desta passagem).
+status: open

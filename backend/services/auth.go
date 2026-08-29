@@ -1,6 +1,7 @@
-// Package services concentra as regras de negócio de autenticação (Story
-// 1.3): autocadastro público sempre como `usuario`, verificação de e-mail via
-// token de uso único, e o outbox/worker de e-mail transacional (AD-4/AD-18).
+// Package services concentra as regras de negócio de autenticação: Story 1.3
+// (autocadastro público sempre como `usuario`, verificação de e-mail via
+// token de uso único, outbox/worker de e-mail transacional — AD-4/AD-18) e
+// Story 1.4 (login por e-mail/senha, emissão e rotação de sessão — AD-6).
 package services
 
 import (
@@ -13,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -26,6 +28,18 @@ const pqUniqueViolation = "23505"
 // para este tipo especificamente (os 30min de `redefinicao_senha` são só da
 // Story 1.6).
 const tokenVerificacaoExpiracao = 24 * time.Hour
+
+// Prazos de sessão (Story 1.4, AD-6): access JWT curto de 30min; refresh
+// token opaco rotativo com TTL de 2h, mesmo formato reaproveitado depois pelo
+// login federado (Story 1.9). RefreshTokenExpiracao é exportado porque é
+// usada nos testes desta suíte (e de handlers/) para validar o Max-Age do
+// cookie contra o TTL configurado — tanto EmitirSessao quanto RenovarSessao
+// devolvem o instante de expiração efetivamente persistido, então nenhum
+// chamador HTTP precisa recalculá-lo a partir desta constante.
+const (
+	accessTokenExpiracao  = 30 * time.Minute
+	RefreshTokenExpiracao = 2 * time.Hour
+)
 
 var (
 	// ErrCadastroValidacao indica campo obrigatório ausente/vazio no payload
@@ -41,6 +55,26 @@ var (
 	// usado — tratados com o mesmo código de erro (TOKEN_EXPIRED) por decisão
 	// da I/O Matrix desta story.
 	ErrTokenExpirado = errors.New("token de verificação expirado ou já utilizado")
+
+	// ErrLoginValidacao indica e-mail ou senha em branco no payload de login —
+	// mapeado para 400 VALIDATION_ERROR, sem nenhuma consulta ao banco (I/O
+	// Matrix, Story 1.4).
+	ErrLoginValidacao = errors.New("e-mail e senha são obrigatórios")
+	// ErrCredenciaisInvalidas cobre TODOS os cenários de login malsucedido
+	// (senha errada, e-mail inexistente, e-mail não verificado, conta
+	// desativada, conta só-SSO) com o mesmo erro — deliberado: o chamador
+	// nunca pode distinguir qual condição falhou nem revelar se o e-mail
+	// existe (regra explícita do contexto do épico).
+	ErrCredenciaisInvalidas = errors.New("e-mail ou senha inválidos")
+	// ErrSessaoInvalida cobre refresh token ausente, expirado, já revogado ou
+	// inexistente — mapeado para 401 TOKEN_EXPIRED pelo handler.
+	ErrSessaoInvalida = errors.New("sessão inválida ou expirada")
+	// ErrUsuarioSessaoNaoEncontrado indica que BuscarUsuarioSessao não
+	// encontrou nenhuma linha para o usuario_id do claim `sub` — o middleware
+	// trata isso como sessão revogada (SESSION_REVOKED), nunca como erro
+	// interno: uma conta pode ter sido removida entre a emissão do token e o
+	// uso.
+	ErrUsuarioSessaoNaoEncontrado = errors.New("usuário da sessão não encontrado")
 )
 
 // normalizeEmail aplica a mesma normalização usada em cmd/seed-admin:
@@ -202,4 +236,216 @@ func VerificarEmail(db *sql.DB, token string) error {
 		return fmt.Errorf("falha ao commitar verificação: %w", err)
 	}
 	return nil
+}
+
+// dummyBcryptHash é um hash bcrypt de custo padrão (bcrypt.DefaultCost)
+// gerado uma única vez no import, para uma senha fixa arbitrária — usado
+// apenas para equalizar o tempo de resposta de Login quando o e-mail não é
+// encontrado (ver abaixo). Sem uma comparação bcrypt nesse caminho, ele seria
+// mensuravelmente mais rápido que o caminho "e-mail existe, senha errada" (que
+// sempre executa bcrypt.CompareHashAndPassword, deliberadamente lento),
+// permitindo a um atacante enumerar e-mails cadastrados pelo tempo de
+// resposta — violação direta da regra desta story de nunca revelar se um
+// e-mail existe.
+var dummyBcryptHash = mustGerarDummyBcryptHash()
+
+func mustGerarDummyBcryptHash() []byte {
+	hash, err := bcrypt.GenerateFromPassword([]byte("senha-dummy-para-defesa-contra-timing"), bcrypt.DefaultCost)
+	if err != nil {
+		panic(fmt.Sprintf("falha ao gerar hash dummy para defesa contra timing em Login: %v", err))
+	}
+	return hash
+}
+
+// UsuarioSessao é a projeção de `usuarios` resolvida a cada requisição
+// autenticada (BuscarUsuarioSessao) e exposta pelo middleware — nunca o
+// claim do JWT, que só carrega `sub` (Story 1.4: papel/ativo/nome/email são
+// sempre lidos do Postgres, nunca cacheados/confiados no token).
+type UsuarioSessao struct {
+	ID    string
+	Nome  string
+	Email string
+	Papel string
+	Ativo bool
+}
+
+// Login valida e-mail/senha e devolve o id do usuário autenticado. Cobre a
+// I/O Matrix da Story 1.4: senha errada, e-mail inexistente, e-mail não
+// verificado, conta desativada e conta só-SSO (`senha_hash IS NULL`)
+// resultam TODOS em ErrCredenciaisInvalidas — a mesma resposta, para nunca
+// revelar qual condição falhou nem se o e-mail existe (regra explícita do
+// contexto do épico).
+func Login(db *sql.DB, email, senha string) (usuarioID string, err error) {
+	normalizedEmail := normalizeEmail(email)
+	if normalizedEmail == "" || strings.TrimSpace(senha) == "" {
+		return "", ErrLoginValidacao
+	}
+
+	var id string
+	var senhaHash sql.NullString
+	var ativo, emailVerificado bool
+	const selectUsuario = `
+		SELECT id, senha_hash, ativo, email_verificado
+		FROM usuarios
+		WHERE lower(email) = $1`
+	err = db.QueryRow(selectUsuario, normalizedEmail).Scan(&id, &senhaHash, &ativo, &emailVerificado)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Defesa contra side-channel de tempo: mesmo sem linha nenhuma para
+			// comparar, ainda executamos uma comparação bcrypt completa contra
+			// dummyBcryptHash, do mesmo custo usado para senhas reais — assim o
+			// tempo de resposta deste caminho fica comparável ao dos demais
+			// caminhos de falha abaixo, e a diferença de latência não revela se o
+			// e-mail existe.
+			_ = bcrypt.CompareHashAndPassword(dummyBcryptHash, []byte(senha))
+			return "", ErrCredenciaisInvalidas
+		}
+		return "", fmt.Errorf("falha ao consultar usuario para login: %w", err)
+	}
+
+	// Mesma defesa contra side-channel de tempo do caminho "e-mail
+	// inexistente" acima: conta desativada, e-mail não verificado ou
+	// senha_hash nulo (conta só-SSO, Story 1.9) também precisam comparar
+	// contra um hash de custo equivalente antes de devolver o erro — senão o
+	// tempo de resposta desses três casos fica mensuravelmente mais rápido do
+	// que os caminhos "e-mail inexistente"/"senha incorreta" (que sempre
+	// executam bcrypt), revelando por temporização que a conta existe e em
+	// que estado ela está.
+	hashParaComparar := dummyBcryptHash
+	if senhaHash.Valid {
+		hashParaComparar = []byte(senhaHash.String)
+	}
+	senhaCorreta := bcrypt.CompareHashAndPassword(hashParaComparar, []byte(senha)) == nil
+
+	if !ativo || !emailVerificado || !senhaHash.Valid || !senhaCorreta {
+		return "", ErrCredenciaisInvalidas
+	}
+
+	return id, nil
+}
+
+// gerarAccessToken emite o JWT de acesso (AD-6): HS256, claim mínimo (`sub`
+// apenas) — deliberado, para que o middleware nunca tenha a tentação de
+// confiar em papel/estado carimbado no token em vez de reconsultar
+// `usuarios`.
+func gerarAccessToken(jwtSecret []byte, usuarioID string) (string, error) {
+	claims := jwt.RegisteredClaims{
+		Subject:   usuarioID,
+		ExpiresAt: jwt.NewNumericDate(time.Now().UTC().Add(accessTokenExpiracao)),
+		IssuedAt:  jwt.NewNumericDate(time.Now().UTC()),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, err := token.SignedString(jwtSecret)
+	if err != nil {
+		return "", fmt.Errorf("falha ao assinar access token: %w", err)
+	}
+	return signed, nil
+}
+
+// EmitirSessao gera o par de tokens de sessão (AD-6) para um usuário já
+// autenticado (por senha, Login acima, ou futuramente por SSO, Story 1.9):
+// um access JWT de 30min e um refresh token opaco de 2h, persistido em
+// `sessoes`. expiraRefresh é devolvido para o chamador HTTP montar o
+// `Set-Cookie` com o mesmo prazo.
+func EmitirSessao(db *sql.DB, jwtSecret []byte, usuarioID string) (accessToken, refreshToken string, expiraRefresh time.Time, err error) {
+	accessToken, err = gerarAccessToken(jwtSecret, usuarioID)
+	if err != nil {
+		return "", "", time.Time{}, err
+	}
+
+	refreshToken, err = gerarTokenAcao()
+	if err != nil {
+		return "", "", time.Time{}, err
+	}
+
+	expiraRefresh = time.Now().UTC().Add(RefreshTokenExpiracao)
+	const insertSessao = `
+		INSERT INTO sessoes (usuario_id, refresh_token, expira_em)
+		VALUES ($1, $2, $3)`
+	if _, err := db.Exec(insertSessao, usuarioID, refreshToken, expiraRefresh); err != nil {
+		return "", "", time.Time{}, fmt.Errorf("falha ao gravar sessão: %w", err)
+	}
+
+	return accessToken, refreshToken, expiraRefresh, nil
+}
+
+// RenovarSessao rotaciona um refresh token válido: a linha atual em
+// `sessoes` é marcada revogada e uma nova é inserida na MESMA transação —
+// mesmo padrão de fechamento de janela de corrida já usado em VerificarEmail
+// (marcarUsado): se o UPDATE não afetar nenhuma linha, outra requisição já
+// rotacionou esse token ou o prazo expirou entre a leitura e o update, e o
+// resultado é ErrSessaoInvalida (mapeado para 401 TOKEN_EXPIRED pelo
+// handler). expiraRefresh é devolvido (mesmo formato de EmitirSessao) para o
+// chamador HTTP montar o Set-Cookie com o prazo EFETIVAMENTE persistido, em
+// vez de recalcular `time.Now().Add(RefreshTokenExpiracao)` de novo e
+// arriscar divergir do valor gravado pelo round-trip ao banco.
+func RenovarSessao(db *sql.DB, jwtSecret []byte, refreshTokenAtual string) (novoAccess, novoRefresh string, expiraRefresh time.Time, err error) {
+	if strings.TrimSpace(refreshTokenAtual) == "" {
+		return "", "", time.Time{}, ErrSessaoInvalida
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return "", "", time.Time{}, fmt.Errorf("falha ao iniciar transação: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
+
+	const marcarRevogada = `
+		UPDATE sessoes
+		SET revogado_em = now()
+		WHERE refresh_token = $1 AND revogado_em IS NULL AND expira_em > now()
+		RETURNING usuario_id`
+	var usuarioID string
+	err = tx.QueryRow(marcarRevogada, refreshTokenAtual).Scan(&usuarioID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", "", time.Time{}, ErrSessaoInvalida
+		}
+		return "", "", time.Time{}, fmt.Errorf("falha ao revogar sessão atual: %w", err)
+	}
+
+	novoAccess, err = gerarAccessToken(jwtSecret, usuarioID)
+	if err != nil {
+		return "", "", time.Time{}, err
+	}
+
+	novoRefresh, err = gerarTokenAcao()
+	if err != nil {
+		return "", "", time.Time{}, err
+	}
+
+	expiraRefresh = time.Now().UTC().Add(RefreshTokenExpiracao)
+	const insertSessao = `
+		INSERT INTO sessoes (usuario_id, refresh_token, expira_em)
+		VALUES ($1, $2, $3)`
+	if _, err := tx.Exec(insertSessao, usuarioID, novoRefresh, expiraRefresh); err != nil {
+		return "", "", time.Time{}, fmt.Errorf("falha ao gravar sessão rotacionada: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", "", time.Time{}, fmt.Errorf("falha ao commitar rotação de sessão: %w", err)
+	}
+
+	return novoAccess, novoRefresh, expiraRefresh, nil
+}
+
+// BuscarUsuarioSessao resolve o usuário por id — sempre a partir do
+// Postgres, nunca do claim do JWT (AD-6). Usado pelo middleware
+// (middleware/auth.go) em toda requisição autenticada: papel/ativo/nome/
+// email refletem o estado atual da conta, garantindo que um rebaixamento ou
+// desativação derruba acesso já na próxima requisição.
+func BuscarUsuarioSessao(db *sql.DB, usuarioID string) (UsuarioSessao, error) {
+	var u UsuarioSessao
+	const selectUsuario = `
+		SELECT id, nome, email, papel, ativo
+		FROM usuarios
+		WHERE id = $1`
+	err := db.QueryRow(selectUsuario, usuarioID).Scan(&u.ID, &u.Nome, &u.Email, &u.Papel, &u.Ativo)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return UsuarioSessao{}, ErrUsuarioSessaoNaoEncontrado
+		}
+		return UsuarioSessao{}, fmt.Errorf("falha ao consultar usuário da sessão: %w", err)
+	}
+	return u, nil
 }

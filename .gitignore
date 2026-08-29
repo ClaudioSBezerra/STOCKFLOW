@@ -4,6 +4,8 @@
 .bmad-loop/policy.toml
 _bmad/render/
 _bmad-output/implementation-artifacts/.kanban-sync-state.json
+_bmad-output/implementation-artifacts/.telegram-notify-state.txt
+.env.telegram
 
 # Backend (Go)
 .env
