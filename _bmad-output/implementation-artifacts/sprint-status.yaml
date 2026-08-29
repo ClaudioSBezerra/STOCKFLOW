@@ -1,0 +1,105 @@
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created, ready for development
+#   - in-progress: Developer actively working on implementation
+#   - review: Implementation complete, ready for review
+#   - done: Story completed
+
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+
+# Action Item Status:
+#   - open: Committed during a retrospective, not yet addressed
+#   - in-progress: Actively being worked on
+#   - done: Completed
+
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when its first story starts (via build's sprint sync)
+# - Stories can be worked in parallel if team capacity allows
+# - Developer typically creates the next story after the previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+# - Retrospective appends its action items to action_items; the status view surfaces open ones
+generated: 08-29-2026 14:50
+last_updated: 08-29-2026 14:50
+project: stockflow
+project_key: NOKEY
+tracking_system: file-system
+story_location: _bmad-output/implementation-artifacts
+development_status:
+  epic-1: backlog
+  1-1-bootstrap-do-primeiro-adm-e-fundação-do-backend: backlog
+  1-2-fundação-do-shell-de-navegação-e-design-tokens: backlog
+  1-3-autocadastro-com-verificação-de-e-mail: backlog
+  1-4-login-por-e-mail-e-senha: backlog
+  1-5-autorização-por-papel-aplicada-no-servidor: backlog
+  1-6-recuperação-de-senha-por-e-mail: backlog
+  1-7-solicitação-de-promoção-de-papel: backlog
+  1-8-gestão-de-contas-desativação-e-rebaixamento: backlog
+  1-9-login-federado-via-keycloak-sso-ferreira-costa: backlog
+  1-10-bloqueio-de-conta-e-política-de-senha: backlog
+  1-11-mfa-obrigatório-para-papéis-administrativos: backlog
+  1-12-log-de-acesso-e-auditoria: backlog
+  epic-1-retrospective: optional
+
+  epic-2: backlog
+  2-1-criar-e-listar-locais-de-estoque: backlog
+  2-2-exclusão-de-estoque-trata-resíduos-e-pedidos-pendentes: backlog
+  2-3-migração-dos-estoques-legados: backlog
+  epic-2-retrospective: optional
+
+  epic-3: backlog
+  3-1-cadastro-manual-de-produto-com-dimensões-estruturadas: backlog
+  3-2-nomenclatura-guiada-por-subtipo: backlog
+  3-3-importação-em-massa-via-planilha-padronizada: backlog
+  3-4-importação-atualiza-por-código-não-só-cria: backlog
+  3-5-upload-e-armazenamento-de-foto-do-produto: backlog
+  3-6-galeria-e-visualização-ampliada-de-fotos-lightbox: backlog
+  3-7-migração-de-produtos-categorias-e-fotos-legadas: backlog
+  epic-3-retrospective: optional
+
+  epic-4: backlog
+  4-1-busca-por-nome-código-categoria-com-sugestões: backlog
+  4-2-filtros-por-categoria-estoque-e-disponibilidade: backlog
+  4-3-visualização-em-grade-e-tabela-agrupada: backlog
+  4-4-detalhe-do-produto-por-estoque-com-atualização-em-tempo-real: backlog
+  4-5-identificação-de-produto-via-qr-code-código-de-barras: backlog
+  4-6-exportação-da-tabela-do-catálogo-para-excel: backlog
+  epic-4-retrospective: optional
+
+  epic-5: backlog
+  5-1-registrar-baixa-consumo: backlog
+  5-2-registrar-transferência-entre-estoques: backlog
+  5-3-histórico-de-movimentações-consultável: backlog
+  5-4-migração-do-histórico-de-movimentações-legado: backlog
+  epic-5-retrospective: optional
+
+  epic-6: backlog
+  6-1-detecção-de-inconsistências-dimensionais: backlog
+  6-2-aplicação-seletiva-de-correções: backlog
+  6-3-detecção-de-duplicatas: backlog
+  6-4-mesclagem-de-duplicatas-com-trilha-de-auditoria: backlog
+  epic-6-retrospective: optional
+
+  epic-7: backlog
+  7-1-carrinho-de-reserva: backlog
+  7-2-envio-de-pedido: backlog
+  7-3-consulta-de-pedidos-próprios: backlog
+  7-4-consulta-de-todos-os-pedidos-fila-almoxarife: backlog
+  7-5-aprovação-rejeição-com-revalidação-de-estoque-item-a-item: backlog
+  7-6-recibo-do-pedido-em-pdf-gerado-pelo-servidor: backlog
+  7-7-migração-de-pedidos-e-vínculo-com-histórico: backlog
+  epic-7-retrospective: optional
+
+  epic-8: backlog
+  8-1-exportação-dos-próprios-dados-pessoais: backlog
+  8-2-exclusão-e-anonimização-de-dados-pessoais-por-adm: backlog
+  epic-8-retrospective: optional
