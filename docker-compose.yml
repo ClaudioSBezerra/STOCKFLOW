@@ -1,0 +1,37 @@
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: stockflow
+      POSTGRES_PASSWORD: stockflow
+      POSTGRES_DB: stockflow
+    ports:
+      - '5432:5432'
+    volumes:
+      - stockflow-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U stockflow -d stockflow']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: postgres://stockflow:stockflow@db:5432/stockflow?sslmode=disable
+      PORT: '8080'
+    ports:
+      - '8080:8080'
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '--spider', '-q', 'http://localhost:8080/api/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  stockflow-db-data:

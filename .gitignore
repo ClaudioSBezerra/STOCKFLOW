@@ -4,3 +4,7 @@
 .bmad-loop/policy.toml
 _bmad/render/
 _bmad-output/implementation-artifacts/.kanban-sync-state.json
+
+# Backend (Go)
+.env
+backend/*.env
