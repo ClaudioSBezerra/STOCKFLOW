@@ -79,7 +79,11 @@ func testDB(t *testing.T) *sql.DB {
 		t.Fatalf("falha ao aplicar migrations: %v", migrateErr)
 	}
 
-	if _, err := db.Exec(`TRUNCATE TABLE usuarios`); err != nil {
+	// CASCADE: desde a migration 000002 (Story 1.3), tokens_acao e
+	// emails_pendentes referenciam usuarios(id) via FK — sem CASCADE, um
+	// TRUNCATE isolado de usuarios falharia mesmo com as tabelas dependentes
+	// vazias.
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 		t.Fatalf("falha ao limpar tabela usuarios entre testes: %v", err)
 	}
 

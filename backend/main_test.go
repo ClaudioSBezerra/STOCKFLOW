@@ -6,11 +6,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	_ "github.com/lib/pq"
+
+	"stockflow/backend/services"
 )
 
 var (
@@ -118,7 +121,11 @@ func TestRunMigrations_CreateUsuariosSchema(t *testing.T) {
 		t.Fatalf("índice único idx_usuarios_email_lower não encontrado: %v", err)
 	}
 
-	if _, err := db.Exec(`TRUNCATE TABLE usuarios`); err != nil {
+	// CASCADE: desde a migration 000002 (Story 1.3), tokens_acao e
+	// emails_pendentes referenciam usuarios(id) via FK — sem CASCADE, um
+	// TRUNCATE isolado de usuarios falharia mesmo com as tabelas dependentes
+	// vazias.
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO usuarios (nome, email, papel) VALUES ('x', 'papel-invalido@example.com', 'inexistente')`); err == nil {
@@ -131,7 +138,11 @@ func TestRunMigrations_CreateUsuariosSchema(t *testing.T) {
 // caixas diferentes devem colidir.
 func TestRunMigrations_UniqueEmailLowerIndex(t *testing.T) {
 	db := testDB(t)
-	if _, err := db.Exec(`TRUNCATE TABLE usuarios`); err != nil {
+	// CASCADE: desde a migration 000002 (Story 1.3), tokens_acao e
+	// emails_pendentes referenciam usuarios(id) via FK — sem CASCADE, um
+	// TRUNCATE isolado de usuarios falharia mesmo com as tabelas dependentes
+	// vazias.
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 
@@ -150,7 +161,11 @@ func TestRunMigrations_UniqueEmailLowerIndex(t *testing.T) {
 // aplicação.
 func TestRunMigrations_UniqueAdminIndex(t *testing.T) {
 	db := testDB(t)
-	if _, err := db.Exec(`TRUNCATE TABLE usuarios`); err != nil {
+	// CASCADE: desde a migration 000002 (Story 1.3), tokens_acao e
+	// emails_pendentes referenciam usuarios(id) via FK — sem CASCADE, um
+	// TRUNCATE isolado de usuarios falharia mesmo com as tabelas dependentes
+	// vazias.
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 
@@ -160,6 +175,120 @@ func TestRunMigrations_UniqueAdminIndex(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO usuarios (nome, email, papel) VALUES ('b', 'admin2@example.com', 'adm')`); err == nil {
 		t.Error("esperava violação do índice único parcial idx_usuarios_unico_adm, insert teve sucesso")
 	}
+}
+
+// TestNewMux_RegistraRotasDeAutenticacao prova que newMux — a função
+// realmente usada por main() — expõe as rotas de autenticação no
+// método+caminho exato esperado. Sem este teste, um erro de digitação no
+// padrão de rota registrado (ex. "POST /api/auth/cadastr") deixaria todos os
+// testes de handlers/auth_test.go verdes (eles chamam CadastroHandler/
+// VerificarEmailHandler diretamente, nunca através deste mux) enquanto o
+// servidor real responderia 404 no caminho pretendido.
+func TestNewMux_RegistraRotasDeAutenticacao(t *testing.T) {
+	db := testDB(t)
+	emailCfg := services.CarregarEmailConfig()
+	mux := newMux(db, emailCfg)
+
+	casos := []struct {
+		nome         string
+		metodo       string
+		caminho      string
+		corpo        string
+		statusQuerAo int
+	}{
+		{
+			nome:         "cadastro com payload invalido chega no CadastroHandler",
+			metodo:       http.MethodPost,
+			caminho:      "/api/auth/cadastro",
+			corpo:        `{isto nao e json`,
+			statusQuerAo: http.StatusBadRequest,
+		},
+		{
+			nome:         "verificar-email sem token chega no VerificarEmailHandler",
+			metodo:       http.MethodGet,
+			caminho:      "/api/auth/verificar-email",
+			statusQuerAo: http.StatusNotFound,
+		},
+		{
+			nome:         "health chega no healthHandler",
+			metodo:       http.MethodGet,
+			caminho:      "/api/health",
+			statusQuerAo: http.StatusOK,
+		},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			var req *http.Request
+			if c.corpo != "" {
+				req = httptest.NewRequest(c.metodo, c.caminho, strings.NewReader(c.corpo))
+			} else {
+				req = httptest.NewRequest(c.metodo, c.caminho, nil)
+			}
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+
+			if w.Code != c.statusQuerAo {
+				t.Fatalf("status = %d, want %d (body=%s)", w.Code, c.statusQuerAo, w.Body.String())
+			}
+		})
+	}
+}
+
+// TestRunMigrations_IndicesDeTokensEEmailsPendentes prova que a migration
+// 000002 (Story 1.3) cria os índices sobre usuario_id em tokens_acao e
+// emails_pendentes — sem cobertura própria até este teste, ao contrário do
+// precedente já estabelecido para idx_usuarios_email_lower acima.
+func TestRunMigrations_IndicesDeTokensEEmailsPendentes(t *testing.T) {
+	db := testDB(t)
+
+	indices := []string{"idx_tokens_acao_usuario_id", "idx_emails_pendentes_usuario_id"}
+	for _, nome := range indices {
+		t.Run(nome, func(t *testing.T) {
+			var indexDef string
+			err := db.QueryRow(`SELECT indexdef FROM pg_indexes WHERE indexname = $1`, nome).Scan(&indexDef)
+			if err != nil {
+				t.Fatalf("índice %q não encontrado: %v", nome, err)
+			}
+		})
+	}
+}
+
+// TestRunMigrations_CheckConstraintsDeTokensEEmailsPendentes prova que os
+// CHECK constraints de tokens_acao.tipo e emails_pendentes.tipo/status
+// (migration 000002) rejeitam valores fora do enum documentado — mesmo
+// precedente já estabelecido para usuarios.papel em
+// TestRunMigrations_CreateUsuariosSchema acima.
+func TestRunMigrations_CheckConstraintsDeTokensEEmailsPendentes(t *testing.T) {
+	db := testDB(t)
+
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	var usuarioID string
+	if err := db.QueryRow(`INSERT INTO usuarios (nome, email, papel) VALUES ('x', 'check-constraint@example.com', 'usuario') RETURNING id`).Scan(&usuarioID); err != nil {
+		t.Fatalf("insert usuario: %v", err)
+	}
+
+	t.Run("tokens_acao.tipo rejeita valor fora do enum", func(t *testing.T) {
+		_, err := db.Exec(`INSERT INTO tokens_acao (usuario_id, token, tipo, expira_em) VALUES ($1, 'token-invalido', 'tipo-invalido', now() + interval '1 hour')`, usuarioID)
+		if err == nil {
+			t.Error("esperava falha ao inserir tipo fora do CHECK ('verificacao_email','redefinicao_senha'), mas o insert teve sucesso")
+		}
+	})
+
+	t.Run("emails_pendentes.tipo rejeita valor fora do enum", func(t *testing.T) {
+		_, err := db.Exec(`INSERT INTO emails_pendentes (usuario_id, destinatario, tipo, variaveis_json) VALUES ($1, 'x@example.com', 'tipo-invalido', '{}')`, usuarioID)
+		if err == nil {
+			t.Error("esperava falha ao inserir tipo fora do CHECK ('verificacao_conta','redefinicao_senha'), mas o insert teve sucesso")
+		}
+	})
+
+	t.Run("emails_pendentes.status rejeita valor fora do enum", func(t *testing.T) {
+		_, err := db.Exec(`INSERT INTO emails_pendentes (usuario_id, destinatario, tipo, variaveis_json, status) VALUES ($1, 'x@example.com', 'verificacao_conta', '{}', 'status-invalido')`, usuarioID)
+		if err == nil {
+			t.Error("esperava falha ao inserir status fora do CHECK ('pendente','enviado','falho'), mas o insert teve sucesso")
+		}
+	})
 }
 
 func TestHealthHandler(t *testing.T) {

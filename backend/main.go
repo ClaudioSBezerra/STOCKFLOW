@@ -1,8 +1,10 @@
 // Command api is the stockflow backend HTTP server. On startup it loads local
 // env vars (.env, when present), opens the database connection pool, applies
 // all pending SQL migrations synchronously (blocking — the process never
-// accepts HTTP traffic against a schema that failed to migrate), and then
-// serves the liveness endpoint used by the compose/CI healthcheck.
+// accepts HTTP traffic against a schema that failed to migrate), starts the
+// e-mail outbox worker (services.IniciarWorkerEmail), and then serves the
+// liveness endpoint plus the public authentication routes (cadastro e
+// verificação de e-mail — Story 1.3).
 package main
 
 import (
@@ -23,6 +25,9 @@ import (
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+
+	"stockflow/backend/handlers"
+	"stockflow/backend/services"
 )
 
 //go:embed migrations/*.sql
@@ -66,8 +71,16 @@ func main() {
 	}
 	slog.Info("migrations aplicadas com sucesso")
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/health", healthHandler(db))
+	emailCfg := services.CarregarEmailConfig()
+
+	// Worker de e-mail (AD-4): uma única goroutine consumindo emails_pendentes
+	// por polling. Sobe depois das migrations (a tabela precisa existir) e
+	// para durante o shutdown gracioso abaixo, antes do pool de conexões
+	// fechar.
+	pararWorkerEmail := services.IniciarWorkerEmail(db, emailCfg, services.IntervaloPollingEmail)
+	defer pararWorkerEmail()
+
+	mux := newMux(db, emailCfg)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -152,6 +165,18 @@ func runMigrations(db *sql.DB) error {
 		return err
 	}
 	return nil
+}
+
+// newMux monta o roteador HTTP do servidor — extraído de main() para que os
+// testes possam despachar requisições através do mux real (mesmos padrões de
+// método+rota registrados em produção), em vez de chamar cada handler
+// diretamente e nunca exercitar o registro em si.
+func newMux(db *sql.DB, emailCfg services.EmailConfig) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/health", healthHandler(db))
+	mux.HandleFunc("POST /api/auth/cadastro", handlers.CadastroHandler(db, emailCfg))
+	mux.HandleFunc("GET /api/auth/verificar-email", handlers.VerificarEmailHandler(db))
+	return mux
 }
 
 type healthResponse struct {

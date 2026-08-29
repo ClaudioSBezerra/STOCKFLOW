@@ -133,3 +133,43 @@ source_spec: `spec-1-2-fundacao-do-shell-de-navegacao-e-design-tokens.md`
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260829-164557-1d23; this entry preserves the lingering recommendation for a deliberate later review.
 status: open
+
+### DW-18: EnviarSMTP's full success path (STARTTLS/AUTH/MAIL/RCPT/DATA) has zero test coverage — every existing test short-circuits on the empty SMTP_PASSWORD guard before reaching it.
+origin: spec-deferred 66f6c936967e
+location: backend/services/email.go:126 (EnviarSMTP)
+source_spec: `spec-1-3-autocadastro-com-verificacao-de-e-mail.md`
+severity: medium
+reason: email_test.go's only EnviarSMTP test (TestEnviarSMTP_SemPasswordFalhaImediatamente) asserts the immediate-failure path when Password == "". A protocol-level regression in the STARTTLS/AUTH/MAIL/RCPT/DATA sequence or message formatting (e.g. the malformed MAIL FROM envelope this review pass just fixed) would ship undetected without a fake/mocked SMTP server, which this story's test suite deliberately avoids depending on (no test may depend on real SMTP credentials or network access, per this story's own AC4).
+status: open
+
+### DW-19: If the emails_pendentes UPDATE to status='enviado' or its transaction commit fails right after EnviarSMTP already succeeded, the row stays 'pendente' and the worker resends the same e-mail to the real
+origin: spec-deferred 96f0710f2c65
+location: backend/services/email_worker.go:98 (processarProximoEmailPendente)
+source_spec: `spec-1-3-autocadastro-com-verificacao-de-e-mail.md`
+severity: medium
+reason: processarProximoEmailPendente calls EnviarSMTP (an external, already irreversible side effect) and then commits the 'enviado' status update in the same local transaction — a DB-side failure between the two leaves no record that the send already happened, so the row is picked up again by the next poll cycle. Low probability (requires a DB failure in the narrow window right after a successful independent SMTP call), and the consequence is a harmless duplicate verification e-mail (the link itself is idempotent — a second click is a no-op), not data corruption.
+status: open
+
+### DW-20: The nginx /api reverse proxy and the Vite dev-server proxy (both added earlier in this story's own prior review pass) have no automated check that they actually forward requests to the backend end-to-
+origin: spec-deferred 1b40f3197b89
+location: frontend/nginx.conf:13, frontend/vite.config.ts:19
+source_spec: `spec-1-3-autocadastro-com-verificacao-de-e-mail.md`
+severity: medium
+reason: docker is unavailable in this sandbox (same limitation already recorded in Stories 1.1/1.2), so `docker compose up --build` plus a manual browser check remain the only way to validate the composed web→api proxy chain. The web service's healthcheck only probes `/`, not `/api/...` through the proxy, so a regression to the pre-fix state (no /api proxying) would not be caught by any automated check in this repo.
+status: open
+
+### DW-21: backend/handlers/auth_test.go, backend/services/auth_test.go e backend/cmd/seed-admin/main_test.go carregam cada um sua própria cópia quase idêntica de testDB()/migrateOnce (incluindo o mesmo comentár
+origin: spec-deferred 6d601ab3a123
+location: backend/main_test.go:36, backend/services/auth_test.go:33, backend/handlers/auth_test.go:451
+source_spec: `spec-1-3-autocadastro-com-verificacao-de-e-mail.md`
+severity: low
+reason: Esta story adicionou a segunda e a terceira cópia (handlers/auth_test.go e services/auth_test.go) do padrão já existente desde a Story 1.1 (cmd/seed-admin/main_test.go). Qualquer mudança futura de schema/retry de migration (ex. adicionar uma quarta tabela, ou mudar a política de retry) precisa ser replicada manualmente nas três cópias. Nenhuma AC/AD desta story pede a extração de um helper compartilhado, e os três arquivos pertencem a pacotes Go diferentes (main, services, handlers), então a extração exigiria decidir onde colocar um pacote de teste interno compartilhado — mudança estrutural maior do que um patch trivial desta passagem.
+status: open
+
+### DW-22: Follow-up review still recommended for 1-3-autocadastro-com-verificação-de-e-mail after the damping cap was spent
+origin: review-budget-followup
+location: n/a
+source_spec: `spec-1-3-autocadastro-com-verificacao-de-e-mail.md`
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260829-175442-6327; this entry preserves the lingering recommendation for a deliberate later review.
+status: open
