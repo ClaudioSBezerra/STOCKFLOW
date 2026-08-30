@@ -10,6 +10,7 @@ import { AppShell } from './AppShell';
 // inalterados.
 const authState = vi.hoisted(() => ({
   papel: 'adm' as string,
+  logout: vi.fn(),
 }));
 
 vi.mock('@/lib/auth', () => ({
@@ -17,6 +18,7 @@ vi.mock('@/lib/auth', () => ({
     estado: 'autenticado',
     usuario: { id: '1', nome: 'Teste', email: 'teste@empresa.com', papel: authState.papel },
     definirSessao: vi.fn(),
+    logout: authState.logout,
   }),
 }));
 
@@ -36,6 +38,7 @@ function renderShell(initialPath = '/') {
 describe('AppShell', () => {
   beforeEach(() => {
     authState.papel = 'adm';
+    authState.logout.mockClear();
   });
 
   it('renderiza o rail (desktop) e a bottom nav (mobile) com as classes de breakpoint corretas', () => {
@@ -121,6 +124,33 @@ describe('AppShell', () => {
     const link = within(menu).getByRole('menuitem', { name: 'Meu Perfil' });
     expect(link.className).toContain('min-h-touch-target-min');
     expect(link.className).toContain('min-w-touch-target-min');
+  });
+
+  it('mostra "Sair" no DropdownMenu de perfil do rail e chama logout ao clicar', async () => {
+    const user = userEvent.setup();
+    renderShell();
+    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
+
+    await user.click(within(rail).getByRole('button', { name: 'Meu Perfil' }));
+
+    const menu = await screen.findByRole('menu');
+    const sair = within(menu).getByRole('menuitem', { name: 'Sair' });
+    await user.click(sair);
+
+    expect(authState.logout).toHaveBeenCalledTimes(1);
+  });
+
+  it('mostra "Sair" no Sheet "Mais" (mobile) e chama logout ao clicar', async () => {
+    const user = userEvent.setup();
+    renderShell();
+    const bottomNav = screen.getAllByRole('navigation', { name: 'Navegação principal' })[1];
+
+    await user.click(within(bottomNav).getByRole('button', { name: 'Mais' }));
+    const dialog = await screen.findByRole('dialog');
+
+    await user.click(within(dialog).getByRole('button', { name: 'Sair' }));
+
+    expect(authState.logout).toHaveBeenCalledTimes(1);
   });
 
   it('abre o Sheet de "Mais" com os itens administrativos e Meu Perfil', async () => {

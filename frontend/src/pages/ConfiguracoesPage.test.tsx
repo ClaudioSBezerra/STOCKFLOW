@@ -15,6 +15,7 @@ vi.mock('@/lib/auth', () => ({
     estado: 'autenticado',
     usuario: { id: '1', nome: authState.nome, email: authState.email, papel: authState.papel },
     definirSessao: vi.fn(),
+    logout: vi.fn(),
   }),
 }));
 

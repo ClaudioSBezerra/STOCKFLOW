@@ -14,6 +14,7 @@ import (
 	_ "github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 
+	"stockflow/backend/iam"
 	"stockflow/backend/services"
 )
 
@@ -189,7 +190,7 @@ func TestNewMux_RegistraRotasDeAutenticacao(t *testing.T) {
 	db := testDB(t)
 	emailCfg := services.CarregarEmailConfig()
 	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
-	mux := newMux(db, emailCfg, jwtSecret)
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
 
 	casos := []struct {
 		nome         string
@@ -298,6 +299,18 @@ func TestNewMux_RegistraRotasDeAutenticacao(t *testing.T) {
 			caminho:      "/api/usuarios/qualquer-id/rebaixamento",
 			statusQuerAo: http.StatusUnauthorized,
 		},
+		{
+			nome:         "sso/config sempre registrada (sem IAM_* -> enabled:false)",
+			metodo:       http.MethodGet,
+			caminho:      "/api/auth/sso/config",
+			statusQuerAo: http.StatusOK,
+		},
+		{
+			nome:         "logout sempre registrado (sem cookie -> 204)",
+			metodo:       http.MethodPost,
+			caminho:      "/api/auth/logout",
+			statusQuerAo: http.StatusNoContent,
+		},
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
@@ -401,7 +414,7 @@ func TestNewMux_UsuariosRotaCarregaRequireRole(t *testing.T) {
 
 	emailCfg := services.CarregarEmailConfig()
 	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
-	mux := newMux(db, emailCfg, jwtSecret)
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
 
 	const senha = "senha-123456"
 	seedConta := func(email, papel string) {
@@ -495,7 +508,7 @@ func TestNewMux_PromocoesRotasCarregamRequireRole(t *testing.T) {
 
 	emailCfg := services.CarregarEmailConfig()
 	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
-	mux := newMux(db, emailCfg, jwtSecret)
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
 
 	const senha = "senha-123456"
 	seedConta := func(email, papel string) {
@@ -602,7 +615,7 @@ func TestNewMux_GestaoUsuariosRotasCarregamRequireRole(t *testing.T) {
 
 	emailCfg := services.CarregarEmailConfig()
 	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
-	mux := newMux(db, emailCfg, jwtSecret)
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
 
 	const senha = "senha-123456"
 	seedConta := func(email, papel string) {
@@ -708,7 +721,7 @@ func TestNewMux_PromocoesRotasAutenticadasAlcancamHandlers(t *testing.T) {
 
 	emailCfg := services.CarregarEmailConfig()
 	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
-	mux := newMux(db, emailCfg, jwtSecret)
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
 
 	const senha = "senha-123456"
 	hash, err := bcrypt.GenerateFromPassword([]byte(senha), bcrypt.DefaultCost)
@@ -889,6 +902,78 @@ func TestRunMigrations_SolicitacoesPromocaoSchema(t *testing.T) {
 // banco falhar, a resposta é 503 com status "unhealthy" — o healthcheck do
 // docker-compose (wget --spider contra /api/health) depende desse contrato
 // para não reportar o container saudável com o banco fora do ar.
+// TestNewMux_SSOConfigSempreRegistrada prova que GET /api/auth/sso/config é
+// registrado mesmo com iam.Config vazia (Story 1.9) e responde
+// {"enabled":false} — a tela de Login depende disso para simplesmente não
+// mostrar o botão de SSO num servidor sem realm configurado.
+func TestNewMux_SSOConfigSempreRegistrada(t *testing.T) {
+	db := testDB(t)
+	mux := newMux(db, services.CarregarEmailConfig(), []byte("segredo-de-teste"), iam.Config{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/sso/config", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["enabled"] != false {
+		t.Fatalf("body = %v, want {\"enabled\":false}", body)
+	}
+}
+
+// TestNewMux_SSOKeycloakRegistradaSomenteComConfig prova o registro
+// condicional de POST /api/auth/sso/keycloak: sem IAM_BASE_URL a rota não
+// existe (404); com um RealmURL setado ela existe e, sem token, o middleware
+// `iam` responde 401.
+func TestNewMux_SSOKeycloakRegistradaSomenteComConfig(t *testing.T) {
+	db := testDB(t)
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste")
+
+	t.Run("sem config -> 404", func(t *testing.T) {
+		mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/sso/keycloak", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (rota não deveria existir sem IAM_BASE_URL)", w.Code)
+		}
+	})
+
+	t.Run("com config -> rota existe, sem token 401", func(t *testing.T) {
+		mux := newMux(db, emailCfg, jwtSecret, iam.Config{
+			RealmURL:         "https://kc.example/realms/ferreiracosta",
+			AllowedClientIDs: []string{"stockflow-web"},
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/sso/keycloak", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401 (body=%s)", w.Code, w.Body.String())
+		}
+	})
+}
+
+// TestNewMux_LogoutSempreRegistrada prova que POST /api/auth/logout existe
+// independentemente da config de SSO e é idempotente sem cookie (204).
+func TestNewMux_LogoutSempreRegistrada(t *testing.T) {
+	db := testDB(t)
+	mux := newMux(db, services.CarregarEmailConfig(), []byte("segredo-de-teste"), iam.Config{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 (body=%s)", w.Code, w.Body.String())
+	}
+}
+
 func TestHealthHandler_Unhealthy(t *testing.T) {
 	db := testDB(t)
 	db.Close()

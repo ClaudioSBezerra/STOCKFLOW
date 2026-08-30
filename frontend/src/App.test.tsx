@@ -43,7 +43,7 @@ describe('RotaProtegida (unidade)', () => {
   });
 
   it('estado carregando: mostra "Carregando..." e não redireciona', () => {
-    useAuthMock.mockReturnValue({ estado: 'carregando', usuario: null, definirSessao: vi.fn() });
+    useAuthMock.mockReturnValue({ estado: 'carregando', usuario: null, definirSessao: vi.fn(), logout: vi.fn() });
     renderRota();
 
     expect(screen.getByText('Carregando...')).toBeInTheDocument();
@@ -53,7 +53,7 @@ describe('RotaProtegida (unidade)', () => {
   });
 
   it('estado anonimo: redireciona para /login', () => {
-    useAuthMock.mockReturnValue({ estado: 'anonimo', usuario: null, definirSessao: vi.fn() });
+    useAuthMock.mockReturnValue({ estado: 'anonimo', usuario: null, definirSessao: vi.fn(), logout: vi.fn() });
     renderRota();
 
     expect(screen.getByText('tela de login')).toBeInTheDocument();
@@ -67,6 +67,7 @@ describe('RotaProtegida (unidade)', () => {
       estado: 'autenticado',
       usuario: { id: '1', nome: 'Teste', email: 'teste@empresa.com', papel: 'usuario' },
       definirSessao: vi.fn(),
+      logout: vi.fn(),
     });
     renderRota();
 
@@ -81,6 +82,7 @@ describe('RotaProtegida (unidade)', () => {
       estado: 'estado-novo-nao-previsto' as never,
       usuario: null,
       definirSessao: vi.fn(),
+      logout: vi.fn(),
     });
     renderRota();
 

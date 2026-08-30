@@ -9,6 +9,11 @@ import {
   type ReactNode,
 } from 'react';
 import { clearAccessToken, setAccessToken } from '@/lib/session';
+import { fetchSSOConfig } from '@/lib/keycloak/config';
+
+// Marca gravada pelo callback de SSO (Story 1.9): decide se "Sair" dispara o
+// RP-initiated logout do Keycloak ou só volta para /login local.
+const SESSION_KEY_AUTH_VIA_SSO = 'auth_via_sso';
 
 /**
  * Sessão de autenticação no frontend (Story 1.5, spec-1-5). O `AuthProvider`
@@ -43,6 +48,15 @@ interface AuthContextValue {
    * para /login.
    */
   definirSessao: (usuario: UsuarioSessao, token: string) => void;
+  /**
+   * Encerra a sessão (Story 1.9): limpa o access token, volta o estado para
+   * `anonimo` e dispara `POST /api/auth/logout` (best-effort, revoga a linha
+   * em `sessoes`). Se a sessão veio de SSO (`sessionStorage.auth_via_sso`),
+   * leva o navegador ao RP-initiated logout do Keycloak com
+   * `post_logout_redirect_uri` de volta para `/login`; caso contrário vai
+   * direto para `/login` sem tocar no Keycloak.
+   */
+  logout: () => void;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -61,12 +75,71 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // `autenticado` -> `anonimo`.
   const bootstrapIniciado = useRef(false);
   const sessaoManual = useRef(false);
+  // Guarda contra duplo logout (duplo clique, dois componentes de navegação
+  // chamando ao mesmo tempo) — a primeira chamada já está navegando para fora.
+  const saindo = useRef(false);
 
   const definirSessao = useCallback((u: UsuarioSessao, token: string) => {
     sessaoManual.current = true;
     setAccessToken(token);
     setUsuario(u);
     setEstado('autenticado');
+  }, []);
+
+  const logout = useCallback(() => {
+    if (saindo.current) {
+      return;
+    }
+    saindo.current = true;
+
+    // Limpeza local SEMPRE acontece de imediato, antes de qualquer chamada de
+    // rede — o app nunca fica preso esperando o backend ou o Keycloak.
+    clearAccessToken();
+    setUsuario(null);
+    setEstado('anonimo');
+    void fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+
+    const viaSSO = sessionStorage.getItem(SESSION_KEY_AUTH_VIA_SSO) === '1';
+    if (!viaSSO) {
+      window.location.assign('/login');
+      return;
+    }
+    sessionStorage.removeItem(SESSION_KEY_AUTH_VIA_SSO);
+
+    // Sessão SSO: RP-initiated logout no realm, com fallback para /login local
+    // se a config não resolver a tempo.
+    let resolvido = false;
+    let timeoutId = 0;
+    const irParaLoginLocal = () => {
+      if (resolvido) {
+        return;
+      }
+      resolvido = true;
+      window.clearTimeout(timeoutId);
+      window.location.assign('/login');
+    };
+    timeoutId = window.setTimeout(irParaLoginLocal, 5000);
+
+    fetchSSOConfig()
+      .then((cfg) => {
+        if (resolvido) {
+          return;
+        }
+        resolvido = true;
+        window.clearTimeout(timeoutId);
+        if (cfg.enabled && cfg.base_url && cfg.client_id) {
+          const params = new URLSearchParams({
+            client_id: cfg.client_id,
+            post_logout_redirect_uri: `${window.location.origin}/login`,
+          });
+          window.location.assign(
+            `${cfg.base_url}/protocol/openid-connect/logout?${params.toString()}`,
+          );
+        } else {
+          window.location.assign('/login');
+        }
+      })
+      .catch(irParaLoginLocal);
   }, []);
 
   useEffect(() => {
@@ -118,8 +191,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<AuthContextValue>(
-    () => ({ estado, usuario, definirSessao }),
-    [estado, usuario, definirSessao],
+    () => ({ estado, usuario, definirSessao, logout }),
+    [estado, usuario, definirSessao, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

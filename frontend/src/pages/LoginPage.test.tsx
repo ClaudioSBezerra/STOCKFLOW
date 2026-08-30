@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { LoginPage } from './LoginPage';
 import { clearAccessToken, getAccessToken, setAccessToken } from '@/lib/session';
+import { resetSSOConfigCache, type SSOConfig } from '@/lib/keycloak/config';
 
 const navigateMock = vi.fn();
 
@@ -16,17 +17,25 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
-// `useAuth` é mockado para isolar LoginPage do bootstrap do AuthProvider (que
-// dispararia um fetch('/api/auth/refresh') na montagem e poluiria a contagem
-// de chamadas de fetch destes testes). `definirSessao` mantém o efeito real
-// de guardar o token via lib/session, para as asserções de getAccessToken
-// continuarem válidas.
+// `useAuth` é mockado para isolar LoginPage do bootstrap do AuthProvider.
+// `definirSessao` mantém o efeito real de guardar o token via lib/session.
 const { definirSessaoMock } = vi.hoisted(() => ({ definirSessaoMock: vi.fn() }));
 
 vi.mock('@/lib/auth', () => ({
-  useAuth: () => ({ estado: 'anonimo', usuario: null, definirSessao: definirSessaoMock }),
+  useAuth: () => ({
+    estado: 'anonimo',
+    usuario: null,
+    definirSessao: definirSessaoMock,
+    logout: vi.fn(),
+  }),
   AuthProvider: ({ children }: { children: ReactNode }) => children,
 }));
+
+// Roteador de fetch por URL: /api/auth/sso/config responde `ssoConfigResp`
+// (default {enabled:false}); /api/auth/login responde `loginResp()`.
+let ssoConfigResp: SSOConfig;
+let loginResp: () => Promise<unknown>;
+const fetchMock = vi.fn();
 
 function renderPage() {
   return render(
@@ -44,17 +53,31 @@ async function preencherEEnviar(user: ReturnType<typeof userEvent.setup>) {
 
 describe('LoginPage', () => {
   beforeEach(() => {
-    vi.stubGlobal('fetch', vi.fn());
+    resetSSOConfigCache();
     navigateMock.mockClear();
     definirSessaoMock.mockReset();
-    // Comportamento padrão: definirSessao guarda o token como o AuthProvider real faz.
     definirSessaoMock.mockImplementation((_usuario: unknown, token: string) => {
       setAccessToken(token);
     });
+
+    ssoConfigResp = { enabled: false };
+    loginResp = () => Promise.reject(new Error('loginResp não configurado neste teste'));
+    fetchMock.mockReset();
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/api/auth/sso/config') {
+        return Promise.resolve({ ok: true, json: async () => ssoConfigResp });
+      }
+      if (url === '/api/auth/login') {
+        return loginResp();
+      }
+      return Promise.reject(new Error(`fetch não stubado para ${url}`));
+    });
+    vi.stubGlobal('fetch', fetchMock);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
     clearAccessToken();
   });
 
@@ -77,29 +100,34 @@ describe('LoginPage', () => {
 
   it('envia POST /api/auth/login com o payload preenchido', async () => {
     const user = userEvent.setup();
-    (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ token: 'access-token-123', usuario: { id: '1', nome: 'x', email: 'x', papel: 'usuario' } }),
-    });
+    loginResp = () =>
+      Promise.resolve({
+        ok: true,
+        json: async () => ({
+          token: 'access-token-123',
+          usuario: { id: '1', nome: 'x', email: 'x', papel: 'usuario' },
+        }),
+      });
     renderPage();
 
     await preencherEEnviar(user);
 
-    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
-    const [url, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(url).toBe('/api/auth/login');
-    expect(init.method).toBe('POST');
-    const body = JSON.parse(init.body as string);
-    expect(body).toEqual({ email: 'fulano@empresa.com', senha: 'senha-123456' });
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([u]) => u === '/api/auth/login')).toBe(true),
+    );
+    const loginCall = fetchMock.mock.calls.find(([u]) => u === '/api/auth/login');
+    expect(loginCall?.[1]?.method).toBe('POST');
+    expect(JSON.parse(loginCall?.[1]?.body as string)).toEqual({
+      email: 'fulano@empresa.com',
+      senha: 'senha-123456',
+    });
   });
 
   it('chama definirSessao(usuario, token) e navega para / no sucesso', async () => {
     const user = userEvent.setup();
     const usuario = { id: '1', nome: 'Fulano', email: 'fulano@empresa.com', papel: 'usuario' };
-    (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ token: 'access-token-123', usuario }),
-    });
+    loginResp = () =>
+      Promise.resolve({ ok: true, json: async () => ({ token: 'access-token-123', usuario }) });
     renderPage();
 
     await preencherEEnviar(user);
@@ -111,10 +139,11 @@ describe('LoginPage', () => {
 
   it('mostra a mesma mensagem genérica no 401 INVALID_CREDENTIALS', async () => {
     const user = userEvent.setup();
-    (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: { code: 'INVALID_CREDENTIALS', message: 'qualquer coisa' } }),
-    });
+    loginResp = () =>
+      Promise.resolve({
+        ok: false,
+        json: async () => ({ error: { code: 'INVALID_CREDENTIALS', message: 'qualquer coisa' } }),
+      });
     renderPage();
 
     await preencherEEnviar(user);
@@ -127,28 +156,27 @@ describe('LoginPage', () => {
 
   it('mostra erro inline de validação no 400 VALIDATION_ERROR', async () => {
     const user = userEvent.setup();
-    (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: { code: 'VALIDATION_ERROR', message: 'obrigatorio' } }),
-    });
+    loginResp = () =>
+      Promise.resolve({
+        ok: false,
+        json: async () => ({ error: { code: 'VALIDATION_ERROR', message: 'obrigatorio' } }),
+      });
     renderPage();
 
     await preencherEEnviar(user);
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Preencha e-mail e senha para continuar.');
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Preencha e-mail e senha para continuar.',
+    );
   });
 
-  it('mostra a mensagem genérica em uma resposta HTTP de erro com código desconhecido/ausente', async () => {
-    // Caminho distinto do erro de rede abaixo: aqui res.ok é false e o corpo
-    // chega normalmente, só que com um `code` que mensagemDeErro não reconhece
-    // (ex.: INTERNAL_ERROR de um 500) — cai no mesmo branch genérico, mas por
-    // um caminho de código diferente (o `if (!res.ok)` de handleSubmit, nunca
-    // o `catch`).
+  it('mostra a mensagem genérica em erro HTTP com código desconhecido/ausente', async () => {
     const user = userEvent.setup();
-    (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: { code: 'INTERNAL_ERROR', message: 'falha ao processar login' } }),
-    });
+    loginResp = () =>
+      Promise.resolve({
+        ok: false,
+        json: async () => ({ error: { code: 'INTERNAL_ERROR', message: 'falha ao processar login' } }),
+      });
     renderPage();
 
     await preencherEEnviar(user);
@@ -162,7 +190,7 @@ describe('LoginPage', () => {
 
   it('mostra mensagem genérica quando a requisição falha por erro de rede', async () => {
     const user = userEvent.setup();
-    (fetch as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('network down'));
+    loginResp = () => Promise.reject(new Error('network down'));
     renderPage();
 
     await preencherEEnviar(user);
@@ -172,12 +200,16 @@ describe('LoginPage', () => {
     );
   });
 
-  it('nunca envia um segundo POST quando dois submits chegam antes do repaint do botão desabilitado', async () => {
+  it('nunca envia um segundo POST quando dois submits chegam antes do repaint', async () => {
     const user = userEvent.setup();
-    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
-      ok: true,
-      json: async () => ({ token: 'access-token-123', usuario: { id: '1', nome: 'x', email: 'x', papel: 'usuario' } }),
-    });
+    loginResp = () =>
+      Promise.resolve({
+        ok: true,
+        json: async () => ({
+          token: 'access-token-123',
+          usuario: { id: '1', nome: 'x', email: 'x', papel: 'usuario' },
+        }),
+      });
     renderPage();
 
     await user.type(screen.getByLabelText('E-mail'), 'fulano@empresa.com');
@@ -190,6 +222,59 @@ describe('LoginPage', () => {
     fireEvent.submit(form);
     fireEvent.submit(form);
 
-    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.filter(([u]) => u === '/api/auth/login')).toHaveLength(1),
+    );
+  });
+
+  describe('botão "Entrar com Ferreira Costa" (SSO, Story 1.9)', () => {
+    it('não aparece quando /api/auth/sso/config responde enabled:false', async () => {
+      renderPage();
+      // dá tempo do useEffect resolver
+      await waitFor(() =>
+        expect(fetchMock.mock.calls.some(([u]) => u === '/api/auth/sso/config')).toBe(true),
+      );
+      expect(screen.queryByRole('button', { name: 'Entrar com Ferreira Costa' })).not.toBeInTheDocument();
+      // o fluxo de senha continua intacto
+      expect(screen.getByRole('button', { name: 'Entrar' })).toBeInTheDocument();
+    });
+
+    it('não aparece quando a config falha (erro de rede)', async () => {
+      fetchMock.mockImplementation((url: string) => {
+        if (url === '/api/auth/sso/config') return Promise.reject(new Error('offline'));
+        return Promise.reject(new Error(`fetch não stubado para ${url}`));
+      });
+      renderPage();
+      await new Promise((r) => setTimeout(r, 0));
+      expect(screen.queryByRole('button', { name: 'Entrar com Ferreira Costa' })).not.toBeInTheDocument();
+    });
+
+    it('aparece quando enabled:true e o clique navega para a URL de authorize com S256', async () => {
+      const user = userEvent.setup();
+      const assignMock = vi.fn();
+      vi.stubGlobal('location', { ...window.location, origin: 'http://localhost', assign: assignMock });
+
+      ssoConfigResp = {
+        enabled: true,
+        base_url: 'https://kc.example/realms/ferreiracosta',
+        client_id: 'stockflow-web',
+        redirect_uri: 'http://localhost/auth/callback',
+        scopes: 'openid profile email',
+      };
+      renderPage();
+
+      const botao = await screen.findByRole('button', { name: 'Entrar com Ferreira Costa' });
+      // o form de senha continua sendo o caminho padrão visível
+      expect(screen.getByRole('button', { name: 'Entrar' })).toBeInTheDocument();
+
+      await user.click(botao);
+
+      await waitFor(() => expect(assignMock).toHaveBeenCalledTimes(1));
+      const url = assignMock.mock.calls[0][0] as string;
+      expect(url).toContain('https://kc.example/realms/ferreiracosta/protocol/openid-connect/auth?');
+      expect(url).toContain('code_challenge_method=S256');
+      expect(url).toContain('client_id=stockflow-web');
+      expect(url).toContain('response_type=code');
+    });
   });
 });

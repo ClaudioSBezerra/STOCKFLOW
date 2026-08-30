@@ -20,6 +20,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useAuth } from '@/lib/auth';
@@ -129,7 +130,7 @@ export function AppShell({ children, tabs, sideNav }: AppShellProps) {
   // Navegação gated por papel (Story 1.5): cada superfície só renderiza os
   // itens cujo `papelMinimo` o papel do usuário alcança. Item sem permissão
   // simplesmente não aparece — nunca desabilitado, nunca "acesso negado".
-  const { usuario } = useAuth();
+  const { usuario, logout } = useAuth();
   const papel = usuario?.papel ?? '';
   const primaryItems = filtrarNavPorPapel(primaryNavItems, papel);
   const adminItems = filtrarNavPorPapel(adminNavItems, papel);
@@ -173,6 +174,12 @@ export function AppShell({ children, tabs, sideNav }: AppShellProps) {
               <DropdownMenuContent align="end" side="right">
                 <DropdownMenuItem asChild className={touchTarget}>
                   <NavLink to={profileNavItem.to}>{profileNavItem.label}</NavLink>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem asChild className={touchTarget}>
+                  <button type="button" onClick={logout} aria-label="Sair">
+                    Sair
+                  </button>
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -234,7 +241,24 @@ export function AppShell({ children, tabs, sideNav }: AppShellProps) {
                   <hr className="my-1 border-border" />
                 ) : null}
                 {mostrarPerfil ? (
-                  <SheetNavRow item={profileNavItem} onNavigate={() => setMoreOpen(false)} />
+                  <>
+                    <SheetNavRow item={profileNavItem} onNavigate={() => setMoreOpen(false)} />
+                    <hr className="my-1 border-border" />
+                    <button
+                      type="button"
+                      aria-label="Sair"
+                      onClick={() => {
+                        setMoreOpen(false);
+                        logout();
+                      }}
+                      className={cn(
+                        'flex w-full items-center justify-start gap-3 rounded-md px-3 text-body text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground',
+                        touchTarget,
+                      )}
+                    >
+                      Sair
+                    </button>
+                  </>
                 ) : null}
               </div>
             </SheetContent>

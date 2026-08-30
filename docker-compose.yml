@@ -24,6 +24,12 @@ services:
       # Valor de desenvolvimento explícito (Story 1.4, AD-6) — nunca usado em
       # produção; cada ambiente real deve definir o próprio segredo.
       JWT_SECRET: dev-jwt-secret-nao-usar-em-producao
+      # Login federado via Keycloak — SSO Ferreira Costa (Story 1.9, AD-7).
+      # NÃO definido aqui de propósito: sem IAM_BASE_URL o SSO fica desligado e
+      # este compose sobe idêntico ao comportamento atual. No ambiente de deploy
+      # dedicado à Ferreira Costa, o operador define IAM_BASE_URL,
+      # IAM_CLIENT_ID, IAM_REDIRECT_URI, IAM_ALLOWED_CLIENT_IDS (e, opcional,
+      # IAM_SCOPES) — ver .env.example e spec-1-9 "operator_actions".
     ports:
       - '8080:8080'
     depends_on:

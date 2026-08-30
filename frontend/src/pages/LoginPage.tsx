@@ -1,10 +1,12 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { useAuth, type UsuarioSessao } from '@/lib/auth';
+import { fetchSSOConfig, type SSOConfig } from '@/lib/keycloak/config';
+import { buildLoginUrl } from '@/lib/keycloak/pkce';
 
 /**
  * Envelope de erro fixo (AD-14): {"error":{"code","message"}}. Só o código é
@@ -53,6 +55,26 @@ export function LoginPage() {
   const [senha, setSenha] = useState('');
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+  // Config de SSO buscada em runtime (Story 1.9): começa oculto; o botão
+  // "Entrar com Ferreira Costa" só aparece quando o backend responde
+  // `enabled:true`. O fluxo de senha nunca muda e NUNCA há auto-redirect.
+  const [ssoConfig, setSSOConfig] = useState<SSOConfig | null>(null);
+
+  useEffect(() => {
+    void fetchSSOConfig().then(setSSOConfig);
+  }, []);
+
+  async function iniciarLoginSSO() {
+    if (!ssoConfig?.enabled) {
+      return;
+    }
+    try {
+      const url = await buildLoginUrl(ssoConfig);
+      window.location.assign(url);
+    } catch {
+      // Config incompleta: mantém apenas o login por senha, sem quebrar a tela.
+    }
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -142,6 +164,17 @@ export function LoginPage() {
                 Criar conta
               </Link>
             </p>
+
+            {ssoConfig?.enabled ? (
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                onClick={() => void iniciarLoginSSO()}
+              >
+                Entrar com Ferreira Costa
+              </Button>
+            ) : null}
           </form>
         </CardContent>
       </Card>

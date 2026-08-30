@@ -11,7 +11,10 @@
 // para qualquer conta autenticada; GET /api/promocoes e
 // POST /api/promocoes/{id}/decisao com mínimo `gestor`) e a gestão de contas —
 // desativação e rebaixamento — Story 1.8 (POST /api/usuarios/{id}/desativacao e
-// POST /api/usuarios/{id}/rebaixamento, mínimo `gestor`).
+// POST /api/usuarios/{id}/rebaixamento, mínimo `gestor`) e o login federado via
+// Keycloak — SSO Ferreira Costa — Story 1.9 (GET /api/auth/sso/config e
+// POST /api/auth/logout sempre registrados; POST /api/auth/sso/keycloak atrás do
+// middleware `iam` só quando `IAM_BASE_URL` está configurado).
 package main
 
 import (
@@ -34,6 +37,7 @@ import (
 	_ "github.com/lib/pq"
 
 	"stockflow/backend/handlers"
+	"stockflow/backend/iam"
 	"stockflow/backend/middleware"
 	"stockflow/backend/services"
 )
@@ -90,6 +94,12 @@ func main() {
 
 	emailCfg := services.CarregarEmailConfig()
 
+	// Config do realm Keycloak (Story 1.9, AD-7): lida uma vez no startup do
+	// ambiente. Sem IAM_BASE_URL, o login federado fica desligado e o servidor
+	// sobe idêntico ao comportamento atual (só /api/auth/sso/config e
+	// /api/auth/logout são registrados, nada mais).
+	iamCfg := iam.CarregarConfig()
+
 	// Worker de e-mail (AD-4): uma única goroutine consumindo emails_pendentes
 	// por polling. Sobe depois das migrations (a tabela precisa existir) e
 	// para durante o shutdown gracioso abaixo, antes do pool de conexões
@@ -97,7 +107,7 @@ func main() {
 	pararWorkerEmail := services.IniciarWorkerEmail(db, emailCfg, services.IntervaloPollingEmail)
 	defer pararWorkerEmail()
 
-	mux := newMux(db, emailCfg, []byte(jwtSecret))
+	mux := newMux(db, emailCfg, []byte(jwtSecret), iamCfg)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -188,7 +198,7 @@ func runMigrations(db *sql.DB) error {
 // testes possam despachar requisições através do mux real (mesmos padrões de
 // método+rota registrados em produção), em vez de chamar cada handler
 // diretamente e nunca exercitar o registro em si.
-func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte) *http.ServeMux {
+func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg iam.Config) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", healthHandler(db))
 	mux.HandleFunc("POST /api/auth/cadastro", handlers.CadastroHandler(db, emailCfg))
@@ -218,6 +228,24 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte) *http.S
 	mux.HandleFunc("POST /api/usuarios/{id}/rebaixamento", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelGestor)(
 			handlers.RebaixarUsuarioHandler(db))))
+
+	// Login federado via Keycloak — SSO Ferreira Costa (Story 1.9, AD-7).
+	// /api/auth/sso/config e /api/auth/logout são SEMPRE registrados (o
+	// primeiro responde {"enabled":false} sem config; o segundo é o único
+	// caminho de logout do produto, inclusive para o login por senha). A troca
+	// de token só existe quando o realm está configurado, sempre atrás do
+	// middleware `iam`.
+	mux.HandleFunc("GET /api/auth/sso/config", handlers.SSOConfigHandler(iamCfg))
+	mux.HandleFunc("POST /api/auth/logout", handlers.LogoutHandler(db))
+	if iamCfg.Habilitado() {
+		jwks := iam.NewJWKSClient(iamCfg.RealmURL+"/protocol/openid-connect/certs", time.Hour)
+		if len(iamCfg.AllowedClientIDs) == 0 {
+			slog.Warn("SSO habilitado mas IAM_ALLOWED_CLIENT_IDS vazio — todo login SSO falhará no azp")
+		}
+		mux.HandleFunc("POST /api/auth/sso/keycloak",
+			iam.Middleware(jwks, iamCfg)(handlers.KeycloakSSOHandler(db, jwtSecret)))
+	}
+
 	return mux
 }
 

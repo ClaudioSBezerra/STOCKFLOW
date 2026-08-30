@@ -8,6 +8,7 @@ import { LoginPage } from '@/pages/LoginPage';
 import { EsqueciSenhaPage } from '@/pages/EsqueciSenhaPage';
 import { RedefinirSenhaPage } from '@/pages/RedefinirSenhaPage';
 import { ConfiguracoesPage } from '@/pages/ConfiguracoesPage';
+import { AuthCallbackPage } from '@/pages/AuthCallbackPage';
 
 /**
  * Rota raiz usa `AppShell` como layout; todo caminho não-raiz reaproveita a
@@ -15,9 +16,10 @@ import { ConfiguracoesPage } from '@/pages/ConfiguracoesPage';
  * (ver spec-1-2). Itens de navegação do shell continuam clicáveis mesmo sem
  * uma rota "de verdade" atrás deles.
  *
- * `/cadastro`, `/verificar-email` (Story 1.3), `/login` (Story 1.4) e
- * `/esqueci-senha` + `/redefinir-senha` (Story 1.6) são rotas públicas irmãs
- * da raiz, fora do `AppShell` e fora do
+ * `/cadastro`, `/verificar-email` (Story 1.3), `/login` (Story 1.4),
+ * `/esqueci-senha` + `/redefinir-senha` (Story 1.6) e `/auth/callback`
+ * (Story 1.9, retorno do login federado via Keycloak) são rotas públicas
+ * irmãs da raiz, fora do `AppShell` e fora do
  * `RotaProtegida`. `/configuracoes` (Story 1.7, "Meu Perfil" + solicitação de
  * promoção de papel) é rota-filha da raiz, dentro do `AppShell`/`RotaProtegida`.
  * A árvore do `AppShell` fica atrás do `RotaProtegida`
@@ -71,6 +73,7 @@ export const router = createBrowserRouter([
   { path: '/login', element: <LoginPage /> },
   { path: '/esqueci-senha', element: <EsqueciSenhaPage /> },
   { path: '/redefinir-senha', element: <RedefinirSenhaPage /> },
+  { path: '/auth/callback', element: <AuthCallbackPage /> },
 ]);
 
 function App() {
