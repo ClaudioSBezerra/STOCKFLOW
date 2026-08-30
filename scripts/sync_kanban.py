@@ -105,12 +105,21 @@ def set_status(item_id, status_name, dry_run):
     ])
 
 
+def get_issue_state(issue_number):
+    out = run(["gh", "issue", "view", str(issue_number), "--repo", REPO, "--json", "state"])
+    return json.loads(out)["state"]  # "OPEN" or "CLOSED"
+
+
 def set_issue_open_state(issue_number, done, dry_run):
     if dry_run:
         return
-    if done:
+    # gh issue close/reopen errors with a generic GraphQL message when the
+    # issue is already in the target state — check first so a stale cache
+    # (or a crash-lost prior run) never turns into a hard failure.
+    current = get_issue_state(issue_number)
+    if done and current == "OPEN":
         run(["gh", "issue", "close", str(issue_number), "--repo", REPO])
-    else:
+    elif not done and current == "CLOSED":
         # Reopen defensively — covers a story/epic moved back out of 'done'.
         run(["gh", "issue", "reopen", str(issue_number), "--repo", REPO])
 
@@ -149,9 +158,11 @@ def main():
         set_issue_open_state(entry["issue_number"], done=(status == "done"), dry_run=args.dry_run)
         changed.append((key, status, target_status, entry["issue_number"]))
         cache[key] = status
-
-    if not args.dry_run:
-        save_cache(cache)
+        if not args.dry_run:
+            # Save after every item, not just at the end — a crash partway
+            # through (network blip, gh API hiccup) must not force every
+            # already-synced item to be re-attempted on the next run.
+            save_cache(cache)
 
     print(f"{'[dry-run] ' if args.dry_run else ''}Synced {len(changed)} item(s), {len(skipped)} already in sync.")
     for key, status, target_status, issue_number in changed:
