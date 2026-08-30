@@ -68,7 +68,7 @@ func TestRevogarSessaoPorRefreshToken_RevogaSessaoViva(t *testing.T) {
 	db := testDB(t)
 	usuarioID := inserirUsuario(t, db, "Com Sessão", "sessao@fc.com", "usuario", true)
 
-	_, refreshToken, _, err := EmitirSessao(db, []byte("segredo-de-teste"), usuarioID)
+	_, refreshToken, _, err := EmitirSessao(db, []byte("segredo-de-teste"), usuarioID, "sso")
 	if err != nil {
 		t.Fatalf("EmitirSessao: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestRevogarSessaoPorRefreshToken_NoOpToleranteNaoErra(t *testing.T) {
 
 	// Revogar duas vezes: a segunda afeta 0 linhas e ainda assim não erra.
 	usuarioID := inserirUsuario(t, db, "Dupla", "dupla@fc.com", "usuario", true)
-	_, refreshToken, _, err := EmitirSessao(db, []byte("segredo-de-teste"), usuarioID)
+	_, refreshToken, _, err := EmitirSessao(db, []byte("segredo-de-teste"), usuarioID, "senha")
 	if err != nil {
 		t.Fatalf("EmitirSessao: %v", err)
 	}

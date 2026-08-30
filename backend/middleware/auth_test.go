@@ -20,6 +20,8 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/lib/pq"
+
+	"stockflow/backend/services"
 )
 
 var (
@@ -98,13 +100,37 @@ func criarUsuario(t *testing.T, db *sql.DB, email string, ativo bool) string {
 // gerarAccessTokenTeste assina um JWT com o mesmo formato de
 // services.gerarAccessToken (claim mínimo `sub`), mas com controle direto
 // sobre segredo/expiração/subject para exercitar todos os ramos de
-// RequireAuth.
+// RequireAuth. Sem claim `origem` — equivalente a um token emitido antes da
+// Story 1.11 (decodifica como string vazia).
 func gerarAccessTokenTeste(t *testing.T, secret []byte, subject string, exp time.Time) string {
 	t.Helper()
 	claims := jwt.RegisteredClaims{
 		Subject:   subject,
 		ExpiresAt: jwt.NewNumericDate(exp),
 		IssuedAt:  jwt.NewNumericDate(time.Now().UTC()),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, err := token.SignedString(secret)
+	if err != nil {
+		t.Fatalf("falha ao assinar token de teste: %v", err)
+	}
+	return signed
+}
+
+// gerarAccessTokenComOrigemTeste é a variante de gerarAccessTokenTeste com
+// controle direto sobre o claim `origem` (Story 1.11) — usada para exercitar
+// o gate de MFA de RequireRole através da composição real
+// RequireAuth->RequireRole (não isolando RequireRole via injeção direta no
+// contexto, como faz middleware/roles_test.go).
+func gerarAccessTokenComOrigemTeste(t *testing.T, secret []byte, subject, origem string, exp time.Time) string {
+	t.Helper()
+	claims := services.AcessoClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   subject,
+			ExpiresAt: jwt.NewNumericDate(exp),
+			IssuedAt:  jwt.NewNumericDate(time.Now().UTC()),
+		},
+		Origem: origem,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := token.SignedString(secret)

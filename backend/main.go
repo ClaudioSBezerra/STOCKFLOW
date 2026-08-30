@@ -209,6 +209,15 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	mux.HandleFunc("GET /api/auth/redefinir-senha", handlers.ValidarRedefinicaoSenhaHandler(db))
 	mux.HandleFunc("POST /api/auth/redefinir-senha", handlers.RedefinirSenhaHandler(db))
 	mux.HandleFunc("GET /api/auth/me", middleware.RequireAuth(db, jwtSecret)(handlers.MeHandler()))
+
+	// MFA obrigatório para papéis administrativos — Story 1.11 (FR-37/SM-2).
+	// /mfa/verificar é pública (troca o token de login pendente por sessão,
+	// ainda sem sessão nenhuma nesse ponto); /mfa/iniciar e /mfa/confirmar
+	// exigem sessão já autenticada (RequireAuth), mas nenhum papel mínimo —
+	// qualquer conta pode configurar MFA, mesmo que só gestor/adm o exijam.
+	mux.HandleFunc("POST /api/auth/mfa/verificar", handlers.MFAVerificarHandler(db, jwtSecret))
+	mux.HandleFunc("POST /api/auth/mfa/iniciar", middleware.RequireAuth(db, jwtSecret)(handlers.MFAIniciarHandler(db)))
+	mux.HandleFunc("POST /api/auth/mfa/confirmar", middleware.RequireAuth(db, jwtSecret)(handlers.MFAConfirmarHandler(db)))
 	mux.HandleFunc("GET /api/usuarios", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelGestor)(
 			handlers.ListarUsuariosHandler(db))))

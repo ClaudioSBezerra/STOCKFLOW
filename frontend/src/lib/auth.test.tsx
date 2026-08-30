@@ -16,7 +16,14 @@ function Sonda() {
         type="button"
         onClick={() =>
           definirSessao(
-            { id: '9', nome: 'Logada', email: 'logada@empresa.com', papel: 'gestor' },
+            {
+              id: '9',
+              nome: 'Logada',
+              email: 'logada@empresa.com',
+              papel: 'gestor',
+              mfaHabilitado: false,
+              origem: 'senha',
+            },
             'token-do-login',
           )
         }

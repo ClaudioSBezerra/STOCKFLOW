@@ -378,7 +378,12 @@ func TestDecidirPromocaoHandler_AprovarAlmoxarifePorGestor(t *testing.T) {
 // depois, 200.
 func TestDecidirPromocaoHandler_AprovarGestorPorAdm(t *testing.T) {
 	db := testDB(t)
-	criarContaComPapel(t, db, "Almox", "http-aprova-g-a@empresa.com", "senha-123456", "almoxarife")
+	almoxID := criarContaComPapel(t, db, "Almox", "http-aprova-g-a@empresa.com", "senha-123456", "almoxarife")
+	// MFA já configurado ANTES da promoção (Story 1.11): este teste prova o
+	// efeito imediato da PROMOÇÃO (Story 1.7), não o gate de MFA — sem isso, a
+	// conta recém-promovida a gestor sem MFA esbarraria em 403
+	// MFA_SETUP_REQUIRED, mascarando o que este teste quer provar.
+	habilitarMFATeste(t, db, almoxID)
 	criarContaComPapel(t, db, "Adm", "http-aprova-g-adm@empresa.com", "senha-123456", "adm")
 	solicitanteToken := tokenDeLogin(t, db, "http-aprova-g-a@empresa.com", "senha-123456")
 	admToken := tokenDeLogin(t, db, "http-aprova-g-adm@empresa.com", "senha-123456")

@@ -43,7 +43,13 @@ describe('RotaProtegida (unidade)', () => {
   });
 
   it('estado carregando: mostra "Carregando..." e não redireciona', () => {
-    useAuthMock.mockReturnValue({ estado: 'carregando', usuario: null, definirSessao: vi.fn(), logout: vi.fn() });
+    useAuthMock.mockReturnValue({
+      estado: 'carregando',
+      usuario: null,
+      definirSessao: vi.fn(),
+      atualizarUsuario: vi.fn(),
+      logout: vi.fn(),
+    });
     renderRota();
 
     expect(screen.getByText('Carregando...')).toBeInTheDocument();
@@ -53,7 +59,13 @@ describe('RotaProtegida (unidade)', () => {
   });
 
   it('estado anonimo: redireciona para /login', () => {
-    useAuthMock.mockReturnValue({ estado: 'anonimo', usuario: null, definirSessao: vi.fn(), logout: vi.fn() });
+    useAuthMock.mockReturnValue({
+      estado: 'anonimo',
+      usuario: null,
+      definirSessao: vi.fn(),
+      atualizarUsuario: vi.fn(),
+      logout: vi.fn(),
+    });
     renderRota();
 
     expect(screen.getByText('tela de login')).toBeInTheDocument();
@@ -65,8 +77,16 @@ describe('RotaProtegida (unidade)', () => {
   it('estado autenticado: renderiza o AppShell e permanece em /', () => {
     useAuthMock.mockReturnValue({
       estado: 'autenticado',
-      usuario: { id: '1', nome: 'Teste', email: 'teste@empresa.com', papel: 'usuario' },
+      usuario: {
+        id: '1',
+        nome: 'Teste',
+        email: 'teste@empresa.com',
+        papel: 'usuario',
+        mfaHabilitado: false,
+        origem: 'senha',
+      },
       definirSessao: vi.fn(),
+      atualizarUsuario: vi.fn(),
       logout: vi.fn(),
     });
     renderRota();
@@ -77,11 +97,63 @@ describe('RotaProtegida (unidade)', () => {
     expect(screen.queryByText('tela de login')).not.toBeInTheDocument();
   });
 
+  it('gestor por senha sem MFA em /: redireciona para /configuracoes (Story 1.11, AC1)', () => {
+    useAuthMock.mockReturnValue({
+      estado: 'autenticado',
+      usuario: {
+        id: '1',
+        nome: 'Gestora',
+        email: 'gestora@empresa.com',
+        papel: 'gestor',
+        mfaHabilitado: false,
+        origem: 'senha',
+      },
+      definirSessao: vi.fn(),
+      atualizarUsuario: vi.fn(),
+      logout: vi.fn(),
+    });
+    renderRota();
+
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/configuracoes');
+    expect(screen.queryByText('árvore protegida')).not.toBeInTheDocument();
+  });
+
+  it('gestor por senha sem MFA já em /configuracoes: NÃO redireciona (evita loop)', () => {
+    useAuthMock.mockReturnValue({
+      estado: 'autenticado',
+      usuario: {
+        id: '1',
+        nome: 'Gestora',
+        email: 'gestora@empresa.com',
+        papel: 'gestor',
+        mfaHabilitado: false,
+        origem: 'senha',
+      },
+      definirSessao: vi.fn(),
+      atualizarUsuario: vi.fn(),
+      logout: vi.fn(),
+    });
+    render(
+      <MemoryRouter initialEntries={['/configuracoes']}>
+        <LocationDisplay />
+        <Routes>
+          <Route path="/" element={<RotaProtegida />}>
+            <Route path="configuracoes" element={<div>árvore protegida</div>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('árvore protegida')).toBeInTheDocument();
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/configuracoes');
+  });
+
   it('estado inesperado (fail-closed): redireciona para /login', () => {
     useAuthMock.mockReturnValue({
       estado: 'estado-novo-nao-previsto' as never,
       usuario: null,
       definirSessao: vi.fn(),
+      atualizarUsuario: vi.fn(),
       logout: vi.fn(),
     });
     renderRota();

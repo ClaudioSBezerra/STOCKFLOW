@@ -46,7 +46,7 @@ development_status:
   1-8-gestão-de-contas-desativação-e-rebaixamento: done
   1-9-login-federado-via-keycloak-sso-ferreira-costa: awaiting-operator
   1-10-bloqueio-de-conta-e-política-de-senha: done
-  1-11-mfa-obrigatório-para-papéis-administrativos: backlog
+  1-11-mfa-obrigatório-para-papéis-administrativos: done
   1-12-log-de-acesso-e-auditoria: backlog
   epic-1-retrospective: optional
 

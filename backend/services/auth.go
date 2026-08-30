@@ -41,6 +41,12 @@ const tokenVerificacaoExpiracao = 24 * time.Hour
 // senha (Story 1.6): 30min, fixado explicitamente pelo intent desta story.
 const tokenRedefinicaoExpiracao = 30 * time.Minute
 
+// mfaLoginTokenExpiracao é o prazo de validade do token opaco de uso único
+// (`tokens_acao`, tipo `mfa_login`) emitido por IniciarLoginMFA quando o
+// login por senha de uma conta com `mfa_habilitado=true` passa a exigir o
+// segundo fator: 5min, fixado explicitamente pelo intent da Story 1.11.
+const mfaLoginTokenExpiracao = 5 * time.Minute
+
 // Prazos de sessão (Story 1.4, AD-6): access JWT curto de 30min; refresh
 // token opaco rotativo com TTL de 2h, mesmo formato reaproveitado depois pelo
 // login federado (Story 1.9). RefreshTokenExpiracao é exportado porque é
@@ -113,6 +119,18 @@ var (
 	// interno: uma conta pode ter sido removida entre a emissão do token e o
 	// uso.
 	ErrUsuarioSessaoNaoEncontrado = errors.New("usuário da sessão não encontrado")
+
+	// ErrMFACodigoInvalido cobre tanto "código TOTP errado" (ConcluirLoginMFA)
+	// quanto "código de confirmação errado" (ConfirmarConfiguracaoMFA) — Story
+	// 1.11. No caminho de login, é o mesmo sinal de força bruta já tratado pelo
+	// contador da Story 1.10 (registrarFalhaLogin é chamado pelo próprio
+	// handler/serviço no ponto correto, não por este erro em si).
+	ErrMFACodigoInvalido = errors.New("código TOTP inválido")
+	// ErrMFAJaConfigurado indica que a conta já tem `mfa_habilitado=true` —
+	// tanto IniciarConfiguracaoMFA quanto ConfirmarConfiguracaoMFA recusam
+	// reconfigurar um MFA já ativo (Story 1.11, sem opção de
+	// desativar/reconfigurar nesta story).
+	ErrMFAJaConfigurado = errors.New("autenticação em duas etapas já configurada para esta conta")
 )
 
 // normalizeEmail aplica a mesma normalização usada em cmd/seed-admin:
@@ -300,12 +318,23 @@ func mustGerarDummyBcryptHash() []byte {
 // autenticada (BuscarUsuarioSessao) e exposta pelo middleware — nunca o
 // claim do JWT, que só carrega `sub` (Story 1.4: papel/ativo/nome/email são
 // sempre lidos do Postgres, nunca cacheados/confiados no token).
+//
+// MFAHabilitado É lido do Postgres (mfa_habilitado), como qualquer outro
+// campo desta struct: estado de CONTA, sempre atual.
+//
+// Origem é a ÚNICA exceção deliberada: NUNCA é preenchida por
+// BuscarUsuarioSessao/BuscarUsuarioPorEmailSSO (fica sempre "" quando lida
+// direto daqui) — é metadado de UMA SESSÃO ("por qual caminho ela entrou:
+// senha ou sso"), não estado de conta, e por isso é preenchida só pelo
+// middleware.RequireAuth a partir do claim `origem` do JWT (Story 1.11).
 type UsuarioSessao struct {
-	ID    string
-	Nome  string
-	Email string
-	Papel string
-	Ativo bool
+	ID            string
+	Nome          string
+	Email         string
+	Papel         string
+	Ativo         bool
+	MFAHabilitado bool
+	Origem        string
 }
 
 // Login valida e-mail/senha e devolve o id do usuário autenticado. Cobre a
@@ -445,15 +474,31 @@ func registrarFalhaLogin(db *sql.DB, usuarioID string) error {
 	return err
 }
 
-// gerarAccessToken emite o JWT de acesso (AD-6): HS256, claim mínimo (`sub`
-// apenas) — deliberado, para que o middleware nunca tenha a tentação de
-// confiar em papel/estado carimbado no token em vez de reconsultar
-// `usuarios`.
-func gerarAccessToken(jwtSecret []byte, usuarioID string) (string, error) {
-	claims := jwt.RegisteredClaims{
-		Subject:   usuarioID,
-		ExpiresAt: jwt.NewNumericDate(time.Now().UTC().Add(accessTokenExpiracao)),
-		IssuedAt:  jwt.NewNumericDate(time.Now().UTC()),
+// AcessoClaims é o claim custom do access JWT (Story 1.11): embute
+// jwt.RegisteredClaims (só `sub`/`exp`/`iat`, como antes) e acrescenta
+// `origem` — a proveniência da sessão ("senha" ou "sso"), um dado IMUTÁVEL
+// para a vida da sessão (mesma classe de decisão que já existe para `sub`),
+// nunca um estado de conta que possa ficar defasado. middleware.RequireAuth
+// parseia este struct (em vez de jwt.RegisteredClaims puro) para poder ler
+// `claims.Origem` e repassá-lo a UsuarioSessao.Origem.
+type AcessoClaims struct {
+	jwt.RegisteredClaims
+	Origem string `json:"origem"`
+}
+
+// gerarAccessToken emite o JWT de acesso (AD-6): HS256, claim mínimo
+// (`sub`+`origem`) — deliberado, para que o middleware nunca tenha a
+// tentação de confiar em papel/estado DE CONTA carimbado no token em vez de
+// reconsultar `usuarios`. `origem` é a única exceção (Story 1.11, ver
+// AcessoClaims): metadado de sessão, não de conta.
+func gerarAccessToken(jwtSecret []byte, usuarioID, origem string) (string, error) {
+	claims := AcessoClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   usuarioID,
+			ExpiresAt: jwt.NewNumericDate(time.Now().UTC().Add(accessTokenExpiracao)),
+			IssuedAt:  jwt.NewNumericDate(time.Now().UTC()),
+		},
+		Origem: origem,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := token.SignedString(jwtSecret)
@@ -464,12 +509,14 @@ func gerarAccessToken(jwtSecret []byte, usuarioID string) (string, error) {
 }
 
 // EmitirSessao gera o par de tokens de sessão (AD-6) para um usuário já
-// autenticado (por senha, Login acima, ou futuramente por SSO, Story 1.9):
-// um access JWT de 30min e um refresh token opaco de 2h, persistido em
-// `sessoes`. expiraRefresh é devolvido para o chamador HTTP montar o
-// `Set-Cookie` com o mesmo prazo.
-func EmitirSessao(db *sql.DB, jwtSecret []byte, usuarioID string) (accessToken, refreshToken string, expiraRefresh time.Time, err error) {
-	accessToken, err = gerarAccessToken(jwtSecret, usuarioID)
+// autenticado (por senha, Login acima, ou por SSO, Story 1.9): um access JWT
+// de 30min e um refresh token opaco de 2h, persistido em `sessoes`.
+// `origem` ("senha" ou "sso", Story 1.11) é gravado tanto no claim do JWT
+// quanto na coluna `sessoes.origem` — uma sessão SSO nunca vira "senha" (nem
+// vice-versa) por refresh (ver RenovarSessao). expiraRefresh é devolvido
+// para o chamador HTTP montar o `Set-Cookie` com o mesmo prazo.
+func EmitirSessao(db *sql.DB, jwtSecret []byte, usuarioID, origem string) (accessToken, refreshToken string, expiraRefresh time.Time, err error) {
+	accessToken, err = gerarAccessToken(jwtSecret, usuarioID, origem)
 	if err != nil {
 		return "", "", time.Time{}, err
 	}
@@ -481,9 +528,9 @@ func EmitirSessao(db *sql.DB, jwtSecret []byte, usuarioID string) (accessToken, 
 
 	expiraRefresh = time.Now().UTC().Add(RefreshTokenExpiracao)
 	const insertSessao = `
-		INSERT INTO sessoes (usuario_id, refresh_token, expira_em)
-		VALUES ($1, $2, $3)`
-	if _, err := db.Exec(insertSessao, usuarioID, refreshToken, expiraRefresh); err != nil {
+		INSERT INTO sessoes (usuario_id, refresh_token, expira_em, origem)
+		VALUES ($1, $2, $3, $4)`
+	if _, err := db.Exec(insertSessao, usuarioID, refreshToken, expiraRefresh, origem); err != nil {
 		return "", "", time.Time{}, fmt.Errorf("falha ao gravar sessão: %w", err)
 	}
 
@@ -515,9 +562,9 @@ func RenovarSessao(db *sql.DB, jwtSecret []byte, refreshTokenAtual string) (novo
 		UPDATE sessoes
 		SET revogado_em = now()
 		WHERE refresh_token = $1 AND revogado_em IS NULL AND expira_em > now()
-		RETURNING usuario_id`
-	var usuarioID string
-	err = tx.QueryRow(marcarRevogada, refreshTokenAtual).Scan(&usuarioID)
+		RETURNING usuario_id, origem`
+	var usuarioID, origem string
+	err = tx.QueryRow(marcarRevogada, refreshTokenAtual).Scan(&usuarioID, &origem)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", "", time.Time{}, ErrSessaoInvalida
@@ -525,7 +572,10 @@ func RenovarSessao(db *sql.DB, jwtSecret []byte, refreshTokenAtual string) (novo
 		return "", "", time.Time{}, fmt.Errorf("falha ao revogar sessão atual: %w", err)
 	}
 
-	novoAccess, err = gerarAccessToken(jwtSecret, usuarioID)
+	// origem é sempre a da sessão que está sendo rotacionada — nunca
+	// recalculada nem aceita de fora: uma sessão SSO nunca vira "senha" (nem
+	// vice-versa) por refresh (Story 1.11).
+	novoAccess, err = gerarAccessToken(jwtSecret, usuarioID, origem)
 	if err != nil {
 		return "", "", time.Time{}, err
 	}
@@ -537,9 +587,9 @@ func RenovarSessao(db *sql.DB, jwtSecret []byte, refreshTokenAtual string) (novo
 
 	expiraRefresh = time.Now().UTC().Add(RefreshTokenExpiracao)
 	const insertSessao = `
-		INSERT INTO sessoes (usuario_id, refresh_token, expira_em)
-		VALUES ($1, $2, $3)`
-	if _, err := tx.Exec(insertSessao, usuarioID, novoRefresh, expiraRefresh); err != nil {
+		INSERT INTO sessoes (usuario_id, refresh_token, expira_em, origem)
+		VALUES ($1, $2, $3, $4)`
+	if _, err := tx.Exec(insertSessao, usuarioID, novoRefresh, expiraRefresh, origem); err != nil {
 		return "", "", time.Time{}, fmt.Errorf("falha ao gravar sessão rotacionada: %w", err)
 	}
 
@@ -548,6 +598,224 @@ func RenovarSessao(db *sql.DB, jwtSecret []byte, refreshTokenAtual string) (novo
 	}
 
 	return novoAccess, novoRefresh, expiraRefresh, nil
+}
+
+// IniciarLoginMFA emite o token opaco de uso único (Story 1.11) que
+// LoginHandler devolve no lugar de uma sessão quando `usuario.MFAHabilitado`
+// é true: mesmo molde de gerarTokenAcao/tokens_acao já usado por
+// verificação de e-mail (Story 1.3) e redefinição de senha (Story 1.6), com
+// `tipo='mfa_login'` e `expira_em = now() + mfaLoginTokenExpiracao` (5min).
+func IniciarLoginMFA(db *sql.DB, usuarioID string) (string, error) {
+	// Invalida qualquer token de mfa_login anterior ainda não usado desta
+	// conta ANTES de emitir um novo — mesmo precedente de
+	// SolicitarRedefinicaoSenha (Story 1.6): uma conta nunca deve ter mais de
+	// um token de login por MFA válido ao mesmo tempo.
+	const invalidarAnteriores = `
+		UPDATE tokens_acao
+		SET usado_em = now()
+		WHERE usuario_id = $1 AND tipo = 'mfa_login' AND usado_em IS NULL`
+	if _, err := db.Exec(invalidarAnteriores, usuarioID); err != nil {
+		return "", fmt.Errorf("falha ao invalidar tokens de login por MFA anteriores: %w", err)
+	}
+
+	token, err := gerarTokenAcao()
+	if err != nil {
+		return "", err
+	}
+
+	expiraEm := time.Now().UTC().Add(mfaLoginTokenExpiracao)
+	const insertToken = `
+		INSERT INTO tokens_acao (usuario_id, token, tipo, expira_em)
+		VALUES ($1, $2, 'mfa_login', $3)`
+	if _, err := db.Exec(insertToken, usuarioID, token, expiraEm); err != nil {
+		return "", fmt.Errorf("falha ao iniciar login por MFA: %w", err)
+	}
+	return token, nil
+}
+
+// ConcluirLoginMFA troca um token de `mfa_login` pendente por um
+// `usuarioID` autenticado, mediante um código TOTP correto (Story 1.11):
+// token inexistente -> ErrTokenNaoEncontrado; expirado ou já usado ->
+// ErrTokenExpirado (molde de RedefinirSenha/VerificarEmail). Reaproveita o
+// MESMO contador de força bruta da Story 1.10
+// (tentativas_login_falhas/bloqueado_ate): uma conta já bloqueada recusa
+// TODA tentativa — mesmo com o código certo — com ErrContaBloqueada, sem
+// consumir o token; um código errado incrementa o contador (podendo
+// bloquear a conta na 5ª falha, de código OU de senha, indistintamente) e
+// NÃO consome o token, permitindo nova tentativa até expirar. No sucesso,
+// marca `usado_em` guardado por `usado_em IS NULL AND expira_em > now()`
+// (fecha a mesma corrida de VerificarEmail/RedefinirSenha) e zera o
+// contador de falhas, se sujo.
+func ConcluirLoginMFA(db *sql.DB, mfaToken, codigo string) (usuarioID string, err error) {
+	var expiraEm time.Time
+	var usadoEm sql.NullTime
+	const selectToken = `
+		SELECT usuario_id, expira_em, usado_em
+		FROM tokens_acao
+		WHERE token = $1 AND tipo = 'mfa_login'`
+	if err := db.QueryRow(selectToken, mfaToken).Scan(&usuarioID, &expiraEm, &usadoEm); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrTokenNaoEncontrado
+		}
+		return "", fmt.Errorf("falha ao consultar token de login por MFA: %w", err)
+	}
+	if usadoEm.Valid || !time.Now().Before(expiraEm) {
+		return "", ErrTokenExpirado
+	}
+
+	var segredo sql.NullString
+	var tentativas int
+	var bloqueadoAte sql.NullTime
+	const selectUsuario = `
+		SELECT mfa_secret, tentativas_login_falhas, bloqueado_ate
+		FROM usuarios
+		WHERE id = $1`
+	if err := db.QueryRow(selectUsuario, usuarioID).Scan(&segredo, &tentativas, &bloqueadoAte); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrUsuarioSessaoNaoEncontrado
+		}
+		return "", fmt.Errorf("falha ao consultar usuário para login por MFA: %w", err)
+	}
+
+	agora := time.Now().UTC()
+	if bloqueadoAte.Valid && bloqueadoAte.Time.After(agora) {
+		// Conta bloqueada nesse meio-tempo (entre IniciarLoginMFA e a chegada do
+		// código): recusa mesmo com o código correto, sem estender o prazo.
+		return "", ErrContaBloqueada
+	}
+	if bloqueadoAte.Valid {
+		// Bloqueio já expirado: destrava e segue, mesmo padrão de Login acima.
+		if _, err := db.Exec(`UPDATE usuarios SET tentativas_login_falhas = 0, bloqueado_ate = NULL
+			WHERE id = $1 AND bloqueado_ate <= now()`, usuarioID); err != nil {
+			slog.Warn("falha ao destravar conta com bloqueio de login expirado (MFA)", "usuario_id", usuarioID, "error", err)
+		}
+		tentativas = 0
+		bloqueadoAte = sql.NullTime{}
+	}
+
+	if !segredo.Valid || !ValidarCodigoTOTP(segredo.String, codigo) {
+		// Código errado conta como tentativa de força bruta, exatamente como
+		// senha errada em Login — o token de mfa_login NÃO é consumido, para
+		// permitir nova tentativa até expirar ou a conta bloquear.
+		if err := registrarFalhaLogin(db, usuarioID); err != nil {
+			slog.Warn("falha ao registrar tentativa de código MFA malsucedida", "usuario_id", usuarioID, "error", err)
+		}
+		return "", ErrMFACodigoInvalido
+	}
+
+	// Defesa contra reuso do mesmo código dentro da mesma janela de validade
+	// (~30s): grava atomicamente o passo TOTP usado, guardado por "ainda não
+	// é este passo" — se outra requisição (ou quem quer que tenha
+	// interceptado o mesmo código) já consumiu este exato passo para esta
+	// conta, RowsAffected()==0 e o resultado é o mesmo ErrMFACodigoInvalido
+	// (mesmo vocabulário, sem revelar que o código em si estava correto).
+	passoAtual := PassoAtualTOTP()
+	const marcarPassoUsado = `
+		UPDATE usuarios
+		SET mfa_ultimo_passo_usado = $2
+		WHERE id = $1 AND (mfa_ultimo_passo_usado IS NULL OR mfa_ultimo_passo_usado <> $2)`
+	resPasso, err := db.Exec(marcarPassoUsado, usuarioID, passoAtual)
+	if err != nil {
+		return "", fmt.Errorf("falha ao registrar passo TOTP usado (login por MFA): %w", err)
+	}
+	if n, _ := resPasso.RowsAffected(); n == 0 {
+		if err := registrarFalhaLogin(db, usuarioID); err != nil {
+			slog.Warn("falha ao registrar tentativa de reuso de código MFA", "usuario_id", usuarioID, "error", err)
+		}
+		return "", ErrMFACodigoInvalido
+	}
+
+	const marcarUsado = `
+		UPDATE tokens_acao
+		SET usado_em = now()
+		WHERE token = $1 AND tipo = 'mfa_login' AND usado_em IS NULL AND expira_em > now()`
+	res, err := db.Exec(marcarUsado, mfaToken)
+	if err != nil {
+		return "", fmt.Errorf("falha ao marcar token de login por MFA como usado: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return "", ErrTokenExpirado
+	}
+
+	if tentativas != 0 || bloqueadoAte.Valid {
+		if _, err := db.Exec(`UPDATE usuarios SET tentativas_login_falhas = 0, bloqueado_ate = NULL WHERE id = $1`, usuarioID); err != nil {
+			slog.Warn("falha ao zerar contador de tentativas após login por MFA bem-sucedido", "usuario_id", usuarioID, "error", err)
+		}
+	}
+
+	slog.Info("login concluído via segundo fator (MFA)", "usuario_id", usuarioID)
+	return usuarioID, nil
+}
+
+// IniciarConfiguracaoMFA gera um novo segredo TOTP e a URL `otpauth://`
+// correspondente PARA A TELA renderizar o QR Code — não grava nada no banco
+// (Story 1.11): o cliente devolve o segredo em POST /mfa/confirmar, e só
+// ConfirmarConfiguracaoMFA persiste algo. Não há ganho de segurança em
+// manter um "rascunho" pendente no servidor entre os dois passos, já que a
+// operação é sempre sobre a própria conta de quem chama (RequireAuth), só
+// complexidade extra (expiração/limpeza de rascunho).
+func IniciarConfiguracaoMFA(email string) (segredo, otpauthURL string, err error) {
+	segredo, err = GerarSegredoTOTP()
+	if err != nil {
+		return "", "", err
+	}
+	otpauthURL = URLProvisionamentoTOTP(email, segredo)
+	return segredo, otpauthURL, nil
+}
+
+// ConfirmarConfiguracaoMFA confere a SENHA ATUAL da conta (bcrypt, mesmo
+// vocabulário de erro do Login: ErrCredenciaisInvalidas) ANTES de validar o
+// código TOTP e gravar qualquer coluna — sem isto, um access token roubado
+// (válido até 30min) bastaria para um atacante habilitar MFA com o PRÓPRIO
+// autenticador na conta da vítima, sequestrando os logins futuros dela mesmo
+// depois do token expirar. Só então o código TOTP é validado contra o
+// segredo recém-gerado e, se correto, `mfa_secret`/`mfa_habilitado=true` são
+// gravados (Story 1.11). Senha errada -> ErrCredenciaisInvalidas, nenhuma
+// escrita. Código errado -> ErrMFACodigoInvalido, NENHUMA coluna gravada — o
+// mesmo segredo/QR continua válido para nova tentativa. O UPDATE final é
+// guardado por `mfa_habilitado = false`: se `RowsAffected() == 0`, a conta já
+// tinha MFA configurado (corrida entre duas abas, ou reenvio duplicado do
+// mesmo POST) -> ErrMFAJaConfigurado. `mfa_ultimo_passo_usado` já nasce
+// gravado com o passo TOTP deste sucesso, no mesmo UPDATE — mesma defesa
+// contra reuso de código usada por ConcluirLoginMFA.
+func ConfirmarConfiguracaoMFA(db *sql.DB, usuarioID, senhaAtual, segredo, codigo string) error {
+	var senhaHash sql.NullString
+	const selectUsuario = `SELECT senha_hash FROM usuarios WHERE id = $1`
+	if err := db.QueryRow(selectUsuario, usuarioID).Scan(&senhaHash); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrUsuarioSessaoNaoEncontrado
+		}
+		return fmt.Errorf("falha ao consultar usuário para confirmar configuração de MFA: %w", err)
+	}
+	// Mesma defesa contra side-channel de tempo do Login: uma conta só-SSO
+	// (senha_hash nulo) ainda compara contra um hash de custo equivalente, em
+	// vez de recusar de imediato — nunca teria como acertar `senhaAtual`
+	// mesmo assim, já que não existe senha nenhuma para essa conta.
+	hashParaComparar := dummyBcryptHash
+	if senhaHash.Valid {
+		hashParaComparar = []byte(senhaHash.String)
+	}
+	if bcrypt.CompareHashAndPassword(hashParaComparar, []byte(senhaAtual)) != nil {
+		return ErrCredenciaisInvalidas
+	}
+
+	if !ValidarCodigoTOTP(segredo, codigo) {
+		return ErrMFACodigoInvalido
+	}
+
+	const upd = `
+		UPDATE usuarios
+		SET mfa_secret = $1, mfa_habilitado = true, mfa_ultimo_passo_usado = $2
+		WHERE id = $3 AND mfa_habilitado = false`
+	res, err := db.Exec(upd, segredo, PassoAtualTOTP(), usuarioID)
+	if err != nil {
+		return fmt.Errorf("falha ao confirmar configuração de MFA: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrMFAJaConfigurado
+	}
+	slog.Info("configuração de MFA concluída", "usuario_id", usuarioID)
+	return nil
 }
 
 // ValidarForcaSenha aplica a política mínima de força de senha (Story 1.6,
@@ -769,10 +1037,10 @@ func RedefinirSenha(db *sql.DB, token, senha string) error {
 func BuscarUsuarioSessao(db *sql.DB, usuarioID string) (UsuarioSessao, error) {
 	var u UsuarioSessao
 	const selectUsuario = `
-		SELECT id, nome, email, papel, ativo
+		SELECT id, nome, email, papel, ativo, mfa_habilitado
 		FROM usuarios
 		WHERE id = $1`
-	err := db.QueryRow(selectUsuario, usuarioID).Scan(&u.ID, &u.Nome, &u.Email, &u.Papel, &u.Ativo)
+	err := db.QueryRow(selectUsuario, usuarioID).Scan(&u.ID, &u.Nome, &u.Email, &u.Papel, &u.Ativo, &u.MFAHabilitado)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return UsuarioSessao{}, ErrUsuarioSessaoNaoEncontrado

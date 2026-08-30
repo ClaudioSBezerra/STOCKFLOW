@@ -33,6 +33,20 @@ export interface UsuarioSessao {
   nome: string;
   email: string;
   papel: string;
+  /**
+   * MFA obrigatório para papéis administrativos (Story 1.11). Espelha
+   * `usuarios.mfa_habilitado` do backend, sempre re-resolvido a cada
+   * `/api/auth/me`/login — nunca cacheado além da sessão em memória.
+   */
+  mfaHabilitado: boolean;
+  /**
+   * Proveniência da SESSÃO atual ('senha' | 'sso'), não da conta — vem do
+   * claim `origem` do JWT (Story 1.11). `RotaProtegida` (App.tsx) usa
+   * `origem==='senha' && rankPapel(papel)>=rankPapel('gestor') && !mfaHabilitado`
+   * para redirecionar para Configurações → Segurança, espelhando o gate do
+   * servidor em middleware.RequireRole.
+   */
+  origem: string;
 }
 
 export type EstadoAuth = 'carregando' | 'autenticado' | 'anonimo';
@@ -48,6 +62,13 @@ interface AuthContextValue {
    * para /login.
    */
   definirSessao: (usuario: UsuarioSessao, token: string) => void;
+  /**
+   * Atualiza o `usuario` da sessão em memória sem round-trip a
+   * `/api/auth/me` (Story 1.11) — usado pela tela de Segurança
+   * (ConfiguracoesPage) para refletir `mfaHabilitado:true` imediatamente
+   * após `POST /api/auth/mfa/confirmar` ter sucesso.
+   */
+  atualizarUsuario: (usuario: UsuarioSessao) => void;
   /**
    * Encerra a sessão (Story 1.9): limpa o access token, volta o estado para
    * `anonimo` e dispara `POST /api/auth/logout` (best-effort, revoga a linha
@@ -84,6 +105,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setAccessToken(token);
     setUsuario(u);
     setEstado('autenticado');
+  }, []);
+
+  const atualizarUsuario = useCallback((u: UsuarioSessao) => {
+    setUsuario(u);
   }, []);
 
   const logout = useCallback(() => {
@@ -191,8 +216,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<AuthContextValue>(
-    () => ({ estado, usuario, definirSessao, logout }),
-    [estado, usuario, definirSessao, logout],
+    () => ({ estado, usuario, definirSessao, atualizarUsuario, logout }),
+    [estado, usuario, definirSessao, atualizarUsuario, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

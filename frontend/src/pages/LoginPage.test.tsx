@@ -32,9 +32,11 @@ vi.mock('@/lib/auth', () => ({
 }));
 
 // Roteador de fetch por URL: /api/auth/sso/config responde `ssoConfigResp`
-// (default {enabled:false}); /api/auth/login responde `loginResp()`.
+// (default {enabled:false}); /api/auth/login responde `loginResp()`;
+// /api/auth/mfa/verificar (Story 1.11) responde `mfaVerificarResp()`.
 let ssoConfigResp: SSOConfig;
 let loginResp: () => Promise<unknown>;
+let mfaVerificarResp: () => Promise<unknown>;
 const fetchMock = vi.fn();
 
 function renderPage() {
@@ -62,6 +64,7 @@ describe('LoginPage', () => {
 
     ssoConfigResp = { enabled: false };
     loginResp = () => Promise.reject(new Error('loginResp não configurado neste teste'));
+    mfaVerificarResp = () => Promise.reject(new Error('mfaVerificarResp não configurado neste teste'));
     fetchMock.mockReset();
     fetchMock.mockImplementation((url: string) => {
       if (url === '/api/auth/sso/config') {
@@ -69,6 +72,9 @@ describe('LoginPage', () => {
       }
       if (url === '/api/auth/login') {
         return loginResp();
+      }
+      if (url === '/api/auth/mfa/verificar') {
+        return mfaVerificarResp();
       }
       return Promise.reject(new Error(`fetch não stubado para ${url}`));
     });
@@ -253,6 +259,131 @@ describe('LoginPage', () => {
     await waitFor(() =>
       expect(fetchMock.mock.calls.filter(([u]) => u === '/api/auth/login')).toHaveLength(1),
     );
+  });
+
+  describe('segundo fator (MFA, Story 1.11)', () => {
+    it('mfaRequerido:true troca para a etapa de código sem chamar definirSessao', async () => {
+      const user = userEvent.setup();
+      loginResp = () =>
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ mfaRequerido: true, mfaToken: 'mfa-token-abc' }),
+        });
+      renderPage();
+
+      await preencherEEnviar(user);
+
+      expect(await screen.findByLabelText('Código de verificação')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Verificar' })).toBeInTheDocument();
+      expect(screen.queryByLabelText('E-mail')).not.toBeInTheDocument();
+      expect(definirSessaoMock).not.toHaveBeenCalled();
+      expect(navigateMock).not.toHaveBeenCalled();
+      expect(getAccessToken()).toBeNull();
+    });
+
+    it('código válido conclui o login (definirSessao + navigate)', async () => {
+      const user = userEvent.setup();
+      loginResp = () =>
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ mfaRequerido: true, mfaToken: 'mfa-token-abc' }),
+        });
+      renderPage();
+      await preencherEEnviar(user);
+      await screen.findByLabelText('Código de verificação');
+
+      const usuario = { id: '1', nome: 'Fulano', email: 'fulano@empresa.com', papel: 'gestor' };
+      mfaVerificarResp = () =>
+        Promise.resolve({ ok: true, json: async () => ({ token: 'access-token-mfa', usuario }) });
+
+      await user.type(screen.getByLabelText('Código de verificação'), '123456');
+      await user.click(screen.getByRole('button', { name: 'Verificar' }));
+
+      await waitFor(() =>
+        expect(fetchMock.mock.calls.some(([u]) => u === '/api/auth/mfa/verificar')).toBe(true),
+      );
+      const verificarCall = fetchMock.mock.calls.find(([u]) => u === '/api/auth/mfa/verificar');
+      expect(JSON.parse(verificarCall?.[1]?.body as string)).toEqual({
+        mfaToken: 'mfa-token-abc',
+        codigo: '123456',
+      });
+
+      await waitFor(() =>
+        expect(definirSessaoMock).toHaveBeenCalledWith(usuario, 'access-token-mfa'),
+      );
+      await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/'));
+    });
+
+    it('código inválido mostra erro e mantém a etapa de código', async () => {
+      const user = userEvent.setup();
+      loginResp = () =>
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ mfaRequerido: true, mfaToken: 'mfa-token-abc' }),
+        });
+      renderPage();
+      await preencherEEnviar(user);
+      await screen.findByLabelText('Código de verificação');
+
+      mfaVerificarResp = () =>
+        Promise.resolve({
+          ok: false,
+          json: async () => ({ error: { code: 'MFA_CODIGO_INVALIDO', message: 'x' } }),
+        });
+
+      await user.type(screen.getByLabelText('Código de verificação'), '000000');
+      await user.click(screen.getByRole('button', { name: 'Verificar' }));
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('Código de autenticação inválido.');
+      expect(screen.getByLabelText('Código de verificação')).toBeInTheDocument();
+      expect(definirSessaoMock).not.toHaveBeenCalled();
+      expect(navigateMock).not.toHaveBeenCalled();
+    });
+
+    it('token expirado/inválido volta para a etapa de senha', async () => {
+      const user = userEvent.setup();
+      loginResp = () =>
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ mfaRequerido: true, mfaToken: 'mfa-token-abc' }),
+        });
+      renderPage();
+      await preencherEEnviar(user);
+      await screen.findByLabelText('Código de verificação');
+
+      mfaVerificarResp = () =>
+        Promise.resolve({
+          ok: false,
+          json: async () => ({ error: { code: 'MFA_TOKEN_INVALIDO', message: 'x' } }),
+        });
+
+      await user.type(screen.getByLabelText('Código de verificação'), '123456');
+      await user.click(screen.getByRole('button', { name: 'Verificar' }));
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'Código de login expirado. Faça login novamente.',
+      );
+      expect(screen.getByLabelText('E-mail')).toBeInTheDocument();
+      expect(screen.queryByLabelText('Código de verificação')).not.toBeInTheDocument();
+      expect(definirSessaoMock).not.toHaveBeenCalled();
+    });
+
+    it('"Voltar" retorna à etapa de senha sem chamar a API', async () => {
+      const user = userEvent.setup();
+      loginResp = () =>
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ mfaRequerido: true, mfaToken: 'mfa-token-abc' }),
+        });
+      renderPage();
+      await preencherEEnviar(user);
+      await screen.findByLabelText('Código de verificação');
+
+      await user.click(screen.getByRole('button', { name: 'Voltar' }));
+
+      expect(screen.getByLabelText('E-mail')).toBeInTheDocument();
+      expect(fetchMock.mock.calls.some(([u]) => u === '/api/auth/mfa/verificar')).toBe(false);
+    });
   });
 
   describe('botão "Entrar com Ferreira Costa" (SSO, Story 1.9)', () => {

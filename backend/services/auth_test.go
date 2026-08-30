@@ -601,7 +601,7 @@ func TestEmitirSessao_EmiteAccessTokenEPersisteRefresh(t *testing.T) {
 	db := testDB(t)
 	usuarioID := criarUsuarioParaLogin(t, db, "sessao@empresa.com", "senha-123456", true, true)
 
-	accessToken, refreshToken, expiraRefresh, err := EmitirSessao(db, testJWTSecret, usuarioID)
+	accessToken, refreshToken, expiraRefresh, err := EmitirSessao(db, testJWTSecret, usuarioID, "senha")
 	if err != nil {
 		t.Fatalf("EmitirSessao retornou erro inesperado: %v", err)
 	}
@@ -652,7 +652,7 @@ func TestEmitirSessao_EmiteAccessTokenEPersisteRefresh(t *testing.T) {
 func TestRenovarSessao_Sucesso(t *testing.T) {
 	db := testDB(t)
 	usuarioID := criarUsuarioParaLogin(t, db, "renovar-ok@empresa.com", "senha-123456", true, true)
-	_, refreshToken, _, err := EmitirSessao(db, testJWTSecret, usuarioID)
+	_, refreshToken, _, err := EmitirSessao(db, testJWTSecret, usuarioID, "senha")
 	if err != nil {
 		t.Fatalf("EmitirSessao falhou: %v", err)
 	}
@@ -726,7 +726,7 @@ func TestRenovarSessao_TokenInexistenteOuVazio(t *testing.T) {
 func TestRenovarSessao_TokenExpirado(t *testing.T) {
 	db := testDB(t)
 	usuarioID := criarUsuarioParaLogin(t, db, "renovar-expirado@empresa.com", "senha-123456", true, true)
-	_, refreshToken, _, err := EmitirSessao(db, testJWTSecret, usuarioID)
+	_, refreshToken, _, err := EmitirSessao(db, testJWTSecret, usuarioID, "senha")
 	if err != nil {
 		t.Fatalf("EmitirSessao falhou: %v", err)
 	}
@@ -747,7 +747,7 @@ func TestRenovarSessao_TokenExpirado(t *testing.T) {
 func TestRenovarSessao_TokenJaRevogado(t *testing.T) {
 	db := testDB(t)
 	usuarioID := criarUsuarioParaLogin(t, db, "renovar-revogado@empresa.com", "senha-123456", true, true)
-	_, refreshToken, _, err := EmitirSessao(db, testJWTSecret, usuarioID)
+	_, refreshToken, _, err := EmitirSessao(db, testJWTSecret, usuarioID, "senha")
 	if err != nil {
 		t.Fatalf("EmitirSessao falhou: %v", err)
 	}
@@ -769,7 +769,7 @@ func TestRenovarSessao_TokenJaRevogado(t *testing.T) {
 func TestRenovarSessao_Concorrente(t *testing.T) {
 	db := testDB(t)
 	usuarioID := criarUsuarioParaLogin(t, db, "renovar-concorrente@empresa.com", "senha-123456", true, true)
-	_, refreshToken, _, err := EmitirSessao(db, testJWTSecret, usuarioID)
+	_, refreshToken, _, err := EmitirSessao(db, testJWTSecret, usuarioID, "senha")
 	if err != nil {
 		t.Fatalf("EmitirSessao falhou: %v", err)
 	}
@@ -1134,12 +1134,12 @@ func TestRedefinirSenha_Sucesso(t *testing.T) {
 	usuarioID, token := prepararRedefinicao(t, db, "redefine-ok@empresa.com")
 
 	// Sessão da própria conta (deve ser revogada) e de outra conta (intacta).
-	_, _, _, err := EmitirSessao(db, testJWTSecret, usuarioID)
+	_, _, _, err := EmitirSessao(db, testJWTSecret, usuarioID, "senha")
 	if err != nil {
 		t.Fatalf("EmitirSessao falhou: %v", err)
 	}
 	outroID := criarUsuarioParaLogin(t, db, "outra-conta@empresa.com", "senha-123456", true, true)
-	_, outroRefresh, _, err := EmitirSessao(db, testJWTSecret, outroID)
+	_, outroRefresh, _, err := EmitirSessao(db, testJWTSecret, outroID, "senha")
 	if err != nil {
 		t.Fatalf("EmitirSessao (outra conta) falhou: %v", err)
 	}
@@ -1689,5 +1689,415 @@ func TestLogin_FalhasConcorrentes(t *testing.T) {
 	}
 	if !bloqueadoAte.Valid || !bloqueadoAte.Time.After(time.Now()) {
 		t.Errorf("bloqueado_ate = %v, want um instante no futuro — a conta deveria ter travado", bloqueadoAte)
+	}
+}
+
+// ===== Story 1.11: MFA obrigatório para papéis administrativos =====
+
+// criarUsuarioComMFA insere uma conta ativa/verificada com um segredo TOTP
+// real já configurado (`mfa_habilitado=true`) — molde de criarUsuarioParaLogin
+// com o segredo devolvido para o chamador computar códigos válidos via
+// gerarCodigoHOTP.
+func criarUsuarioComMFA(t *testing.T, db *sql.DB, email, senha string) (usuarioID, segredo string) {
+	t.Helper()
+	usuarioID = criarUsuarioParaLogin(t, db, email, senha, true, true)
+	segredo, err := GerarSegredoTOTP()
+	if err != nil {
+		t.Fatalf("GerarSegredoTOTP: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE usuarios SET mfa_habilitado = true, mfa_secret = $1 WHERE id = $2`, segredo, usuarioID); err != nil {
+		t.Fatalf("falha ao habilitar MFA de teste: %v", err)
+	}
+	return usuarioID, segredo
+}
+
+// codigoTOTPValidoAgora gera um código TOTP correto para `segredo` no
+// instante atual, usando o mesmo gerarCodigoHOTP não-exportado de totp.go —
+// possível aqui porque este arquivo é do mesmo pacote `services`.
+func codigoTOTPValidoAgora(t *testing.T, segredo string) string {
+	t.Helper()
+	contador := uint64(time.Now().UTC().Unix()) / 30
+	codigo, err := gerarCodigoHOTP(segredo, contador)
+	if err != nil {
+		t.Fatalf("gerarCodigoHOTP: %v", err)
+	}
+	return codigo
+}
+
+// TestIniciarLoginMFA_GeraTokenTipoMfaLogin prova que IniciarLoginMFA grava
+// um token opaco em tokens_acao com tipo='mfa_login' e expira_em ~5min à
+// frente — o mesmo molde de token de uso único já usado por verificação de
+// e-mail/redefinição de senha.
+func TestIniciarLoginMFA_GeraTokenTipoMfaLogin(t *testing.T) {
+	db := testDB(t)
+	usuarioID, _ := criarUsuarioComMFA(t, db, "mfa-iniciar@empresa.com", "senha-123456")
+
+	token, err := IniciarLoginMFA(db, usuarioID)
+	if err != nil {
+		t.Fatalf("IniciarLoginMFA retornou erro inesperado: %v", err)
+	}
+	if token == "" {
+		t.Fatal("token vazio")
+	}
+
+	var tipo string
+	var expiraEm time.Time
+	var usadoEm sql.NullTime
+	if err := db.QueryRow(`SELECT tipo, expira_em, usado_em FROM tokens_acao WHERE token = $1`, token).
+		Scan(&tipo, &expiraEm, &usadoEm); err != nil {
+		t.Fatalf("falha ao ler token persistido: %v", err)
+	}
+	if tipo != "mfa_login" {
+		t.Errorf("tipo = %q, want %q", tipo, "mfa_login")
+	}
+	if usadoEm.Valid {
+		t.Error("usado_em já preenchido em token recém-emitido")
+	}
+	wantExpira := time.Now().UTC().Add(mfaLoginTokenExpiracao)
+	if diff := wantExpira.Sub(expiraEm); diff < -time.Minute || diff > time.Minute {
+		t.Errorf("expira_em = %v, want ~5min a partir de agora (diff=%v)", expiraEm, diff)
+	}
+}
+
+// TestIniciarLoginMFA_InvalidaTokenAnterior prova o precedente já usado por
+// SolicitarRedefinicaoSenha (Story 1.6): um novo login por MFA da mesma conta
+// invalida (usado_em) qualquer token de mfa_login anterior ainda não
+// consumido — nunca mais de um token válido ao mesmo tempo para a mesma
+// conta.
+func TestIniciarLoginMFA_InvalidaTokenAnterior(t *testing.T) {
+	db := testDB(t)
+	usuarioID, _ := criarUsuarioComMFA(t, db, "mfa-iniciar-invalida-anterior@empresa.com", "senha-123456")
+
+	token1, err := IniciarLoginMFA(db, usuarioID)
+	if err != nil {
+		t.Fatalf("IniciarLoginMFA (1) falhou: %v", err)
+	}
+	token2, err := IniciarLoginMFA(db, usuarioID)
+	if err != nil {
+		t.Fatalf("IniciarLoginMFA (2) falhou: %v", err)
+	}
+	if token1 == token2 {
+		t.Fatal("tokens de logins consecutivos idênticos")
+	}
+
+	var usadoEm1 sql.NullTime
+	if err := db.QueryRow(`SELECT usado_em FROM tokens_acao WHERE token = $1`, token1).Scan(&usadoEm1); err != nil {
+		t.Fatalf("falha ao reler token1: %v", err)
+	}
+	if !usadoEm1.Valid {
+		t.Error("token1 (anterior) não foi invalidado pelo novo login por MFA")
+	}
+
+	var usadoEm2 sql.NullTime
+	if err := db.QueryRow(`SELECT usado_em FROM tokens_acao WHERE token = $1`, token2).Scan(&usadoEm2); err != nil {
+		t.Fatalf("falha ao reler token2: %v", err)
+	}
+	if usadoEm2.Valid {
+		t.Error("token2 (o mais recente) não deveria estar invalidado")
+	}
+}
+
+// TestConcluirLoginMFA_CodigoCorreto prova o caminho feliz: um código TOTP
+// válido troca o token de mfa_login por um usuarioID, marcando o token usado.
+func TestConcluirLoginMFA_CodigoCorreto(t *testing.T) {
+	db := testDB(t)
+	usuarioID, segredo := criarUsuarioComMFA(t, db, "mfa-concluir-ok@empresa.com", "senha-123456")
+	token, err := IniciarLoginMFA(db, usuarioID)
+	if err != nil {
+		t.Fatalf("IniciarLoginMFA falhou: %v", err)
+	}
+
+	got, err := ConcluirLoginMFA(db, token, codigoTOTPValidoAgora(t, segredo))
+	if err != nil {
+		t.Fatalf("ConcluirLoginMFA retornou erro inesperado: %v", err)
+	}
+	if got != usuarioID {
+		t.Errorf("usuarioID = %q, want %q", got, usuarioID)
+	}
+
+	var usadoEm sql.NullTime
+	if err := db.QueryRow(`SELECT usado_em FROM tokens_acao WHERE token = $1`, token).Scan(&usadoEm); err != nil {
+		t.Fatalf("falha ao reler token: %v", err)
+	}
+	if !usadoEm.Valid {
+		t.Error("usado_em não preenchido após ConcluirLoginMFA bem-sucedido")
+	}
+}
+
+// TestConcluirLoginMFA_CodigoErradoNaoConsomeToken prova a I/O Matrix: um
+// código incorreto devolve ErrMFACodigoInvalido e NÃO consome o token — nova
+// tentativa continua possível até expirar ou a conta bloquear.
+func TestConcluirLoginMFA_CodigoErradoNaoConsomeToken(t *testing.T) {
+	db := testDB(t)
+	usuarioID, _ := criarUsuarioComMFA(t, db, "mfa-codigo-errado@empresa.com", "senha-123456")
+	token, err := IniciarLoginMFA(db, usuarioID)
+	if err != nil {
+		t.Fatalf("IniciarLoginMFA falhou: %v", err)
+	}
+
+	_, err = ConcluirLoginMFA(db, token, "000000")
+	if !errors.Is(err, ErrMFACodigoInvalido) {
+		t.Fatalf("erro = %v, want ErrMFACodigoInvalido", err)
+	}
+
+	var usadoEm sql.NullTime
+	if err := db.QueryRow(`SELECT usado_em FROM tokens_acao WHERE token = $1`, token).Scan(&usadoEm); err != nil {
+		t.Fatalf("falha ao reler token: %v", err)
+	}
+	if usadoEm.Valid {
+		t.Error("usado_em preenchido após código errado — o token não deveria ter sido consumido")
+	}
+
+	tentativas, _ := lerBloqueioLogin(t, db, usuarioID)
+	if tentativas != 1 {
+		t.Errorf("tentativas_login_falhas = %d, want 1 — código errado deve contar como tentativa de força bruta", tentativas)
+	}
+}
+
+// TestConcluirLoginMFA_QuintaFalhaBloqueiaConta prova que 5 códigos errados
+// seguidos bloqueiam a conta por duracaoBloqueioLogin — o MESMO contador da
+// Story 1.10, compartilhado com senha.
+func TestConcluirLoginMFA_QuintaFalhaBloqueiaConta(t *testing.T) {
+	db := testDB(t)
+	usuarioID, segredo := criarUsuarioComMFA(t, db, "mfa-quinta-falha@empresa.com", "senha-123456")
+
+	for i := 0; i < maxTentativasLogin; i++ {
+		token, err := IniciarLoginMFA(db, usuarioID)
+		if err != nil {
+			t.Fatalf("IniciarLoginMFA (tentativa %d) falhou: %v", i+1, err)
+		}
+		_, err = ConcluirLoginMFA(db, token, "000000")
+		if i < maxTentativasLogin-1 {
+			if !errors.Is(err, ErrMFACodigoInvalido) {
+				t.Fatalf("tentativa %d: erro = %v, want ErrMFACodigoInvalido", i+1, err)
+			}
+		} else if !errors.Is(err, ErrMFACodigoInvalido) {
+			t.Fatalf("última tentativa: erro = %v, want ErrMFACodigoInvalido", err)
+		}
+	}
+
+	_, bloqueadoAte := lerBloqueioLogin(t, db, usuarioID)
+	if !bloqueadoAte.Valid || !bloqueadoAte.Time.After(time.Now()) {
+		t.Fatalf("bloqueado_ate = %v, want um instante no futuro após %d falhas", bloqueadoAte, maxTentativasLogin)
+	}
+
+	// Mesmo com o código CERTO, a conta bloqueada recusa a tentativa.
+	token, err := IniciarLoginMFA(db, usuarioID)
+	if err != nil {
+		t.Fatalf("IniciarLoginMFA (pós-bloqueio) falhou: %v", err)
+	}
+	if _, err := ConcluirLoginMFA(db, token, codigoTOTPValidoAgora(t, segredo)); !errors.Is(err, ErrContaBloqueada) {
+		t.Fatalf("erro = %v, want ErrContaBloqueada mesmo com código correto", err)
+	}
+}
+
+// TestConcluirLoginMFA_TokenExpirado prova que um token de mfa_login com
+// expira_em no passado é recusado com ErrTokenExpirado, mesmo com o código
+// certo.
+func TestConcluirLoginMFA_TokenExpirado(t *testing.T) {
+	db := testDB(t)
+	usuarioID, segredo := criarUsuarioComMFA(t, db, "mfa-token-expirado@empresa.com", "senha-123456")
+	token, err := IniciarLoginMFA(db, usuarioID)
+	if err != nil {
+		t.Fatalf("IniciarLoginMFA falhou: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE tokens_acao SET expira_em = now() - interval '1 hour' WHERE token = $1`, token); err != nil {
+		t.Fatalf("falha ao forçar expiração: %v", err)
+	}
+
+	if _, err := ConcluirLoginMFA(db, token, codigoTOTPValidoAgora(t, segredo)); !errors.Is(err, ErrTokenExpirado) {
+		t.Fatalf("erro = %v, want ErrTokenExpirado", err)
+	}
+}
+
+// TestConcluirLoginMFA_TokenReusado prova que um token já usado (login por
+// MFA já concluído) não pode ser reaproveitado.
+func TestConcluirLoginMFA_TokenReusado(t *testing.T) {
+	db := testDB(t)
+	usuarioID, segredo := criarUsuarioComMFA(t, db, "mfa-token-reusado@empresa.com", "senha-123456")
+	token, err := IniciarLoginMFA(db, usuarioID)
+	if err != nil {
+		t.Fatalf("IniciarLoginMFA falhou: %v", err)
+	}
+	if _, err := ConcluirLoginMFA(db, token, codigoTOTPValidoAgora(t, segredo)); err != nil {
+		t.Fatalf("primeira conclusão falhou: %v", err)
+	}
+
+	if _, err := ConcluirLoginMFA(db, token, codigoTOTPValidoAgora(t, segredo)); !errors.Is(err, ErrTokenExpirado) {
+		t.Fatalf("segunda conclusão: erro = %v, want ErrTokenExpirado", err)
+	}
+}
+
+// TestConcluirLoginMFA_CodigoReusadoNaoAceitoEmNovoToken prova a defesa
+// contra reuso de código dentro da mesma janela de validade (~30s): o MESMO
+// código TOTP, correto, não pode autenticar duas vezes — mesmo trocado de
+// token de mfa_login (um código interceptado por quem já conhece a senha não
+// pode ser reaproveitado para logar de novo).
+func TestConcluirLoginMFA_CodigoReusadoNaoAceitoEmNovoToken(t *testing.T) {
+	db := testDB(t)
+	usuarioID, segredo := criarUsuarioComMFA(t, db, "mfa-codigo-reusado@empresa.com", "senha-123456")
+
+	token1, err := IniciarLoginMFA(db, usuarioID)
+	if err != nil {
+		t.Fatalf("IniciarLoginMFA (1) falhou: %v", err)
+	}
+	codigo := codigoTOTPValidoAgora(t, segredo)
+	if _, err := ConcluirLoginMFA(db, token1, codigo); err != nil {
+		t.Fatalf("primeira conclusão falhou: %v", err)
+	}
+
+	token2, err := IniciarLoginMFA(db, usuarioID)
+	if err != nil {
+		t.Fatalf("IniciarLoginMFA (2) falhou: %v", err)
+	}
+	if _, err := ConcluirLoginMFA(db, token2, codigo); !errors.Is(err, ErrMFACodigoInvalido) {
+		t.Fatalf("erro = %v, want ErrMFACodigoInvalido (reuso do mesmo código nesta janela)", err)
+	}
+}
+
+// TestConcluirLoginMFA_TokenInexistente prova que um token que nunca existiu
+// devolve ErrTokenNaoEncontrado.
+func TestConcluirLoginMFA_TokenInexistente(t *testing.T) {
+	db := testDB(t)
+	if _, err := ConcluirLoginMFA(db, "token-nunca-existiu", "123456"); !errors.Is(err, ErrTokenNaoEncontrado) {
+		t.Fatalf("erro = %v, want ErrTokenNaoEncontrado", err)
+	}
+}
+
+// TestConfirmarConfiguracaoMFA_Sucesso prova o caminho feliz do enrollment:
+// código correto grava mfa_secret/mfa_habilitado=true.
+func TestConfirmarConfiguracaoMFA_Sucesso(t *testing.T) {
+	db := testDB(t)
+	usuarioID := criarUsuarioParaLogin(t, db, "mfa-confirmar-ok@empresa.com", "senha-123456", true, true)
+	segredo, err := GerarSegredoTOTP()
+	if err != nil {
+		t.Fatalf("GerarSegredoTOTP: %v", err)
+	}
+
+	if err := ConfirmarConfiguracaoMFA(db, usuarioID, "senha-123456", segredo, codigoTOTPValidoAgora(t, segredo)); err != nil {
+		t.Fatalf("ConfirmarConfiguracaoMFA retornou erro inesperado: %v", err)
+	}
+
+	var mfaHabilitado bool
+	var mfaSecret sql.NullString
+	if err := db.QueryRow(`SELECT mfa_habilitado, mfa_secret FROM usuarios WHERE id = $1`, usuarioID).Scan(&mfaHabilitado, &mfaSecret); err != nil {
+		t.Fatalf("falha ao reler usuario: %v", err)
+	}
+	if !mfaHabilitado {
+		t.Error("mfa_habilitado = false, want true")
+	}
+	if !mfaSecret.Valid || mfaSecret.String != segredo {
+		t.Errorf("mfa_secret = %+v, want %q", mfaSecret, segredo)
+	}
+}
+
+// TestConfirmarConfiguracaoMFA_CodigoErrado prova que um código incorreto não
+// grava nenhuma coluna.
+func TestConfirmarConfiguracaoMFA_CodigoErrado(t *testing.T) {
+	db := testDB(t)
+	usuarioID := criarUsuarioParaLogin(t, db, "mfa-confirmar-errado@empresa.com", "senha-123456", true, true)
+	segredo, err := GerarSegredoTOTP()
+	if err != nil {
+		t.Fatalf("GerarSegredoTOTP: %v", err)
+	}
+
+	if err := ConfirmarConfiguracaoMFA(db, usuarioID, "senha-123456", segredo, "000000"); !errors.Is(err, ErrMFACodigoInvalido) {
+		t.Fatalf("erro = %v, want ErrMFACodigoInvalido", err)
+	}
+
+	var mfaHabilitado bool
+	if err := db.QueryRow(`SELECT mfa_habilitado FROM usuarios WHERE id = $1`, usuarioID).Scan(&mfaHabilitado); err != nil {
+		t.Fatalf("falha ao reler usuario: %v", err)
+	}
+	if mfaHabilitado {
+		t.Error("mfa_habilitado = true após código errado, want false")
+	}
+}
+
+// TestConfirmarConfiguracaoMFA_SenhaErrada prova a defesa contra sequestro de
+// conta (Story 1.11): a senha atual errada devolve ErrCredenciaisInvalidas —
+// mesmo erro/vocabulário de Login — e NENHUMA coluna é gravada, mesmo com o
+// código TOTP correto.
+func TestConfirmarConfiguracaoMFA_SenhaErrada(t *testing.T) {
+	db := testDB(t)
+	usuarioID := criarUsuarioParaLogin(t, db, "mfa-confirmar-senha-errada@empresa.com", "senha-123456", true, true)
+	segredo, err := GerarSegredoTOTP()
+	if err != nil {
+		t.Fatalf("GerarSegredoTOTP: %v", err)
+	}
+
+	if err := ConfirmarConfiguracaoMFA(db, usuarioID, "senha-totalmente-errada", segredo, codigoTOTPValidoAgora(t, segredo)); !errors.Is(err, ErrCredenciaisInvalidas) {
+		t.Fatalf("erro = %v, want ErrCredenciaisInvalidas", err)
+	}
+
+	var mfaHabilitado bool
+	var mfaSecret sql.NullString
+	if err := db.QueryRow(`SELECT mfa_habilitado, mfa_secret FROM usuarios WHERE id = $1`, usuarioID).Scan(&mfaHabilitado, &mfaSecret); err != nil {
+		t.Fatalf("falha ao reler usuario: %v", err)
+	}
+	if mfaHabilitado || mfaSecret.Valid {
+		t.Error("MFA habilitado/segredo gravado apesar da senha atual incorreta")
+	}
+}
+
+// TestConfirmarConfiguracaoMFA_JaConfigurado prova o guard de corrida: uma
+// conta que já tem mfa_habilitado=true recusa uma nova confirmação.
+func TestConfirmarConfiguracaoMFA_JaConfigurado(t *testing.T) {
+	db := testDB(t)
+	usuarioID, segredoAntigo := criarUsuarioComMFA(t, db, "mfa-ja-configurado@empresa.com", "senha-123456")
+
+	novoSegredo, err := GerarSegredoTOTP()
+	if err != nil {
+		t.Fatalf("GerarSegredoTOTP: %v", err)
+	}
+	if err := ConfirmarConfiguracaoMFA(db, usuarioID, "senha-123456", novoSegredo, codigoTOTPValidoAgora(t, novoSegredo)); !errors.Is(err, ErrMFAJaConfigurado) {
+		t.Fatalf("erro = %v, want ErrMFAJaConfigurado", err)
+	}
+
+	var mfaSecret sql.NullString
+	if err := db.QueryRow(`SELECT mfa_secret FROM usuarios WHERE id = $1`, usuarioID).Scan(&mfaSecret); err != nil {
+		t.Fatalf("falha ao reler usuario: %v", err)
+	}
+	if !mfaSecret.Valid || mfaSecret.String != segredoAntigo {
+		t.Error("mfa_secret foi sobrescrito por uma tentativa de reconfiguração — deveria permanecer intacto")
+	}
+}
+
+// TestRenovarSessao_PreservaOrigem prova que RenovarSessao propaga a mesma
+// `origem` da sessão que está rotacionando — tanto para o claim do novo
+// access token quanto para a nova linha em `sessoes` (Story 1.11): uma
+// sessão SSO nunca vira "senha" (nem vice-versa) por refresh.
+func TestRenovarSessao_PreservaOrigem(t *testing.T) {
+	db := testDB(t)
+	for _, origem := range []string{"senha", "sso"} {
+		t.Run(origem, func(t *testing.T) {
+			usuarioID := criarUsuarioParaLogin(t, db, "renovar-origem-"+origem+"@empresa.com", "senha-123456", true, true)
+			_, refreshToken, _, err := EmitirSessao(db, testJWTSecret, usuarioID, origem)
+			if err != nil {
+				t.Fatalf("EmitirSessao falhou: %v", err)
+			}
+
+			novoAccess, novoRefresh, _, err := RenovarSessao(db, testJWTSecret, refreshToken)
+			if err != nil {
+				t.Fatalf("RenovarSessao falhou: %v", err)
+			}
+
+			var origemPersistida string
+			if err := db.QueryRow(`SELECT origem FROM sessoes WHERE refresh_token = $1`, novoRefresh).Scan(&origemPersistida); err != nil {
+				t.Fatalf("falha ao ler origem da nova sessão: %v", err)
+			}
+			if origemPersistida != origem {
+				t.Errorf("sessoes.origem = %q, want %q", origemPersistida, origem)
+			}
+
+			claims := &AcessoClaims{}
+			parsed, err := jwt.ParseWithClaims(novoAccess, claims, func(*jwt.Token) (any, error) { return testJWTSecret, nil })
+			if err != nil || !parsed.Valid {
+				t.Fatalf("novo access token inválido: %v", err)
+			}
+			if claims.Origem != origem {
+				t.Errorf("claim origem = %q, want %q", claims.Origem, origem)
+			}
+		})
 	}
 }

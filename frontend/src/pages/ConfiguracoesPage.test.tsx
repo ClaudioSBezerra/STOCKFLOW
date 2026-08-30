@@ -8,13 +8,25 @@ const authState = vi.hoisted(() => ({
   papel: 'usuario' as string,
   nome: 'Ana Usuária',
   email: 'ana@empresa.com',
+  mfaHabilitado: false,
+  origem: 'senha' as string,
 }));
+
+const atualizarUsuarioMock = vi.hoisted(() => vi.fn());
 
 vi.mock('@/lib/auth', () => ({
   useAuth: () => ({
     estado: 'autenticado',
-    usuario: { id: '1', nome: authState.nome, email: authState.email, papel: authState.papel },
+    usuario: {
+      id: '1',
+      nome: authState.nome,
+      email: authState.email,
+      papel: authState.papel,
+      mfaHabilitado: authState.mfaHabilitado,
+      origem: authState.origem,
+    },
     definirSessao: vi.fn(),
+    atualizarUsuario: atualizarUsuarioMock,
     logout: vi.fn(),
   }),
 }));
@@ -35,6 +47,9 @@ beforeEach(() => {
   authState.papel = 'usuario';
   authState.nome = 'Ana Usuária';
   authState.email = 'ana@empresa.com';
+  authState.mfaHabilitado = false;
+  authState.origem = 'senha';
+  atualizarUsuarioMock.mockReset();
 });
 
 afterEach(() => {
@@ -416,5 +431,152 @@ describe('ConfiguracoesPage — Decidir promoções', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Não foi possível concluir a decisão.');
     await waitFor(() => expect(screen.queryByText('Bruno')).not.toBeInTheDocument());
     expect(pendentesChamadas).toBe(2);
+  });
+});
+
+describe('ConfiguracoesPage — Segurança (MFA, Story 1.11)', () => {
+  function stubFetchBase(extra: FetchImpl) {
+    return stubFetch((url, init) => {
+      if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
+      if (url === '/api/promocoes' && (!init || init.method === undefined)) return jsonOk({ solicitacoes: [] });
+      if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+      return extra(url, init);
+    });
+  }
+
+  it('gestor sem MFA (origem=senha): mensagem "obrigatório para o seu papel"', async () => {
+    authState.papel = 'gestor';
+    authState.origem = 'senha';
+    authState.mfaHabilitado = false;
+    stubFetchBase(() => {
+      throw new Error('URL inesperada');
+    });
+
+    render(<ConfiguracoesPage />);
+
+    expect(await screen.findByRole('heading', { name: 'Segurança' })).toBeInTheDocument();
+    expect(
+      screen.getByText('Obrigatório para o seu papel. Configure para continuar acessando ações restritas.'),
+    ).toBeInTheDocument();
+  });
+
+  it('usuario sem MFA: mensagem "opcional"', async () => {
+    authState.papel = 'usuario';
+    authState.mfaHabilitado = false;
+    stubFetchBase(() => {
+      throw new Error('URL inesperada');
+    });
+
+    render(<ConfiguracoesPage />);
+
+    expect(await screen.findByText('Opcional para o seu papel.')).toBeInTheDocument();
+  });
+
+  it('gestor via SSO sem MFA: mensagem "opcional", nunca "obrigatório"', async () => {
+    authState.papel = 'gestor';
+    authState.origem = 'sso';
+    authState.mfaHabilitado = false;
+    stubFetchBase(() => {
+      throw new Error('URL inesperada');
+    });
+
+    render(<ConfiguracoesPage />);
+
+    expect(await screen.findByText('Opcional para o seu papel.')).toBeInTheDocument();
+    expect(
+      screen.queryByText('Obrigatório para o seu papel. Configure para continuar acessando ações restritas.'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('MFA já habilitado: mensagem "ativa", sem botão de configurar', async () => {
+    authState.mfaHabilitado = true;
+    stubFetchBase(() => {
+      throw new Error('URL inesperada');
+    });
+
+    render(<ConfiguracoesPage />);
+
+    expect(await screen.findByText('Autenticação em duas etapas ativa.')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Configurar autenticação em duas etapas' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('fluxo de confirmação feliz: iniciar -> QR + segredo -> confirmar com sucesso', async () => {
+    authState.mfaHabilitado = false;
+    const fetchMock = stubFetchBase((url, init) => {
+      if (url === '/api/auth/mfa/iniciar' && init?.method === 'POST') {
+        return jsonOk({ segredo: 'JBSWY3DPEHPK3PXP', otpauthUrl: 'otpauth://totp/StockFlow:ana@empresa.com?secret=JBSWY3DPEHPK3PXP' });
+      }
+      if (url === '/api/auth/mfa/confirmar' && init?.method === 'POST') {
+        return jsonOk({});
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    const user = userEvent.setup();
+    render(<ConfiguracoesPage />);
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Configurar autenticação em duas etapas' }),
+    );
+
+    expect(await screen.findByText('JBSWY3DPEHPK3PXP')).toBeInTheDocument();
+    const inputCodigo = screen.getByLabelText('Código de verificação');
+    await user.type(inputCodigo, '123456');
+    await user.click(screen.getByRole('button', { name: 'Confirmar' }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/auth/mfa/confirmar',
+        expect.objectContaining({ method: 'POST' }),
+      ),
+    );
+    const confirmarCall = fetchMock.mock.calls.find(([u]) => u === '/api/auth/mfa/confirmar');
+    const confirmarInit = confirmarCall?.[1] as RequestInit | undefined;
+    expect(JSON.parse(confirmarInit?.body as string)).toEqual({
+      segredo: 'JBSWY3DPEHPK3PXP',
+      codigo: '123456',
+    });
+
+    await waitFor(() =>
+      expect(atualizarUsuarioMock).toHaveBeenCalledWith(
+        expect.objectContaining({ mfaHabilitado: true }),
+      ),
+    );
+  });
+
+  it('código de confirmação errado: mostra erro inline e mantém o QR para nova tentativa', async () => {
+    authState.mfaHabilitado = false;
+    stubFetchBase((url, init) => {
+      if (url === '/api/auth/mfa/iniciar' && init?.method === 'POST') {
+        return jsonOk({ segredo: 'JBSWY3DPEHPK3PXP', otpauthUrl: 'otpauth://totp/StockFlow:ana@empresa.com?secret=JBSWY3DPEHPK3PXP' });
+      }
+      if (url === '/api/auth/mfa/confirmar' && init?.method === 'POST') {
+        return Promise.resolve({
+          ok: false,
+          json: async () => ({ error: { code: 'MFA_CODIGO_INVALIDO' } }),
+        });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    const user = userEvent.setup();
+    render(<ConfiguracoesPage />);
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Configurar autenticação em duas etapas' }),
+    );
+    await screen.findByText('JBSWY3DPEHPK3PXP');
+
+    await user.type(screen.getByLabelText('Código de verificação'), '000000');
+    await user.click(screen.getByRole('button', { name: 'Confirmar' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Código de autenticação inválido. Confira o código no seu aplicativo e tente novamente.',
+    );
+    // O QR/segredo continua visível para nova tentativa — nada foi gravado.
+    expect(screen.getByText('JBSWY3DPEHPK3PXP')).toBeInTheDocument();
+    expect(atualizarUsuarioMock).not.toHaveBeenCalled();
   });
 });

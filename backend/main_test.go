@@ -1,8 +1,13 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha1" //nolint:gosec // HMAC-SHA1 é o algoritmo do TOTP (RFC 6238/4226), não hashing de segredo.
 	"database/sql"
+	"encoding/base32"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +22,114 @@ import (
 	"stockflow/backend/iam"
 	"stockflow/backend/services"
 )
+
+// totpCodigoTesteAtual gera um código TOTP válido para `segredo` no instante
+// atual — mesmo algoritmo HOTP/RFC 6238 de services.ValidarCodigoTOTP,
+// reimplementado aqui porque package main não acessa o gerador não-exportado
+// de services (mesmo padrão de duplicação de middleware/auth_test.go, que
+// assina seus próprios JWTs de teste em vez de chamar a função não-exportada
+// equivalente de services).
+func totpCodigoTesteAtual(t *testing.T, segredo string) string {
+	t.Helper()
+	chave, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(segredo)
+	if err != nil {
+		t.Fatalf("segredo TOTP de teste inválido: %v", err)
+	}
+	contador := uint64(time.Now().UTC().Unix()) / 30
+	var contadorBytes [8]byte
+	binary.BigEndian.PutUint64(contadorBytes[:], contador)
+	mac := hmac.New(sha1.New, chave)
+	mac.Write(contadorBytes[:])
+	soma := mac.Sum(nil)
+	offset := soma[len(soma)-1] & 0x0f
+	truncado := (uint32(soma[offset])&0x7f)<<24 |
+		uint32(soma[offset+1])<<16 |
+		uint32(soma[offset+2])<<8 |
+		uint32(soma[offset+3])
+	return fmt.Sprintf("%06d", truncado%1000000)
+}
+
+// seedContaMux insere uma conta ativa/verificada com papel e senha
+// controlados, para os testes de composição de newMux abaixo (Story 1.5/1.7/
+// 1.8). Story 1.11: papel gestor+ nasce com `mfa_habilitado=true` e um
+// segredo TOTP real, guardado em `segredos[email]` — necessário para
+// tokenDeMux conseguir completar o segundo fator (estes testes provam o gate
+// de PAPEL, não o de MFA, que tem cobertura dedicada em
+// middleware/roles_test.go; sem MFA configurado, o login de uma conta
+// gestor/adm nem chegaria à rota que estes testes querem exercitar).
+func seedContaMux(t *testing.T, db *sql.DB, email, papel, senha string, segredos map[string]string) {
+	t.Helper()
+	hash, err := bcrypt.GenerateFromPassword([]byte(senha), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	mfaHabilitado := services.RankPapel(papel) >= services.RankPapel(services.PapelGestor)
+	var mfaSecret sql.NullString
+	if mfaHabilitado {
+		segredo, err := services.GerarSegredoTOTP()
+		if err != nil {
+			t.Fatalf("GerarSegredoTOTP: %v", err)
+		}
+		segredos[email] = segredo
+		mfaSecret = sql.NullString{String: segredo, Valid: true}
+	}
+	if _, err := db.Exec(
+		`INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, mfa_habilitado, mfa_secret)
+		 VALUES ('Conta Teste', $1, $2, $3, true, true, $4, $5)`,
+		email, string(hash), papel, mfaHabilitado, mfaSecret,
+	); err != nil {
+		t.Fatalf("insert conta %q (%s): %v", email, papel, err)
+	}
+}
+
+// tokenDeMux faz login real (POST /api/auth/login) através de `mux` e, se a
+// conta exigir MFA (Story 1.11: resposta `mfaRequerido:true`), completa o
+// segundo fator via POST /api/auth/mfa/verificar usando o segredo gravado por
+// seedContaMux — sempre devolve um access token de sessão de verdade, o mesmo
+// caminho que o frontend percorre.
+func tokenDeMux(t *testing.T, mux *http.ServeMux, email, senha string, segredos map[string]string) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login",
+		strings.NewReader(`{"email":"`+email+`","senha":"`+senha+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("login %q: status = %d, want 200 (body=%s)", email, w.Code, w.Body.String())
+	}
+	var body struct {
+		Token        string `json:"token"`
+		MfaRequerido bool   `json:"mfaRequerido"`
+		MfaToken     string `json:"mfaToken"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("login %q: decode: %v", email, err)
+	}
+	if !body.MfaRequerido {
+		return body.Token
+	}
+
+	segredo, ok := segredos[email]
+	if !ok {
+		t.Fatalf("login %q: mfaRequerido=true sem segredo TOTP conhecido para essa conta", email)
+	}
+	codigo := totpCodigoTesteAtual(t, segredo)
+	req2 := httptest.NewRequest(http.MethodPost, "/api/auth/mfa/verificar",
+		strings.NewReader(`{"mfaToken":"`+body.MfaToken+`","codigo":"`+codigo+`"}`))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	mux.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("mfa/verificar %q: status = %d, want 200 (body=%s)", email, w2.Code, w2.Body.String())
+	}
+	var body2 struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(w2.Body.Bytes(), &body2); err != nil {
+		t.Fatalf("mfa/verificar %q: decode: %v", email, err)
+	}
+	return body2.Token
+}
 
 var (
 	migrateOnce sync.Once
@@ -417,37 +530,7 @@ func TestNewMux_UsuariosRotaCarregaRequireRole(t *testing.T) {
 	mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
 
 	const senha = "senha-123456"
-	seedConta := func(email, papel string) {
-		hash, err := bcrypt.GenerateFromPassword([]byte(senha), bcrypt.DefaultCost)
-		if err != nil {
-			t.Fatalf("hash: %v", err)
-		}
-		if _, err := db.Exec(
-			`INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
-			 VALUES ('Conta Teste', $1, $2, $3, true, true)`,
-			email, string(hash), papel,
-		); err != nil {
-			t.Fatalf("insert conta %q (%s): %v", email, papel, err)
-		}
-	}
-
-	tokenDe := func(email string) string {
-		req := httptest.NewRequest(http.MethodPost, "/api/auth/login",
-			strings.NewReader(`{"email":"`+email+`","senha":"`+senha+`"}`))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		mux.ServeHTTP(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("login %q: status = %d, want 200 (body=%s)", email, w.Code, w.Body.String())
-		}
-		var body struct {
-			Token string `json:"token"`
-		}
-		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-			t.Fatalf("login %q: decode: %v", email, err)
-		}
-		return body.Token
-	}
+	segredos := map[string]string{}
 
 	getUsuarios := func(token string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, "/api/usuarios", nil)
@@ -457,14 +540,14 @@ func TestNewMux_UsuariosRotaCarregaRequireRole(t *testing.T) {
 		return w
 	}
 
-	seedConta("mux-usuario@empresa.com", "usuario")
-	seedConta("mux-almox@empresa.com", "almoxarife")
-	seedConta("mux-gestor@empresa.com", "gestor")
-	seedConta("mux-adm@empresa.com", "adm")
+	seedContaMux(t, db, "mux-usuario@empresa.com", "usuario", senha, segredos)
+	seedContaMux(t, db, "mux-almox@empresa.com", "almoxarife", senha, segredos)
+	seedContaMux(t, db, "mux-gestor@empresa.com", "gestor", senha, segredos)
+	seedContaMux(t, db, "mux-adm@empresa.com", "adm", senha, segredos)
 
 	t.Run("papel insuficiente -> 403 FORBIDDEN", func(t *testing.T) {
 		for _, email := range []string{"mux-usuario@empresa.com", "mux-almox@empresa.com"} {
-			w := getUsuarios(tokenDe(email))
+			w := getUsuarios(tokenDeMux(t, mux, email, senha, segredos))
 			if w.Code != http.StatusForbidden {
 				t.Fatalf("%s: status = %d, want %d (body=%s)", email, w.Code, http.StatusForbidden, w.Body.String())
 			}
@@ -484,7 +567,7 @@ func TestNewMux_UsuariosRotaCarregaRequireRole(t *testing.T) {
 
 	t.Run("papel suficiente -> 200", func(t *testing.T) {
 		for _, email := range []string{"mux-gestor@empresa.com", "mux-adm@empresa.com"} {
-			w := getUsuarios(tokenDe(email))
+			w := getUsuarios(tokenDeMux(t, mux, email, senha, segredos))
 			if w.Code != http.StatusOK {
 				t.Fatalf("%s: status = %d, want %d (body=%s)", email, w.Code, http.StatusOK, w.Body.String())
 			}
@@ -511,37 +594,7 @@ func TestNewMux_PromocoesRotasCarregamRequireRole(t *testing.T) {
 	mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
 
 	const senha = "senha-123456"
-	seedConta := func(email, papel string) {
-		hash, err := bcrypt.GenerateFromPassword([]byte(senha), bcrypt.DefaultCost)
-		if err != nil {
-			t.Fatalf("hash: %v", err)
-		}
-		if _, err := db.Exec(
-			`INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
-			 VALUES ('Conta Teste', $1, $2, $3, true, true)`,
-			email, string(hash), papel,
-		); err != nil {
-			t.Fatalf("insert conta %q (%s): %v", email, papel, err)
-		}
-	}
-
-	tokenDe := func(email string) string {
-		req := httptest.NewRequest(http.MethodPost, "/api/auth/login",
-			strings.NewReader(`{"email":"`+email+`","senha":"`+senha+`"}`))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		mux.ServeHTTP(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("login %q: status = %d, want 200 (body=%s)", email, w.Code, w.Body.String())
-		}
-		var body struct {
-			Token string `json:"token"`
-		}
-		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-			t.Fatalf("login %q: decode: %v", email, err)
-		}
-		return body.Token
-	}
+	segredos := map[string]string{}
 
 	despachar := func(metodo, caminho, token, corpo string) *httptest.ResponseRecorder {
 		var req *http.Request
@@ -557,16 +610,16 @@ func TestNewMux_PromocoesRotasCarregamRequireRole(t *testing.T) {
 		return w
 	}
 
-	seedConta("promo-mux-usuario@empresa.com", "usuario")
-	seedConta("promo-mux-almox@empresa.com", "almoxarife")
-	seedConta("promo-mux-gestor@empresa.com", "gestor")
-	seedConta("promo-mux-adm@empresa.com", "adm")
+	seedContaMux(t, db, "promo-mux-usuario@empresa.com", "usuario", senha, segredos)
+	seedContaMux(t, db, "promo-mux-almox@empresa.com", "almoxarife", senha, segredos)
+	seedContaMux(t, db, "promo-mux-gestor@empresa.com", "gestor", senha, segredos)
+	seedContaMux(t, db, "promo-mux-adm@empresa.com", "adm", senha, segredos)
 
 	const uuidAleatorio = "11111111-1111-1111-1111-111111111111"
 
 	t.Run("papel abaixo de gestor -> 403 nas duas rotas", func(t *testing.T) {
 		for _, email := range []string{"promo-mux-usuario@empresa.com", "promo-mux-almox@empresa.com"} {
-			token := tokenDe(email)
+			token := tokenDeMux(t, mux, email, senha, segredos)
 
 			wGet := despachar(http.MethodGet, "/api/promocoes", token, "")
 			if wGet.Code != http.StatusForbidden {
@@ -582,7 +635,7 @@ func TestNewMux_PromocoesRotasCarregamRequireRole(t *testing.T) {
 
 	t.Run("gestor/adm passam do gate", func(t *testing.T) {
 		for _, email := range []string{"promo-mux-gestor@empresa.com", "promo-mux-adm@empresa.com"} {
-			token := tokenDe(email)
+			token := tokenDeMux(t, mux, email, senha, segredos)
 
 			wGet := despachar(http.MethodGet, "/api/promocoes", token, "")
 			if wGet.Code != http.StatusOK {
@@ -618,37 +671,7 @@ func TestNewMux_GestaoUsuariosRotasCarregamRequireRole(t *testing.T) {
 	mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
 
 	const senha = "senha-123456"
-	seedConta := func(email, papel string) {
-		hash, err := bcrypt.GenerateFromPassword([]byte(senha), bcrypt.DefaultCost)
-		if err != nil {
-			t.Fatalf("hash: %v", err)
-		}
-		if _, err := db.Exec(
-			`INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
-			 VALUES ('Conta Teste', $1, $2, $3, true, true)`,
-			email, string(hash), papel,
-		); err != nil {
-			t.Fatalf("insert conta %q (%s): %v", email, papel, err)
-		}
-	}
-
-	tokenDe := func(email string) string {
-		req := httptest.NewRequest(http.MethodPost, "/api/auth/login",
-			strings.NewReader(`{"email":"`+email+`","senha":"`+senha+`"}`))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		mux.ServeHTTP(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("login %q: status = %d, want 200 (body=%s)", email, w.Code, w.Body.String())
-		}
-		var body struct {
-			Token string `json:"token"`
-		}
-		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-			t.Fatalf("login %q: decode: %v", email, err)
-		}
-		return body.Token
-	}
+	segredos := map[string]string{}
 
 	despachar := func(caminho, token, corpo string) *httptest.ResponseRecorder {
 		var req *http.Request
@@ -664,16 +687,16 @@ func TestNewMux_GestaoUsuariosRotasCarregamRequireRole(t *testing.T) {
 		return w
 	}
 
-	seedConta("gestao-mux-usuario@empresa.com", "usuario")
-	seedConta("gestao-mux-almox@empresa.com", "almoxarife")
-	seedConta("gestao-mux-gestor@empresa.com", "gestor")
-	seedConta("gestao-mux-adm@empresa.com", "adm")
+	seedContaMux(t, db, "gestao-mux-usuario@empresa.com", "usuario", senha, segredos)
+	seedContaMux(t, db, "gestao-mux-almox@empresa.com", "almoxarife", senha, segredos)
+	seedContaMux(t, db, "gestao-mux-gestor@empresa.com", "gestor", senha, segredos)
+	seedContaMux(t, db, "gestao-mux-adm@empresa.com", "adm", senha, segredos)
 
 	const uuidAleatorio = "11111111-1111-1111-1111-111111111111"
 
 	t.Run("papel abaixo de gestor -> 403 nas duas rotas", func(t *testing.T) {
 		for _, email := range []string{"gestao-mux-usuario@empresa.com", "gestao-mux-almox@empresa.com"} {
-			token := tokenDe(email)
+			token := tokenDeMux(t, mux, email, senha, segredos)
 
 			wDesat := despachar("/api/usuarios/"+uuidAleatorio+"/desativacao", token, `{"ativo":false}`)
 			if wDesat.Code != http.StatusForbidden {
@@ -688,7 +711,7 @@ func TestNewMux_GestaoUsuariosRotasCarregamRequireRole(t *testing.T) {
 
 	t.Run("gestor/adm passam do gate", func(t *testing.T) {
 		for _, email := range []string{"gestao-mux-gestor@empresa.com", "gestao-mux-adm@empresa.com"} {
-			token := tokenDe(email)
+			token := tokenDeMux(t, mux, email, senha, segredos)
 
 			// uuid válido porém inexistente: o handler executou (passou do
 			// RequireRole) e devolveu 404, nunca 403.

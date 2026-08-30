@@ -67,7 +67,7 @@ func RequireAuth(db *sql.DB, jwtSecret []byte) func(http.HandlerFunc) http.Handl
 				return
 			}
 
-			claims := &jwt.RegisteredClaims{}
+			claims := &services.AcessoClaims{}
 			parsedToken, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (any, error) {
 				if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 					return nil, fmt.Errorf("método de assinatura inesperado: %v", t.Header["alg"])
@@ -92,6 +92,14 @@ func RequireAuth(db *sql.DB, jwtSecret []byte) func(http.HandlerFunc) http.Handl
 				escreverErro(w, http.StatusUnauthorized, "SESSION_REVOKED", "sessão revogada")
 				return
 			}
+
+			// origem (Story 1.11) vem SEMPRE do claim do token, nunca de
+			// BuscarUsuarioSessao (que não é sequer capaz de preenchê-lo — não é
+			// estado de conta). Um access JWT emitido antes desta story (sem o
+			// claim `origem`) decodifica como string vazia — o gate de MFA em
+			// RequireRole trata isso como "não senha" (fail-open só para o gate de
+			// MFA, nunca para autenticidade), até a sessão expirar naturalmente.
+			usuario.Origem = claims.Origem
 
 			ctx := context.WithValue(r.Context(), usuarioSessaoCtxKey, usuario)
 			next(w, r.WithContext(ctx))

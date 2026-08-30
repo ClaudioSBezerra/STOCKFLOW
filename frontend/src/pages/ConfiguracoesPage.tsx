@@ -1,6 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { QRCodeSVG } from 'qrcode.react';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { useAuth } from '@/lib/auth';
 import { getAccessToken } from '@/lib/session';
 import { rankPapel } from '@/components/shell/nav-items';
@@ -24,6 +28,13 @@ import { GestaoUsuariosSection } from '@/components/usuarios/GestaoUsuariosSecti
  *    `gestor`/`adm`. Lista `GET /api/usuarios` com "Desativar"/"Reativar"/
  *    "Rebaixar" por linha, chamando `POST /api/usuarios/{id}/desativacao` e
  *    `POST /api/usuarios/{id}/rebaixamento`.
+ *  - "Segurança" (`SegurancaCard`, Story 1.11): visível a TODOS os papéis —
+ *    "obrigatório para o seu papel" quando `origem==='senha'` e o papel
+ *    alcança `gestor` sem MFA habilitado; "opcional" para os demais casos
+ *    sem MFA; "ativo" quando já habilitado. Fluxo de configuração: botão ->
+ *    `POST /mfa/iniciar` (QR Code + segredo em texto) -> código TOTP ->
+ *    `POST /mfa/confirmar` -> `atualizarUsuario` reflete `mfaHabilitado:true`
+ *    sem round-trip extra a `/me`.
  *
  * O backend é sempre a autoridade: o papel-alvo é derivado no servidor a
  * partir do papel atual do solicitante, nunca enviado pelo cliente. Falha de
@@ -58,6 +69,179 @@ const MENSAGEM_ERRO_SOLICITAR =
 const MENSAGEM_ERRO_DECISAO = 'Não foi possível concluir a decisão.';
 const MENSAGEM_ERRO_CARREGAR_MINHA =
   'Não foi possível verificar o estado da sua solicitação. Recarregue a página.';
+
+/**
+ * Seção "Segurança" (Story 1.11, spec-1-11): configuração de MFA (TOTP).
+ * Três estados de mensagem, todos derivados de `usuario` (nunca reconsultado
+ * aqui — o backend já é a autoridade em `/me`/login):
+ *   - "ativo": `mfaHabilitado === true`.
+ *   - "obrigatório para o seu papel": `origem==='senha' && rankPapel(papel)
+ *     >= rankPapel('gestor') && !mfaHabilitado` — mesma condição do gate de
+ *     navegação em App.tsx e do 403 MFA_SETUP_REQUIRED no servidor.
+ *   - "opcional": qualquer outro caso sem MFA (papel abaixo de gestor, ou
+ *     sessão SSO — nunca forçado).
+ *
+ * Fluxo de configuração (`etapa`): 'inicial' -> botão dispara
+ * `POST /mfa/iniciar` -> 'configurando' (QR Code + segredo em `font-mono` +
+ * input de código) -> `POST /mfa/confirmar` no submit. Sucesso chama
+ * `atualizarUsuario` (reflete `mfaHabilitado:true` sem round-trip extra) e
+ * mostra um toast (`sonner`, molde do `Toaster` já montado em `main.tsx`).
+ */
+function SegurancaCard() {
+  const { usuario, atualizarUsuario } = useAuth();
+  const papel = usuario?.papel ?? '';
+  const origem = usuario?.origem ?? '';
+  const mfaHabilitado = usuario?.mfaHabilitado ?? false;
+  const mfaObrigatorio = origem === 'senha' && rankPapel(papel) >= rankPapel('gestor');
+
+  const [etapa, setEtapa] = useState<'inicial' | 'configurando'>('inicial');
+  const [segredo, setSegredo] = useState('');
+  const [otpauthUrl, setOtpauthUrl] = useState('');
+  const [codigo, setCodigo] = useState('');
+  const [iniciando, setIniciando] = useState(false);
+  const [confirmando, setConfirmando] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+
+  async function iniciarConfiguracao() {
+    if (iniciando) {
+      return;
+    }
+    setErro(null);
+    setIniciando(true);
+    try {
+      const res = await fetch('/api/auth/mfa/iniciar', { method: 'POST', headers: authHeaders() });
+      if (!res.ok) {
+        setErro('Não foi possível iniciar a configuração agora. Tente novamente em instantes.');
+        return;
+      }
+      const body = (await res.json()) as { segredo: string; otpauthUrl: string };
+      setSegredo(body.segredo);
+      setOtpauthUrl(body.otpauthUrl);
+      setCodigo('');
+      setEtapa('configurando');
+    } catch {
+      setErro('Não foi possível iniciar a configuração agora. Tente novamente em instantes.');
+    } finally {
+      setIniciando(false);
+    }
+  }
+
+  async function confirmarConfiguracao(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (confirmando) {
+      return;
+    }
+    setErro(null);
+    setConfirmando(true);
+    try {
+      const res = await fetch('/api/auth/mfa/confirmar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ segredo, codigo }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: { code?: string } };
+        if (body.error?.code === 'MFA_CODIGO_INVALIDO') {
+          setErro('Código de autenticação inválido. Confira o código no seu aplicativo e tente novamente.');
+        } else {
+          setErro('Não foi possível confirmar a configuração agora. Tente novamente em instantes.');
+        }
+        return;
+      }
+      if (usuario) {
+        atualizarUsuario({ ...usuario, mfaHabilitado: true });
+      }
+      setEtapa('inicial');
+      toast.success('Autenticação em duas etapas ativada com sucesso.');
+    } catch {
+      setErro('Não foi possível confirmar a configuração agora. Tente novamente em instantes.');
+    } finally {
+      setConfirmando(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <h2 className="text-heading-md">Segurança</h2>
+        <CardDescription>Autenticação em duas etapas (TOTP) para proteger sua conta.</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        {mfaHabilitado ? (
+          <p className="text-body">Autenticação em duas etapas ativa.</p>
+        ) : etapa === 'inicial' ? (
+          <>
+            <p className="text-body text-muted-foreground">
+              {mfaObrigatorio
+                ? 'Obrigatório para o seu papel. Configure para continuar acessando ações restritas.'
+                : 'Opcional para o seu papel.'}
+            </p>
+            <Button
+              type="button"
+              onClick={() => void iniciarConfiguracao()}
+              disabled={iniciando}
+              className="self-start"
+            >
+              {iniciando ? 'Gerando...' : 'Configurar autenticação em duas etapas'}
+            </Button>
+            {erro && (
+              <p role="alert" className="text-body text-destructive">
+                {erro}
+              </p>
+            )}
+          </>
+        ) : (
+          <form onSubmit={confirmarConfiguracao} className="flex flex-col gap-4" noValidate>
+            <p className="text-body text-muted-foreground">
+              Escaneie o QR Code com seu aplicativo autenticador ou digite o segredo manualmente.
+            </p>
+            <QRCodeSVG value={otpauthUrl} size={180} />
+            <div className="flex flex-col gap-1">
+              <span className="text-label text-muted-foreground">Segredo</span>
+              <span className="font-mono text-body break-all">{segredo}</span>
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="mfa-codigo">Código de verificação</Label>
+              <Input
+                id="mfa-codigo"
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={6}
+                required
+                value={codigo}
+                onChange={(event) => setCodigo(event.target.value.replace(/\D/g, ''))}
+              />
+            </div>
+
+            {erro && (
+              <p role="alert" className="text-body text-destructive">
+                {erro}
+              </p>
+            )}
+
+            <div className="flex gap-2">
+              <Button type="submit" disabled={confirmando}>
+                {confirmando ? 'Confirmando...' : 'Confirmar'}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={confirmando}
+                onClick={() => {
+                  setEtapa('inicial');
+                  setErro(null);
+                }}
+              >
+                Cancelar
+              </Button>
+            </div>
+          </form>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 export function ConfiguracoesPage() {
   const { usuario } = useAuth();
@@ -313,6 +497,8 @@ export function ConfiguracoesPage() {
           </CardContent>
         </Card>
       )}
+
+      <SegurancaCard />
 
       {podeDecidir && <GestaoUsuariosSection />}
     </div>

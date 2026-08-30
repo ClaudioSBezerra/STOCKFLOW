@@ -131,13 +131,30 @@ const (
 	refreshTokenCookiePath = "/api/auth"
 )
 
-// usuarioResposta é o formato de usuário devolvido em POST /api/auth/login e
-// GET /api/auth/me.
+// usuarioResposta é o formato de usuário devolvido em POST /api/auth/login,
+// POST /api/auth/mfa/verificar, POST /api/auth/sso/keycloak e
+// GET /api/auth/me. MfaHabilitado/Origem (Story 1.11) espelham
+// UsuarioSessao: o frontend usa os dois para decidir o gate de navegação
+// para Configurações → Segurança (RotaProtegida, App.tsx) — mesma regra do
+// backend em middleware.RequireRole, nunca reimplementada com dado próprio.
 type usuarioResposta struct {
-	ID    string `json:"id"`
-	Nome  string `json:"nome"`
-	Email string `json:"email"`
-	Papel string `json:"papel"`
+	ID            string `json:"id"`
+	Nome          string `json:"nome"`
+	Email         string `json:"email"`
+	Papel         string `json:"papel"`
+	MfaHabilitado bool   `json:"mfaHabilitado"`
+	Origem        string `json:"origem"`
+}
+
+func usuarioRespostaDe(usuario services.UsuarioSessao) usuarioResposta {
+	return usuarioResposta{
+		ID:            usuario.ID,
+		Nome:          usuario.Nome,
+		Email:         usuario.Email,
+		Papel:         usuario.Papel,
+		MfaHabilitado: usuario.MFAHabilitado,
+		Origem:        usuario.Origem,
+	}
 }
 
 // cookieEhSeguro decide a flag Secure do cookie de refresh (AD-6): true
@@ -165,6 +182,28 @@ func setRefreshCookie(w http.ResponseWriter, r *http.Request, token string, expi
 		Secure:   cookieEhSeguro(r),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   maxAge,
+	})
+}
+
+// emitirSessaoEResponder emite a sessão (Story 1.4/1.6, AD-6) para um
+// `usuario` já resolvido do Postgres e escreve a resposta 200 padrão
+// ({"token","usuario"}) + cookie de refresh — reaproveitado por LoginHandler
+// (login sem MFA) e por MFAVerificarHandler (Story 1.11, após código TOTP
+// correto). `origem` é sempre explícito no ponto de chamada (nunca inferido
+// de `usuario`, que não carrega esse dado): "senha" nos dois casos acima.
+func emitirSessaoEResponder(w http.ResponseWriter, r *http.Request, db *sql.DB, jwtSecret []byte, usuario services.UsuarioSessao, origem string) {
+	accessToken, refreshToken, expiraRefresh, err := services.EmitirSessao(db, jwtSecret, usuario.ID, origem)
+	if err != nil {
+		slog.Error("falha ao emitir sessão", "error", err)
+		escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao emitir sessão")
+		return
+	}
+
+	usuario.Origem = origem
+	setRefreshCookie(w, r, refreshToken, expiraRefresh)
+	escreverJSON(w, http.StatusOK, map[string]any{
+		"token":   accessToken,
+		"usuario": usuarioRespostaDe(usuario),
 	})
 }
 
@@ -199,6 +238,15 @@ type loginRequest struct {
 // por excesso de tentativas (Story 1.10) é a única exceção: 429 ACCOUNT_LOCKED
 // com mensagem sem o tempo restante — só aparece para quem já fez 5 tentativas
 // falhas contra aquela conta.
+//
+// Story 1.11 (FR-37/SM-2): logo após senha válida, carrega o usuário
+// (services.BuscarUsuarioSessao — já necessário para montar a resposta,
+// então isto elimina a segunda consulta que rodava depois de EmitirSessao
+// antes desta story). Se `usuario.MFAHabilitado`, NENHUMA sessão é emitida
+// ainda: gera um token opaco de uso único (`IniciarLoginMFA`) e responde
+// `{"mfaRequerido":true,"mfaToken":...}` — o cliente troca esse token por
+// sessão em POST /api/auth/mfa/verificar. Senão, segue o caminho de sempre
+// via emitirSessaoEResponder(..., "senha").
 func LoginHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
@@ -228,13 +276,6 @@ func LoginHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 			return
 		}
 
-		accessToken, refreshToken, expiraRefresh, err := services.EmitirSessao(db, jwtSecret, usuarioID)
-		if err != nil {
-			slog.Error("falha ao emitir sessão", "error", err)
-			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao emitir sessão")
-			return
-		}
-
 		usuario, err := services.BuscarUsuarioSessao(db, usuarioID)
 		if err != nil {
 			slog.Error("falha ao carregar usuário recém-autenticado", "error", err)
@@ -242,16 +283,21 @@ func LoginHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 			return
 		}
 
-		setRefreshCookie(w, r, refreshToken, expiraRefresh)
-		escreverJSON(w, http.StatusOK, map[string]any{
-			"token": accessToken,
-			"usuario": usuarioResposta{
-				ID:    usuario.ID,
-				Nome:  usuario.Nome,
-				Email: usuario.Email,
-				Papel: usuario.Papel,
-			},
-		})
+		if usuario.MFAHabilitado {
+			mfaToken, err := services.IniciarLoginMFA(db, usuario.ID)
+			if err != nil {
+				slog.Error("falha ao iniciar login por MFA", "error", err)
+				escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao processar login")
+				return
+			}
+			escreverJSON(w, http.StatusOK, map[string]any{
+				"mfaRequerido": true,
+				"mfaToken":     mfaToken,
+			})
+			return
+		}
+
+		emitirSessaoEResponder(w, r, db, jwtSecret, usuario, "senha")
 	}
 }
 
@@ -406,11 +452,6 @@ func MeHandler() http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
-		escreverJSON(w, http.StatusOK, usuarioResposta{
-			ID:    usuario.ID,
-			Nome:  usuario.Nome,
-			Email: usuario.Email,
-			Papel: usuario.Papel,
-		})
+		escreverJSON(w, http.StatusOK, usuarioRespostaDe(usuario))
 	}
 }

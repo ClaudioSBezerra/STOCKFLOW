@@ -224,6 +224,34 @@ func TestKeycloakSSO_PapelPreservadoDoBanco(t *testing.T) {
 	}
 }
 
+// TestKeycloakSSO_OrigemSSO prova que uma sessão de login federado é
+// observável de ponta a ponta como origem="sso" (Story 1.11) — uma
+// regressão pontual em KeycloakSSOHandler que trocasse o literal "sso" por
+// "senha" na chamada de emitirSessaoEResponder quebraria a isenção de MFA
+// para SSO sem que nenhum outro teste falhasse.
+func TestKeycloakSSO_OrigemSSO(t *testing.T) {
+	db := testDB(t)
+	priv := ssoGerarChave(t)
+	criarContaComPapel(t, db, "Gestora", "carlos@fc.com", "senha-123456", "gestor")
+	h := ssoHandler(t, db, priv, "")
+
+	w := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var body struct {
+		Usuario struct {
+			Origem string `json:"origem"`
+		} `json:"usuario"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Usuario.Origem != "sso" {
+		t.Fatalf("usuario.origem = %q, want %q", body.Usuario.Origem, "sso")
+	}
+}
+
 func TestKeycloakSSO_EmailCaseInsensitive(t *testing.T) {
 	db := testDB(t)
 	priv := ssoGerarChave(t)

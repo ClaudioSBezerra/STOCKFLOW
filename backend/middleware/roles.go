@@ -32,6 +32,18 @@ import (
 //
 // A decisão allow/deny vive só aqui — nenhum handler reimplementa a
 // comparação de papel nem usa allow-list de pares (AD-8 forma 1).
+//
+// Story 1.11 (FR-37/SM-2, MFA obrigatório para papéis administrativos)
+// acrescenta um segundo gate, DEPOIS do de papel: uma sessão autenticada por
+// SENHA (`usuario.Origem == "senha"`), de papel `gestor`+ (mesma comparação
+// de rank do papel mínimo desta rota), SEM MFA habilitado
+// (`!usuario.MFAHabilitado`), é recusada com 403 MFA_SETUP_REQUIRED — mesmo
+// tendo papel suficiente. A ordem importa: papel insuficiente SEMPRE vence
+// primeiro (403 FORBIDDEN), para nunca vazar "esta rota existe e é
+// restrita" a quem nem tem o papel mínimo. Sessão `origem=sso` (o realm
+// Keycloak já impõe MFA a esses papéis) e sessão `origem=""` (JWT emitido
+// antes desta migration, sem o claim — fail-open só para este gate, nunca
+// para autenticidade) nunca disparam esta checagem.
 func RequireRole(papelMinimo string) func(http.HandlerFunc) http.HandlerFunc {
 	rankMinimo := services.RankPapel(papelMinimo)
 	if rankMinimo == 0 {
@@ -49,6 +61,11 @@ func RequireRole(papelMinimo string) func(http.HandlerFunc) http.HandlerFunc {
 
 			if services.RankPapel(usuario.Papel) < rankMinimo {
 				escreverErro(w, http.StatusForbidden, "FORBIDDEN", "papel insuficiente para acessar este recurso")
+				return
+			}
+
+			if rankMinimo >= services.RankPapel(services.PapelGestor) && usuario.Origem == "senha" && !usuario.MFAHabilitado {
+				escreverErro(w, http.StatusForbidden, "MFA_SETUP_REQUIRED", "configure a autenticação em duas etapas em Configurações → Segurança para continuar.")
 				return
 			}
 

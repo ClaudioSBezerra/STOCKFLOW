@@ -86,23 +86,11 @@ func KeycloakSSOHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 			return
 		}
 
-		accessToken, refreshToken, expiraRefresh, err := services.EmitirSessao(db, jwtSecret, usuario.ID)
-		if err != nil {
-			slog.Error("falha ao emitir sessão via SSO", "error", err)
-			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao emitir sessão")
-			return
-		}
-
-		setRefreshCookie(w, r, refreshToken, expiraRefresh)
-		escreverJSON(w, http.StatusOK, map[string]any{
-			"token": accessToken,
-			"usuario": usuarioResposta{
-				ID:    usuario.ID,
-				Nome:  usuario.Nome,
-				Email: usuario.Email,
-				Papel: usuario.Papel,
-			},
-		})
+		// origem="sso" (Story 1.11): o realm Keycloak já impõe MFA a
+		// gestor/adm — esta sessão NUNCA passa pelo gate de MFA local
+		// (middleware.RequireRole), então emitirSessaoEResponder nunca é chamado
+		// com "sso" fora daqui.
+		emitirSessaoEResponder(w, r, db, jwtSecret, usuario, "sso")
 	}
 }
 

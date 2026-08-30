@@ -1,6 +1,7 @@
-import { createBrowserRouter, Navigate, RouterProvider } from 'react-router-dom';
+import { createBrowserRouter, Navigate, RouterProvider, useLocation } from 'react-router-dom';
 import { AppShell } from '@/components/shell/AppShell';
 import { AuthProvider, useAuth } from '@/lib/auth';
+import { rankPapel } from '@/components/shell/nav-items';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
 import { CadastroPage } from '@/pages/CadastroPage';
 import { VerificarEmailPage } from '@/pages/VerificarEmailPage';
@@ -34,12 +35,22 @@ import { AuthCallbackPage } from '@/pages/AuthCallbackPage';
  * EXPLÍCITO `autenticado` libera o shell; qualquer outra coisa que não seja
  * `carregando` (incl. um estado futuro inesperado) cai no redirect.
  * - `carregando`: tela mínima de carregamento (bootstrap em andamento).
- * - `autenticado`: renderiza o `AppShell`.
+ * - `autenticado`: renderiza o `AppShell`, sujeito ao gate de MFA abaixo.
  * - qualquer outro (`anonimo`, …): redireciona para `/login` (replace, para
  *   não empilhar histórico).
+ *
+ * Story 1.11 (MFA obrigatório para papéis administrativos): quando a sessão
+ * é `origem==='senha'`, o papel alcança `gestor` na hierarquia e
+ * `!mfaHabilitado`, a navegação normal fica bloqueada — todo caminho que não
+ * seja `/configuracoes` redireciona para lá (replace), espelhando no cliente
+ * o mesmo `403 MFA_SETUP_REQUIRED` que o servidor já aplicaria em
+ * `middleware.RequireRole`. Itens do rail continuam visíveis (UX-DR22:
+ * "bloqueando a navegação normal", não "escondendo") — só a navegação em si
+ * é interceptada aqui, uma camada acima do shell.
  */
 export function RotaProtegida() {
-  const { estado } = useAuth();
+  const { estado, usuario } = useAuth();
+  const location = useLocation();
 
   if (estado === 'carregando') {
     return (
@@ -50,6 +61,16 @@ export function RotaProtegida() {
   }
 
   if (estado === 'autenticado') {
+    const mfaPendente =
+      usuario !== null &&
+      usuario.origem === 'senha' &&
+      rankPapel(usuario.papel) >= rankPapel('gestor') &&
+      !usuario.mfaHabilitado;
+
+    if (mfaPendente && location.pathname !== '/configuracoes') {
+      return <Navigate to="/configuracoes" replace />;
+    }
+
     return <AppShell />;
   }
 

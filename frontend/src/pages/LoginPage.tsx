@@ -38,12 +38,36 @@ function mensagemDeErro(codigo: string | undefined): string {
   if (codigo === 'ACCOUNT_LOCKED') {
     return 'Muitas tentativas de login sem sucesso. Por segurança, novas tentativas ficam bloqueadas temporariamente. Tente novamente mais tarde.';
   }
+  // MFA_CODIGO_INVALIDO/MFA_TOKEN_INVALIDO (Story 1.11): segunda etapa do
+  // login, POST /api/auth/mfa/verificar.
+  if (codigo === 'MFA_CODIGO_INVALIDO') {
+    return 'Código de autenticação inválido.';
+  }
+  if (codigo === 'MFA_TOKEN_INVALIDO') {
+    return 'Código de login expirado. Faça login novamente.';
+  }
   return 'Não foi possível entrar. Tente novamente em instantes.';
 }
 
-interface LoginResposta {
+interface LoginSucesso {
   token: string;
   usuario: UsuarioSessao;
+}
+
+/**
+ * Resposta de POST /api/auth/login quando a conta tem MFA habilitado (Story
+ * 1.11): nenhuma sessão é emitida ainda — `mfaToken` é trocado por sessão em
+ * POST /api/auth/mfa/verificar.
+ */
+interface LoginMFARequerida {
+  mfaRequerido: true;
+  mfaToken: string;
+}
+
+type LoginResposta = LoginSucesso | LoginMFARequerida;
+
+function ehMFARequerida(body: LoginResposta): body is LoginMFARequerida {
+  return (body as LoginMFARequerida).mfaRequerido === true;
 }
 
 /**
@@ -67,6 +91,15 @@ export function LoginPage() {
   // "Entrar com Ferreira Costa" só aparece quando o backend responde
   // `enabled:true`. O fluxo de senha nunca muda e NUNCA há auto-redirect.
   const [ssoConfig, setSSOConfig] = useState<SSOConfig | null>(null);
+
+  // Segundo fator (Story 1.11): `etapa` alterna entre o formulário de
+  // e-mail/senha e o de código TOTP. `mfaToken` só existe durante a etapa
+  // `codigo` — é o token opaco de uso único devolvido por
+  // POST /api/auth/login quando a conta tem MFA habilitado, trocado por
+  // sessão em POST /api/auth/mfa/verificar.
+  const [etapa, setEtapa] = useState<'senha' | 'codigo'>('senha');
+  const [mfaToken, setMfaToken] = useState('');
+  const [codigo, setCodigo] = useState('');
 
   useEffect(() => {
     void fetchSSOConfig().then(setSSOConfig);
@@ -109,6 +142,12 @@ export function LoginPage() {
       }
 
       const body = (await res.json()) as LoginResposta;
+      if (ehMFARequerida(body)) {
+        setMfaToken(body.mfaToken);
+        setCodigo('');
+        setEtapa('codigo');
+        return;
+      }
       definirSessao(body.usuario, body.token);
       navigate('/');
     } catch {
@@ -116,6 +155,101 @@ export function LoginPage() {
     } finally {
       setEnviando(false);
     }
+  }
+
+  async function handleSubmitCodigo(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (enviando) {
+      return;
+    }
+    setErro(null);
+    setEnviando(true);
+
+    try {
+      const res = await fetch('/api/auth/mfa/verificar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mfaToken, codigo }),
+      });
+
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as ErroEnvelope;
+        // Token expirado/inválido (mfaToken de 5min já venceu, ou já foi
+        // trocado por sessão em outra aba): volta para a etapa de senha — o
+        // token desta etapa não presta mais para nada.
+        if (body.error?.code === 'MFA_TOKEN_INVALIDO') {
+          setEtapa('senha');
+          setSenha('');
+        }
+        setErro(mensagemDeErro(body.error?.code));
+        return;
+      }
+
+      const body = (await res.json()) as LoginSucesso;
+      definirSessao(body.usuario, body.token);
+      navigate('/');
+    } catch {
+      setErro(mensagemDeErro(undefined));
+    } finally {
+      setEnviando(false);
+    }
+  }
+
+  if (etapa === 'codigo') {
+    return (
+      <div className="flex min-h-screen items-center justify-center p-6">
+        <Card className="w-full max-w-sm">
+          <CardHeader>
+            <CardTitle>Verificação em duas etapas</CardTitle>
+            <CardDescription>
+              Digite o código de 6 dígitos do seu aplicativo autenticador.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleSubmitCodigo} className="flex flex-col gap-4" noValidate>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="codigo">Código de verificação</Label>
+                <Input
+                  id="codigo"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  pattern="[0-9]*"
+                  maxLength={6}
+                  required
+                  value={codigo}
+                  onChange={(event) => setCodigo(event.target.value.replace(/\D/g, ''))}
+                />
+              </div>
+
+              {erro && (
+                <p role="alert" className="text-body text-destructive">
+                  {erro}
+                </p>
+              )}
+
+              <Button type="submit" className="w-full" disabled={enviando}>
+                {enviando ? 'Verificando...' : 'Verificar'}
+              </Button>
+
+              <Button
+                type="button"
+                variant="ghost"
+                className="w-full"
+                disabled={enviando}
+                onClick={() => {
+                  setEtapa('senha');
+                  setSenha('');
+                  setErro(null);
+                }}
+              >
+                Voltar
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
+      </div>
+    );
   }
 
   return (

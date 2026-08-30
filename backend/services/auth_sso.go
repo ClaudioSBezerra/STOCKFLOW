@@ -19,10 +19,10 @@ var ErrContaSSONaoEncontrada = errors.New("nenhuma conta local para o e-mail do 
 func BuscarUsuarioPorEmailSSO(db *sql.DB, email string) (UsuarioSessao, error) {
 	var u UsuarioSessao
 	const q = `
-		SELECT id, nome, email, papel, ativo
+		SELECT id, nome, email, papel, ativo, mfa_habilitado
 		FROM usuarios
 		WHERE lower(email) = lower($1)`
-	err := db.QueryRow(q, email).Scan(&u.ID, &u.Nome, &u.Email, &u.Papel, &u.Ativo)
+	err := db.QueryRow(q, email).Scan(&u.ID, &u.Nome, &u.Email, &u.Papel, &u.Ativo, &u.MFAHabilitado)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return UsuarioSessao{}, ErrContaSSONaoEncontrada
