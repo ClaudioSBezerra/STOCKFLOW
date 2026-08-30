@@ -106,8 +106,8 @@ def diff_and_notify(token, chat_id, state):
     for key, old_phase, new_phase in changed:
         if new_phase == "done":
             send_telegram(token, chat_id, f"✅ Story concluída: {key}\nBacklog restante: {state['backlog']}")
-        elif new_phase in ("blocked", "escalated"):
-            send_telegram(token, chat_id, f"🚨 Story precisa de atenção: {key} -> {new_phase}")
+        elif new_phase in ("blocked", "escalated", "deferred"):
+            send_telegram(token, chat_id, f"🚨 Story precisa de atenção: {key} -> {new_phase}\nRode `bmad-loop status` para ver o motivo.")
         elif old_phase is None:
             send_telegram(token, chat_id, f"▶️ Story iniciada: {key} ({new_phase})")
         # dev-running <-> review-running transitions: no push, too noisy.

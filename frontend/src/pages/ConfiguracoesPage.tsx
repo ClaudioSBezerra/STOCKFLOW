@@ -5,6 +5,7 @@ import { useAuth } from '@/lib/auth';
 import { getAccessToken } from '@/lib/session';
 import { rankPapel } from '@/components/shell/nav-items';
 import { proximoPapel, rotuloPapel } from '@/lib/promocao';
+import { GestaoUsuariosSection } from '@/components/usuarios/GestaoUsuariosSection';
 
 /**
  * Página "Meu Perfil" (`/configuracoes`, Story 1.7, spec-1-7). Renderizada
@@ -19,6 +20,10 @@ import { proximoPapel, rotuloPapel } from '@/lib/promocao';
  *  - "Decidir promoções": só montada para `gestor`/`adm`. Lista de
  *    `GET /api/promocoes` com "Aprovar"/"Recusar" por item, chamando
  *    `POST /api/promocoes/{id}/decisao`.
+ *  - "Gestão de Usuários" (`GestaoUsuariosSection`, Story 1.8): só montada para
+ *    `gestor`/`adm`. Lista `GET /api/usuarios` com "Desativar"/"Reativar"/
+ *    "Rebaixar" por linha, chamando `POST /api/usuarios/{id}/desativacao` e
+ *    `POST /api/usuarios/{id}/rebaixamento`.
  *
  * O backend é sempre a autoridade: o papel-alvo é derivado no servidor a
  * partir do papel atual do solicitante, nunca enviado pelo cliente. Falha de
@@ -308,6 +313,8 @@ export function ConfiguracoesPage() {
           </CardContent>
         </Card>
       )}
+
+      {podeDecidir && <GestaoUsuariosSection />}
     </div>
   );
 }

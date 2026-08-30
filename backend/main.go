@@ -6,10 +6,12 @@
 // liveness endpoint plus the public authentication routes (cadastro e
 // verificação de e-mail — Story 1.3; login, refresh e /me — Story 1.4;
 // esqueci-senha e redefinir-senha — Story 1.6), the first role-gated route
-// (GET /api/usuarios, mínimo `gestor` — Story 1.5) and a solicitação de
+// (GET /api/usuarios, mínimo `gestor` — Story 1.5), a solicitação de
 // promoção de papel — Story 1.7 (POST /api/promocoes e GET /api/promocoes/minha
 // para qualquer conta autenticada; GET /api/promocoes e
-// POST /api/promocoes/{id}/decisao com mínimo `gestor`).
+// POST /api/promocoes/{id}/decisao com mínimo `gestor`) e a gestão de contas —
+// desativação e rebaixamento — Story 1.8 (POST /api/usuarios/{id}/desativacao e
+// POST /api/usuarios/{id}/rebaixamento, mínimo `gestor`).
 package main
 
 import (
@@ -210,6 +212,12 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte) *http.S
 	mux.HandleFunc("POST /api/promocoes/{id}/decisao", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelGestor)(
 			handlers.DecidirPromocaoHandler(db))))
+	mux.HandleFunc("POST /api/usuarios/{id}/desativacao", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelGestor)(
+			handlers.DesativarUsuarioHandler(db))))
+	mux.HandleFunc("POST /api/usuarios/{id}/rebaixamento", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelGestor)(
+			handlers.RebaixarUsuarioHandler(db))))
 	return mux
 }
 

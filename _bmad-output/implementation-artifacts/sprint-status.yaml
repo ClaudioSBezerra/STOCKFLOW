@@ -43,7 +43,7 @@ development_status:
   1-5-autorização-por-papel-aplicada-no-servidor: done
   1-6-recuperação-de-senha-por-e-mail: done
   1-7-solicitação-de-promoção-de-papel: done
-  1-8-gestão-de-contas-desativação-e-rebaixamento: backlog
+  1-8-gestão-de-contas-desativação-e-rebaixamento: done
   1-9-login-federado-via-keycloak-sso-ferreira-costa: backlog
   1-10-bloqueio-de-conta-e-política-de-senha: backlog
   1-11-mfa-obrigatório-para-papéis-administrativos: backlog

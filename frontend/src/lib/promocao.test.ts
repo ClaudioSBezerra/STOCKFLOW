@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { proximoPapel, rotuloPapel } from './promocao';
+import { papelAbaixo, proximoPapel, rotuloPapel } from './promocao';
 
 describe('proximoPapel (espelho de services.proximoPapelPromocao)', () => {
   const casos: Array<[string, string | null]> = [
@@ -13,6 +13,28 @@ describe('proximoPapel (espelho de services.proximoPapelPromocao)', () => {
 
   it.each(casos)('proximoPapel(%j) -> %j', (papel, esperado) => {
     expect(proximoPapel(papel)).toBe(esperado);
+  });
+});
+
+describe('papelAbaixo (espelho de services.papelImediatamenteAbaixo)', () => {
+  const casos: Array<[string, string | null]> = [
+    ['gestor', 'almoxarife'],
+    ['almoxarife', 'usuario'],
+    ['usuario', null],
+    ['adm', null],
+    ['', null],
+    ['desconhecido', null],
+  ];
+
+  it.each(casos)('papelAbaixo(%j) -> %j', (papel, esperado) => {
+    expect(papelAbaixo(papel)).toBe(esperado);
+  });
+
+  it('é o inverso de proximoPapel nos degraus intermediários', () => {
+    expect(papelAbaixo('almoxarife')).toBe('usuario');
+    expect(proximoPapel('usuario')).toBe('almoxarife');
+    expect(papelAbaixo('gestor')).toBe('almoxarife');
+    expect(proximoPapel('almoxarife')).toBe('gestor');
   });
 });
 

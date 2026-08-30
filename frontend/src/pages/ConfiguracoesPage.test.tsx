@@ -172,6 +172,7 @@ describe('ConfiguracoesPage — Meu Perfil', () => {
     stubFetch((url) => {
       if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
       if (url === '/api/promocoes') return jsonOk({ solicitacoes: [] });
+      if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
       throw new Error(`URL inesperada: ${url}`);
     });
 
@@ -182,6 +183,34 @@ describe('ConfiguracoesPage — Meu Perfil', () => {
     ).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Solicitar promoção/ })).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Decidir promoções' })).toBeInTheDocument();
+  });
+
+  it('gestor vê o heading "Gestão de Usuários"; usuario não', async () => {
+    authState.papel = 'gestor';
+    stubFetch((url) => {
+      if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
+      if (url === '/api/promocoes') return jsonOk({ solicitacoes: [] });
+      if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    const { unmount } = render(<ConfiguracoesPage />);
+    expect(
+      await screen.findByRole('heading', { name: 'Gestão de Usuários' }),
+    ).toBeInTheDocument();
+    unmount();
+
+    authState.papel = 'usuario';
+    vi.clearAllMocks();
+    const fetchMock = stubFetch((url) => {
+      if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    render(<ConfiguracoesPage />);
+    await screen.findByRole('button', { name: /Solicitar promoção/ });
+    expect(screen.queryByRole('heading', { name: 'Gestão de Usuários' })).not.toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/usuarios', expect.anything());
   });
 
   it('erro HTTP ao solicitar promoção mostra um role="alert"', async () => {
@@ -269,6 +298,7 @@ describe('ConfiguracoesPage — Decidir promoções', () => {
       if (url === '/api/promocoes/p1/decisao' && init?.method === 'POST') {
         return Promise.resolve({ ok: true, json: async () => ({ solicitacao: { id: 'p1', status: 'aprovada' } }) });
       }
+      if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
       throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
     });
 
@@ -316,6 +346,7 @@ describe('ConfiguracoesPage — Decidir promoções', () => {
       if (url === '/api/promocoes/p1/decisao' && init?.method === 'POST') {
         return Promise.resolve({ ok: false, status: 409, json: async () => ({ error: { code: 'CONFLICT' } }) });
       }
+      if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
       throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
     });
 
@@ -335,6 +366,7 @@ describe('ConfiguracoesPage — Decidir promoções', () => {
       if (url === '/api/promocoes' && (!init || init.method === undefined)) {
         return Promise.resolve({ ok: false, status: 500, json: async () => ({ error: { code: 'INTERNAL_ERROR' } }) });
       }
+      if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
       throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
     });
 
@@ -371,6 +403,7 @@ describe('ConfiguracoesPage — Decidir promoções', () => {
       if (url === '/api/promocoes/p1/decisao' && init?.method === 'POST') {
         return Promise.reject(new Error('falha de rede'));
       }
+      if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
       throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
     });
 

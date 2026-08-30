@@ -286,6 +286,18 @@ func TestNewMux_RegistraRotasDeAutenticacao(t *testing.T) {
 			caminho:      "/api/promocoes/qualquer-id/decisao",
 			statusQuerAo: http.StatusUnauthorized,
 		},
+		{
+			nome:         "usuarios/{id}/desativacao sem token chega no RequireAuth antes de RequireRole",
+			metodo:       http.MethodPost,
+			caminho:      "/api/usuarios/qualquer-id/desativacao",
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
+			nome:         "usuarios/{id}/rebaixamento sem token chega no RequireAuth antes de RequireRole",
+			metodo:       http.MethodPost,
+			caminho:      "/api/usuarios/qualquer-id/rebaixamento",
+			statusQuerAo: http.StatusUnauthorized,
+		},
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
@@ -569,6 +581,111 @@ func TestNewMux_PromocoesRotasCarregamRequireRole(t *testing.T) {
 			wPost := despachar(http.MethodPost, "/api/promocoes/"+uuidAleatorio+"/decisao", token, `{"aprovar":true}`)
 			if wPost.Code != http.StatusNotFound {
 				t.Errorf("%s POST .../decisao: status = %d, want 404 (body=%s)", email, wPost.Code, wPost.Body.String())
+			}
+		}
+	})
+}
+
+// TestNewMux_GestaoUsuariosRotasCarregamRequireRole prova, pela mesma
+// instância de newMux usada por main(), que POST /api/usuarios/{id}/desativacao
+// e POST /api/usuarios/{id}/rebaixamento estão atrás de RequireRole(gestor)
+// (Story 1.8). Um token de `usuario`/`almoxarife` recebe 403 FORBIDDEN; um de
+// `gestor`/`adm` passa do gate (o handler executa e devolve 404 para um uuid
+// aleatório, provando que não parou no 403). Sem estes casos, remover
+// `middleware.RequireRole(services.PapelGestor)` dessas duas rotas em newMux
+// deixaria a suíte verde.
+func TestNewMux_GestaoUsuariosRotasCarregamRequireRole(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	mux := newMux(db, emailCfg, jwtSecret)
+
+	const senha = "senha-123456"
+	seedConta := func(email, papel string) {
+		hash, err := bcrypt.GenerateFromPassword([]byte(senha), bcrypt.DefaultCost)
+		if err != nil {
+			t.Fatalf("hash: %v", err)
+		}
+		if _, err := db.Exec(
+			`INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
+			 VALUES ('Conta Teste', $1, $2, $3, true, true)`,
+			email, string(hash), papel,
+		); err != nil {
+			t.Fatalf("insert conta %q (%s): %v", email, papel, err)
+		}
+	}
+
+	tokenDe := func(email string) string {
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/login",
+			strings.NewReader(`{"email":"`+email+`","senha":"`+senha+`"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("login %q: status = %d, want 200 (body=%s)", email, w.Code, w.Body.String())
+		}
+		var body struct {
+			Token string `json:"token"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("login %q: decode: %v", email, err)
+		}
+		return body.Token
+	}
+
+	despachar := func(caminho, token, corpo string) *httptest.ResponseRecorder {
+		var req *http.Request
+		if corpo != "" {
+			req = httptest.NewRequest(http.MethodPost, caminho, strings.NewReader(corpo))
+			req.Header.Set("Content-Type", "application/json")
+		} else {
+			req = httptest.NewRequest(http.MethodPost, caminho, nil)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	seedConta("gestao-mux-usuario@empresa.com", "usuario")
+	seedConta("gestao-mux-almox@empresa.com", "almoxarife")
+	seedConta("gestao-mux-gestor@empresa.com", "gestor")
+	seedConta("gestao-mux-adm@empresa.com", "adm")
+
+	const uuidAleatorio = "11111111-1111-1111-1111-111111111111"
+
+	t.Run("papel abaixo de gestor -> 403 nas duas rotas", func(t *testing.T) {
+		for _, email := range []string{"gestao-mux-usuario@empresa.com", "gestao-mux-almox@empresa.com"} {
+			token := tokenDe(email)
+
+			wDesat := despachar("/api/usuarios/"+uuidAleatorio+"/desativacao", token, `{"ativo":false}`)
+			if wDesat.Code != http.StatusForbidden {
+				t.Errorf("%s POST .../desativacao: status = %d, want 403 (body=%s)", email, wDesat.Code, wDesat.Body.String())
+			}
+			wReb := despachar("/api/usuarios/"+uuidAleatorio+"/rebaixamento", token, "")
+			if wReb.Code != http.StatusForbidden {
+				t.Errorf("%s POST .../rebaixamento: status = %d, want 403 (body=%s)", email, wReb.Code, wReb.Body.String())
+			}
+		}
+	})
+
+	t.Run("gestor/adm passam do gate", func(t *testing.T) {
+		for _, email := range []string{"gestao-mux-gestor@empresa.com", "gestao-mux-adm@empresa.com"} {
+			token := tokenDe(email)
+
+			// uuid válido porém inexistente: o handler executou (passou do
+			// RequireRole) e devolveu 404, nunca 403.
+			wDesat := despachar("/api/usuarios/"+uuidAleatorio+"/desativacao", token, `{"ativo":false}`)
+			if wDesat.Code != http.StatusNotFound {
+				t.Errorf("%s POST .../desativacao: status = %d, want 404 (body=%s)", email, wDesat.Code, wDesat.Body.String())
+			}
+			wReb := despachar("/api/usuarios/"+uuidAleatorio+"/rebaixamento", token, "")
+			if wReb.Code != http.StatusNotFound {
+				t.Errorf("%s POST .../rebaixamento: status = %d, want 404 (body=%s)", email, wReb.Code, wReb.Body.String())
 			}
 		}
 	})

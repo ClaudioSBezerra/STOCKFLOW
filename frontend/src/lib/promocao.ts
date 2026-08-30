@@ -24,6 +24,23 @@ export function proximoPapel(papel: string): Papel | null {
   return PROXIMO_PAPEL[papel as Papel] ?? null;
 }
 
+const PAPEL_ABAIXO: Partial<Record<Papel, Papel>> = {
+  gestor: 'almoxarife',
+  almoxarife: 'usuario',
+};
+
+/**
+ * Papel imediatamente abaixo na hierarquia (`gestor -> almoxarife`,
+ * `almoxarife -> usuario`) — inverso exato de `proximoPapel`, espelho de
+ * `services.papelImediatamenteAbaixo` (spec-1-8). `usuario`, `adm` e qualquer
+ * valor desconhecido não têm papel abaixo aplicável a rebaixamento -> `null`.
+ * Só decide o rótulo/visibilidade do botão "Rebaixar"; a AUTORIDADE é sempre o
+ * servidor, que deriva o alvo do papel atual do alvo e ignora o cliente.
+ */
+export function papelAbaixo(papel: string): Papel | null {
+  return PAPEL_ABAIXO[papel as Papel] ?? null;
+}
+
 const ROTULO_PAPEL: Record<Papel, string> = {
   usuario: 'Usuário',
   almoxarife: 'Almoxarife',
