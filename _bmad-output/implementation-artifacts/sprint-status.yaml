@@ -51,7 +51,7 @@ development_status:
   epic-1-retrospective: optional
 
   epic-2: backlog
-  2-1-criar-e-listar-locais-de-estoque: backlog
+  2-1-criar-e-listar-locais-de-estoque: done
   2-2-exclusão-de-estoque-trata-resíduos-e-pedidos-pendentes: backlog
   2-3-migração-dos-estoques-legados: backlog
   epic-2-retrospective: optional

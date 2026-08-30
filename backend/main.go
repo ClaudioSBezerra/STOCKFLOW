@@ -16,7 +16,12 @@
 // POST /api/auth/logout sempre registrados; POST /api/auth/sso/keycloak atrás do
 // middleware `iam` só quando `IAM_BASE_URL` está configurado) e o log de acesso
 // e auditoria — Story 1.12 (GET /api/logs-acesso, mínimo `adm`: toda tentativa
-// de login por senha ou SSO é registrada append-only em `logs_acesso`).
+// de login por senha ou SSO é registrada append-only em `logs_acesso`) e a
+// abertura do domínio de Estoques — Story 2.1 (POST /api/estoques, mínimo
+// `almoxarife`, e GET /api/estoques para qualquer conta autenticada: criar e
+// listar locais de estoque, com nome único — insensível a maiúsculas/minúsculas
+// e a espaçamento — imposto pelo índice único sobre a coluna gerada
+// `nome_normalizado`).
 package main
 
 import (
@@ -248,6 +253,21 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	mux.HandleFunc("GET /api/logs-acesso", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAdm)(
 			handlers.ListarLogsAcessoHandler(db))))
+
+	// Gestão de Estoques — criar e listar locais — Story 2.1 (FR12). POST fica
+	// atrás de RequireRole(almoxarife): criar Estoque é restrito a `almoxarife`+
+	// e a decisão é do middleware (403 para papéis abaixo, mesmo em chamada
+	// direta à API). GET leva só RequireAuth — a lista de Estoques é liberada a
+	// qualquer conta autenticada (as telas de catálogo do Epic 4 precisam
+	// listar nomes de Estoque para contas `usuario`); por isso NÃO leva
+	// RequireRole. Unicidade de nome — insensível a caixa e a espaçamento — é
+	// imposta pelo índice único sobre a coluna gerada `nome_normalizado`; a
+	// colisão vira 409 CONFLICT.
+	mux.HandleFunc("POST /api/estoques", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAlmoxarife)(
+			handlers.CriarEstoqueHandler(db))))
+	mux.HandleFunc("GET /api/estoques", middleware.RequireAuth(db, jwtSecret)(
+		handlers.ListarEstoquesHandler(db)))
 
 	// Login federado via Keycloak — SSO Ferreira Costa (Story 1.9, AD-7).
 	// /api/auth/sso/config e /api/auth/logout são SEMPRE registrados (o

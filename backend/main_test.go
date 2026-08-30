@@ -419,6 +419,19 @@ func TestNewMux_RegistraRotasDeAutenticacao(t *testing.T) {
 			statusQuerAo: http.StatusUnauthorized,
 		},
 		{
+			nome:         "estoques POST sem token chega no RequireAuth antes de RequireRole",
+			metodo:       http.MethodPost,
+			caminho:      "/api/estoques",
+			corpo:        `{"nome":"Canteiro A"}`,
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
+			nome:         "estoques GET sem token chega no RequireAuth (rota sem RequireRole)",
+			metodo:       http.MethodGet,
+			caminho:      "/api/estoques",
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
 			nome:         "sso/config sempre registrada (sem IAM_* -> enabled:false)",
 			metodo:       http.MethodGet,
 			caminho:      "/api/auth/sso/config",
@@ -577,6 +590,100 @@ func TestNewMux_UsuariosRotaCarregaRequireRole(t *testing.T) {
 			if w.Code != http.StatusOK {
 				t.Fatalf("%s: status = %d, want %d (body=%s)", email, w.Code, http.StatusOK, w.Body.String())
 			}
+		}
+	})
+}
+
+// TestNewMux_EstoquesRotaCarregaRequireRole prova, despachando pela mesma
+// instância de newMux usada por main() (Story 2.1), que:
+//   - POST /api/estoques está atrás de RequireRole(almoxarife): token
+//     `usuario` -> 403 FORBIDDEN; token `almoxarife`/`gestor`/`adm` passa do
+//     gate (201, ou 400 num payload inválido — nunca 403).
+//   - GET /api/estoques NÃO leva RequireRole: um token `usuario` -> 200.
+//
+// Sem estes casos, remover `middleware.RequireRole(services.PapelAlmoxarife)`
+// do POST — ou adicioná-lo indevidamente ao GET — deixaria a suíte verde (o
+// único caso pré-existente em main_test.go, sem token -> 401, é produzido só
+// por RequireAuth).
+func TestNewMux_EstoquesRotaCarregaRequireRole(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate usuarios: %v", err)
+	}
+	if _, err := db.Exec(`TRUNCATE TABLE estoques`); err != nil {
+		t.Fatalf("truncate estoques: %v", err)
+	}
+
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
+
+	const senha = "senha-123456"
+	segredos := map[string]string{}
+
+	despachar := func(metodo, caminho, token, corpo string) *httptest.ResponseRecorder {
+		var req *http.Request
+		if corpo != "" {
+			req = httptest.NewRequest(metodo, caminho, strings.NewReader(corpo))
+			req.Header.Set("Content-Type", "application/json")
+		} else {
+			req = httptest.NewRequest(metodo, caminho, nil)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	seedContaMux(t, db, "estq-mux-usuario@empresa.com", "usuario", senha, segredos)
+	seedContaMux(t, db, "estq-mux-almox@empresa.com", "almoxarife", senha, segredos)
+	seedContaMux(t, db, "estq-mux-gestor@empresa.com", "gestor", senha, segredos)
+	seedContaMux(t, db, "estq-mux-adm@empresa.com", "adm", senha, segredos)
+
+	t.Run("POST: papel usuario -> 403 FORBIDDEN", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "estq-mux-usuario@empresa.com", senha, segredos)
+		w := despachar(http.MethodPost, "/api/estoques", token, `{"nome":"Canteiro Vetado"}`)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusForbidden, w.Body.String())
+		}
+		var env struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+			t.Fatalf("decode envelope: %v", err)
+		}
+		if env.Error.Code != "FORBIDDEN" {
+			t.Errorf("code = %q, want FORBIDDEN", env.Error.Code)
+		}
+	})
+
+	t.Run("POST: almoxarife/gestor/adm passam do gate (nunca 403)", func(t *testing.T) {
+		casos := []struct{ email, nome string }{
+			{"estq-mux-almox@empresa.com", "Canteiro Almox"},
+			{"estq-mux-gestor@empresa.com", "Canteiro Gestor"},
+			{"estq-mux-adm@empresa.com", "Canteiro Adm"},
+		}
+		for _, c := range casos {
+			token := tokenDeMux(t, mux, c.email, senha, segredos)
+			w := despachar(http.MethodPost, "/api/estoques", token, `{"nome":"`+c.nome+`"}`)
+			if w.Code != http.StatusCreated {
+				t.Errorf("%s: status = %d, want %d (body=%s)", c.email, w.Code, http.StatusCreated, w.Body.String())
+			}
+			// Payload inválido pelo mesmo caminho: o handler executou (400), não parou no 403.
+			wInvalido := despachar(http.MethodPost, "/api/estoques", token, `{"nome":"   "}`)
+			if wInvalido.Code != http.StatusBadRequest {
+				t.Errorf("%s (payload inválido): status = %d, want %d (body=%s)", c.email, wInvalido.Code, http.StatusBadRequest, wInvalido.Body.String())
+			}
+		}
+	})
+
+	t.Run("GET: papel usuario -> 200 (rota sem RequireRole)", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "estq-mux-usuario@empresa.com", senha, segredos)
+		w := despachar(http.MethodGet, "/api/estoques", token, "")
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
 		}
 	})
 }

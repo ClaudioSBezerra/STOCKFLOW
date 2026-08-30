@@ -9,6 +9,7 @@ import { LoginPage } from '@/pages/LoginPage';
 import { EsqueciSenhaPage } from '@/pages/EsqueciSenhaPage';
 import { RedefinirSenhaPage } from '@/pages/RedefinirSenhaPage';
 import { ConfiguracoesPage } from '@/pages/ConfiguracoesPage';
+import { EstoquesPage } from '@/pages/EstoquesPage';
 import { AuthCallbackPage } from '@/pages/AuthCallbackPage';
 
 /**
@@ -22,7 +23,9 @@ import { AuthCallbackPage } from '@/pages/AuthCallbackPage';
  * (Story 1.9, retorno do login federado via Keycloak) são rotas públicas
  * irmãs da raiz, fora do `AppShell` e fora do
  * `RotaProtegida`. `/configuracoes` (Story 1.7, "Meu Perfil" + solicitação de
- * promoção de papel) é rota-filha da raiz, dentro do `AppShell`/`RotaProtegida`.
+ * promoção de papel) e `/estoques` (Story 2.1, tela "Locais": cadastro + lista
+ * de locais de estoque, com gate de papel `almoxarife`+ na própria página) são
+ * rotas-filhas da raiz, dentro do `AppShell`/`RotaProtegida`.
  * A árvore do `AppShell` fica atrás do `RotaProtegida`
  * (Story 1.5): o `AuthProvider` faz o bootstrap silencioso da sessão ao
  * montar o app (silent refresh via cookie), e enquanto isso não resolve a
@@ -86,6 +89,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <PlaceholderPage /> },
       { path: 'configuracoes', element: <ConfiguracoesPage /> },
+      { path: 'estoques', element: <EstoquesPage /> },
       { path: '*', element: <PlaceholderPage /> },
     ],
   },
