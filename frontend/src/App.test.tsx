@@ -162,6 +162,33 @@ describe('<App /> — wiring real de AuthProvider + RotaProtegida', () => {
     expect(screen.queryByRole('navigation', { name: 'Navegação principal' })).not.toBeInTheDocument();
   });
 
+  it('/configuracoes renderiza ConfiguracoesPage dentro do shell, não a PlaceholderPage', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/api/auth/refresh') {
+        return Promise.resolve({ ok: true, json: async () => ({ token: 'access-abc' }) });
+      }
+      if (url === '/api/auth/me') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ id: '1', nome: 'Fulano', email: 'f@empresa.com', papel: 'usuario' }),
+        });
+      }
+      if (url === '/api/promocoes/minha') {
+        return Promise.resolve({ ok: true, json: async () => ({ solicitacao: null }) });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    await router.navigate('/configuracoes');
+
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Meu Perfil' })).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/configuracoes');
+    expect(screen.getByRole('button', { name: 'Solicitar promoção para Almoxarife' })).toBeInTheDocument();
+    expect(screen.getAllByRole('navigation', { name: 'Navegação principal' }).length).toBeGreaterThan(0);
+    expect(screen.queryByText('Em construção')).not.toBeInTheDocument();
+  });
+
   it('cookie válido: refresh + /me resolvem e o AppShell é renderizado em /', async () => {
     fetchMock.mockImplementation((url: string) => {
       if (url === '/api/auth/refresh') {

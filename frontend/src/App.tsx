@@ -7,6 +7,7 @@ import { VerificarEmailPage } from '@/pages/VerificarEmailPage';
 import { LoginPage } from '@/pages/LoginPage';
 import { EsqueciSenhaPage } from '@/pages/EsqueciSenhaPage';
 import { RedefinirSenhaPage } from '@/pages/RedefinirSenhaPage';
+import { ConfiguracoesPage } from '@/pages/ConfiguracoesPage';
 
 /**
  * Rota raiz usa `AppShell` como layout; todo caminho não-raiz reaproveita a
@@ -17,7 +18,9 @@ import { RedefinirSenhaPage } from '@/pages/RedefinirSenhaPage';
  * `/cadastro`, `/verificar-email` (Story 1.3), `/login` (Story 1.4) e
  * `/esqueci-senha` + `/redefinir-senha` (Story 1.6) são rotas públicas irmãs
  * da raiz, fora do `AppShell` e fora do
- * `RotaProtegida`. A árvore do `AppShell` fica atrás do `RotaProtegida`
+ * `RotaProtegida`. `/configuracoes` (Story 1.7, "Meu Perfil" + solicitação de
+ * promoção de papel) é rota-filha da raiz, dentro do `AppShell`/`RotaProtegida`.
+ * A árvore do `AppShell` fica atrás do `RotaProtegida`
  * (Story 1.5): o `AuthProvider` faz o bootstrap silencioso da sessão ao
  * montar o app (silent refresh via cookie), e enquanto isso não resolve a
  * rota protegida mostra uma tela mínima de carregamento; conta anônima é
@@ -59,6 +62,7 @@ export const router = createBrowserRouter([
     element: <RotaProtegida />,
     children: [
       { index: true, element: <PlaceholderPage /> },
+      { path: 'configuracoes', element: <ConfiguracoesPage /> },
       { path: '*', element: <PlaceholderPage /> },
     ],
   },

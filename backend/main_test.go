@@ -262,6 +262,30 @@ func TestNewMux_RegistraRotasDeAutenticacao(t *testing.T) {
 			caminho:      "/api/usuarios",
 			statusQuerAo: http.StatusUnauthorized,
 		},
+		{
+			nome:         "promocoes POST sem token chega no RequireAuth",
+			metodo:       http.MethodPost,
+			caminho:      "/api/promocoes",
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
+			nome:         "promocoes/minha sem token chega no RequireAuth",
+			metodo:       http.MethodGet,
+			caminho:      "/api/promocoes/minha",
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
+			nome:         "promocoes GET sem token chega no RequireAuth antes de RequireRole",
+			metodo:       http.MethodGet,
+			caminho:      "/api/promocoes",
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
+			nome:         "promocoes/{id}/decisao sem token chega no RequireAuth antes de RequireRole",
+			metodo:       http.MethodPost,
+			caminho:      "/api/promocoes/qualquer-id/decisao",
+			statusQuerAo: http.StatusUnauthorized,
+		},
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
@@ -438,6 +462,192 @@ func TestNewMux_UsuariosRotaCarregaRequireRole(t *testing.T) {
 			w := getUsuarios(tokenDe(email))
 			if w.Code != http.StatusOK {
 				t.Fatalf("%s: status = %d, want %d (body=%s)", email, w.Code, http.StatusOK, w.Body.String())
+			}
+		}
+	})
+}
+
+// TestNewMux_PromocoesRotasCarregamRequireRole prova, pela mesma instância de
+// newMux usada por main(), que GET /api/promocoes e
+// POST /api/promocoes/{id}/decisao estão atrás de RequireRole(gestor) — e não
+// só de RequireAuth (Story 1.7). Um token de `usuario`/`almoxarife` recebe
+// 403 FORBIDDEN; um de `gestor`/`adm` passa do gate (200 no GET; 404 no POST
+// decisao com um uuid aleatório, provando que o handler executou). Sem estes
+// casos, remover `middleware.RequireRole(services.PapelGestor)` dessas duas
+// rotas em newMux deixaria a suíte verde.
+func TestNewMux_PromocoesRotasCarregamRequireRole(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	mux := newMux(db, emailCfg, jwtSecret)
+
+	const senha = "senha-123456"
+	seedConta := func(email, papel string) {
+		hash, err := bcrypt.GenerateFromPassword([]byte(senha), bcrypt.DefaultCost)
+		if err != nil {
+			t.Fatalf("hash: %v", err)
+		}
+		if _, err := db.Exec(
+			`INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
+			 VALUES ('Conta Teste', $1, $2, $3, true, true)`,
+			email, string(hash), papel,
+		); err != nil {
+			t.Fatalf("insert conta %q (%s): %v", email, papel, err)
+		}
+	}
+
+	tokenDe := func(email string) string {
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/login",
+			strings.NewReader(`{"email":"`+email+`","senha":"`+senha+`"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("login %q: status = %d, want 200 (body=%s)", email, w.Code, w.Body.String())
+		}
+		var body struct {
+			Token string `json:"token"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("login %q: decode: %v", email, err)
+		}
+		return body.Token
+	}
+
+	despachar := func(metodo, caminho, token, corpo string) *httptest.ResponseRecorder {
+		var req *http.Request
+		if corpo != "" {
+			req = httptest.NewRequest(metodo, caminho, strings.NewReader(corpo))
+			req.Header.Set("Content-Type", "application/json")
+		} else {
+			req = httptest.NewRequest(metodo, caminho, nil)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	seedConta("promo-mux-usuario@empresa.com", "usuario")
+	seedConta("promo-mux-almox@empresa.com", "almoxarife")
+	seedConta("promo-mux-gestor@empresa.com", "gestor")
+	seedConta("promo-mux-adm@empresa.com", "adm")
+
+	const uuidAleatorio = "11111111-1111-1111-1111-111111111111"
+
+	t.Run("papel abaixo de gestor -> 403 nas duas rotas", func(t *testing.T) {
+		for _, email := range []string{"promo-mux-usuario@empresa.com", "promo-mux-almox@empresa.com"} {
+			token := tokenDe(email)
+
+			wGet := despachar(http.MethodGet, "/api/promocoes", token, "")
+			if wGet.Code != http.StatusForbidden {
+				t.Errorf("%s GET /api/promocoes: status = %d, want 403 (body=%s)", email, wGet.Code, wGet.Body.String())
+			}
+
+			wPost := despachar(http.MethodPost, "/api/promocoes/"+uuidAleatorio+"/decisao", token, `{"aprovar":true}`)
+			if wPost.Code != http.StatusForbidden {
+				t.Errorf("%s POST .../decisao: status = %d, want 403 (body=%s)", email, wPost.Code, wPost.Body.String())
+			}
+		}
+	})
+
+	t.Run("gestor/adm passam do gate", func(t *testing.T) {
+		for _, email := range []string{"promo-mux-gestor@empresa.com", "promo-mux-adm@empresa.com"} {
+			token := tokenDe(email)
+
+			wGet := despachar(http.MethodGet, "/api/promocoes", token, "")
+			if wGet.Code != http.StatusOK {
+				t.Errorf("%s GET /api/promocoes: status = %d, want 200 (body=%s)", email, wGet.Code, wGet.Body.String())
+			}
+
+			// uuid válido porém inexistente: o handler executou (passou do
+			// RequireRole) e devolveu 404, nunca 403.
+			wPost := despachar(http.MethodPost, "/api/promocoes/"+uuidAleatorio+"/decisao", token, `{"aprovar":true}`)
+			if wPost.Code != http.StatusNotFound {
+				t.Errorf("%s POST .../decisao: status = %d, want 404 (body=%s)", email, wPost.Code, wPost.Body.String())
+			}
+		}
+	})
+}
+
+// TestRunMigrations_SolicitacoesPromocaoSchema prova que a migration 000004
+// (Story 1.7) cria os CHECK constraints e os índices de solicitacoes_promocao
+// — mesmo precedente das asserções de schema das migrations anteriores neste
+// arquivo.
+func TestRunMigrations_SolicitacoesPromocaoSchema(t *testing.T) {
+	db := testDB(t)
+
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	var solicitanteID string
+	if err := db.QueryRow(
+		`INSERT INTO usuarios (nome, email, papel) VALUES ('x', 'promo-schema@example.com', 'usuario') RETURNING id`,
+	).Scan(&solicitanteID); err != nil {
+		t.Fatalf("insert usuario: %v", err)
+	}
+
+	t.Run("papel_alvo rejeita valor fora do enum", func(t *testing.T) {
+		_, err := db.Exec(
+			`INSERT INTO solicitacoes_promocao (solicitante_id, papel_alvo) VALUES ($1, 'adm')`, solicitanteID,
+		)
+		if err == nil {
+			t.Error("esperava falha ao inserir papel_alvo fora do CHECK ('almoxarife','gestor'), mas o insert teve sucesso")
+		}
+	})
+
+	t.Run("status rejeita valor fora do enum", func(t *testing.T) {
+		_, err := db.Exec(
+			`INSERT INTO solicitacoes_promocao (solicitante_id, papel_alvo, status) VALUES ($1, 'almoxarife', 'cancelada')`,
+			solicitanteID,
+		)
+		if err == nil {
+			t.Error("esperava falha ao inserir status fora do CHECK ('pendente','aprovada','rejeitada'), mas o insert teve sucesso")
+		}
+	})
+
+	t.Run("CHECK de consistência: pendente com decidido_em preenchido é rejeitado", func(t *testing.T) {
+		_, err := db.Exec(
+			`INSERT INTO solicitacoes_promocao (solicitante_id, papel_alvo, status, decidido_em)
+			 VALUES ($1, 'almoxarife', 'pendente', now())`,
+			solicitanteID,
+		)
+		if err == nil {
+			t.Error("esperava falha: status='pendente' exige decidido_em NULL")
+		}
+	})
+
+	t.Run("CHECK de consistência: decidida sem decidido_em é rejeitada", func(t *testing.T) {
+		_, err := db.Exec(
+			`INSERT INTO solicitacoes_promocao (solicitante_id, papel_alvo, status) VALUES ($1, 'almoxarife', 'aprovada')`,
+			solicitanteID,
+		)
+		if err == nil {
+			t.Error("esperava falha: status != 'pendente' exige decidido_em preenchido")
+		}
+	})
+
+	t.Run("índices esperados existem", func(t *testing.T) {
+		indices := []string{
+			"idx_solicitacoes_promocao_pendente_unica",
+			"idx_solicitacoes_promocao_solicitante",
+			"idx_solicitacoes_promocao_decidido_por",
+			"idx_solicitacoes_promocao_status",
+		}
+		for _, nome := range indices {
+			var indexDef string
+			if err := db.QueryRow(`SELECT indexdef FROM pg_indexes WHERE indexname = $1`, nome).Scan(&indexDef); err != nil {
+				t.Errorf("índice %q não encontrado: %v", nome, err)
+				continue
+			}
+			if nome == "idx_solicitacoes_promocao_pendente_unica" {
+				if !strings.Contains(indexDef, "UNIQUE") || !strings.Contains(indexDef, "WHERE") {
+					t.Errorf("%s deveria ser um índice parcial UNIQUE, definição = %q", nome, indexDef)
+				}
 			}
 		}
 	})

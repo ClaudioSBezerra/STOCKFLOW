@@ -5,8 +5,11 @@
 // e-mail outbox worker (services.IniciarWorkerEmail), and then serves the
 // liveness endpoint plus the public authentication routes (cadastro e
 // verificação de e-mail — Story 1.3; login, refresh e /me — Story 1.4;
-// esqueci-senha e redefinir-senha — Story 1.6) and the first role-gated route
-// (GET /api/usuarios, mínimo `gestor` — Story 1.5).
+// esqueci-senha e redefinir-senha — Story 1.6), the first role-gated route
+// (GET /api/usuarios, mínimo `gestor` — Story 1.5) and a solicitação de
+// promoção de papel — Story 1.7 (POST /api/promocoes e GET /api/promocoes/minha
+// para qualquer conta autenticada; GET /api/promocoes e
+// POST /api/promocoes/{id}/decisao com mínimo `gestor`).
 package main
 
 import (
@@ -197,6 +200,16 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte) *http.S
 	mux.HandleFunc("GET /api/usuarios", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelGestor)(
 			handlers.ListarUsuariosHandler(db))))
+	mux.HandleFunc("POST /api/promocoes", middleware.RequireAuth(db, jwtSecret)(
+		handlers.SolicitarPromocaoHandler(db)))
+	mux.HandleFunc("GET /api/promocoes/minha", middleware.RequireAuth(db, jwtSecret)(
+		handlers.MinhaSolicitacaoHandler(db)))
+	mux.HandleFunc("GET /api/promocoes", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelGestor)(
+			handlers.ListarPromocoesHandler(db))))
+	mux.HandleFunc("POST /api/promocoes/{id}/decisao", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelGestor)(
+			handlers.DecidirPromocaoHandler(db))))
 	return mux
 }
 
