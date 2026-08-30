@@ -545,3 +545,121 @@ func contarLinhasUsuarios(t *testing.T, db *sql.DB) int {
 	}
 	return n
 }
+
+// --- Story 1.12: log de acesso e auditoria no caminho SSO ---
+
+// TestKeycloakSSO_RegistraTentativaBemSucedida prova a linha "SSO bem-sucedido"
+// da I/O Matrix: 1 linha logs_acesso metodo='sso' sucesso=true com usuario_id
+// preenchido.
+func TestKeycloakSSO_RegistraTentativaBemSucedida(t *testing.T) {
+	db := testDB(t)
+	priv := ssoGerarChave(t)
+	id := criarContaComPapel(t, db, "Carlos", "carlos@fc.com", "senha-123456", "usuario")
+	h := ssoHandler(t, db, priv, "")
+
+	w := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	if n := contarLogsAcesso(t, db); n != 1 {
+		t.Fatalf("logs_acesso = %d, want 1", n)
+	}
+	l := ultimoLogAcesso(t, db)
+	if l.metodo != "sso" || !l.sucesso {
+		t.Errorf("metodo=%q sucesso=%v, want sso/true", l.metodo, l.sucesso)
+	}
+	if !l.usuarioID.Valid || l.usuarioID.String != id {
+		t.Errorf("usuario_id = %v, want %q", l.usuarioID, id)
+	}
+	if l.email != "carlos@fc.com" {
+		t.Errorf("email_informado = %q, want carlos@fc.com", l.email)
+	}
+}
+
+// TestKeycloakSSO_SemContaRegistraFalha prova a linha "SSO sem conta local":
+// 401 SSO_SEM_CONTA + 1 linha sucesso=false, usuario_id=NULL, email_informado
+// = o e-mail do token.
+func TestKeycloakSSO_SemContaRegistraFalha(t *testing.T) {
+	db := testDB(t)
+	priv := ssoGerarChave(t)
+	h := ssoHandler(t, db, priv, "")
+
+	w := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (body=%s)", w.Code, w.Body.String())
+	}
+	if n := contarLogsAcesso(t, db); n != 1 {
+		t.Fatalf("logs_acesso = %d, want 1", n)
+	}
+	l := ultimoLogAcesso(t, db)
+	if l.usuarioID.Valid || l.sucesso || l.metodo != "sso" {
+		t.Errorf("linha = %+v, want metodo=sso sucesso=false usuario_id=NULL", l)
+	}
+	if l.email != "carlos@fc.com" {
+		t.Errorf("email_informado = %q, want o e-mail do token", l.email)
+	}
+}
+
+// TestKeycloakSSO_EmailNaoVerificadoRegistraFalha prova a linha "SSO e-mail
+// não verificado no token": 401 EMAIL_NOT_VERIFIED + 1 linha sucesso=false
+// usuario_id=NULL.
+func TestKeycloakSSO_EmailNaoVerificadoRegistraFalha(t *testing.T) {
+	db := testDB(t)
+	priv := ssoGerarChave(t)
+	criarContaComPapel(t, db, "Carlos", "carlos@fc.com", "senha-123456", "usuario")
+	h := ssoHandler(t, db, priv, "")
+
+	c := ssoClaims()
+	c["email_verified"] = false
+	w := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, c))
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (body=%s)", w.Code, w.Body.String())
+	}
+	if n := contarLogsAcesso(t, db); n != 1 {
+		t.Fatalf("logs_acesso = %d, want 1", n)
+	}
+	if l := ultimoLogAcesso(t, db); l.usuarioID.Valid || l.sucesso {
+		t.Errorf("linha = %+v, want sucesso=false usuario_id=NULL", l)
+	}
+}
+
+// TestKeycloakSSO_ContaInativaRegistraFalhaComUsuario prova o "qualquer
+// desfecho do SSO em que BuscarUsuarioPorEmailSSO achou a conta (inclusive
+// conta inativa)" grava usuario_id: 401 INVALID_CREDENTIALS + 1 linha
+// sucesso=false COM usuario_id.
+func TestKeycloakSSO_ContaInativaRegistraFalhaComUsuario(t *testing.T) {
+	db := testDB(t)
+	priv := ssoGerarChave(t)
+	id := criarUsuarioLoginComEstado(t, db, "carlos@fc.com", "", false, true) // ativo=false
+	h := ssoHandler(t, db, priv, "")
+
+	w := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (body=%s)", w.Code, w.Body.String())
+	}
+	l := ultimoLogAcesso(t, db)
+	if !l.usuarioID.Valid || l.usuarioID.String != id {
+		t.Errorf("usuario_id = %v, want %q (conta identificável)", l.usuarioID, id)
+	}
+	if l.sucesso || l.metodo != "sso" {
+		t.Errorf("linha = %+v, want metodo=sso sucesso=false", l)
+	}
+}
+
+// TestKeycloakSSO_TokenSemEmailNaoRegistra prova a linha "SSO token sem
+// e-mail": 400 VALIDATION_ERROR e NENHUMA linha logs_acesso.
+func TestKeycloakSSO_TokenSemEmailNaoRegistra(t *testing.T) {
+	db := testDB(t)
+	priv := ssoGerarChave(t)
+	h := ssoHandler(t, db, priv, "")
+
+	c := ssoClaims()
+	delete(c, "email")
+	w := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, c))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%s)", w.Code, w.Body.String())
+	}
+	if n := contarLogsAcesso(t, db); n != 0 {
+		t.Fatalf("logs_acesso = %d, want 0 (sem identidade de tentativa)", n)
+	}
+}

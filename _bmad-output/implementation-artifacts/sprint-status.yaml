@@ -47,7 +47,7 @@ development_status:
   1-9-login-federado-via-keycloak-sso-ferreira-costa: awaiting-operator
   1-10-bloqueio-de-conta-e-política-de-senha: done
   1-11-mfa-obrigatório-para-papéis-administrativos: done
-  1-12-log-de-acesso-e-auditoria: backlog
+  1-12-log-de-acesso-e-auditoria: done
   epic-1-retrospective: optional
 
   epic-2: backlog

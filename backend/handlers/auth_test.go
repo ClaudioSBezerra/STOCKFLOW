@@ -1294,3 +1294,148 @@ func TestCadastroHandler_SenhaFraca(t *testing.T) {
 		t.Errorf("count(usuarios) = %d, want %d — cadastro com senha fraca não pode criar conta", depois, antes)
 	}
 }
+
+// --- Story 1.12: log de acesso e auditoria na fronteira HTTP ---
+
+// TestLoginHandler_RegistraTentativaBemSucedida prova a linha "Login por senha
+// bem-sucedido" da I/O Matrix: 1 linha logs_acesso metodo='senha' sucesso=true
+// com usuario_id preenchido, email_informado e ip — e a resposta 200 é a mesma
+// de sempre.
+func TestLoginHandler_RegistraTentativaBemSucedida(t *testing.T) {
+	db := testDB(t)
+	id := criarUsuarioLogin(t, db, "log-login-ok@empresa.com", "senha-123456")
+
+	w := postLogin(db, `{"email":"Log-Login-OK@Empresa.com","senha":"senha-123456"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	if n := contarLogsAcesso(t, db); n != 1 {
+		t.Fatalf("logs_acesso = %d, want 1", n)
+	}
+	l := ultimoLogAcesso(t, db)
+	if !l.usuarioID.Valid || l.usuarioID.String != id {
+		t.Errorf("usuario_id = %v, want %q", l.usuarioID, id)
+	}
+	if l.metodo != "senha" || !l.sucesso {
+		t.Errorf("metodo=%q sucesso=%v, want senha/true", l.metodo, l.sucesso)
+	}
+	if l.email != "log-login-ok@empresa.com" {
+		t.Errorf("email_informado = %q, want normalizado", l.email)
+	}
+	if l.ip == "" {
+		t.Errorf("ip vazio, want algo (RemoteAddr do httptest)")
+	}
+}
+
+// TestLoginHandler_RegistraTentativaFalha prova a linha "Senha errada / e-mail
+// inexistente": 1 linha sucesso=false, usuario_id=NULL, email_informado = o
+// e-mail tentado — a resposta 401 continua idêntica.
+func TestLoginHandler_RegistraTentativaFalha(t *testing.T) {
+	db := testDB(t)
+
+	// E-mail que nem existe: ainda assim registra a tentativa.
+	w := postLogin(db, `{"email":"nunca-existiu-log@empresa.com","senha":"qualquer"}`)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (body=%s)", w.Code, w.Body.String())
+	}
+	if n := contarLogsAcesso(t, db); n != 1 {
+		t.Fatalf("logs_acesso = %d, want 1 (linha gravada mesmo no caminho de erro)", n)
+	}
+	l := ultimoLogAcesso(t, db)
+	if l.usuarioID.Valid {
+		t.Errorf("usuario_id = %v, want NULL", l.usuarioID)
+	}
+	if l.metodo != "senha" || l.sucesso {
+		t.Errorf("metodo=%q sucesso=%v, want senha/false", l.metodo, l.sucesso)
+	}
+	if l.email != "nunca-existiu-log@empresa.com" {
+		t.Errorf("email_informado = %q, want o e-mail tentado", l.email)
+	}
+}
+
+// TestLoginHandler_ContaBloqueadaRegistraFalha prova a linha "Conta bloqueada
+// (Story 1.10)": 429 igual a hoje + 1 linha sucesso=false usuario_id=NULL.
+func TestLoginHandler_ContaBloqueadaRegistraFalha(t *testing.T) {
+	db := testDB(t)
+	id := criarUsuarioLogin(t, db, "log-bloqueada@empresa.com", "senha-123456")
+	if _, err := db.Exec(
+		`UPDATE usuarios SET tentativas_login_falhas = 5, bloqueado_ate = now() + interval '15 minutes' WHERE id = $1`, id,
+	); err != nil {
+		t.Fatalf("bloquear conta: %v", err)
+	}
+
+	w := postLogin(db, `{"email":"log-bloqueada@empresa.com","senha":"senha-123456"}`)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429 (body=%s)", w.Code, w.Body.String())
+	}
+	if n := contarLogsAcesso(t, db); n != 1 {
+		t.Fatalf("logs_acesso = %d, want 1", n)
+	}
+	l := ultimoLogAcesso(t, db)
+	if l.usuarioID.Valid || l.sucesso || l.metodo != "senha" {
+		t.Errorf("linha = %+v, want metodo=senha sucesso=false usuario_id=NULL", l)
+	}
+}
+
+// TestLoginHandler_CamposEmBrancoNaoRegistram prova a linha "Campos em branco
+// no login": 400 VALIDATION_ERROR e NENHUMA linha logs_acesso.
+func TestLoginHandler_CamposEmBrancoNaoRegistram(t *testing.T) {
+	db := testDB(t)
+
+	w := postLogin(db, `{"email":"","senha":"senha-123456"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%s)", w.Code, w.Body.String())
+	}
+	if n := contarLogsAcesso(t, db); n != 0 {
+		t.Fatalf("logs_acesso = %d, want 0 (sem identidade de tentativa real)", n)
+	}
+}
+
+// TestLoginHandler_IPDeXForwardedFor prova que ipDaRequisicao prefere o
+// primeiro salto de X-Forwarded-For (produção atrás de proxy).
+func TestLoginHandler_IPDeXForwardedFor(t *testing.T) {
+	db := testDB(t)
+	criarUsuarioLogin(t, db, "log-xff@empresa.com", "senha-123456")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login",
+		strings.NewReader(`{"email":"log-xff@empresa.com","senha":"senha-123456"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-For", "198.51.100.23, 10.0.0.1")
+	w := httptest.NewRecorder()
+	LoginHandler(db, testJWTSecret)(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	if l := ultimoLogAcesso(t, db); l.ip != "198.51.100.23" {
+		t.Errorf("ip = %q, want 198.51.100.23 (primeiro salto do XFF)", l.ip)
+	}
+}
+
+// TestLoginHandler_XForwardedForLixoNaoSuprimeAuditoria prova que um
+// X-Forwarded-For gigante / não-IP na rota pública de login NÃO vira o valor
+// gravado nem derruba o INSERT de auditoria (coluna ip VARCHAR(64)): a linha
+// é gravada mesmo assim, e o ip cai no fallback são de RemoteAddr.
+func TestLoginHandler_XForwardedForLixoNaoSuprimeAuditoria(t *testing.T) {
+	db := testDB(t)
+	criarUsuarioLogin(t, db, "log-xff-lixo@empresa.com", "senha-123456")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login",
+		strings.NewReader(`{"email":"log-xff-lixo@empresa.com","senha":"senha-123456"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-For", strings.Repeat("naoehip-", 40)) // ~320 chars, não é IP
+	w := httptest.NewRecorder()
+	LoginHandler(db, testJWTSecret)(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	if n := contarLogsAcesso(t, db); n != 1 {
+		t.Fatalf("logs_acesso = %d, want 1 (auditoria não pode ser suprimida por XFF lixo)", n)
+	}
+	l := ultimoLogAcesso(t, db)
+	if strings.Contains(l.ip, "naoehip") {
+		t.Errorf("ip = %q, want o fallback de RemoteAddr, não o XFF lixo", l.ip)
+	}
+	if len(l.ip) > 64 {
+		t.Errorf("ip com %d chars, want <= 64", len(l.ip))
+	}
+}

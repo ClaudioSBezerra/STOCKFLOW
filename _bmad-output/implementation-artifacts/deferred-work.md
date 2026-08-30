@@ -229,3 +229,27 @@ source_spec: `spec-1-10-bloqueio-de-conta-e-politica-de-senha.md`
 severity: low
 reason: EsqueciSenhaHandler (handlers/auth.go) responde sempre 200 e chama SolicitarRedefinicaoSenha, que enfileira uma linha em emails_pendentes por requisição (invalida tokens anteriores, mas não limita e-mails enviados). Gap pré-existente da Story 1.6; a Story 1.10 o torna mais relevante ao empurrar usuários bloqueados para esse endpoint. Fora do escopo de FR-36 (que só pede bloqueio no login por senha), mas merece uma passagem dedicada de segurança.
 status: open
+
+### DW-30: Tentativas no SEGUNDO fator (código TOTP errado em POST /api/auth/mfa/verificar, e o bloqueio na 6ª falha de código) não geram linha em `logs_acesso` — só a etapa de senha aparece, marcada `sucesso=tr
+origin: spec-deferred 29649c86f9bb
+location: backend/handlers/auth_mfa.go (MFAVerificarHandler)
+source_spec: `spec-1-12-log-de-acesso-e-auditoria.md`
+severity: medium
+reason: A AC do épico enumera o método como "senha ou SSO"; MFAVerificarHandler (backend/handlers/auth_mfa.go) não chama registrarTentativaLogin. A força bruta de código já é contada pelo lockout da Story 1.10, mas o `adm` não enxerga no log de acesso quando um segundo fator falhou repetidamente. Decisão deliberada da spec (`<intent-contract>` → Never), registrada aqui.
+status: open
+
+### DW-31: Não há rotina de expurgo/arquivamento dos 12 meses de retenção que o PRD §9 define para o log de acesso — a tabela `logs_acesso` cresce sem teto.
+origin: spec-deferred 9b86eb332a37
+location: backend/migrations/000007_create_logs_acesso.up.sql
+source_spec: `spec-1-12-log-de-acesso-e-auditoria.md`
+severity: low
+reason: PRD §9 deixa a política de retenção "a detalhar na Arquitetura" e a ARCHITECTURE-SPINE não a fixa. Uma story de operação futura precisa de um job de purge/partição por tempo. Cada tentativa de login falha (inclusive contra e-mail inexistente) grava uma linha + entrada de índice.
+status: open
+
+### DW-32: GET /api/logs-acesso só filtra por período — não por resultado (sucesso/falha) nem por método — e `logs_acesso` não tem índice em `sucesso`, `email_informado` ou `usuario_id`.
+origin: spec-deferred 6b777c5a7148
+location: backend/services/logs_acesso.go (ListarLogsAcesso)
+source_spec: `spec-1-12-log-de-acesso-e-auditoria.md`
+severity: low
+reason: O uso primário de um log de acesso é "mostre as falhas" ou "as falhas de uma conta"; hoje isso é varredura completa da tabela. Fora do escopo da AC do épico (que pede só filtro por período), mas provável necessidade quando o volume crescer sob credential stuffing.
+status: open

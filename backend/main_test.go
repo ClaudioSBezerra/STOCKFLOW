@@ -413,6 +413,12 @@ func TestNewMux_RegistraRotasDeAutenticacao(t *testing.T) {
 			statusQuerAo: http.StatusUnauthorized,
 		},
 		{
+			nome:         "logs-acesso sem token chega no RequireAuth antes de RequireRole(adm)",
+			metodo:       http.MethodGet,
+			caminho:      "/api/logs-acesso",
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
 			nome:         "sso/config sempre registrada (sem IAM_* -> enabled:false)",
 			metodo:       http.MethodGet,
 			caminho:      "/api/auth/sso/config",
@@ -571,6 +577,68 @@ func TestNewMux_UsuariosRotaCarregaRequireRole(t *testing.T) {
 			if w.Code != http.StatusOK {
 				t.Fatalf("%s: status = %d, want %d (body=%s)", email, w.Code, http.StatusOK, w.Body.String())
 			}
+		}
+	})
+}
+
+// TestNewMux_LogsAcessoRotaCarregaRequireRole prova, despachando pela mesma
+// instância de newMux usada por main(), que GET /api/logs-acesso está atrás
+// de RequireRole(services.PapelAdm) — e não só de RequireAuth nem de um gate
+// de papel mais baixo. Um token de `usuario`/`almoxarife`/`gestor` recebe 403
+// FORBIDDEN; só um `adm` recebe 200. Sem estes casos, trocar o argumento de
+// RequireRole (ex. PapelGestor) ou remover o middleware de newMux deixaria a
+// suíte verde — o único caso pré-existente em main_test.go (sem token -> 401)
+// é insensível ao argumento de papel.
+func TestNewMux_LogsAcessoRotaCarregaRequireRole(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
+
+	const senha = "senha-123456"
+	segredos := map[string]string{}
+
+	getLogs := func(token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/logs-acesso", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	seedContaMux(t, db, "mux-logs-usuario@empresa.com", "usuario", senha, segredos)
+	seedContaMux(t, db, "mux-logs-almox@empresa.com", "almoxarife", senha, segredos)
+	seedContaMux(t, db, "mux-logs-gestor@empresa.com", "gestor", senha, segredos)
+	seedContaMux(t, db, "mux-logs-adm@empresa.com", "adm", senha, segredos)
+
+	t.Run("papel abaixo de adm -> 403 FORBIDDEN", func(t *testing.T) {
+		for _, email := range []string{"mux-logs-usuario@empresa.com", "mux-logs-almox@empresa.com", "mux-logs-gestor@empresa.com"} {
+			w := getLogs(tokenDeMux(t, mux, email, senha, segredos))
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("%s: status = %d, want %d (body=%s)", email, w.Code, http.StatusForbidden, w.Body.String())
+			}
+			var env struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+				t.Fatalf("%s: decode envelope: %v", email, err)
+			}
+			if env.Error.Code != "FORBIDDEN" {
+				t.Errorf("%s: code = %q, want %q", email, env.Error.Code, "FORBIDDEN")
+			}
+		}
+	})
+
+	t.Run("adm -> 200", func(t *testing.T) {
+		w := getLogs(tokenDeMux(t, mux, "mux-logs-adm@empresa.com", senha, segredos))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
 		}
 	})
 }

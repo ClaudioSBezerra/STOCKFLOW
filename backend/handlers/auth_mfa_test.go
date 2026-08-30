@@ -110,6 +110,35 @@ func TestLoginHandler_MFARequerido(t *testing.T) {
 	}
 }
 
+// TestLoginHandler_MFARequerido_RegistraUmaLinhaDeSucesso prova a linha
+// "Login por senha, MFA exigido" da I/O Matrix da Story 1.12: a resposta é
+// {"mfaRequerido":true,...} igual a hoje, e mesmo assim exatamente UMA linha
+// logs_acesso metodo='senha' sucesso=true é gravada (o campo `sucesso`
+// reflete o fator senha, não a emissão de sessão).
+func TestLoginHandler_MFARequerido_RegistraUmaLinhaDeSucesso(t *testing.T) {
+	db := testDB(t)
+	usuarioID := criarUsuarioLogin(t, db, "login-mfa-log@empresa.com", "senha-123456")
+	habilitarMFAConta(t, db, usuarioID)
+
+	w := postLogin(db, `{"email":"login-mfa-log@empresa.com","senha":"senha-123456"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	if mfaRequerido, _ := body["mfaRequerido"].(bool); !mfaRequerido {
+		t.Fatalf("mfaRequerido = %v, want true", body["mfaRequerido"])
+	}
+
+	if n := contarLogsAcesso(t, db); n != 1 {
+		t.Fatalf("logs_acesso = %d, want exatamente 1", n)
+	}
+	l := ultimoLogAcesso(t, db)
+	if l.metodo != "senha" || !l.sucesso || !l.usuarioID.Valid || l.usuarioID.String != usuarioID {
+		t.Errorf("linha = %+v, want metodo=senha sucesso=true usuario_id=%q", l, usuarioID)
+	}
+}
+
 // TestMFAVerificarHandler_CodigoCorreto prova o caminho feliz: mfaToken
 // válido + código TOTP correto emitem sessão idêntica à de um login sem MFA.
 func TestMFAVerificarHandler_CodigoCorreto(t *testing.T) {

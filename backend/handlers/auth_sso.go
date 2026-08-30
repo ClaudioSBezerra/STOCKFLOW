@@ -52,6 +52,14 @@ func SSOConfigHandler(cfg iam.Config) http.HandlerFunc {
 // access+refresh do login por senha, AD-6) — busca a conta por e-mail
 // case-insensitive e NUNCA cria. O papel é sempre o de `usuarios`, nunca do
 // token; o token do Keycloak nunca é persistido.
+//
+// Story 1.12 (FR-38/NFR-3): grava UMA linha em `logs_acesso` por tentativa
+// concluída, via registrarTentativaLogin — nos ramos de sucesso (`usuario_id`
+// preenchido, antes de emitirSessaoEResponder), e-mail não verificado e sem
+// conta local (`usuario_id = NULL`), e conta inativa (`usuario_id`
+// preenchido: BuscarUsuarioPorEmailSSO achou a conta). O ramo `email == ""`
+// (sem identidade de tentativa) e o 500 genérico de infraestrutura NÃO
+// registram. O registro é não-fatal e nunca altera a resposta ao solicitante.
 func KeycloakSSOHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		email := iam.EmailDaSessaoSSO(r.Context())
@@ -61,6 +69,7 @@ func KeycloakSSOHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 		}
 
 		if !iam.EmailVerificadoSSO(r.Context()) {
+			registrarTentativaLogin(r, db, "sso", email, nil, false)
 			escreverErro(w, http.StatusUnauthorized, "EMAIL_NOT_VERIFIED",
 				"Confirme o e-mail da sua conta corporativa no Ferreira Costa antes de entrar.")
 			return
@@ -69,6 +78,7 @@ func KeycloakSSOHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 		usuario, err := services.BuscarUsuarioPorEmailSSO(db, email)
 		if err != nil {
 			if errors.Is(err, services.ErrContaSSONaoEncontrada) {
+				registrarTentativaLogin(r, db, "sso", email, nil, false)
 				escreverErro(w, http.StatusUnauthorized, "SSO_SEM_CONTA",
 					"Não encontramos uma conta do stockflow para este e-mail. Cadastre-se primeiro.")
 				return
@@ -82,6 +92,7 @@ func KeycloakSSOHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 			// Conta desativada não autentica por SSO — coerente com a Story 1.8 e
 			// o epic-context. Mesmo código do login por senha, sem mensagem
 			// distinta.
+			registrarTentativaLogin(r, db, "sso", email, &usuario.ID, false)
 			escreverErro(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "E-mail ou senha inválidos.")
 			return
 		}
@@ -90,6 +101,7 @@ func KeycloakSSOHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 		// gestor/adm — esta sessão NUNCA passa pelo gate de MFA local
 		// (middleware.RequireRole), então emitirSessaoEResponder nunca é chamado
 		// com "sso" fora daqui.
+		registrarTentativaLogin(r, db, "sso", email, &usuario.ID, true)
 		emitirSessaoEResponder(w, r, db, jwtSecret, usuario, "sso")
 	}
 }

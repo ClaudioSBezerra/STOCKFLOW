@@ -247,6 +247,15 @@ type loginRequest struct {
 // `{"mfaRequerido":true,"mfaToken":...}` — o cliente troca esse token por
 // sessão em POST /api/auth/mfa/verificar. Senão, segue o caminho de sempre
 // via emitirSessaoEResponder(..., "senha").
+//
+// Story 1.12 (FR-38/NFR-3): grava UMA linha em `logs_acesso` por tentativa
+// concluída, via registrarTentativaLogin — nos ramos de sucesso (senha
+// aceita por services.Login, `usuario_id` preenchido, ANTES da bifurcação de
+// MFA) e de falha de credencial (ErrCredenciaisInvalidas / ErrContaBloqueada,
+// `usuario_id = NULL`). Os ramos ErrLoginValidacao (e-mail/senha em branco —
+// sem identidade de tentativa) e default (500 de infraestrutura) NÃO
+// registram. O registro é não-fatal e nunca altera o corpo nem o status da
+// resposta ao solicitante (é um único INSERT indexado, não-fatal).
 func LoginHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
@@ -265,9 +274,11 @@ func LoginHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "e-mail e senha são obrigatórios")
 			return
 		case errors.Is(err, services.ErrCredenciaisInvalidas):
+			registrarTentativaLogin(r, db, "senha", req.Email, nil, false)
 			escreverErro(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "E-mail ou senha inválidos.")
 			return
 		case errors.Is(err, services.ErrContaBloqueada):
+			registrarTentativaLogin(r, db, "senha", req.Email, nil, false)
 			escreverErro(w, http.StatusTooManyRequests, "ACCOUNT_LOCKED", "Muitas tentativas de login sem sucesso. Por segurança, novas tentativas ficam bloqueadas temporariamente. Tente novamente mais tarde.")
 			return
 		default:
@@ -282,6 +293,12 @@ func LoginHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao processar login")
 			return
 		}
+
+		// Story 1.12: a senha primária foi aceita — registra a tentativa como
+		// sucesso UMA vez, antes da bifurcação de MFA. `sucesso` reflete o fator
+		// senha, não a emissão de sessão: um login que ainda vai exigir o
+		// segundo fator continua sendo `sucesso=true` aqui.
+		registrarTentativaLogin(r, db, "senha", req.Email, &usuarioID, true)
 
 		if usuario.MFAHabilitado {
 			mfaToken, err := services.IniciarLoginMFA(db, usuario.ID)

@@ -580,3 +580,54 @@ describe('ConfiguracoesPage — Segurança (MFA, Story 1.11)', () => {
     expect(atualizarUsuarioMock).not.toHaveBeenCalled();
   });
 });
+
+describe('ConfiguracoesPage — Log de Acesso (Story 1.12)', () => {
+  it('adm vê a seção "Log de Acesso"', async () => {
+    authState.papel = 'adm';
+    stubFetch((url) => {
+      if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
+      if (url === '/api/promocoes') return jsonOk({ solicitacoes: [] });
+      if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+      if (url.startsWith('/api/logs-acesso')) return jsonOk({ logs: [] });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    render(<ConfiguracoesPage />);
+
+    expect(
+      await screen.findByRole('heading', { name: 'Log de Acesso' }),
+    ).toBeInTheDocument();
+  });
+
+  it('gestor NÃO vê a seção "Log de Acesso" e nunca chama GET /api/logs-acesso', async () => {
+    authState.papel = 'gestor';
+    const fetchMock = stubFetch((url) => {
+      if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
+      if (url === '/api/promocoes') return jsonOk({ solicitacoes: [] });
+      if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    render(<ConfiguracoesPage />);
+
+    await screen.findByRole('heading', { name: 'Decidir promoções' });
+    expect(screen.queryByRole('heading', { name: 'Log de Acesso' })).not.toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('/api/logs-acesso'),
+      expect.anything(),
+    );
+  });
+
+  it('usuario NÃO vê a seção "Log de Acesso"', async () => {
+    authState.papel = 'usuario';
+    stubFetch((url) => {
+      if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    render(<ConfiguracoesPage />);
+
+    await screen.findByRole('button', { name: /Solicitar promoção/ });
+    expect(screen.queryByRole('heading', { name: 'Log de Acesso' })).not.toBeInTheDocument();
+  });
+});

@@ -11,10 +11,12 @@
 // para qualquer conta autenticada; GET /api/promocoes e
 // POST /api/promocoes/{id}/decisao com mínimo `gestor`) e a gestão de contas —
 // desativação e rebaixamento — Story 1.8 (POST /api/usuarios/{id}/desativacao e
-// POST /api/usuarios/{id}/rebaixamento, mínimo `gestor`) e o login federado via
+// POST /api/usuarios/{id}/rebaixamento, mínimo `gestor`), o login federado via
 // Keycloak — SSO Ferreira Costa — Story 1.9 (GET /api/auth/sso/config e
 // POST /api/auth/logout sempre registrados; POST /api/auth/sso/keycloak atrás do
-// middleware `iam` só quando `IAM_BASE_URL` está configurado).
+// middleware `iam` só quando `IAM_BASE_URL` está configurado) e o log de acesso
+// e auditoria — Story 1.12 (GET /api/logs-acesso, mínimo `adm`: toda tentativa
+// de login por senha ou SSO é registrada append-only em `logs_acesso`).
 package main
 
 import (
@@ -237,6 +239,15 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	mux.HandleFunc("POST /api/usuarios/{id}/rebaixamento", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelGestor)(
 			handlers.RebaixarUsuarioHandler(db))))
+
+	// Log de acesso e auditoria — Story 1.12 (FR-38/NFR-3). Mesma composição de
+	// GET /api/usuarios, aqui com o gate de papel + MFA (Story 1.11) resolvido
+	// no mínimo `adm`: só um `adm` consulta a trilha append-only de tentativas
+	// de login. Não há rota de escrita — `logs_acesso` só recebe o INSERT
+	// não-fatal disparado de dentro de LoginHandler/KeycloakSSOHandler.
+	mux.HandleFunc("GET /api/logs-acesso", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAdm)(
+			handlers.ListarLogsAcessoHandler(db))))
 
 	// Login federado via Keycloak — SSO Ferreira Costa (Story 1.9, AD-7).
 	// /api/auth/sso/config e /api/auth/logout são SEMPRE registrados (o

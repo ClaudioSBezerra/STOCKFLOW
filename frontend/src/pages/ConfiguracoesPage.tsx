@@ -10,6 +10,7 @@ import { getAccessToken } from '@/lib/session';
 import { rankPapel } from '@/components/shell/nav-items';
 import { proximoPapel, rotuloPapel } from '@/lib/promocao';
 import { GestaoUsuariosSection } from '@/components/usuarios/GestaoUsuariosSection';
+import { LogAcessoSection } from '@/components/logs/LogAcessoSection';
 
 /**
  * Página "Meu Perfil" (`/configuracoes`, Story 1.7, spec-1-7). Renderizada
@@ -28,6 +29,10 @@ import { GestaoUsuariosSection } from '@/components/usuarios/GestaoUsuariosSecti
  *    `gestor`/`adm`. Lista `GET /api/usuarios` com "Desativar"/"Reativar"/
  *    "Rebaixar" por linha, chamando `POST /api/usuarios/{id}/desativacao` e
  *    `POST /api/usuarios/{id}/rebaixamento`.
+ *  - "Log de Acesso" (`LogAcessoSection`, Story 1.12): só montada para `adm`.
+ *    Tabela somente-leitura de `GET /api/logs-acesso` (toda tentativa de login
+ *    por senha ou SSO, sucesso ou falha), filtrável por período. Nenhuma ação
+ *    de edição/exclusão — a trilha é append-only.
  *  - "Segurança" (`SegurancaCard`, Story 1.11): visível a TODOS os papéis —
  *    "obrigatório para o seu papel" quando `origem==='senha'` e o papel
  *    alcança `gestor` sem MFA habilitado; "opcional" para os demais casos
@@ -501,6 +506,8 @@ export function ConfiguracoesPage() {
       <SegurancaCard />
 
       {podeDecidir && <GestaoUsuariosSection />}
+
+      {rankPapel(papel) >= rankPapel('adm') && <LogAcessoSection />}
     </div>
   );
 }
