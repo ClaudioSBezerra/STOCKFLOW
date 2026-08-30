@@ -41,6 +41,12 @@ STORY_STATUS_MAP = {
     "in-progress": "In progress",
     "review": "In review",
     "done": "Done",
+    # bmad-loop's terminal-but-not-done park: agent-doable work is committed,
+    "awaiting-operator": "In review",
+    # but acceptance criteria include an action only a human can do (e.g.
+    # provisioning a real external credential). Closest board analog to
+    # "waiting on a human before this can truly be Done" -- the issue stays
+    # open (done=False below) so it doesn't read as finished.
 }
 
 EPIC_STATUS_MAP = {
