@@ -64,7 +64,12 @@ def get_status_text():
 
 
 # "  1-3-autocadastro-com-verificação-de-e-mail review-running    dev×1 review×1 ..."
-STORY_LINE_RE = re.compile(r"^\s{2}(\S+)\s+(\S+)\s+.*$", re.M)
+# Story keys always look like "epic-N" or "N-M-slug" (sprintstatus.py's kebab
+# keys) -- anchoring on that shape (rather than "any two words at 2-space
+# indent") stops a pause/escalation notice's numbered instructions ("  1.
+# **BACK UP any...") from being misread as a story transitioning to a phase
+# literally named "**BACK".
+STORY_LINE_RE = re.compile(r"^\s{2}((?:epic-\d+(?:-retrospective)?|\d+-\d+-\S+))\s+(\S+)\s+.*$", re.M)
 RUN_STATUS_RE = re.compile(r"^status:\s*(.+)$", re.M)
 BACKLOG_RE = re.compile(r"sprint backlog remaining:\s*(\d+)")
 
@@ -146,8 +151,15 @@ def main():
                     token, chat_id,
                     f"🏁 Run finalizada ({state['run_status']}). Backlog restante: {state['backlog']}",
                 )
+                # Deliberately does NOT break: a session in this project starts
+                # a fresh `bmad-loop run` right after stopping/finishing one
+                # (per-epic runs, manual-recovery restarts), so exiting here
+                # silently stopped watching every subsequent run -- exactly
+                # what happened overnight on 2026-08-30. Keep polling; only
+                # re-fire this message on an actual finished<->stopped edge.
                 last_run_status = state["run_status"]
-                break
+                time.sleep(args.interval)
+                continue
 
             last_run_status = state["run_status"]
             time.sleep(args.interval)
