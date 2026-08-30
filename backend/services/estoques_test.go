@@ -170,6 +170,54 @@ func TestCriarEstoque_Concorrencia(t *testing.T) {
 	}
 }
 
+// TestExcluirEstoque_Sucesso prova a AC1: um Estoque existente é removido e a
+// tabela volta a ficar vazia (contarEstoques == 0).
+func TestExcluirEstoque_Sucesso(t *testing.T) {
+	db := testDB(t)
+	limparEstoques(t, db)
+
+	e, err := CriarEstoque(db, "Canteiro Temp")
+	if err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+	if err := ExcluirEstoque(db, e.ID); err != nil {
+		t.Fatalf("ExcluirEstoque erro inesperado: %v", err)
+	}
+	if n := contarEstoques(t, db); n != 0 {
+		t.Errorf("linhas = %d, want 0", n)
+	}
+}
+
+// TestExcluirEstoque_IdInexistente prova a AC2: um UUID válido sem linha
+// correspondente -> ErrEstoqueNaoEncontrado (RowsAffected() == 0), nada removido.
+func TestExcluirEstoque_IdInexistente(t *testing.T) {
+	db := testDB(t)
+	limparEstoques(t, db)
+	if _, err := CriarEstoque(db, "Canteiro Vivo"); err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+
+	err := ExcluirEstoque(db, "00000000-0000-4000-8000-000000000000")
+	if !errors.Is(err, ErrEstoqueNaoEncontrado) {
+		t.Fatalf("erro = %v, want ErrEstoqueNaoEncontrado", err)
+	}
+	if n := contarEstoques(t, db); n != 1 {
+		t.Errorf("linhas = %d, want 1 (nada removido)", n)
+	}
+}
+
+// TestExcluirEstoque_IdMalformado prova a AC2: um id que não é UUID (`pq`
+// SQLSTATE 22P02) colapsa no mesmo ErrEstoqueNaoEncontrado.
+func TestExcluirEstoque_IdMalformado(t *testing.T) {
+	db := testDB(t)
+	limparEstoques(t, db)
+
+	err := ExcluirEstoque(db, "nao-e-uuid")
+	if !errors.Is(err, ErrEstoqueNaoEncontrado) {
+		t.Fatalf("erro = %v, want ErrEstoqueNaoEncontrado", err)
+	}
+}
+
 // TestListarEstoques_Vazio prova que ausência de linhas devolve slice vazio,
 // nunca nil/erro.
 func TestListarEstoques_Vazio(t *testing.T) {

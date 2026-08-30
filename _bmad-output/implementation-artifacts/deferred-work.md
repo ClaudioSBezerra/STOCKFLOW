@@ -253,3 +253,19 @@ source_spec: `spec-1-12-log-de-acesso-e-auditoria.md`
 severity: low
 reason: O uso primário de um log de acesso é "mostre as falhas" ou "as falhas de uma conta"; hoje isso é varredura completa da tabela. Fora do escopo da AC do épico (que pede só filtro por período), mas provável necessidade quando o volume crescer sob credential stuffing.
 status: open
+
+### DW-33: Ao confirmar uma exclusão, o foco do teclado cai para o <body> porque o <Button> "Excluir" da linha (o elemento que abriu o ConfirmDialog) é desmontado quando a linha some, e o AlertDialog do Radix nã
+origin: spec-deferred 3aedea89daab
+location: frontend/src/components/estoques/LocaisEstoqueSection.tsx
+source_spec: `spec-2-2-exclusao-de-estoque-trata-residuos-e-pedidos-pendentes.md`
+severity: medium
+reason: LocaisEstoqueSection.tsx: cada <li> tem seu próprio botão "Excluir"; após o DELETE bem-sucedido, carregar() remove a linha e o botão que era o trigger deixa de existir. O ConfirmDialog/AlertDialog restaura foco no trigger ao fechar; sem trigger, o foco vai para o body — regressão de navegação por teclado/leitor de tela. GestaoUsuariosSection (o outro consumidor de ConfirmDialog) não expõe isso porque lá o trigger nunca é desmontado pela ação confirmada. Correção provável: mover o foco para um elemento estável (heading "Locais" ou o input de nome) no onOpenChange do diálogo quando a exclusão foi confirmada.
+status: open
+
+### DW-34: Numa corrida em que outro operador já excluiu o mesmo Estoque, o DELETE volta 404 e o frontend exibe o alerta genérico "Não foi possível excluir o estoque agora. Tente novamente." — enganoso, já que a
+origin: spec-deferred 4d2fc001b929
+location: frontend/src/components/estoques/LocaisEstoqueSection.tsx
+source_spec: `spec-2-2-exclusao-de-estoque-trata-residuos-e-pedidos-pendentes.md`
+severity: low
+reason: LocaisEstoqueSection.tsx `excluir()`: o contrato da story (intent-contract > Boundaries > Always) determina "qualquer `!res.ok` → setErro( MENSAGEM_ERRO_EXCLUIR)", então 404 cai no ramo de erro. Como o `finally` sempre chama carregar(), o usuário vê simultaneamente a linha sumir e um alerta vermelho de falha. Baixa frequência (exige exclusão concorrente do mesmo id). Correção provável: tratar `res.status === 404` como sucesso idempotente (toast de sucesso + recarga), sem alerta — mas isso desvia do texto literal do intent-contract e deve ser confirmado por um humano.
+status: open

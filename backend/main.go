@@ -21,7 +21,10 @@
 // `almoxarife`, e GET /api/estoques para qualquer conta autenticada: criar e
 // listar locais de estoque, com nome único — insensível a maiúsculas/minúsculas
 // e a espaçamento — imposto pelo índice único sobre a coluna gerada
-// `nome_normalizado`).
+// `nome_normalizado`) e a exclusão de Estoque — Story 2.2
+// (DELETE /api/estoques/{id}, mínimo `almoxarife`: 204 no sucesso, 404 para id
+// inexistente ou malformado; os guards de estoque residual e Pedido pendente
+// entram nas Stories 3.1 e 7.2, sem reabrir a Story 2.2).
 package main
 
 import (
@@ -254,20 +257,26 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 		middleware.RequireRole(services.PapelAdm)(
 			handlers.ListarLogsAcessoHandler(db))))
 
-	// Gestão de Estoques — criar e listar locais — Story 2.1 (FR12). POST fica
-	// atrás de RequireRole(almoxarife): criar Estoque é restrito a `almoxarife`+
-	// e a decisão é do middleware (403 para papéis abaixo, mesmo em chamada
-	// direta à API). GET leva só RequireAuth — a lista de Estoques é liberada a
-	// qualquer conta autenticada (as telas de catálogo do Epic 4 precisam
-	// listar nomes de Estoque para contas `usuario`); por isso NÃO leva
-	// RequireRole. Unicidade de nome — insensível a caixa e a espaçamento — é
-	// imposta pelo índice único sobre a coluna gerada `nome_normalizado`; a
-	// colisão vira 409 CONFLICT.
+	// Gestão de Estoques — criar e listar locais — Story 2.1 (FR12);
+	// excluir — Story 2.2 (FR12). POST e DELETE ficam atrás de
+	// RequireRole(almoxarife): criar e excluir Estoque são restritos a
+	// `almoxarife`+ e a decisão é do middleware (403 para papéis abaixo, mesmo
+	// em chamada direta à API). GET leva só RequireAuth — a lista de Estoques é
+	// liberada a qualquer conta autenticada (as telas de catálogo do Epic 4
+	// precisam listar nomes de Estoque para contas `usuario`); por isso NÃO
+	// leva RequireRole. Unicidade de nome — insensível a caixa e a espaçamento
+	// — é imposta pelo índice único sobre a coluna gerada `nome_normalizado`; a
+	// colisão vira 409 CONFLICT. O DELETE responde 204 sem corpo no sucesso e
+	// 404 para id inexistente ou malformado; os guards de estoque residual
+	// (Epic 3) e Pedido pendente (Epic 7) entram nas Stories 3.1 e 7.2.
 	mux.HandleFunc("POST /api/estoques", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.CriarEstoqueHandler(db))))
 	mux.HandleFunc("GET /api/estoques", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarEstoquesHandler(db)))
+	mux.HandleFunc("DELETE /api/estoques/{id}", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAlmoxarife)(
+			handlers.ExcluirEstoqueHandler(db))))
 
 	// Login federado via Keycloak — SSO Ferreira Costa (Story 1.9, AD-7).
 	// /api/auth/sso/config e /api/auth/logout são SEMPRE registrados (o

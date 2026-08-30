@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { LocaisEstoqueSection } from './LocaisEstoqueSection';
 
@@ -145,6 +145,119 @@ describe('LocaisEstoqueSection', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Não foi possível carregar a lista de estoques. Recarregue a página.',
     );
+  });
+
+  it('"Excluir" abre o ConfirmDialog e confirmar dispara DELETE + toast + GET refeito sem o item', async () => {
+    let gets = 0;
+    const fetchMock = stubFetch((url, init) => {
+      if (url === '/api/estoques' && (init?.method ?? 'GET') === 'GET') {
+        gets += 1;
+        return jsonOk({ estoques: gets === 1 ? ESTOQUES : [ESTOQUES[1]] });
+      }
+      if (url === '/api/estoques/e-1' && init?.method === 'DELETE') {
+        return Promise.resolve({ ok: true, status: 204, json: async () => ({}) });
+      }
+      throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
+    });
+
+    const user = userEvent.setup();
+    render(<LocaisEstoqueSection />);
+    await screen.findByText('Almoxarifado Central');
+
+    await user.click(
+      screen.getByRole('button', { name: 'Excluir estoque Almoxarifado Central' }),
+    );
+    const dialog = await screen.findByRole('alertdialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Excluir' }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/estoques/e-1',
+        expect.objectContaining({ method: 'DELETE' }),
+      ),
+    );
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Estoque excluído.'));
+    await waitFor(() => expect(gets).toBe(2));
+    expect(screen.queryByText('Almoxarifado Central')).not.toBeInTheDocument();
+    expect(screen.getByText('Canteiro A')).toBeInTheDocument();
+  });
+
+  it('cancelar o ConfirmDialog não dispara nenhum DELETE e mantém a lista', async () => {
+    const fetchMock = stubFetch((url, init) => {
+      if (url === '/api/estoques' && (init?.method ?? 'GET') === 'GET') {
+        return jsonOk({ estoques: ESTOQUES });
+      }
+      throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
+    });
+
+    const user = userEvent.setup();
+    render(<LocaisEstoqueSection />);
+    await screen.findByText('Almoxarifado Central');
+
+    await user.click(
+      screen.getByRole('button', { name: 'Excluir estoque Almoxarifado Central' }),
+    );
+    const dialog = await screen.findByRole('alertdialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Cancelar' }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument(),
+    );
+    expect(
+      fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE'),
+    ).toHaveLength(0);
+    expect(screen.getByText('Almoxarifado Central')).toBeInTheDocument();
+  });
+
+  it('DELETE !ok mostra o role="alert" genérico e recarrega a lista', async () => {
+    let gets = 0;
+    stubFetch((url, init) => {
+      if (url === '/api/estoques' && (init?.method ?? 'GET') === 'GET') {
+        gets += 1;
+        return jsonOk({ estoques: ESTOQUES });
+      }
+      if (url === '/api/estoques/e-1' && init?.method === 'DELETE') {
+        return Promise.resolve({
+          ok: false,
+          status: 500,
+          json: async () => ({ error: { code: 'INTERNAL_ERROR' } }),
+        });
+      }
+      throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
+    });
+
+    const user = userEvent.setup();
+    render(<LocaisEstoqueSection />);
+    await screen.findByText('Almoxarifado Central');
+
+    await user.click(
+      screen.getByRole('button', { name: 'Excluir estoque Almoxarifado Central' }),
+    );
+    const dialog = await screen.findByRole('alertdialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Excluir' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Não foi possível excluir o estoque agora. Tente novamente em instantes.',
+    );
+    expect(toastSuccess).not.toHaveBeenCalled();
+    await waitFor(() => expect(gets).toBe(2));
+  });
+
+  it('nome de estoque muito longo (~255 chars) não remove nem esconde o botão "Excluir" da linha', async () => {
+    const nomeLongo = 'L'.repeat(255);
+    stubFetch((url, init) => {
+      if (url === '/api/estoques' && (init?.method ?? 'GET') === 'GET') {
+        return jsonOk({ estoques: [{ id: 'e-long', nome: nomeLongo }] });
+      }
+      throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
+    });
+
+    render(<LocaisEstoqueSection />);
+
+    const botao = await screen.findByRole('button', {
+      name: `Excluir estoque ${nomeLongo}`,
+    });
+    expect(botao).toBeInTheDocument();
   });
 
   it('botão desabilitado enquanto o nome está em branco', async () => {

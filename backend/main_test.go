@@ -432,6 +432,12 @@ func TestNewMux_RegistraRotasDeAutenticacao(t *testing.T) {
 			statusQuerAo: http.StatusUnauthorized,
 		},
 		{
+			nome:         "estoques DELETE sem token chega no RequireAuth antes de RequireRole",
+			metodo:       http.MethodDelete,
+			caminho:      "/api/estoques/algum-id",
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
 			nome:         "sso/config sempre registrada (sem IAM_* -> enabled:false)",
 			metodo:       http.MethodGet,
 			caminho:      "/api/auth/sso/config",
@@ -599,6 +605,9 @@ func TestNewMux_UsuariosRotaCarregaRequireRole(t *testing.T) {
 //   - POST /api/estoques está atrás de RequireRole(almoxarife): token
 //     `usuario` -> 403 FORBIDDEN; token `almoxarife`/`gestor`/`adm` passa do
 //     gate (201, ou 400 num payload inválido — nunca 403).
+//   - DELETE /api/estoques/{id} está atrás de RequireRole(almoxarife): token
+//     `usuario` -> 403 FORBIDDEN; token `almoxarife`/`gestor`/`adm` passa do
+//     gate (204 num Estoque criado, ou 404 num id aleatório — nunca 403).
 //   - GET /api/estoques NÃO leva RequireRole: um token `usuario` -> 200.
 //
 // Sem estes casos, remover `middleware.RequireRole(services.PapelAlmoxarife)`
@@ -659,7 +668,10 @@ func TestNewMux_EstoquesRotaCarregaRequireRole(t *testing.T) {
 		}
 	})
 
-	t.Run("POST: almoxarife/gestor/adm passam do gate (nunca 403)", func(t *testing.T) {
+	t.Run("POST e DELETE: almoxarife/gestor/adm passam do gate (nunca 403)", func(t *testing.T) {
+		// Um único tokenDeMux por conta: gestor/adm exigem MFA e o segundo
+		// fator TOTP não pode ser reapresentado dentro da mesma janela de 30s,
+		// então POST e DELETE compartilham o mesmo token/subteste.
 		casos := []struct{ email, nome string }{
 			{"estq-mux-almox@empresa.com", "Canteiro Almox"},
 			{"estq-mux-gestor@empresa.com", "Canteiro Gestor"},
@@ -667,14 +679,34 @@ func TestNewMux_EstoquesRotaCarregaRequireRole(t *testing.T) {
 		}
 		for _, c := range casos {
 			token := tokenDeMux(t, mux, c.email, senha, segredos)
+
 			w := despachar(http.MethodPost, "/api/estoques", token, `{"nome":"`+c.nome+`"}`)
 			if w.Code != http.StatusCreated {
 				t.Errorf("%s: status = %d, want %d (body=%s)", c.email, w.Code, http.StatusCreated, w.Body.String())
+			}
+			var criado struct {
+				Estoque struct {
+					ID string `json:"id"`
+				} `json:"estoque"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &criado); err != nil {
+				t.Fatalf("%s: decode estoque criado: %v", c.email, err)
 			}
 			// Payload inválido pelo mesmo caminho: o handler executou (400), não parou no 403.
 			wInvalido := despachar(http.MethodPost, "/api/estoques", token, `{"nome":"   "}`)
 			if wInvalido.Code != http.StatusBadRequest {
 				t.Errorf("%s (payload inválido): status = %d, want %d (body=%s)", c.email, wInvalido.Code, http.StatusBadRequest, wInvalido.Body.String())
+			}
+
+			// DELETE pelo mesmo caminho: o Estoque recém-criado -> 204 (nunca 403).
+			wDel := despachar(http.MethodDelete, "/api/estoques/"+criado.Estoque.ID, token, "")
+			if wDel.Code != http.StatusNoContent {
+				t.Errorf("%s: DELETE status = %d, want %d (body=%s)", c.email, wDel.Code, http.StatusNoContent, wDel.Body.String())
+			}
+			// Id aleatório pelo mesmo caminho: o handler executou (404), não parou no 403.
+			wAusente := despachar(http.MethodDelete, "/api/estoques/00000000-0000-4000-8000-000000000000", token, "")
+			if wAusente.Code != http.StatusNotFound {
+				t.Errorf("%s (id ausente): status = %d, want %d (body=%s)", c.email, wAusente.Code, http.StatusNotFound, wAusente.Body.String())
 			}
 		}
 	})
@@ -686,6 +718,26 @@ func TestNewMux_EstoquesRotaCarregaRequireRole(t *testing.T) {
 			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
 		}
 	})
+
+	t.Run("DELETE: papel usuario -> 403 FORBIDDEN", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "estq-mux-usuario@empresa.com", senha, segredos)
+		w := despachar(http.MethodDelete, "/api/estoques/00000000-0000-4000-8000-000000000000", token, "")
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusForbidden, w.Body.String())
+		}
+		var env struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+			t.Fatalf("decode envelope: %v", err)
+		}
+		if env.Error.Code != "FORBIDDEN" {
+			t.Errorf("code = %q, want FORBIDDEN", env.Error.Code)
+		}
+	})
+
 }
 
 // TestNewMux_LogsAcessoRotaCarregaRequireRole prova, despachando pela mesma

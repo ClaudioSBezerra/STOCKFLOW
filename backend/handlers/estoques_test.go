@@ -59,6 +59,23 @@ func getEstoques(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
 	return w
 }
 
+// deleteEstoques despacha DELETE /api/estoques/{id} pela MESMA composição de
+// newMux (RequireAuth -> RequireRole(almoxarife) -> ExcluirEstoqueHandler).
+func deleteEstoques(db *sql.DB, authHeader, id string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("DELETE /api/estoques/{id}",
+		middleware.RequireAuth(db, testJWTSecret)(
+			middleware.RequireRole(services.PapelAlmoxarife)(
+				ExcluirEstoqueHandler(db))))
+	r := httptest.NewRequest(http.MethodDelete, "/api/estoques/"+id, nil)
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
 // decodeEstoquesFio decodifica o corpo de GET /api/estoques travando o
 // conjunto de chaves de fio: cada elemento tem exatamente `id` e `nome`.
 func decodeEstoquesFio(t *testing.T, body []byte) []map[string]any {
@@ -268,6 +285,116 @@ func TestListarEstoquesHandler_401SemToken(t *testing.T) {
 	limparEstoquesHandler(t, db)
 
 	w := getEstoques(db, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+}
+
+// TestExcluirEstoqueHandler_204ParaAlmoxarifeGestorAdm prova a AC1 na fronteira
+// HTTP: uma sessão `almoxarife`+ excluindo um Estoque existente recebe 204 sem
+// corpo e a linha some de `estoques`.
+func TestExcluirEstoqueHandler_204ParaAlmoxarifeGestorAdm(t *testing.T) {
+	db := testDB(t)
+
+	casos := []struct{ papel, email string }{
+		{"almoxarife", "del-almox@empresa.com"},
+		{"gestor", "del-gestor@empresa.com"},
+		{"adm", "del-adm@empresa.com"},
+	}
+	for _, c := range casos {
+		t.Run(c.papel, func(t *testing.T) {
+			limparEstoquesHandler(t, db)
+			criarContaComPapel(t, db, "Conta "+c.papel, c.email, "senha-123456", c.papel)
+			token := tokenDeLogin(t, db, c.email, "senha-123456")
+
+			e, err := services.CriarEstoque(db, "Canteiro "+c.papel)
+			if err != nil {
+				t.Fatalf("seed CriarEstoque: %v", err)
+			}
+
+			w := deleteEstoques(db, "Bearer "+token, e.ID)
+			if w.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusNoContent, w.Body.String())
+			}
+			if w.Body.Len() != 0 {
+				t.Errorf("corpo do 204 não vazio: %q", w.Body.String())
+			}
+			var n int
+			if err := db.QueryRow(`SELECT count(*) FROM estoques WHERE id = $1`, e.ID).Scan(&n); err != nil {
+				t.Fatalf("count: %v", err)
+			}
+			if n != 0 {
+				t.Errorf("linhas com id = %d, want 0", n)
+			}
+		})
+	}
+}
+
+// TestExcluirEstoqueHandler_404IdDesconhecidoOuMalformado prova a AC2 na
+// fronteira: um id UUID sem linha e um id não-UUID caem no mesmo 404 NOT_FOUND
+// com envelope de erro.
+func TestExcluirEstoqueHandler_404IdDesconhecidoOuMalformado(t *testing.T) {
+	db := testDB(t)
+	limparEstoquesHandler(t, db)
+	criarContaComPapel(t, db, "Almox", "del404-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "del404-almox@empresa.com", "senha-123456")
+
+	casos := map[string]string{
+		"uuid sem linha": "00000000-0000-4000-8000-000000000000",
+		"id não-uuid":    "nao-e-uuid",
+	}
+	for nome, id := range casos {
+		t.Run(nome, func(t *testing.T) {
+			w := deleteEstoques(db, "Bearer "+token, id)
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusNotFound, w.Body.String())
+			}
+			env := decodeErro(t, w.Body.Bytes())
+			if env.Error.Code != "NOT_FOUND" {
+				t.Errorf("code = %q, want NOT_FOUND", env.Error.Code)
+			}
+		})
+	}
+}
+
+// TestExcluirEstoqueHandler_403ParaUsuario prova a AC3: papel `usuario`
+// chamando DELETE /api/estoques/{id} direto -> 403 FORBIDDEN, corpo do
+// envelope, e o handler nunca executa (a linha continua lá).
+func TestExcluirEstoqueHandler_403ParaUsuario(t *testing.T) {
+	db := testDB(t)
+	limparEstoquesHandler(t, db)
+	criarContaComPapel(t, db, "Usuária", "del-usuario@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "del-usuario@empresa.com", "senha-123456")
+
+	e, err := services.CriarEstoque(db, "Canteiro Protegido")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+
+	w := deleteEstoques(db, "Bearer "+token, e.ID)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusForbidden, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "FORBIDDEN" {
+		t.Errorf("code = %q, want FORBIDDEN", env.Error.Code)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM estoques`).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("linhas = %d, want 1 (handler não deve ter executado)", n)
+	}
+}
+
+// TestExcluirEstoqueHandler_401SemToken prova a linha "sem autenticação" da
+// I/O Matrix: RequireAuth responde 401 antes de RequireRole rodar.
+func TestExcluirEstoqueHandler_401SemToken(t *testing.T) {
+	db := testDB(t)
+	limparEstoquesHandler(t, db)
+
+	w := deleteEstoques(db, "", "00000000-0000-4000-8000-000000000000")
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
 	}

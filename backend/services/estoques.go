@@ -27,6 +27,10 @@ var (
 	// idx_estoques_nome_normalizado (SQLSTATE 23505). É backstop de corrida —
 	// não há checagem prévia. Mapeado para 409 CONFLICT.
 	ErrNomeEstoqueDuplicado = errors.New("já existe um estoque com esse nome")
+	// ErrEstoqueNaoEncontrado indica `id` inexistente OU malformado (não-UUID,
+	// `pq` SQLSTATE 22P02) — os dois caem no mesmo erro. Mapeado para
+	// 404 NOT_FOUND.
+	ErrEstoqueNaoEncontrado = errors.New("estoque não encontrado")
 )
 
 // CriarEstoque valida e insere um novo local de estoque (Story 2.1, FR12).
@@ -81,4 +85,36 @@ func ListarEstoques(db *sql.DB) ([]Estoque, error) {
 		return nil, fmt.Errorf("falha ao iterar estoques: %w", err)
 	}
 	return estoques, nil
+}
+
+// ExcluirEstoque remove o local de estoque de `id` (DELETE /api/estoques/{id},
+// Story 2.2, FR12). Um único `DELETE ... WHERE id = $1`: um `id` não-UUID
+// (`pq` SQLSTATE 22P02, reusa a constante de pacote pqInvalidTextRepresentation)
+// ou um `id` UUID válido sem linha correspondente (`RowsAffected() == 0`)
+// colapsam em ErrEstoqueNaoEncontrado — a mesma decisão de
+// carregarAlvoParaGestao (gestao_usuarios.go) e DecidirSolicitacao
+// (promocao.go): input de cliente inválido não vira 500 e não se vaza "este id
+// existe mas está errado". Uma linha removida -> nil.
+//
+// Os guards de integridade referencial — quantidade residual de Produto
+// (PRODUTO_ESTOQUE, Epic 3) e Pedido `pendente` (PEDIDOS, Epic 7) — são
+// acrescentados pelas Stories 3.1 e 7.2 quando essas tabelas existirem,
+// envolvendo o DELETE numa transação; não fazem parte desta story.
+func ExcluirEstoque(db *sql.DB, id string) error {
+	res, err := db.Exec(`DELETE FROM estoques WHERE id = $1`, id)
+	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation {
+			return ErrEstoqueNaoEncontrado
+		}
+		return fmt.Errorf("falha ao excluir estoque: %w", err)
+	}
+	linhas, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("falha ao ler linhas afetadas na exclusão de estoque: %w", err)
+	}
+	if linhas == 0 {
+		return ErrEstoqueNaoEncontrado
+	}
+	return nil
 }

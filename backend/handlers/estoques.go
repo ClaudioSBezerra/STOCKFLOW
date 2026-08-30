@@ -11,10 +11,10 @@ import (
 	"stockflow/backend/services"
 )
 
-// Handlers de Estoques — criar e listar locais (Story 2.1, spec-2-1).
-// Fronteira HTTP pura: decodifica/serializa JSON, mapeia os erros de
-// services/estoques.go para o envelope de erro fixo (AD-14) e nunca contém
-// regra de negócio própria.
+// Handlers de Estoques — criar, listar e excluir locais (Stories 2.1 e 2.2,
+// spec-2-1 / spec-2-2). Fronteira HTTP pura: decodifica/serializa JSON, mapeia
+// os erros de services/estoques.go para o envelope de erro fixo (AD-14) e
+// nunca contém regra de negócio própria.
 //
 // Registro em newMux (main.go):
 //   - POST /api/estoques -> RequireAuth -> RequireRole(almoxarife); corpo
@@ -23,6 +23,11 @@ import (
 //     já passou nesse gate.
 //   - GET /api/estoques -> RequireAuth apenas: qualquer conta autenticada
 //     lista os Estoques (AC4).
+//   - DELETE /api/estoques/{id} -> RequireAuth -> RequireRole(almoxarife);
+//     sem corpo. `204 No Content` no sucesso, `404 NOT_FOUND` para id
+//     inexistente ou malformado (não-UUID). Os guards de estoque residual
+//     (Epic 3) e Pedido pendente (Epic 7) entram nas Stories 3.1 e 7.2, sem
+//     reabrir a Story 2.2.
 
 // criarEstoqueRequest é o corpo aceito por POST /api/estoques. `nome`
 // ausente decodifica como "" e é rejeitado por services.CriarEstoque como
@@ -85,5 +90,33 @@ func ListarEstoquesHandler(db *sql.DB) http.HandlerFunc {
 		}
 
 		escreverJSON(w, http.StatusOK, map[string]any{"estoques": estoques})
+	}
+}
+
+// ExcluirEstoqueHandler expõe DELETE /api/estoques/{id}: remove um local de
+// estoque. `204 No Content` **sem corpo** no sucesso (molde de LogoutHandler);
+// `404 NOT_FOUND` com o envelope de erro para `id` inexistente ou malformado
+// (não-UUID) — os dois colapsam em services.ErrEstoqueNaoEncontrado; qualquer
+// outra falha -> `500 INTERNAL_ERROR` + slog. Sem corpo de requisição — não
+// lê `r.Body`. O 403 para papel abaixo de `almoxarife` é decidido inteiramente
+// por RequireRole; este handler só executa quando o papel já passou nesse gate.
+func ExcluirEstoqueHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := middleware.UsuarioDaSessao(r.Context()); !ok {
+			slog.Error("ExcluirEstoqueHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+
+		err := services.ExcluirEstoque(db, r.PathValue("id"))
+		switch {
+		case err == nil:
+			w.WriteHeader(http.StatusNoContent)
+		case errors.Is(err, services.ErrEstoqueNaoEncontrado):
+			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "estoque não encontrado")
+		default:
+			slog.Error("falha ao excluir estoque", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao excluir estoque")
+		}
 	}
 }
