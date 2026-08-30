@@ -2,8 +2,9 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
+import type { ReactNode } from 'react';
 import { LoginPage } from './LoginPage';
-import { clearAccessToken, getAccessToken } from '@/lib/session';
+import { clearAccessToken, getAccessToken, setAccessToken } from '@/lib/session';
 
 const navigateMock = vi.fn();
 
@@ -14,6 +15,18 @@ vi.mock('react-router-dom', async () => {
     useNavigate: () => navigateMock,
   };
 });
+
+// `useAuth` é mockado para isolar LoginPage do bootstrap do AuthProvider (que
+// dispararia um fetch('/api/auth/refresh') na montagem e poluiria a contagem
+// de chamadas de fetch destes testes). `definirSessao` mantém o efeito real
+// de guardar o token via lib/session, para as asserções de getAccessToken
+// continuarem válidas.
+const { definirSessaoMock } = vi.hoisted(() => ({ definirSessaoMock: vi.fn() }));
+
+vi.mock('@/lib/auth', () => ({
+  useAuth: () => ({ estado: 'anonimo', usuario: null, definirSessao: definirSessaoMock }),
+  AuthProvider: ({ children }: { children: ReactNode }) => children,
+}));
 
 function renderPage() {
   return render(
@@ -33,6 +46,11 @@ describe('LoginPage', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn());
     navigateMock.mockClear();
+    definirSessaoMock.mockReset();
+    // Comportamento padrão: definirSessao guarda o token como o AuthProvider real faz.
+    definirSessaoMock.mockImplementation((_usuario: unknown, token: string) => {
+      setAccessToken(token);
+    });
   });
 
   afterEach(() => {
@@ -66,16 +84,18 @@ describe('LoginPage', () => {
     expect(body).toEqual({ email: 'fulano@empresa.com', senha: 'senha-123456' });
   });
 
-  it('guarda o access token via lib/session.ts e navega para / no sucesso', async () => {
+  it('chama definirSessao(usuario, token) e navega para / no sucesso', async () => {
     const user = userEvent.setup();
+    const usuario = { id: '1', nome: 'Fulano', email: 'fulano@empresa.com', papel: 'usuario' };
     (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ token: 'access-token-123', usuario: { id: '1', nome: 'x', email: 'x', papel: 'usuario' } }),
+      json: async () => ({ token: 'access-token-123', usuario }),
     });
     renderPage();
 
     await preencherEEnviar(user);
 
+    await waitFor(() => expect(definirSessaoMock).toHaveBeenCalledWith(usuario, 'access-token-123'));
     await waitFor(() => expect(getAccessToken()).toBe('access-token-123'));
     await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/'));
   });
@@ -92,6 +112,7 @@ describe('LoginPage', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('E-mail ou senha inválidos.');
     expect(getAccessToken()).toBeNull();
+    expect(definirSessaoMock).not.toHaveBeenCalled();
     expect(navigateMock).not.toHaveBeenCalled();
   });
 

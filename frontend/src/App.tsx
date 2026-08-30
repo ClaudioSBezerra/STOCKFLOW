@@ -1,5 +1,6 @@
-import { createBrowserRouter, RouterProvider } from 'react-router-dom';
+import { createBrowserRouter, Navigate, RouterProvider } from 'react-router-dom';
 import { AppShell } from '@/components/shell/AppShell';
+import { AuthProvider, useAuth } from '@/lib/auth';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
 import { CadastroPage } from '@/pages/CadastroPage';
 import { VerificarEmailPage } from '@/pages/VerificarEmailPage';
@@ -11,17 +12,48 @@ import { LoginPage } from '@/pages/LoginPage';
  * (ver spec-1-2). Itens de navegação do shell continuam clicáveis mesmo sem
  * uma rota "de verdade" atrás deles.
  *
- * `/cadastro`, `/verificar-email` (Story 1.3) e `/login` (Story 1.4,
- * spec-1-4) são rotas públicas irmãs da raiz, fora do `AppShell` — mesma
- * classificação de superfície pública, cada uma com seu próprio layout
- * mínimo (sem rail/bottom nav). Nenhum bootstrap automático de sessão
- * acontece aqui ao montar o app (silent refresh via cookie): `AppShell`
- * ainda não gateia nada por papel — fica para a Story 1.5.
+ * `/cadastro`, `/verificar-email` (Story 1.3) e `/login` (Story 1.4) são
+ * rotas públicas irmãs da raiz, fora do `AppShell` e fora do
+ * `RotaProtegida`. A árvore do `AppShell` fica atrás do `RotaProtegida`
+ * (Story 1.5): o `AuthProvider` faz o bootstrap silencioso da sessão ao
+ * montar o app (silent refresh via cookie), e enquanto isso não resolve a
+ * rota protegida mostra uma tela mínima de carregamento; conta anônima é
+ * redirecionada para `/login`.
  */
-const router = createBrowserRouter([
+
+/**
+ * Wrapper de rota que gateia a árvore autenticada — fail-closed: só o estado
+ * EXPLÍCITO `autenticado` libera o shell; qualquer outra coisa que não seja
+ * `carregando` (incl. um estado futuro inesperado) cai no redirect.
+ * - `carregando`: tela mínima de carregamento (bootstrap em andamento).
+ * - `autenticado`: renderiza o `AppShell`.
+ * - qualquer outro (`anonimo`, …): redireciona para `/login` (replace, para
+ *   não empilhar histórico).
+ */
+export function RotaProtegida() {
+  const { estado } = useAuth();
+
+  if (estado === 'carregando') {
+    return (
+      <output className="flex min-h-svh items-center justify-center text-muted-foreground">
+        Carregando...
+      </output>
+    );
+  }
+
+  if (estado === 'autenticado') {
+    return <AppShell />;
+  }
+
+  return <Navigate to="/login" replace />;
+}
+
+// Exportado só para os testes poderem resetar a localização entre casos
+// (`router.navigate('/')`) — em runtime só o `<App />` abaixo o consome.
+export const router = createBrowserRouter([
   {
     path: '/',
-    element: <AppShell />,
+    element: <RotaProtegida />,
     children: [
       { index: true, element: <PlaceholderPage /> },
       { path: '*', element: <PlaceholderPage /> },
@@ -33,7 +65,11 @@ const router = createBrowserRouter([
 ]);
 
 function App() {
-  return <RouterProvider router={router} />;
+  return (
+    <AuthProvider>
+      <RouterProvider router={router} />
+    </AuthProvider>
+  );
 }
 
 export default App;

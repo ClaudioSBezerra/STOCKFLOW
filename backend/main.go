@@ -4,7 +4,8 @@
 // accepts HTTP traffic against a schema that failed to migrate), starts the
 // e-mail outbox worker (services.IniciarWorkerEmail), and then serves the
 // liveness endpoint plus the public authentication routes (cadastro e
-// verificação de e-mail — Story 1.3; login, refresh e /me — Story 1.4).
+// verificação de e-mail — Story 1.3; login, refresh e /me — Story 1.4) and the
+// first role-gated route (GET /api/usuarios, mínimo `gestor` — Story 1.5).
 package main
 
 import (
@@ -189,6 +190,9 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte) *http.S
 	mux.HandleFunc("POST /api/auth/login", handlers.LoginHandler(db, jwtSecret))
 	mux.HandleFunc("POST /api/auth/refresh", handlers.RefreshHandler(db, jwtSecret))
 	mux.HandleFunc("GET /api/auth/me", middleware.RequireAuth(db, jwtSecret)(handlers.MeHandler()))
+	mux.HandleFunc("GET /api/usuarios", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelGestor)(
+			handlers.ListarUsuariosHandler(db))))
 	return mux
 }
 

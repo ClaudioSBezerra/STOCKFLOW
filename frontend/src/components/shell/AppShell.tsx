@@ -22,7 +22,14 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { adminNavItems, primaryNavItems, profileNavItem, type NavItem } from './nav-items';
+import { useAuth } from '@/lib/auth';
+import {
+  adminNavItems,
+  filtrarNavPorPapel,
+  primaryNavItems,
+  profileNavItem,
+  type NavItem,
+} from './nav-items';
 
 export interface AppShellProps {
   /** Conteúdo da página atual. Se omitido, renderiza o `<Outlet />` do react-router. */
@@ -119,6 +126,17 @@ export function AppShell({ children, tabs, sideNav }: AppShellProps) {
   // Esc/clique fora, deixando o overlay/painel aberto sobre a rota nova.
   const [moreOpen, setMoreOpen] = useState(false);
 
+  // Navegação gated por papel (Story 1.5): cada superfície só renderiza os
+  // itens cujo `papelMinimo` o papel do usuário alcança. Item sem permissão
+  // simplesmente não aparece — nunca desabilitado, nunca "acesso negado".
+  const { usuario } = useAuth();
+  const papel = usuario?.papel ?? '';
+  const primaryItems = filtrarNavPorPapel(primaryNavItems, papel);
+  const adminItems = filtrarNavPorPapel(adminNavItems, papel);
+  // Mesma regra de visibilidade que os demais itens usam — uma única
+  // implementação (`filtrarNavPorPapel`), nunca uma comparação de rank inline.
+  const mostrarPerfil = filtrarNavPorPapel([profileNavItem], papel).length > 0;
+
   return (
     <TooltipProvider>
       <div className="flex min-h-svh flex-col bg-background text-foreground md:flex-row">
@@ -128,35 +146,37 @@ export function AppShell({ children, tabs, sideNav }: AppShellProps) {
           className="hidden w-rail-width shrink-0 flex-col items-center justify-between border-r border-border bg-card py-3 md:flex"
         >
           <div className="flex flex-col items-center gap-1">
-            {primaryNavItems.map((item) => (
+            {primaryItems.map((item) => (
               <RailNavIcon key={item.id} item={item} />
             ))}
-            <hr className="my-2 w-8 border-border" />
-            {adminNavItems.map((item) => (
+            {adminItems.length > 0 ? <hr className="my-2 w-8 border-border" /> : null}
+            {adminItems.map((item) => (
               <RailNavIcon key={item.id} item={item} />
             ))}
           </div>
 
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                aria-label={profileNavItem.label}
-                className={cn('flex items-center justify-center rounded-full', touchTarget)}
-              >
-                <Avatar className="size-8">
-                  <AvatarFallback>
-                    <profileNavItem.icon className="size-4" aria-hidden="true" />
-                  </AvatarFallback>
-                </Avatar>
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" side="right">
-              <DropdownMenuItem asChild className={touchTarget}>
-                <NavLink to={profileNavItem.to}>{profileNavItem.label}</NavLink>
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          {mostrarPerfil ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  aria-label={profileNavItem.label}
+                  className={cn('flex items-center justify-center rounded-full', touchTarget)}
+                >
+                  <Avatar className="size-8">
+                    <AvatarFallback>
+                      <profileNavItem.icon className="size-4" aria-hidden="true" />
+                    </AvatarFallback>
+                  </Avatar>
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" side="right">
+                <DropdownMenuItem asChild className={touchTarget}>
+                  <NavLink to={profileNavItem.to}>{profileNavItem.label}</NavLink>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
         </nav>
 
         <div className="flex min-w-0 flex-1 flex-col">
@@ -185,7 +205,7 @@ export function AppShell({ children, tabs, sideNav }: AppShellProps) {
           aria-label="Navegação principal"
           className="fixed inset-x-0 bottom-0 z-40 flex h-bottom-nav-height items-stretch border-t border-border bg-card md:hidden"
         >
-          {primaryNavItems.map((item) => (
+          {primaryItems.map((item) => (
             <BottomNavIcon key={item.id} item={item} />
           ))}
 
@@ -207,11 +227,15 @@ export function AppShell({ children, tabs, sideNav }: AppShellProps) {
                 <SheetTitle>Mais</SheetTitle>
               </SheetHeader>
               <div className="flex flex-col gap-1 px-4 pb-4">
-                {adminNavItems.map((item) => (
+                {adminItems.map((item) => (
                   <SheetNavRow key={item.id} item={item} onNavigate={() => setMoreOpen(false)} />
                 ))}
-                <hr className="my-1 border-border" />
-                <SheetNavRow item={profileNavItem} onNavigate={() => setMoreOpen(false)} />
+                {adminItems.length > 0 && mostrarPerfil ? (
+                  <hr className="my-1 border-border" />
+                ) : null}
+                {mostrarPerfil ? (
+                  <SheetNavRow item={profileNavItem} onNavigate={() => setMoreOpen(false)} />
+                ) : null}
               </div>
             </SheetContent>
           </Sheet>

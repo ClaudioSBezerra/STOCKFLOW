@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { setAccessToken } from '@/lib/session';
+import { useAuth, type UsuarioSessao } from '@/lib/auth';
 
 /**
  * Envelope de erro fixo (AD-14): {"error":{"code","message"}}. Só o código é
@@ -33,17 +33,22 @@ function mensagemDeErro(codigo: string | undefined): string {
 
 interface LoginResposta {
   token: string;
+  usuario: UsuarioSessao;
 }
 
 /**
  * Tela pública de login (Story 1.4, spec-1-4). Rota irmã de `/cadastro` e
  * `/verificar-email`, fora do `AppShell` — mesmo layout mínimo (Story 1.3).
- * Login bem-sucedido guarda o access token em memória via `lib/session.ts`
- * (nunca `localStorage`/`sessionStorage`) e navega para `/`; o refresh token
- * chega em cookie HttpOnly, fora do alcance desta tela.
+ * Login bem-sucedido chama `definirSessao(usuario, token)` do `AuthProvider`
+ * (Story 1.5), que guarda o access token em memória (nunca
+ * `localStorage`/`sessionStorage`) e promove o estado para `autenticado`
+ * ANTES do `navigate('/')` — sem isso, a rota protegida ainda veria
+ * `anonimo` e devolveria para `/login`. O refresh token chega em cookie
+ * HttpOnly, fora do alcance desta tela.
  */
 export function LoginPage() {
   const navigate = useNavigate();
+  const { definirSessao } = useAuth();
   const [email, setEmail] = useState('');
   const [senha, setSenha] = useState('');
   const [enviando, setEnviando] = useState(false);
@@ -74,7 +79,7 @@ export function LoginPage() {
       }
 
       const body = (await res.json()) as LoginResposta;
-      setAccessToken(body.token);
+      definirSessao(body.usuario, body.token);
       navigate('/');
     } catch {
       setErro(mensagemDeErro(undefined));

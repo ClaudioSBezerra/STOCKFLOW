@@ -5,9 +5,10 @@
  * quem precisa de persistência entre abas/reloads é o refresh token, que já
  * vive em cookie HttpOnly (fora do alcance de JavaScript).
  *
- * Nenhum bootstrap automático de sessão existe ainda (silent refresh via
- * cookie ao montar `App.tsx`) — deliberadamente fora do escopo desta story,
- * já que `AppShell` não gateia nada por papel até a Story 1.5.
+ * O bootstrap automático de sessão (silent refresh via cookie ao montar o
+ * app) vive em `lib/auth.tsx` (`AuthProvider`, Story 1.5): ele grava aqui o
+ * access token devolvido por `POST /api/auth/refresh` antes de chamar
+ * `GET /api/auth/me`. Este módulo continua sendo só a guarda em memória.
  */
 let accessToken: string | null = null;
 

@@ -1,8 +1,24 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { AppShell } from './AppShell';
+
+// AppShell consome useAuth() para gatear a navegação por papel (Story 1.5).
+// O mock deixa o papel do usuário configurável por teste; o padrão é `adm`,
+// que vê todas as superfícies — mantendo os testes de layout pré-Story-1.5
+// inalterados.
+const authState = vi.hoisted(() => ({
+  papel: 'adm' as string,
+}));
+
+vi.mock('@/lib/auth', () => ({
+  useAuth: () => ({
+    estado: 'autenticado',
+    usuario: { id: '1', nome: 'Teste', email: 'teste@empresa.com', papel: authState.papel },
+    definirSessao: vi.fn(),
+  }),
+}));
 
 function renderShell(initialPath = '/') {
   return render(
@@ -18,6 +34,10 @@ function renderShell(initialPath = '/') {
 }
 
 describe('AppShell', () => {
+  beforeEach(() => {
+    authState.papel = 'adm';
+  });
+
   it('renderiza o rail (desktop) e a bottom nav (mobile) com as classes de breakpoint corretas', () => {
     renderShell();
 
@@ -160,7 +180,69 @@ describe('AppShell', () => {
   });
 });
 
+describe('AppShell — navegação gated por papel (Story 1.5)', () => {
+  beforeEach(() => {
+    authState.papel = 'usuario';
+  });
+
+  it('esconde Estoques/Normalização/Relatórios no rail para papel usuario', () => {
+    renderShell();
+    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
+    const scoped = within(rail);
+
+    expect(scoped.getByRole('link', { name: 'Catálogo' })).toBeInTheDocument();
+    expect(scoped.getByRole('link', { name: 'Carrinho' })).toBeInTheDocument();
+    expect(scoped.getByRole('link', { name: 'Pedidos' })).toBeInTheDocument();
+    expect(scoped.queryByRole('link', { name: 'Estoques' })).not.toBeInTheDocument();
+    expect(scoped.queryByRole('link', { name: 'Normalização' })).not.toBeInTheDocument();
+    expect(scoped.queryByRole('link', { name: 'Relatórios' })).not.toBeInTheDocument();
+  });
+
+  it('esconde os itens admin na bottom nav para papel usuario', () => {
+    renderShell();
+    const bottomNav = screen.getAllByRole('navigation', { name: 'Navegação principal' })[1];
+    const scoped = within(bottomNav);
+
+    expect(scoped.getByRole('link', { name: 'Catálogo' })).toBeInTheDocument();
+    expect(scoped.queryByRole('link', { name: 'Estoques' })).not.toBeInTheDocument();
+    expect(scoped.queryByRole('link', { name: 'Normalização' })).not.toBeInTheDocument();
+    expect(scoped.queryByRole('link', { name: 'Relatórios' })).not.toBeInTheDocument();
+  });
+
+  it('esconde os itens admin no Sheet "Mais" para papel usuario (sem tela de acesso negado)', async () => {
+    const user = userEvent.setup();
+    renderShell();
+    const bottomNav = screen.getAllByRole('navigation', { name: 'Navegação principal' })[1];
+
+    await user.click(within(bottomNav).getByRole('button', { name: 'Mais' }));
+    const dialog = await screen.findByRole('dialog');
+    const scoped = within(dialog);
+
+    expect(scoped.queryByRole('link', { name: /Estoques/ })).not.toBeInTheDocument();
+    expect(scoped.queryByRole('link', { name: /Normalização/ })).not.toBeInTheDocument();
+    expect(scoped.queryByRole('link', { name: /Relatórios/ })).not.toBeInTheDocument();
+    // "Meu Perfil" (papelMinimo 'usuario') continua visível.
+    expect(scoped.getByRole('link', { name: /Meu Perfil/ })).toBeInTheDocument();
+    expect(screen.queryByText(/acesso negado/i)).not.toBeInTheDocument();
+  });
+
+  it('mostra os itens admin quando o papel é almoxarife', () => {
+    authState.papel = 'almoxarife';
+    renderShell();
+    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
+    const scoped = within(rail);
+
+    expect(scoped.getByRole('link', { name: 'Estoques' })).toBeInTheDocument();
+    expect(scoped.getByRole('link', { name: 'Normalização' })).toBeInTheDocument();
+    expect(scoped.getByRole('link', { name: 'Relatórios' })).toBeInTheDocument();
+  });
+});
+
 describe('AppShell (sem consumo de erro global)', () => {
+  beforeEach(() => {
+    authState.papel = 'adm';
+  });
+
   it('não quebra ao montar sem props obrigatórias além do Router', () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     renderShell();

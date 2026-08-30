@@ -12,6 +12,7 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+	"golang.org/x/crypto/bcrypt"
 
 	"stockflow/backend/services"
 )
@@ -235,6 +236,12 @@ func TestNewMux_RegistraRotasDeAutenticacao(t *testing.T) {
 			caminho:      "/api/auth/me",
 			statusQuerAo: http.StatusUnauthorized,
 		},
+		{
+			nome:         "usuarios sem token chega no RequireAuth antes de RequireRole",
+			metodo:       http.MethodGet,
+			caminho:      "/api/usuarios",
+			statusQuerAo: http.StatusUnauthorized,
+		},
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
@@ -321,6 +328,99 @@ func TestHealthHandler(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
 	}
+}
+
+// TestNewMux_UsuariosRotaCarregaRequireRole prova, despachando pela mesma
+// instância de newMux usada por main(), que GET /api/usuarios está atrás de
+// RequireRole(gestor) — e não só de RequireAuth. Um token de `usuario`/
+// `almoxarife` recebe 403 FORBIDDEN; um de `gestor`/`adm` recebe 200. Sem
+// estes casos, remover `middleware.RequireRole(services.PapelGestor)` de
+// newMux deixaria toda a suíte verde (o único caso pré-existente — sem token
+// -> 401 — é produzido só por RequireAuth).
+func TestNewMux_UsuariosRotaCarregaRequireRole(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	mux := newMux(db, emailCfg, jwtSecret)
+
+	const senha = "senha-123456"
+	seedConta := func(email, papel string) {
+		hash, err := bcrypt.GenerateFromPassword([]byte(senha), bcrypt.DefaultCost)
+		if err != nil {
+			t.Fatalf("hash: %v", err)
+		}
+		if _, err := db.Exec(
+			`INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
+			 VALUES ('Conta Teste', $1, $2, $3, true, true)`,
+			email, string(hash), papel,
+		); err != nil {
+			t.Fatalf("insert conta %q (%s): %v", email, papel, err)
+		}
+	}
+
+	tokenDe := func(email string) string {
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/login",
+			strings.NewReader(`{"email":"`+email+`","senha":"`+senha+`"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("login %q: status = %d, want 200 (body=%s)", email, w.Code, w.Body.String())
+		}
+		var body struct {
+			Token string `json:"token"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("login %q: decode: %v", email, err)
+		}
+		return body.Token
+	}
+
+	getUsuarios := func(token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/usuarios", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	seedConta("mux-usuario@empresa.com", "usuario")
+	seedConta("mux-almox@empresa.com", "almoxarife")
+	seedConta("mux-gestor@empresa.com", "gestor")
+	seedConta("mux-adm@empresa.com", "adm")
+
+	t.Run("papel insuficiente -> 403 FORBIDDEN", func(t *testing.T) {
+		for _, email := range []string{"mux-usuario@empresa.com", "mux-almox@empresa.com"} {
+			w := getUsuarios(tokenDe(email))
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("%s: status = %d, want %d (body=%s)", email, w.Code, http.StatusForbidden, w.Body.String())
+			}
+			var env struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+				t.Fatalf("%s: decode envelope: %v", email, err)
+			}
+			if env.Error.Code != "FORBIDDEN" {
+				t.Errorf("%s: code = %q, want %q", email, env.Error.Code, "FORBIDDEN")
+			}
+		}
+	})
+
+	t.Run("papel suficiente -> 200", func(t *testing.T) {
+		for _, email := range []string{"mux-gestor@empresa.com", "mux-adm@empresa.com"} {
+			w := getUsuarios(tokenDe(email))
+			if w.Code != http.StatusOK {
+				t.Fatalf("%s: status = %d, want %d (body=%s)", email, w.Code, http.StatusOK, w.Body.String())
+			}
+		}
+	})
 }
 
 // TestHealthHandler_Unhealthy prova o ramo de erro do handler: se o ping ao
