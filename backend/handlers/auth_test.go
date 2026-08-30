@@ -879,6 +879,287 @@ func TestMeHandler_SemToken(t *testing.T) {
 	}
 }
 
+// --- Story 1.6: recuperação de senha por e-mail -------------------------
+
+func postEsqueciSenha(db *sql.DB, jsonBody string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/esqueci-senha", strings.NewReader(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	EsqueciSenhaHandler(db, testEmailCfg)(w, req)
+	return w
+}
+
+func getValidarRedefinicao(db *sql.DB, token string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/redefinir-senha?token="+token, nil)
+	w := httptest.NewRecorder()
+	ValidarRedefinicaoSenhaHandler(db)(w, req)
+	return w
+}
+
+func postRedefinirSenha(db *sql.DB, jsonBody string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/redefinir-senha", strings.NewReader(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	RedefinirSenhaHandler(db)(w, req)
+	return w
+}
+
+// seedTokenRedefinicao cria uma conta ativa/verificada com senha conhecida e
+// devolve o id + um token de redefinição válido (via o próprio service).
+func seedTokenRedefinicao(t *testing.T, db *sql.DB, email string) (usuarioID, token string) {
+	t.Helper()
+	usuarioID = criarUsuarioLogin(t, db, email, "senha-antiga1")
+	if err := services.SolicitarRedefinicaoSenha(db, testEmailCfg, email); err != nil {
+		t.Fatalf("SolicitarRedefinicaoSenha falhou: %v", err)
+	}
+	if err := db.QueryRow(
+		`SELECT token FROM tokens_acao WHERE usuario_id = $1 AND tipo = 'redefinicao_senha'`, usuarioID,
+	).Scan(&token); err != nil {
+		t.Fatalf("falha ao ler token de redefinição: %v", err)
+	}
+	return usuarioID, token
+}
+
+// TestEsqueciSenhaHandler_RespostaGenericaByteIdentica prova a garantia
+// central da I/O Matrix: conta existente e inexistente produzem o MESMO
+// status e o MESMO corpo byte-a-byte — e só a conta existente grava
+// token+outbox.
+func TestEsqueciSenhaHandler_RespostaGenericaByteIdentica(t *testing.T) {
+	db := testDB(t)
+	criarUsuarioLogin(t, db, "esqueci-existe@empresa.com", "senha-123456")
+
+	wExiste := postEsqueciSenha(db, `{"email":"Esqueci-Existe@Empresa.com"}`)
+	wNaoExiste := postEsqueciSenha(db, `{"email":"esqueci-fantasma@empresa.com"}`)
+
+	if wExiste.Code != http.StatusOK || wNaoExiste.Code != http.StatusOK {
+		t.Fatalf("status = %d / %d, want 200 / 200", wExiste.Code, wNaoExiste.Code)
+	}
+	if wExiste.Body.String() != wNaoExiste.Body.String() {
+		t.Fatalf("corpos diferentes:\n existe    = %q\n nao existe = %q", wExiste.Body.String(), wNaoExiste.Body.String())
+	}
+	if wExiste.Body.String() != `{"mensagem":"Se o e-mail existir, você receberá um link."}`+"\n" {
+		t.Errorf("corpo = %q, want a mensagem genérica fixa", wExiste.Body.String())
+	}
+
+	var tokens, emails int
+	if err := db.QueryRow(`SELECT count(*) FROM tokens_acao WHERE tipo = 'redefinicao_senha'`).Scan(&tokens); err != nil {
+		t.Fatalf("count tokens: %v", err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM emails_pendentes WHERE tipo = 'redefinicao_senha'`).Scan(&emails); err != nil {
+		t.Fatalf("count emails: %v", err)
+	}
+	if tokens != 1 || emails != 1 {
+		t.Errorf("tokens=%d emails=%d, want 1 e 1 (só a conta existente grava)", tokens, emails)
+	}
+}
+
+// TestEsqueciSenhaHandler_PayloadInvalido prova que só JSON malformado ->
+// 400 VALIDATION_ERROR.
+func TestEsqueciSenhaHandler_PayloadInvalido(t *testing.T) {
+	db := testDB(t)
+
+	w := postEsqueciSenha(db, `{isto nao e json`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "VALIDATION_ERROR" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "VALIDATION_ERROR")
+	}
+}
+
+// TestValidarRedefinicaoSenhaHandler cobre os três desfechos do GET de
+// validação de link (I/O Matrix): válido -> 200 {"valido":true} sem consumir;
+// inexistente -> 404 NOT_FOUND; expirado/usado -> 400 TOKEN_EXPIRED.
+func TestValidarRedefinicaoSenhaHandler(t *testing.T) {
+	db := testDB(t)
+	_, token := seedTokenRedefinicao(t, db, "valida-handler@empresa.com")
+
+	w := getValidarRedefinicao(db, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("token válido: status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var body struct {
+		Valido bool `json:"valido"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || !body.Valido {
+		t.Fatalf("corpo = %s, want {\"valido\":true}", w.Body.String())
+	}
+	var usado *string
+	if err := db.QueryRow(`SELECT usado_em::text FROM tokens_acao WHERE token = $1`, token).Scan(&usado); err != nil {
+		t.Fatalf("falha ao reler token: %v", err)
+	}
+	if usado != nil {
+		t.Error("GET de validação consumiu o token (usado_em preenchido)")
+	}
+
+	wInexistente := getValidarRedefinicao(db, "token-que-nunca-existiu")
+	if wInexistente.Code != http.StatusNotFound {
+		t.Fatalf("inexistente: status = %d, want 404 (body=%s)", wInexistente.Code, wInexistente.Body.String())
+	}
+	if env := decodeErro(t, wInexistente.Body.Bytes()); env.Error.Code != "NOT_FOUND" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "NOT_FOUND")
+	}
+
+	// Token usado mas AINDA não expirado (sub-ramo `usadoEm.Valid` isolado da
+	// expiração) -> 400 TOKEN_EXPIRED.
+	_, tokenUsado := seedTokenRedefinicao(t, db, "valida-handler-usado@empresa.com")
+	if _, err := db.Exec(`UPDATE tokens_acao SET usado_em = now() WHERE token = $1`, tokenUsado); err != nil {
+		t.Fatalf("falha ao marcar token como usado: %v", err)
+	}
+	wUsado := getValidarRedefinicao(db, tokenUsado)
+	if wUsado.Code != http.StatusBadRequest {
+		t.Fatalf("usado: status = %d, want 400 (body=%s)", wUsado.Code, wUsado.Body.String())
+	}
+	if env := decodeErro(t, wUsado.Body.Bytes()); env.Error.Code != "TOKEN_EXPIRED" {
+		t.Errorf("usado: code = %q, want %q", env.Error.Code, "TOKEN_EXPIRED")
+	}
+
+	if _, err := db.Exec(`UPDATE tokens_acao SET expira_em = now() - interval '1 minute' WHERE token = $1`, token); err != nil {
+		t.Fatalf("falha ao forçar expiração: %v", err)
+	}
+	wExpirado := getValidarRedefinicao(db, token)
+	if wExpirado.Code != http.StatusBadRequest {
+		t.Fatalf("expirado: status = %d, want 400 (body=%s)", wExpirado.Code, wExpirado.Body.String())
+	}
+	if env := decodeErro(t, wExpirado.Body.Bytes()); env.Error.Code != "TOKEN_EXPIRED" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "TOKEN_EXPIRED")
+	}
+}
+
+// TestRedefinirSenhaHandler_Sucesso prova o caminho feliz na fronteira HTTP:
+// 200; a nova senha passa a autenticar em POST /api/auth/login; um refresh
+// com um cookie emitido antes do reset passa a devolver 401 TOKEN_EXPIRED.
+func TestRedefinirSenhaHandler_Sucesso(t *testing.T) {
+	db := testDB(t)
+	_, token := seedTokenRedefinicao(t, db, "redefine-handler-ok@empresa.com")
+
+	// Sessão emitida ANTES do reset (via login real).
+	wLogin := postLogin(db, `{"email":"redefine-handler-ok@empresa.com","senha":"senha-antiga1"}`)
+	if wLogin.Code != http.StatusOK {
+		t.Fatalf("login pré-reset: status = %d, want 200", wLogin.Code)
+	}
+	cookieAntigo := refreshCookieDoResultado(t, wLogin)
+
+	w := postRedefinirSenha(db, `{"token":"`+token+`","senha":"nova-senha1"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+
+	// Encadeamento reset -> login com a nova senha.
+	wNovoLogin := postLogin(db, `{"email":"redefine-handler-ok@empresa.com","senha":"nova-senha1"}`)
+	if wNovoLogin.Code != http.StatusOK {
+		t.Fatalf("login com a nova senha: status = %d, want 200 (body=%s)", wNovoLogin.Code, wNovoLogin.Body.String())
+	}
+
+	// Encadeamento reset -> refresh com o cookie antigo -> 401 TOKEN_EXPIRED.
+	wRefresh := postRefresh(db, cookieAntigo)
+	if wRefresh.Code != http.StatusUnauthorized {
+		t.Fatalf("refresh com cookie pré-reset: status = %d, want 401 (body=%s)", wRefresh.Code, wRefresh.Body.String())
+	}
+	if env := decodeErro(t, wRefresh.Body.Bytes()); env.Error.Code != "TOKEN_EXPIRED" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "TOKEN_EXPIRED")
+	}
+}
+
+// TestRedefinirSenhaHandler_SenhaFraca prova o cenário "Redefinição, senha
+// fraca": 400 VALIDATION_ERROR e o token permanece válido para nova tentativa.
+func TestRedefinirSenhaHandler_SenhaFraca(t *testing.T) {
+	db := testDB(t)
+	_, token := seedTokenRedefinicao(t, db, "redefine-handler-fraca@empresa.com")
+
+	w := postRedefinirSenha(db, `{"token":"`+token+`","senha":"curta1"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "VALIDATION_ERROR" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "VALIDATION_ERROR")
+	}
+
+	wRetry := postRedefinirSenha(db, `{"token":"`+token+`","senha":"nova-senha1"}`)
+	if wRetry.Code != http.StatusOK {
+		t.Fatalf("retry com senha forte: status = %d, want 200 (body=%s)", wRetry.Code, wRetry.Body.String())
+	}
+}
+
+// TestRedefinirSenhaHandler_TokenInexistente prova 404 NOT_FOUND.
+func TestRedefinirSenhaHandler_TokenInexistente(t *testing.T) {
+	db := testDB(t)
+
+	w := postRedefinirSenha(db, `{"token":"token-que-nunca-existiu","senha":"nova-senha1"}`)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "NOT_FOUND" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "NOT_FOUND")
+	}
+}
+
+// TestRedefinirSenhaHandler_TokenExpiradoEReuso prova 400 TOKEN_EXPIRED para
+// token vencido e para o reuso de um token já consumido.
+func TestRedefinirSenhaHandler_TokenExpiradoEReuso(t *testing.T) {
+	db := testDB(t)
+	_, tokenVencido := seedTokenRedefinicao(t, db, "redefine-handler-venc@empresa.com")
+	if _, err := db.Exec(`UPDATE tokens_acao SET expira_em = now() - interval '1 minute' WHERE token = $1`, tokenVencido); err != nil {
+		t.Fatalf("falha ao forçar expiração: %v", err)
+	}
+	wVencido := postRedefinirSenha(db, `{"token":"`+tokenVencido+`","senha":"nova-senha1"}`)
+	if wVencido.Code != http.StatusBadRequest {
+		t.Fatalf("vencido: status = %d, want 400 (body=%s)", wVencido.Code, wVencido.Body.String())
+	}
+	if env := decodeErro(t, wVencido.Body.Bytes()); env.Error.Code != "TOKEN_EXPIRED" {
+		t.Errorf("vencido: code = %q, want %q", env.Error.Code, "TOKEN_EXPIRED")
+	}
+
+	_, tokenReuso := seedTokenRedefinicao(t, db, "redefine-handler-reuso@empresa.com")
+	if w := postRedefinirSenha(db, `{"token":"`+tokenReuso+`","senha":"nova-senha1"}`); w.Code != http.StatusOK {
+		t.Fatalf("primeiro uso: status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	wReuso := postRedefinirSenha(db, `{"token":"`+tokenReuso+`","senha":"outra-senha2"}`)
+	if wReuso.Code != http.StatusBadRequest {
+		t.Fatalf("reuso: status = %d, want 400 (body=%s)", wReuso.Code, wReuso.Body.String())
+	}
+	if env := decodeErro(t, wReuso.Body.Bytes()); env.Error.Code != "TOKEN_EXPIRED" {
+		t.Errorf("reuso: code = %q, want %q", env.Error.Code, "TOKEN_EXPIRED")
+	}
+}
+
+// TestRedefinirSenhaHandler_TokenDeVerificacaoEmail prova o isolamento entre
+// fluxos (AD-18) na fronteira HTTP: um token válido de
+// tipo='verificacao_email' -> 404 NOT_FOUND.
+func TestRedefinirSenhaHandler_TokenDeVerificacaoEmail(t *testing.T) {
+	db := testDB(t)
+	usuarioID, err := services.Cadastrar(db, testEmailCfg, "isola-handler", "isola-handler@empresa.com", "senha-123456")
+	if err != nil {
+		t.Fatalf("Cadastrar falhou: %v", err)
+	}
+	var tokenVerificacao string
+	if err := db.QueryRow(`SELECT token FROM tokens_acao WHERE usuario_id = $1`, usuarioID).Scan(&tokenVerificacao); err != nil {
+		t.Fatalf("falha ao ler token: %v", err)
+	}
+
+	w := postRedefinirSenha(db, `{"token":"`+tokenVerificacao+`","senha":"nova-senha1"}`)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "NOT_FOUND" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "NOT_FOUND")
+	}
+}
+
+// TestRedefinirSenhaHandler_PayloadInvalido prova 400 VALIDATION_ERROR para
+// corpo não-JSON.
+func TestRedefinirSenhaHandler_PayloadInvalido(t *testing.T) {
+	db := testDB(t)
+
+	w := postRedefinirSenha(db, `{isto nao e json`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "VALIDATION_ERROR" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "VALIDATION_ERROR")
+	}
+}
+
 // TestMeHandler_ContaDesativadaAposEmissao prova a AC principal da Story
 // 1.4: um token de acesso ainda válido, para uma conta desativada entre a
 // emissão e o uso, é rejeitado com 401 SESSION_REVOKED — provado através da

@@ -856,3 +856,497 @@ func TestBuscarUsuarioSessao_ContaDesativada(t *testing.T) {
 		t.Error("Ativo = true, want false")
 	}
 }
+
+// --- Story 1.6: recuperação de senha por e-mail ---------------------------
+
+// TestValidarForcaSenha prova a política mínima de força de senha (Story 1.6,
+// semente da Story 1.10): 8+ caracteres contados como runes, ao menos uma
+// letra e um dígito, no máximo 72 bytes.
+func TestValidarForcaSenha(t *testing.T) {
+	casos := []struct {
+		nome  string
+		senha string
+		ok    bool
+	}{
+		{"7 caracteres é curto demais", "abc1234", false},
+		{"8 caracteres com letra e dígito passa", "abcd1234", true},
+		{"sem dígito reprova", "abcdefgh", false},
+		{"sem letra reprova", "12345678", false},
+		{"73 bytes reprova (limite do bcrypt)", strings.Repeat("a", 72) + "1", false},
+		{"72 bytes no limite passa", strings.Repeat("a", 71) + "1", true},
+		{"acento conta como 1 rune: 8 runes / 13 bytes passa", "áéíóú123", true},
+		{"string vazia reprova", "", false},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			err := ValidarForcaSenha(c.senha)
+			if c.ok && err != nil {
+				t.Fatalf("ValidarForcaSenha(%q) = %v, want nil", c.senha, err)
+			}
+			if !c.ok && !errors.Is(err, ErrSenhaFraca) {
+				t.Fatalf("ValidarForcaSenha(%q) = %v, want ErrSenhaFraca", c.senha, err)
+			}
+		})
+	}
+}
+
+// lerTokenRedefinicao lê o token de redefinição (tipo='redefinicao_senha')
+// gerado para um usuário; falha o teste se não houver exatamente um.
+func lerTokenRedefinicao(t *testing.T, db *sql.DB, usuarioID string) string {
+	t.Helper()
+	var token string
+	if err := db.QueryRow(
+		`SELECT token FROM tokens_acao WHERE usuario_id = $1 AND tipo = 'redefinicao_senha'`,
+		usuarioID,
+	).Scan(&token); err != nil {
+		t.Fatalf("falha ao ler token de redefinição: %v", err)
+	}
+	return token
+}
+
+// TestSolicitarRedefinicaoSenha_ContaExiste prova o cenário "Solicitação,
+// conta existe" da I/O Matrix: um tokens_acao (redefinicao_senha, +30min,
+// usado_em nulo) + um emails_pendentes (redefinicao_senha) gravados na mesma
+// transação, com o link montado a partir de APP_URL.
+func TestSolicitarRedefinicaoSenha_ContaExiste(t *testing.T) {
+	db := testDB(t)
+	usuarioID := criarUsuarioParaLogin(t, db, "reset-existe@empresa.com", "senha-123456", true, true)
+
+	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, "Reset-Existe@Empresa.com"); err != nil {
+		t.Fatalf("SolicitarRedefinicaoSenha retornou erro inesperado: %v", err)
+	}
+
+	var token, tipo string
+	var expiraEm time.Time
+	var usadoEm sql.NullTime
+	if err := db.QueryRow(
+		`SELECT token, tipo, expira_em, usado_em FROM tokens_acao WHERE usuario_id = $1`, usuarioID,
+	).Scan(&token, &tipo, &expiraEm, &usadoEm); err != nil {
+		t.Fatalf("falha ao ler token gerado: %v", err)
+	}
+	if tipo != "redefinicao_senha" {
+		t.Errorf("tipo do token = %q, want %q", tipo, "redefinicao_senha")
+	}
+	if usadoEm.Valid {
+		t.Error("usado_em já preenchido em token recém-criado")
+	}
+	wantExpira := time.Now().UTC().Add(30 * time.Minute)
+	if diff := wantExpira.Sub(expiraEm); diff < -time.Minute || diff > time.Minute {
+		t.Errorf("expira_em = %v, want ~30min a partir de agora (diff=%v)", expiraEm, diff)
+	}
+
+	var destinatario, tipoEmail, variaveisRaw string
+	if err := db.QueryRow(
+		`SELECT destinatario, tipo, variaveis_json::text FROM emails_pendentes WHERE usuario_id = $1`, usuarioID,
+	).Scan(&destinatario, &tipoEmail, &variaveisRaw); err != nil {
+		t.Fatalf("falha ao ler linha de outbox: %v", err)
+	}
+	if destinatario != "reset-existe@empresa.com" {
+		t.Errorf("destinatario = %q, want %q (normalizado)", destinatario, "reset-existe@empresa.com")
+	}
+	if tipoEmail != "redefinicao_senha" {
+		t.Errorf("tipo do e-mail = %q, want %q", tipoEmail, "redefinicao_senha")
+	}
+	var variaveis map[string]any
+	if err := json.Unmarshal([]byte(variaveisRaw), &variaveis); err != nil {
+		t.Fatalf("variaveis_json inválido: %v", err)
+	}
+	wantLink := "http://test.local/redefinir-senha?token=" + token
+	if got, _ := variaveis["link"].(string); got != wantLink {
+		t.Errorf("link = %q, want %q", got, wantLink)
+	}
+}
+
+// TestSolicitarRedefinicaoSenha_ContaNaoExiste prova o cenário "Solicitação,
+// conta não existe": retorna nil e nenhuma linha é gravada.
+func TestSolicitarRedefinicaoSenha_ContaNaoExiste(t *testing.T) {
+	db := testDB(t)
+
+	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, "nunca-existiu@empresa.com"); err != nil {
+		t.Fatalf("SolicitarRedefinicaoSenha retornou erro inesperado: %v", err)
+	}
+	if n := contarLinhas(t, db, "tokens_acao"); n != 0 {
+		t.Errorf("count(tokens_acao) = %d, want 0", n)
+	}
+	if n := contarLinhas(t, db, "emails_pendentes"); n != 0 {
+		t.Errorf("count(emails_pendentes) = %d, want 0", n)
+	}
+}
+
+// TestSolicitarRedefinicaoSenha_ContaSoSSO prova que uma conta só-SSO
+// (senha_hash nulo) NÃO é exceção — recebe token e e-mail normalmente.
+func TestSolicitarRedefinicaoSenha_ContaSoSSO(t *testing.T) {
+	db := testDB(t)
+	usuarioID := criarUsuarioParaLogin(t, db, "reset-sso@empresa.com", "", true, true)
+
+	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, "reset-sso@empresa.com"); err != nil {
+		t.Fatalf("SolicitarRedefinicaoSenha retornou erro inesperado: %v", err)
+	}
+	_ = lerTokenRedefinicao(t, db, usuarioID)
+	if n := contarLinhas(t, db, "emails_pendentes"); n != 1 {
+		t.Errorf("count(emails_pendentes) = %d, want 1", n)
+	}
+}
+
+// TestSolicitarRedefinicaoSenha_EmailComMaiusculasEEspacos prova o match
+// case-insensitive com normalização de bordas (normalizeEmail).
+func TestSolicitarRedefinicaoSenha_EmailComMaiusculasEEspacos(t *testing.T) {
+	db := testDB(t)
+	usuarioID := criarUsuarioParaLogin(t, db, "reset-normaliza@empresa.com", "senha-123456", true, true)
+
+	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, "  Reset-Normaliza@Empresa.COM "); err != nil {
+		t.Fatalf("SolicitarRedefinicaoSenha retornou erro inesperado: %v", err)
+	}
+	_ = lerTokenRedefinicao(t, db, usuarioID)
+}
+
+// TestSolicitarRedefinicaoSenha_InvalidaTokensAnteriores prova que emitir um
+// novo link marca como usado qualquer token de redefinição anterior ainda não
+// consumido — a conta nunca fica com vários links de redefinição válidos ao
+// mesmo tempo (só o mais recente é aceito).
+func TestSolicitarRedefinicaoSenha_InvalidaTokensAnteriores(t *testing.T) {
+	db := testDB(t)
+	usuarioID := criarUsuarioParaLogin(t, db, "reset-invalida-anterior@empresa.com", "senha-antiga1", true, true)
+
+	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, "reset-invalida-anterior@empresa.com"); err != nil {
+		t.Fatalf("primeira solicitação falhou: %v", err)
+	}
+	var primeiroToken string
+	if err := db.QueryRow(
+		`SELECT token FROM tokens_acao WHERE usuario_id = $1 AND tipo = 'redefinicao_senha' ORDER BY criado_em`,
+		usuarioID,
+	).Scan(&primeiroToken); err != nil {
+		t.Fatalf("falha ao ler primeiro token: %v", err)
+	}
+
+	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, "reset-invalida-anterior@empresa.com"); err != nil {
+		t.Fatalf("segunda solicitação falhou: %v", err)
+	}
+
+	var usadoPrimeiro sql.NullTime
+	if err := db.QueryRow(`SELECT usado_em FROM tokens_acao WHERE token = $1`, primeiroToken).Scan(&usadoPrimeiro); err != nil {
+		t.Fatalf("falha ao reler primeiro token: %v", err)
+	}
+	if !usadoPrimeiro.Valid {
+		t.Error("primeiro token continua com usado_em nulo após a emissão de um novo link")
+	}
+
+	var segundoToken string
+	if err := db.QueryRow(
+		`SELECT token FROM tokens_acao WHERE usuario_id = $1 AND tipo = 'redefinicao_senha' AND usado_em IS NULL`,
+		usuarioID,
+	).Scan(&segundoToken); err != nil {
+		t.Fatalf("falha ao ler segundo token (único não usado): %v", err)
+	}
+	if segundoToken == primeiroToken {
+		t.Fatal("segundo token igual ao primeiro")
+	}
+
+	if err := ValidarTokenRedefinicao(db, primeiroToken); !errors.Is(err, ErrTokenExpirado) {
+		t.Errorf("ValidarTokenRedefinicao(primeiro) = %v, want ErrTokenExpirado", err)
+	}
+	if err := ValidarTokenRedefinicao(db, segundoToken); err != nil {
+		t.Errorf("ValidarTokenRedefinicao(segundo) = %v, want nil", err)
+	}
+	if err := RedefinirSenha(db, primeiroToken, "nova-senha1"); !errors.Is(err, ErrTokenExpirado) {
+		t.Errorf("RedefinirSenha(primeiro) = %v, want ErrTokenExpirado", err)
+	}
+	if err := RedefinirSenha(db, segundoToken, "nova-senha1"); err != nil {
+		t.Errorf("RedefinirSenha(segundo) = %v, want nil", err)
+	}
+}
+
+// TestValidarTokenRedefinicao cobre os três desfechos: válido (sem consumir),
+// inexistente e expirado/usado.
+func TestValidarTokenRedefinicao(t *testing.T) {
+	db := testDB(t)
+	usuarioID := criarUsuarioParaLogin(t, db, "valida-token@empresa.com", "senha-123456", true, true)
+	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, "valida-token@empresa.com"); err != nil {
+		t.Fatalf("SolicitarRedefinicaoSenha falhou: %v", err)
+	}
+	token := lerTokenRedefinicao(t, db, usuarioID)
+
+	if err := ValidarTokenRedefinicao(db, token); err != nil {
+		t.Fatalf("ValidarTokenRedefinicao(token válido) = %v, want nil", err)
+	}
+	var usadoEm sql.NullTime
+	if err := db.QueryRow(`SELECT usado_em FROM tokens_acao WHERE token = $1`, token).Scan(&usadoEm); err != nil {
+		t.Fatalf("falha ao reler token: %v", err)
+	}
+	if usadoEm.Valid {
+		t.Error("usado_em preenchido — ValidarTokenRedefinicao não pode consumir o token")
+	}
+
+	if err := ValidarTokenRedefinicao(db, "token-que-nunca-existiu"); !errors.Is(err, ErrTokenNaoEncontrado) {
+		t.Fatalf("erro = %v, want ErrTokenNaoEncontrado", err)
+	}
+
+	// Token usado mas AINDA não expirado: fixa o sub-ramo `usadoEm.Valid` de
+	// ValidarTokenRedefinicao isolado da expiração (linha "GET com token
+	// vencido OU usado_em preenchido" da I/O Matrix).
+	if _, err := db.Exec(`UPDATE tokens_acao SET usado_em = now() WHERE token = $1`, token); err != nil {
+		t.Fatalf("falha ao marcar token como usado: %v", err)
+	}
+	if err := ValidarTokenRedefinicao(db, token); !errors.Is(err, ErrTokenExpirado) {
+		t.Fatalf("token usado (não expirado): erro = %v, want ErrTokenExpirado", err)
+	}
+
+	if _, err := db.Exec(`UPDATE tokens_acao SET expira_em = now() - interval '1 minute' WHERE token = $1`, token); err != nil {
+		t.Fatalf("falha ao forçar expiração: %v", err)
+	}
+	if err := ValidarTokenRedefinicao(db, token); !errors.Is(err, ErrTokenExpirado) {
+		t.Fatalf("erro = %v, want ErrTokenExpirado", err)
+	}
+}
+
+// TestValidarTokenRedefinicao_TokenDeVerificacaoEmailIsolado prova o
+// isolamento entre fluxos (AD-18): um token válido de tipo='verificacao_email'
+// é invisível para o fluxo de redefinição.
+func TestValidarTokenRedefinicao_TokenDeVerificacaoEmailIsolado(t *testing.T) {
+	db := testDB(t)
+	_, tokenVerificacao := criarUsuarioComToken(t, db, "isola-verificacao@empresa.com")
+
+	if err := ValidarTokenRedefinicao(db, tokenVerificacao); !errors.Is(err, ErrTokenNaoEncontrado) {
+		t.Fatalf("erro = %v, want ErrTokenNaoEncontrado — fluxos isolados", err)
+	}
+}
+
+// prepararRedefinicao cria uma conta ativa/verificada com senha conhecida e
+// devolve o id + um token de redefinição válido.
+func prepararRedefinicao(t *testing.T, db *sql.DB, email string) (usuarioID, token string) {
+	t.Helper()
+	usuarioID = criarUsuarioParaLogin(t, db, email, "senha-antiga1", true, true)
+	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, email); err != nil {
+		t.Fatalf("SolicitarRedefinicaoSenha falhou: %v", err)
+	}
+	return usuarioID, lerTokenRedefinicao(t, db, usuarioID)
+}
+
+// TestRedefinirSenha_Sucesso prova o caminho feliz: senha_hash passa a casar
+// a nova senha (não a antiga), o token fica usado e TODAS as sessões da conta
+// são revogadas — sessões de outras contas ficam intactas.
+func TestRedefinirSenha_Sucesso(t *testing.T) {
+	db := testDB(t)
+	usuarioID, token := prepararRedefinicao(t, db, "redefine-ok@empresa.com")
+
+	// Sessão da própria conta (deve ser revogada) e de outra conta (intacta).
+	_, _, _, err := EmitirSessao(db, testJWTSecret, usuarioID)
+	if err != nil {
+		t.Fatalf("EmitirSessao falhou: %v", err)
+	}
+	outroID := criarUsuarioParaLogin(t, db, "outra-conta@empresa.com", "senha-123456", true, true)
+	_, outroRefresh, _, err := EmitirSessao(db, testJWTSecret, outroID)
+	if err != nil {
+		t.Fatalf("EmitirSessao (outra conta) falhou: %v", err)
+	}
+
+	if err := RedefinirSenha(db, token, "nova-senha1"); err != nil {
+		t.Fatalf("RedefinirSenha retornou erro inesperado: %v", err)
+	}
+
+	var senhaHash string
+	if err := db.QueryRow(`SELECT senha_hash FROM usuarios WHERE id = $1`, usuarioID).Scan(&senhaHash); err != nil {
+		t.Fatalf("falha ao reler senha_hash: %v", err)
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(senhaHash), []byte("nova-senha1")); err != nil {
+		t.Errorf("senha_hash não casa a nova senha: %v", err)
+	}
+	if bcrypt.CompareHashAndPassword([]byte(senhaHash), []byte("senha-antiga1")) == nil {
+		t.Error("senha_hash ainda casa a senha antiga")
+	}
+
+	var usadoEm sql.NullTime
+	if err := db.QueryRow(`SELECT usado_em FROM tokens_acao WHERE token = $1`, token).Scan(&usadoEm); err != nil {
+		t.Fatalf("falha ao reler token: %v", err)
+	}
+	if !usadoEm.Valid {
+		t.Error("usado_em não preenchido após redefinição bem-sucedida")
+	}
+
+	var ativas int
+	if err := db.QueryRow(`SELECT count(*) FROM sessoes WHERE usuario_id = $1 AND revogado_em IS NULL`, usuarioID).Scan(&ativas); err != nil {
+		t.Fatalf("falha ao contar sessões ativas: %v", err)
+	}
+	if ativas != 0 {
+		t.Errorf("sessões ativas da conta = %d, want 0", ativas)
+	}
+
+	// A sessão da outra conta continua utilizável.
+	if _, _, _, err := RenovarSessao(db, testJWTSecret, outroRefresh); err != nil {
+		t.Errorf("sessão de outra conta foi afetada: %v", err)
+	}
+}
+
+// TestRedefinirSenha_SenhaFracaNaoConsomeToken prova o cenário "Redefinição,
+// senha fraca" da I/O Matrix: ErrSenhaFraca, token permanece válido.
+func TestRedefinirSenha_SenhaFracaNaoConsomeToken(t *testing.T) {
+	db := testDB(t)
+	usuarioID, token := prepararRedefinicao(t, db, "redefine-fraca@empresa.com")
+
+	if err := RedefinirSenha(db, token, "curta1"); !errors.Is(err, ErrSenhaFraca) {
+		t.Fatalf("erro = %v, want ErrSenhaFraca", err)
+	}
+
+	var usadoEm sql.NullTime
+	var senhaHash string
+	if err := db.QueryRow(`SELECT usado_em FROM tokens_acao WHERE token = $1`, token).Scan(&usadoEm); err != nil {
+		t.Fatalf("falha ao reler token: %v", err)
+	}
+	if usadoEm.Valid {
+		t.Error("usado_em preenchido — senha fraca não pode consumir o token")
+	}
+	if err := db.QueryRow(`SELECT senha_hash FROM usuarios WHERE id = $1`, usuarioID).Scan(&senhaHash); err != nil {
+		t.Fatalf("falha ao reler senha_hash: %v", err)
+	}
+	if bcrypt.CompareHashAndPassword([]byte(senhaHash), []byte("senha-antiga1")) != nil {
+		t.Error("senha_hash mudou apesar da senha fraca")
+	}
+	// O mesmo link continua válido para nova tentativa.
+	if err := RedefinirSenha(db, token, "nova-senha1"); err != nil {
+		t.Fatalf("segunda tentativa com senha forte falhou: %v", err)
+	}
+}
+
+// TestRedefinirSenha_TokenInexistente prova o cenário "Redefinição, token
+// inexistente" da I/O Matrix.
+func TestRedefinirSenha_TokenInexistente(t *testing.T) {
+	db := testDB(t)
+
+	if err := RedefinirSenha(db, "token-que-nunca-existiu", "nova-senha1"); !errors.Is(err, ErrTokenNaoEncontrado) {
+		t.Fatalf("erro = %v, want ErrTokenNaoEncontrado", err)
+	}
+}
+
+// TestRedefinirSenha_TokenExpirado prova o cenário "Redefinição, token
+// expirado/usado" da I/O Matrix — e que o erro não deixa nenhum efeito
+// colateral: senha_hash intacto (bcrypt ainda casa a senha antiga) e
+// usado_em do token ainda nulo.
+func TestRedefinirSenha_TokenExpirado(t *testing.T) {
+	db := testDB(t)
+	usuarioID, token := prepararRedefinicao(t, db, "redefine-expirado@empresa.com")
+	if _, err := db.Exec(`UPDATE tokens_acao SET expira_em = now() - interval '1 minute' WHERE token = $1`, token); err != nil {
+		t.Fatalf("falha ao forçar expiração: %v", err)
+	}
+
+	if err := RedefinirSenha(db, token, "nova-senha1"); !errors.Is(err, ErrTokenExpirado) {
+		t.Fatalf("erro = %v, want ErrTokenExpirado", err)
+	}
+
+	var senhaHash string
+	if err := db.QueryRow(`SELECT senha_hash FROM usuarios WHERE id = $1`, usuarioID).Scan(&senhaHash); err != nil {
+		t.Fatalf("falha ao reler senha_hash: %v", err)
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(senhaHash), []byte("senha-antiga1")); err != nil {
+		t.Errorf("senha_hash mudou apesar do token expirado: %v", err)
+	}
+	if bcrypt.CompareHashAndPassword([]byte(senhaHash), []byte("nova-senha1")) == nil {
+		t.Error("senha_hash passou a casar a nova senha apesar do token expirado")
+	}
+
+	var usadoEm sql.NullTime
+	if err := db.QueryRow(`SELECT usado_em FROM tokens_acao WHERE token = $1`, token).Scan(&usadoEm); err != nil {
+		t.Fatalf("falha ao reler token: %v", err)
+	}
+	if usadoEm.Valid {
+		t.Error("usado_em preenchido — token expirado não pode ser consumido")
+	}
+}
+
+// TestRedefinirSenha_ReusoDoMesmoToken prova o cenário "Redefinição, reuso do
+// mesmo token": o segundo POST com o token já consumido -> ErrTokenExpirado
+// (o UPDATE guardado afeta 0 linhas).
+func TestRedefinirSenha_ReusoDoMesmoToken(t *testing.T) {
+	db := testDB(t)
+	_, token := prepararRedefinicao(t, db, "redefine-reuso@empresa.com")
+
+	if err := RedefinirSenha(db, token, "nova-senha1"); err != nil {
+		t.Fatalf("primeira redefinição falhou: %v", err)
+	}
+	if err := RedefinirSenha(db, token, "outra-senha2"); !errors.Is(err, ErrTokenExpirado) {
+		t.Fatalf("segunda redefinição: erro = %v, want ErrTokenExpirado", err)
+	}
+}
+
+// TestRedefinirSenha_TokenDeVerificacaoEmailIsolado prova o isolamento entre
+// fluxos (AD-18): um token válido de tipo='verificacao_email' -> NOT_FOUND.
+func TestRedefinirSenha_TokenDeVerificacaoEmailIsolado(t *testing.T) {
+	db := testDB(t)
+	_, tokenVerificacao := criarUsuarioComToken(t, db, "redefine-isola@empresa.com")
+
+	if err := RedefinirSenha(db, tokenVerificacao, "nova-senha1"); !errors.Is(err, ErrTokenNaoEncontrado) {
+		t.Fatalf("erro = %v, want ErrTokenNaoEncontrado — fluxos isolados", err)
+	}
+}
+
+// TestRedefinirSenha_ContaSoSSOPassaAAutenticarPorSenha prova o cenário
+// "Redefinição de conta só-SSO" da I/O Matrix: senha_hash era nulo; após o
+// fluxo, Login com a nova senha autentica.
+func TestRedefinirSenha_ContaSoSSOPassaAAutenticarPorSenha(t *testing.T) {
+	db := testDB(t)
+	usuarioID := criarUsuarioParaLogin(t, db, "sso-ganha-senha@empresa.com", "", true, true)
+	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, "sso-ganha-senha@empresa.com"); err != nil {
+		t.Fatalf("SolicitarRedefinicaoSenha falhou: %v", err)
+	}
+	token := lerTokenRedefinicao(t, db, usuarioID)
+
+	if err := RedefinirSenha(db, token, "nova-senha1"); err != nil {
+		t.Fatalf("RedefinirSenha falhou: %v", err)
+	}
+
+	got, err := Login(db, "sso-ganha-senha@empresa.com", "nova-senha1")
+	if err != nil {
+		t.Fatalf("Login com a nova senha falhou: %v", err)
+	}
+	if got != usuarioID {
+		t.Errorf("Login devolveu id %q, want %q", got, usuarioID)
+	}
+
+	// email_verificado e ativo intactos.
+	var emailVerificado, ativo bool
+	if err := db.QueryRow(`SELECT email_verificado, ativo FROM usuarios WHERE id = $1`, usuarioID).Scan(&emailVerificado, &ativo); err != nil {
+		t.Fatalf("falha ao reler usuario: %v", err)
+	}
+	if !emailVerificado || !ativo {
+		t.Errorf("email_verificado=%v ativo=%v, want ambos true (nenhum efeito colateral)", emailVerificado, ativo)
+	}
+}
+
+// TestRedefinirSenha_Concorrente prova o backstop contra a corrida fechada
+// pela condição repetida no UPDATE de marcarUsado
+// (`usado_em IS NULL AND expira_em > now()`): duas chamadas concorrentes para
+// o MESMO token só podem ter uma vencedora. Mesmo padrão de
+// TestVerificarEmail_Concorrente.
+func TestRedefinirSenha_Concorrente(t *testing.T) {
+	db := testDB(t)
+	_, token := prepararRedefinicao(t, db, "redefine-concorrente@empresa.com")
+
+	const n = 2
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	results := make([]error, n)
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results[i] = RedefinirSenha(db, token, "nova-senha1")
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	var ok, expirado int
+	for _, err := range results {
+		switch {
+		case err == nil:
+			ok++
+		case errors.Is(err, ErrTokenExpirado):
+			expirado++
+		default:
+			t.Fatalf("erro inesperado em execução concorrente: %v", err)
+		}
+	}
+	if ok != 1 || expirado != n-1 {
+		t.Errorf("ok=%d expirado=%d, want ok=1 expirado=%d", ok, expirado, n-1)
+	}
+}

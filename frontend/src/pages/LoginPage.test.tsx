@@ -66,6 +66,15 @@ describe('LoginPage', () => {
     expect(screen.getByRole('button', { name: 'Entrar' })).toBeInTheDocument();
   });
 
+  it('mostra o link "Esqueci minha senha" apontando para /esqueci-senha', () => {
+    renderPage();
+
+    expect(screen.getByRole('link', { name: 'Esqueci minha senha' })).toHaveAttribute(
+      'href',
+      '/esqueci-senha',
+    );
+  });
+
   it('envia POST /api/auth/login com o payload preenchido', async () => {
     const user = userEvent.setup();
     (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({

@@ -3,6 +3,7 @@ package services
 import (
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -112,14 +113,22 @@ func TestProcessarProximoEmailPendente_MarcaFalhoAposLimite(t *testing.T) {
 	}
 }
 
-// TestProcessarProximoEmailPendente_TipoDesconhecido prova que um tipo sem
-// template implementado (ex. 'redefinicao_senha', que só ganha template na
-// Story 1.6) é tratado como falha de envio dessa linha — nunca derruba o
-// worker.
-func TestProcessarProximoEmailPendente_TipoDesconhecido(t *testing.T) {
+// TestProcessarProximoEmailPendente_RedefinicaoSenhaTemTemplate prova que,
+// a partir da Story 1.6, o worker resolve o template de 'redefinicao_senha'
+// SEM cair no ramo de "tipo de e-mail desconhecido": a linha passa da
+// renderização e só falha no envio SMTP (testEmailCfg não tem SMTP),
+// registrando a falha sem derrubar o worker. O CHECK de
+// emails_pendentes.tipo só admite tipos que hoje têm template
+// ('verificacao_conta', 'redefinicao_senha'), então o ramo de erro de
+// renderização do worker é defensivo — coberto isoladamente por
+// TestRenderizarTemplate_TipoDesconhecidoRetornaErro.
+func TestProcessarProximoEmailPendente_RedefinicaoSenhaTemTemplate(t *testing.T) {
 	db := testDB(t)
-	usuarioID := inserirUsuarioDeTeste(t, db, "worker-tipo-desconhecido@empresa.com")
-	id := inserirEmailPendente(t, db, usuarioID, "worker-tipo-desconhecido@empresa.com", "redefinicao_senha", map[string]any{})
+	usuarioID := inserirUsuarioDeTeste(t, db, "worker-redefinicao@empresa.com")
+	id := inserirEmailPendente(t, db, usuarioID, "worker-redefinicao@empresa.com", "redefinicao_senha", map[string]any{
+		"nome": "Fulano",
+		"link": "http://test.local/redefinir-senha?token=abc123",
+	})
 
 	processarProximoEmailPendente(db, testEmailCfg)
 
@@ -131,7 +140,10 @@ func TestProcessarProximoEmailPendente_TipoDesconhecido(t *testing.T) {
 		t.Errorf("tentativas = %d, want 1", tentativas)
 	}
 	if !ultimoErro.Valid || ultimoErro.String == "" {
-		t.Error("ultimo_erro não preenchido para tipo sem template implementado")
+		t.Fatal("ultimo_erro não preenchido")
+	}
+	if strings.Contains(ultimoErro.String, "tipo de e-mail desconhecido") {
+		t.Errorf("worker caiu no ramo de tipo desconhecido para 'redefinicao_senha': %q", ultimoErro.String)
 	}
 }
 

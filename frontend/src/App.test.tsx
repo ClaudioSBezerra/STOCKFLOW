@@ -126,6 +126,42 @@ describe('<App /> — wiring real de AuthProvider + RotaProtegida', () => {
     expect(screen.queryByRole('navigation', { name: 'Navegação principal' })).not.toBeInTheDocument();
   });
 
+  it('/esqueci-senha renderiza EsqueciSenhaPage sem passar pelo RotaProtegida', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/api/auth/refresh') {
+        return Promise.resolve({ ok: false, status: 401, json: async () => ({}) });
+      }
+      throw new Error(`não deveria chamar ${url}`);
+    });
+    await router.navigate('/esqueci-senha');
+
+    render(<App />);
+
+    expect(
+      await screen.findByText('Informe seu e-mail e enviaremos um link para redefinir a senha.'),
+    ).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/esqueci-senha');
+    expect(screen.queryByRole('navigation', { name: 'Navegação principal' })).not.toBeInTheDocument();
+  });
+
+  it('/redefinir-senha renderiza RedefinirSenhaPage sem passar pelo RotaProtegida', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/api/auth/refresh') {
+        return Promise.resolve({ ok: false, status: 401, json: async () => ({}) });
+      }
+      throw new Error(`não deveria chamar ${url}`);
+    });
+    await router.navigate('/redefinir-senha');
+
+    render(<App />);
+
+    // Sem `?token=` a página já resolve para o estado de link inválido, sem
+    // tocar a API — prova que a rota pública renderiza a página, não o shell.
+    expect(await screen.findByText('Este link de redefinição é inválido.')).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/redefinir-senha');
+    expect(screen.queryByRole('navigation', { name: 'Navegação principal' })).not.toBeInTheDocument();
+  });
+
   it('cookie válido: refresh + /me resolvem e o AppShell é renderizado em /', async () => {
     fetchMock.mockImplementation((url: string) => {
       if (url === '/api/auth/refresh') {

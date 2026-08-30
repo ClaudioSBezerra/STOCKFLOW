@@ -5,6 +5,8 @@ import { PlaceholderPage } from '@/pages/PlaceholderPage';
 import { CadastroPage } from '@/pages/CadastroPage';
 import { VerificarEmailPage } from '@/pages/VerificarEmailPage';
 import { LoginPage } from '@/pages/LoginPage';
+import { EsqueciSenhaPage } from '@/pages/EsqueciSenhaPage';
+import { RedefinirSenhaPage } from '@/pages/RedefinirSenhaPage';
 
 /**
  * Rota raiz usa `AppShell` como layout; todo caminho não-raiz reaproveita a
@@ -12,8 +14,9 @@ import { LoginPage } from '@/pages/LoginPage';
  * (ver spec-1-2). Itens de navegação do shell continuam clicáveis mesmo sem
  * uma rota "de verdade" atrás deles.
  *
- * `/cadastro`, `/verificar-email` (Story 1.3) e `/login` (Story 1.4) são
- * rotas públicas irmãs da raiz, fora do `AppShell` e fora do
+ * `/cadastro`, `/verificar-email` (Story 1.3), `/login` (Story 1.4) e
+ * `/esqueci-senha` + `/redefinir-senha` (Story 1.6) são rotas públicas irmãs
+ * da raiz, fora do `AppShell` e fora do
  * `RotaProtegida`. A árvore do `AppShell` fica atrás do `RotaProtegida`
  * (Story 1.5): o `AuthProvider` faz o bootstrap silencioso da sessão ao
  * montar o app (silent refresh via cookie), e enquanto isso não resolve a
@@ -62,6 +65,8 @@ export const router = createBrowserRouter([
   { path: '/cadastro', element: <CadastroPage /> },
   { path: '/verificar-email', element: <VerificarEmailPage /> },
   { path: '/login', element: <LoginPage /> },
+  { path: '/esqueci-senha', element: <EsqueciSenhaPage /> },
+  { path: '/redefinir-senha', element: <RedefinirSenhaPage /> },
 ]);
 
 function App() {

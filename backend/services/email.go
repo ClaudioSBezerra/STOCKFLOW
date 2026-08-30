@@ -85,10 +85,9 @@ type templateRenderizado struct {
 }
 
 // renderizarTemplate resolve o template pelo `tipo` no momento do envio —
-// nunca no momento em que o produtor enfileira o e-mail (AD-4). Nesta story
-// só 'verificacao_conta' tem template implementado; qualquer outro tipo
-// (ex. 'redefinicao_senha', que só ganha template na Story 1.6) retorna erro,
-// tratado pelo worker como falha de envio dessa linha.
+// nunca no momento em que o produtor enfileira o e-mail (AD-4). 'verificacao_conta'
+// (Story 1.3) e 'redefinicao_senha' (Story 1.6) têm template; qualquer outro
+// tipo retorna erro, tratado pelo worker como falha de envio dessa linha.
 func renderizarTemplate(tipo string, variaveis map[string]any) (templateRenderizado, error) {
 	switch tipo {
 	case "verificacao_conta":
@@ -107,6 +106,25 @@ func renderizarTemplate(tipo string, variaveis map[string]any) (templateRenderiz
 </html>`, html.EscapeString(nome), link, link)
 		return templateRenderizado{
 			Assunto:   "Confirme seu e-mail — stockflow",
+			CorpoHTML: corpo,
+		}, nil
+	case "redefinicao_senha":
+		nome, _ := variaveis["nome"].(string)
+		link, _ := variaveis["link"].(string)
+		corpo := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="font-family: Arial, sans-serif; color: #333333;">
+	<p>Olá, %s.</p>
+	<p>Recebemos um pedido para redefinir a sua senha no stockflow. Clique no link abaixo para escolher uma nova senha:</p>
+	<p><a href="%s">Redefinir minha senha</a></p>
+	<p>Ou copie e cole no navegador: %s</p>
+	<p>Se você não fez esse pedido, ignore este e-mail — sua senha continua a mesma.</p>
+	<p style="font-size: 12px; color: #999999;">Este link expira em 30 minutos.</p>
+</body>
+</html>`, html.EscapeString(nome), link, link)
+		return templateRenderizado{
+			Assunto:   "Redefinição de senha — stockflow",
 			CorpoHTML: corpo,
 		}, nil
 	default:

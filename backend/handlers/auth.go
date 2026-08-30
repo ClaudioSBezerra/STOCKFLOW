@@ -1,7 +1,9 @@
 // Package handlers implementa a fronteira HTTP de autenticação: Story 1.3
-// (cadastro/verificação de e-mail) e Story 1.4 (login, refresh de sessão e
-// `/me`) — decodifica/serializa JSON, mapeia erros de `services/` para o
-// envelope de erro fixo (AD-14), e nunca contém regra de negócio própria.
+// (cadastro/verificação de e-mail), Story 1.4 (login, refresh de sessão e
+// `/me`) e Story 1.6 (esqueci-senha, validação de link de redefinição e
+// redefinição de senha) — decodifica/serializa JSON, mapeia erros de
+// `services/` para o envelope de erro fixo (AD-14), e nunca contém regra de
+// negócio própria.
 package handlers
 
 import (
@@ -275,6 +277,108 @@ func RefreshHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 		// LoginHandler/EmitirSessao acima).
 		setRefreshCookie(w, r, novoRefresh, expiraRefresh)
 		escreverJSON(w, http.StatusOK, map[string]string{"token": novoAccess})
+	}
+}
+
+// mensagemEsqueciSenha é o corpo devolvido por EsqueciSenhaHandler em TODO
+// caso não-erro (200), exista ou não a conta. O intent desta story exige que
+// seja byte-idêntico nos dois casos — um json.Encode de um map de chave única
+// é determinístico, então nada aqui ramifica pela existência do e-mail.
+const mensagemEsqueciSenha = "Se o e-mail existir, você receberá um link."
+
+// esqueciSenhaRequest é o payload aceito por POST /api/auth/esqueci-senha.
+type esqueciSenhaRequest struct {
+	Email string `json:"email"`
+}
+
+// EsqueciSenhaHandler expõe POST /api/auth/esqueci-senha (Story 1.6): sempre
+// responde 200 com a MESMA mensagem genérica — nunca revela por status, corpo
+// ou latência perceptível se um e-mail está cadastrado (sem bcrypt neste
+// caminho; sem ramo condicional após escrever a resposta). Só JSON malformado
+// -> 400 VALIDATION_ERROR; erro real de infraestrutura -> 500 INTERNAL_ERROR.
+// Não há limite de taxa aqui — é escopo da Story 1.10.
+func EsqueciSenhaHandler(db *sql.DB, emailCfg services.EmailConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
+
+		var req esqueciSenhaRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "payload inválido")
+			return
+		}
+
+		if err := services.SolicitarRedefinicaoSenha(db, emailCfg, req.Email); err != nil {
+			slog.Error("falha ao processar solicitação de redefinição de senha", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao processar solicitação")
+			return
+		}
+
+		escreverJSON(w, http.StatusOK, map[string]string{"mensagem": mensagemEsqueciSenha})
+	}
+}
+
+// ValidarRedefinicaoSenhaHandler expõe GET /api/auth/redefinir-senha?token=...
+// (Story 1.6): checa a validade do link SEM consumi-lo, para a tela de
+// redefinição explicar um link morto já ao abrir. Válido -> 200
+// {"valido":true}; inexistente -> 404 NOT_FOUND; expirado/usado -> 400
+// TOKEN_EXPIRED.
+func ValidarRedefinicaoSenhaHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := r.URL.Query().Get("token")
+
+		err := services.ValidarTokenRedefinicao(db, token)
+		switch {
+		case err == nil:
+			escreverJSON(w, http.StatusOK, map[string]bool{"valido": true})
+		case errors.Is(err, services.ErrTokenNaoEncontrado):
+			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "link de redefinição não encontrado")
+		case errors.Is(err, services.ErrTokenExpirado):
+			escreverErro(w, http.StatusBadRequest, "TOKEN_EXPIRED", "link de redefinição expirado ou já utilizado")
+		default:
+			slog.Error("falha ao validar link de redefinição", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao validar link de redefinição")
+		}
+	}
+}
+
+// redefinirSenhaRequest é o payload aceito por POST /api/auth/redefinir-senha.
+type redefinirSenhaRequest struct {
+	Token string `json:"token"`
+	Senha string `json:"senha"`
+}
+
+// RedefinirSenhaHandler expõe POST /api/auth/redefinir-senha (Story 1.6):
+// valida o token + a força da nova senha, troca `senha_hash`, marca o token
+// usado e revoga todas as sessões da conta. Nova senha reprovada na política
+// -> 400 VALIDATION_ERROR SEM consumir o token; token inexistente -> 404
+// NOT_FOUND; token expirado/usado (inclui a corrida "expirou entre o GET e o
+// POST" e o reuso do mesmo link) -> 400 TOKEN_EXPIRED.
+func RedefinirSenhaHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
+
+		var req redefinirSenhaRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "payload inválido")
+			return
+		}
+
+		err := services.RedefinirSenha(db, req.Token, req.Senha)
+		switch {
+		case err == nil:
+			escreverJSON(w, http.StatusOK, map[string]string{
+				"mensagem": "Senha redefinida com sucesso. Faça login com a nova senha.",
+			})
+		case errors.Is(err, services.ErrSenhaFraca):
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "A senha deve ter ao menos 8 caracteres, incluindo uma letra e um número.")
+		case errors.Is(err, services.ErrTokenNaoEncontrado):
+			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "link de redefinição não encontrado")
+		case errors.Is(err, services.ErrTokenExpirado):
+			escreverErro(w, http.StatusBadRequest, "TOKEN_EXPIRED", "link de redefinição expirado ou já utilizado")
+		default:
+			slog.Error("falha ao redefinir senha", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao redefinir senha")
+		}
 	}
 }
 

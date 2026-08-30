@@ -1,7 +1,10 @@
 // Package services concentra as regras de negócio de autenticação: Story 1.3
 // (autocadastro público sempre como `usuario`, verificação de e-mail via
-// token de uso único, outbox/worker de e-mail transacional — AD-4/AD-18) e
-// Story 1.4 (login por e-mail/senha, emissão e rotação de sessão — AD-6).
+// token de uso único, outbox/worker de e-mail transacional — AD-4/AD-18),
+// Story 1.4 (login por e-mail/senha, emissão e rotação de sessão — AD-6) e
+// Story 1.6 (recuperação de senha por e-mail: solicitação com resposta
+// genérica + outbox, redefinição consumindo o token de uso único e revogando
+// todas as sessões da conta, política mínima de força de senha).
 package services
 
 import (
@@ -12,6 +15,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -28,6 +32,10 @@ const pqUniqueViolation = "23505"
 // para este tipo especificamente (os 30min de `redefinicao_senha` são só da
 // Story 1.6).
 const tokenVerificacaoExpiracao = 24 * time.Hour
+
+// tokenRedefinicaoExpiracao é o prazo de validade do token de redefinição de
+// senha (Story 1.6): 30min, fixado explicitamente pelo intent desta story.
+const tokenRedefinicaoExpiracao = 30 * time.Minute
 
 // Prazos de sessão (Story 1.4, AD-6): access JWT curto de 30min; refresh
 // token opaco rotativo com TTL de 2h, mesmo formato reaproveitado depois pelo
@@ -55,6 +63,12 @@ var (
 	// usado — tratados com o mesmo código de erro (TOKEN_EXPIRED) por decisão
 	// da I/O Matrix desta story.
 	ErrTokenExpirado = errors.New("token de verificação expirado ou já utilizado")
+
+	// ErrSenhaFraca indica que a senha não cumpre a política mínima de força
+	// aplicada por ValidarForcaSenha (Story 1.6): 8+ caracteres, ao menos uma
+	// letra e um dígito, no máximo 72 bytes (limite do bcrypt). Semente que a
+	// Story 1.10 (bloqueio de conta e política de senha) vai reusar/estender.
+	ErrSenhaFraca = errors.New("a senha não cumpre a política mínima de força")
 
 	// ErrLoginValidacao indica e-mail ou senha em branco no payload de login —
 	// mapeado para 400 VALIDATION_ERROR, sem nenhuma consulta ao banco (I/O
@@ -427,6 +441,217 @@ func RenovarSessao(db *sql.DB, jwtSecret []byte, refreshTokenAtual string) (novo
 	}
 
 	return novoAccess, novoRefresh, expiraRefresh, nil
+}
+
+// ValidarForcaSenha aplica a política mínima de força de senha (Story 1.6,
+// semente da Story 1.10): mínimo 8 caracteres — contados como runes
+// (utf8.RuneCountInString), então um acento vale 1 —, ao menos uma letra
+// (unicode.IsLetter) e ao menos um dígito (unicode.IsDigit), no máximo 72
+// bytes (limite rígido de bcrypt.GenerateFromPassword). Falha em qualquer
+// regra devolve ErrSenhaFraca. O backend é sempre a autoridade; o espelho em
+// frontend/src/lib/senha.ts é só conveniência no cliente.
+func ValidarForcaSenha(senha string) error {
+	if utf8.RuneCountInString(senha) < 8 {
+		return ErrSenhaFraca
+	}
+	if len(senha) > 72 {
+		return ErrSenhaFraca
+	}
+	var temLetra, temDigito bool
+	for _, r := range senha {
+		switch {
+		case unicode.IsLetter(r):
+			temLetra = true
+		case unicode.IsDigit(r):
+			temDigito = true
+		}
+	}
+	if !temLetra || !temDigito {
+		return ErrSenhaFraca
+	}
+	return nil
+}
+
+// SolicitarRedefinicaoSenha trata a regra por trás de POST
+// /api/auth/esqueci-senha. A resposta do handler é SEMPRE a mesma mensagem
+// genérica — esta função devolve nil tanto no caso "e-mail sem match" quanto
+// no caso "token + linha de outbox gravados": o chamador nunca pode
+// distinguir se a conta existe. Só um erro real de infraestrutura sobe como
+// não-nil (vira 500 no handler).
+//
+// Quando (e só quando) existe uma linha em `usuarios` com lower(email) igual
+// ao informado, grava numa única transação (mesmo padrão de Cadastrar): um
+// `tokens_acao` (tipo='redefinicao_senha', expira_em = now()+30min) + um
+// `emails_pendentes` via EnfileirarEmail, com
+// link = "{APP_URL}/redefinir-senha?token={token}". Conta só-SSO
+// (senha_hash nulo) NÃO é exceção — recebe token e e-mail normalmente.
+func SolicitarRedefinicaoSenha(db *sql.DB, emailCfg EmailConfig, email string) error {
+	normalizedEmail := normalizeEmail(email)
+	if normalizedEmail == "" {
+		return nil
+	}
+
+	var usuarioID, nome string
+	const selectUsuario = `
+		SELECT id, nome
+		FROM usuarios
+		WHERE lower(email) = $1`
+	if err := db.QueryRow(selectUsuario, normalizedEmail).Scan(&usuarioID, &nome); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("falha ao consultar usuario para redefinição: %w", err)
+	}
+
+	token, err := gerarTokenAcao()
+	if err != nil {
+		return err
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("falha ao iniciar transação: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
+
+	// Invalida qualquer token de redefinição anterior ainda não usado ANTES de
+	// emitir o novo: uma conta nunca deve ter vários links de redefinição
+	// válidos ao mesmo tempo — o link recém-emitido passa a ser o único aceito,
+	// reforçando a intenção de "trancar" o acesso ao pedir a redefinição.
+	const invalidarAnteriores = `
+		UPDATE tokens_acao
+		SET usado_em = now()
+		WHERE usuario_id = $1 AND tipo = 'redefinicao_senha' AND usado_em IS NULL`
+	if _, err := tx.Exec(invalidarAnteriores, usuarioID); err != nil {
+		return fmt.Errorf("falha ao invalidar tokens de redefinição anteriores: %w", err)
+	}
+
+	expiraEm := time.Now().UTC().Add(tokenRedefinicaoExpiracao)
+	const insertToken = `
+		INSERT INTO tokens_acao (usuario_id, token, tipo, expira_em)
+		VALUES ($1, $2, 'redefinicao_senha', $3)`
+	if _, err := tx.Exec(insertToken, usuarioID, token, expiraEm); err != nil {
+		return fmt.Errorf("falha ao inserir token de redefinição: %w", err)
+	}
+
+	link := fmt.Sprintf("%s/redefinir-senha?token=%s", emailCfg.AppURL, token)
+	variaveis := map[string]any{
+		"nome": nome,
+		"link": link,
+	}
+	if err := EnfileirarEmail(tx, normalizedEmail, usuarioID, "redefinicao_senha", variaveis); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("falha ao commitar solicitação de redefinição: %w", err)
+	}
+	return nil
+}
+
+// ValidarTokenRedefinicao checa a validade de um token de redefinição SEM
+// consumi-lo (SELECT puro, nenhuma escrita) — usado por GET
+// /api/auth/redefinir-senha para a tela explicar um link morto já na
+// abertura, antes de o usuário digitar a nova senha. Molde de VerificarEmail:
+// token inexistente -> ErrTokenNaoEncontrado; existente porém expirado ou já
+// usado -> ErrTokenExpirado; válido -> nil. O POST continua sendo a
+// autoridade (revalida e trata a corrida "expirou entre abrir e enviar").
+func ValidarTokenRedefinicao(db *sql.DB, token string) error {
+	var expiraEm time.Time
+	var usadoEm sql.NullTime
+	const selectToken = `
+		SELECT expira_em, usado_em
+		FROM tokens_acao
+		WHERE token = $1 AND tipo = 'redefinicao_senha'`
+	if err := db.QueryRow(selectToken, token).Scan(&expiraEm, &usadoEm); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrTokenNaoEncontrado
+		}
+		return fmt.Errorf("falha ao consultar token de redefinição: %w", err)
+	}
+	if usadoEm.Valid || !time.Now().Before(expiraEm) {
+		return ErrTokenExpirado
+	}
+	return nil
+}
+
+// RedefinirSenha consome um token de redefinição válido e troca a senha da
+// conta (Story 1.6). A força da nova senha é validada ANTES de tocar no token
+// (senha reprovada -> ErrSenhaFraca, o mesmo link continua válido para nova
+// tentativa). O token é resolvido por token+tipo (o valor já é globalmente
+// único, mesmo padrão de VerificarEmail): inexistente -> ErrTokenNaoEncontrado;
+// expirado ou já usado -> ErrTokenExpirado.
+//
+// No sucesso, numa única transação: UPDATE usuarios.senha_hash (bcrypt,
+// DefaultCost); UPDATE tokens_acao.usado_em guardado por
+// `usado_em IS NULL AND expira_em > now()` (RowsAffected()==0 ->
+// ErrTokenExpirado, fecha a corrida SELECT->UPDATE como em VerificarEmail);
+// UPDATE sessoes.revogado_em de TODAS as sessões ativas da conta. O access
+// JWT stateless de <=30min expira sozinho; o efeito observável da revogação é
+// um POST /api/auth/refresh com um cookie pré-redefinição passar a devolver
+// 401. Nenhum outro campo de `usuarios` muda (email_verificado/ativo
+// intactos): uma conta só-SSO que passa por aqui ganha os dois caminhos de
+// login.
+func RedefinirSenha(db *sql.DB, token, senha string) error {
+	if err := ValidarForcaSenha(senha); err != nil {
+		return err
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("falha ao iniciar transação: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
+
+	var usuarioID string
+	var expiraEm time.Time
+	var usadoEm sql.NullTime
+	const selectToken = `
+		SELECT usuario_id, expira_em, usado_em
+		FROM tokens_acao
+		WHERE token = $1 AND tipo = 'redefinicao_senha'`
+	if err := tx.QueryRow(selectToken, token).Scan(&usuarioID, &expiraEm, &usadoEm); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrTokenNaoEncontrado
+		}
+		return fmt.Errorf("falha ao consultar token de redefinição: %w", err)
+	}
+	if usadoEm.Valid || !time.Now().Before(expiraEm) {
+		return ErrTokenExpirado
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(senha), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("falha ao gerar hash da nova senha: %w", err)
+	}
+
+	if _, err := tx.Exec(`UPDATE usuarios SET senha_hash = $1 WHERE id = $2`, string(hash), usuarioID); err != nil {
+		return fmt.Errorf("falha ao atualizar senha_hash: %w", err)
+	}
+
+	const marcarUsado = `
+		UPDATE tokens_acao
+		SET usado_em = now()
+		WHERE token = $1 AND tipo = 'redefinicao_senha' AND usado_em IS NULL AND expira_em > now()`
+	res, err := tx.Exec(marcarUsado, token)
+	if err != nil {
+		return fmt.Errorf("falha ao marcar token de redefinição como usado: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrTokenExpirado
+	}
+
+	if _, err := tx.Exec(
+		`UPDATE sessoes SET revogado_em = now() WHERE usuario_id = $1 AND revogado_em IS NULL`,
+		usuarioID,
+	); err != nil {
+		return fmt.Errorf("falha ao revogar sessões da conta: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("falha ao commitar redefinição de senha: %w", err)
+	}
+	return nil
 }
 
 // BuscarUsuarioSessao resolve o usuário por id — sempre a partir do

@@ -131,6 +131,12 @@ export function LoginPage() {
             </Button>
 
             <p className="text-body text-center text-muted-foreground">
+              <Link to="/esqueci-senha" className="text-primary hover:underline">
+                Esqueci minha senha
+              </Link>
+            </p>
+
+            <p className="text-body text-center text-muted-foreground">
               Ainda não tem uma conta?{' '}
               <Link to="/cadastro" className="text-primary hover:underline">
                 Criar conta

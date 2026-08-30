@@ -189,3 +189,27 @@ source_spec: `spec-1-4-login-por-e-mail-e-senha.md`
 severity: low
 reason: criarUsuarioLogin/criarUsuarioLoginComEstado (handlers), criarUsuario (middleware) e criarUsuarioParaLogin (services) são três variações quase idênticas do mesmo helper, e testJWTSecret é redeclarado verbatim nos três arquivos — mesmo padrão de duplicação já deferido para testDB() na Story 1.3 (arquivos de teste em pacotes Go diferentes não podem compartilhar um helper não-exportado sem um pacote de suporte de teste dedicado, mudança estrutural maior que um patch trivial desta passagem).
 status: open
+
+### DW-25: Um POST /api/auth/login com a senha antiga concorrente à transação de RedefinirSenha pode criar uma sessão que sobrevive ao "revoga todas as sessões".
+origin: spec-deferred 0964c24538d3
+location: backend/services/auth.go RedefinirSenha / Login
+source_spec: `spec-1-6-recuperacao-de-senha-por-e-mail.md`
+severity: low
+reason: RedefinirSenha roda sob READ COMMITTED e faz UPDATE sessoes SET revogado_em = now() WHERE revogado_em IS NULL; uma sessão inserida por um Login concorrente que valida a senha antiga antes do commit do novo senha_hash não é vista por esse UPDATE. Janela de milissegundos; após o commit a senha antiga deixa de funcionar e a sessão sobrevivente expira em <=2h. Correção proporcional exige SELECT ... FOR UPDATE na linha de usuarios tanto em RedefinirSenha quanto no caminho de Login — mudança de dois lados sobre um padrão estabelecido do repo (nenhum acesso usa lock de linha hoje).
+status: open
+
+### DW-26: O token de redefinição permanece na URL e no histórico do navegador após o mount de RedefinirSenhaPage e na tela de sucesso; sem history.replaceState e sem meta Referrer-Policy.
+origin: spec-deferred f82731ca5bbd
+location: frontend/src/pages/RedefinirSenhaPage.tsx
+source_spec: `spec-1-6-recuperacao-de-senha-por-e-mail.md`
+severity: low
+reason: RedefinirSenhaPage lê ?token= e nunca o remove da barra de endereço. Espelha o padrão já existente de VerificarEmailPage (Story 1.3), mas o token de redefinição é mais sensível (permite definir senha). Mitigações naturais: single-use, TTL 30min, consumido no primeiro uso bem-sucedido, e o uso revoga sessões. A página não carrega subrecursos de terceiros hoje, então o vetor de Referer é teórico.
+status: open
+
+### DW-27: RedefinirSenhaPage não tem retry no lugar após falha transitória do GET de validação no mount — um token válido que pega um 5xx/erro de rede força o usuário a pedir um link novo.
+origin: spec-deferred ec696cc6a325
+location: frontend/src/pages/RedefinirSenhaPage.tsx:62-87
+source_spec: `spec-1-6-recuperacao-de-senha-por-e-mail.md`
+severity: low
+reason: O useEffect grava tokenValidado.current = token antes do fetch; em erro a fase vira 'erro' e o guard de early-return impede nova validação naquela aba. Estrutura copiada de VerificarEmailPage. Existe caminho de recuperação (botão "Solicitar novo link"), porém mais pesado (novo round-trip de e-mail). Falhas transitórias são pouco frequentes.
+status: open

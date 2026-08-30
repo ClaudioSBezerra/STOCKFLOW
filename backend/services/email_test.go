@@ -55,6 +55,28 @@ func TestRenderizarTemplate_VerificacaoConta(t *testing.T) {
 	}
 }
 
+func TestRenderizarTemplate_RedefinicaoSenha(t *testing.T) {
+	tpl, err := renderizarTemplate("redefinicao_senha", map[string]any{
+		"nome": "Fulano <script>",
+		"link": "http://test.local/redefinir-senha?token=abc123",
+	})
+	if err != nil {
+		t.Fatalf("renderizarTemplate retornou erro: %v", err)
+	}
+	if tpl.Assunto != "Redefinição de senha — stockflow" {
+		t.Errorf("assunto = %q, want %q", tpl.Assunto, "Redefinição de senha — stockflow")
+	}
+	if !strings.Contains(tpl.CorpoHTML, "http://test.local/redefinir-senha?token=abc123") {
+		t.Error("corpo não contém o link de redefinição")
+	}
+	if !strings.Contains(tpl.CorpoHTML, "30 minutos") {
+		t.Error("corpo não menciona a expiração de 30 minutos")
+	}
+	if strings.Contains(tpl.CorpoHTML, "<script>") {
+		t.Error("corpo não escapou o nome do usuário — risco de HTML injection")
+	}
+}
+
 func TestRenderizarTemplate_TipoDesconhecidoRetornaErro(t *testing.T) {
 	_, err := renderizarTemplate("tipo-nao-implementado", map[string]any{})
 	if err == nil {

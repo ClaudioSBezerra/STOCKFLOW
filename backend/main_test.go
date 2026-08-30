@@ -237,6 +237,26 @@ func TestNewMux_RegistraRotasDeAutenticacao(t *testing.T) {
 			statusQuerAo: http.StatusUnauthorized,
 		},
 		{
+			nome:         "esqueci-senha com payload invalido chega no EsqueciSenhaHandler",
+			metodo:       http.MethodPost,
+			caminho:      "/api/auth/esqueci-senha",
+			corpo:        `{isto nao e json`,
+			statusQuerAo: http.StatusBadRequest,
+		},
+		{
+			nome:         "redefinir-senha GET sem token chega no ValidarRedefinicaoSenhaHandler",
+			metodo:       http.MethodGet,
+			caminho:      "/api/auth/redefinir-senha",
+			statusQuerAo: http.StatusNotFound,
+		},
+		{
+			nome:         "redefinir-senha POST com payload invalido chega no RedefinirSenhaHandler",
+			metodo:       http.MethodPost,
+			caminho:      "/api/auth/redefinir-senha",
+			corpo:        `{isto nao e json`,
+			statusQuerAo: http.StatusBadRequest,
+		},
+		{
 			nome:         "usuarios sem token chega no RequireAuth antes de RequireRole",
 			metodo:       http.MethodGet,
 			caminho:      "/api/usuarios",
