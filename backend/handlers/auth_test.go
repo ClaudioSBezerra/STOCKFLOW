@@ -144,7 +144,7 @@ func TestCadastroHandler_EmailDuplicado(t *testing.T) {
 		t.Fatalf("primeiro cadastro: status = %d, want %d", w1.Code, http.StatusCreated)
 	}
 
-	w2 := postCadastro(db, `{"nome":"Segundo","email":"duplicado@empresa.com","senha":"outra-senha"}`)
+	w2 := postCadastro(db, `{"nome":"Segundo","email":"duplicado@empresa.com","senha":"outra-senha1"}`)
 	if w2.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d (body=%s)", w2.Code, http.StatusConflict, w2.Body.String())
 	}
@@ -1190,5 +1190,107 @@ func TestMeHandler_ContaDesativadaAposEmissao(t *testing.T) {
 	env := decodeErro(t, w.Body.Bytes())
 	if env.Error.Code != "SESSION_REVOKED" {
 		t.Errorf("code = %q, want %q", env.Error.Code, "SESSION_REVOKED")
+	}
+}
+
+// --- Story 1.10: bloqueio de conta e política de senha na fronteira HTTP ---
+
+// TestLoginHandler_SextaTentativaResponde429 prova a AC principal da Story
+// 1.10 na fronteira HTTP: 5 logins errados seguidos contra a mesma conta e o
+// 6º responde 429 com code ACCOUNT_LOCKED e uma mensagem SEM o tempo restante
+// (nenhum dígito, nenhuma menção a minutos/segundos).
+func TestLoginHandler_SextaTentativaResponde429(t *testing.T) {
+	db := testDB(t)
+	criarUsuarioLogin(t, db, "http-brute@empresa.com", "senha-123456")
+
+	for i := 1; i <= 5; i++ {
+		w := postLogin(db, `{"email":"http-brute@empresa.com","senha":"errada"}`)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("tentativa %d: status = %d, want 401 (body=%s)", i, w.Code, w.Body.String())
+		}
+		if got := decodeErro(t, w.Body.Bytes()).Error.Code; got != "INVALID_CREDENTIALS" {
+			t.Fatalf("tentativa %d: code = %q, want INVALID_CREDENTIALS", i, got)
+		}
+	}
+
+	// 6ª tentativa, agora com a senha CORRETA — ainda assim bloqueada.
+	w := postLogin(db, `{"email":"http-brute@empresa.com","senha":"senha-123456"}`)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("6ª tentativa: status = %d, want 429 (body=%s)", w.Code, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "ACCOUNT_LOCKED" {
+		t.Fatalf("code = %q, want ACCOUNT_LOCKED", env.Error.Code)
+	}
+	if strings.ContainsAny(env.Error.Message, "0123456789") {
+		t.Errorf("mensagem contém dígitos (tempo restante vazado): %q", env.Error.Message)
+	}
+	for _, termo := range []string{"minuto", "segundo", "hora"} {
+		if strings.Contains(strings.ToLower(env.Error.Message), termo) {
+			t.Errorf("mensagem menciona %q (tempo restante vazado): %q", termo, env.Error.Message)
+		}
+	}
+}
+
+// TestLoginHandler_ContaBloqueadaAindaPodeRedefinirSenha prova a AC2: uma
+// conta com bloqueado_ate no futuro continua podendo acionar
+// POST /api/auth/esqueci-senha — resposta 200 e token de redefinição + linha
+// de outbox gravados normalmente.
+func TestLoginHandler_ContaBloqueadaAindaPodeRedefinirSenha(t *testing.T) {
+	db := testDB(t)
+	id := criarUsuarioLogin(t, db, "http-bloqueada-reset@empresa.com", "senha-123456")
+	if _, err := db.Exec(
+		`UPDATE usuarios SET tentativas_login_falhas = 5, bloqueado_ate = now() + interval '15 minutes' WHERE id = $1`, id,
+	); err != nil {
+		t.Fatalf("falha ao bloquear conta: %v", err)
+	}
+
+	// Sanidade: o login por senha está de fato bloqueado.
+	wLogin := postLogin(db, `{"email":"http-bloqueada-reset@empresa.com","senha":"senha-123456"}`)
+	if wLogin.Code != http.StatusTooManyRequests {
+		t.Fatalf("pré-condição: login status = %d, want 429", wLogin.Code)
+	}
+
+	w := postEsqueciSenha(db, `{"email":"http-bloqueada-reset@empresa.com"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("esqueci-senha: status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+
+	var tokens, emails int
+	if err := db.QueryRow(
+		`SELECT count(*) FROM tokens_acao WHERE usuario_id = $1 AND tipo = 'redefinicao_senha'`, id,
+	).Scan(&tokens); err != nil {
+		t.Fatalf("contar tokens: %v", err)
+	}
+	if err := db.QueryRow(
+		`SELECT count(*) FROM emails_pendentes WHERE usuario_id = $1 AND tipo = 'redefinicao_senha'`, id,
+	).Scan(&emails); err != nil {
+		t.Fatalf("contar emails: %v", err)
+	}
+	if tokens != 1 || emails != 1 {
+		t.Errorf("tokens=%d emails=%d, want 1 / 1 — o bloqueio de login não pode afetar a redefinição", tokens, emails)
+	}
+}
+
+// TestCadastroHandler_SenhaFraca prova a linha "UI cadastro senha fraca" no
+// nível HTTP: POST /api/auth/cadastro com "abc" -> 400 VALIDATION_ERROR com o
+// critério da política, e count(usuarios) inalterado.
+func TestCadastroHandler_SenhaFraca(t *testing.T) {
+	db := testDB(t)
+	antes := contarLinhasUsuarios(t, db)
+
+	w := postCadastro(db, `{"nome":"Fulano","email":"fraca-http@empresa.com","senha":"abc"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%s)", w.Code, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "VALIDATION_ERROR" {
+		t.Fatalf("code = %q, want VALIDATION_ERROR", env.Error.Code)
+	}
+	if env.Error.Message != "A senha deve ter ao menos 8 caracteres, incluindo uma letra e um número." {
+		t.Errorf("mensagem = %q, want a string idêntica à de RedefinirSenhaHandler", env.Error.Message)
+	}
+	if depois := contarLinhasUsuarios(t, db); depois != antes {
+		t.Errorf("count(usuarios) = %d, want %d — cadastro com senha fraca não pode criar conta", depois, antes)
 	}
 }

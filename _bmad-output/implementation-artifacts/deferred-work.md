@@ -213,3 +213,19 @@ source_spec: `spec-1-6-recuperacao-de-senha-por-e-mail.md`
 severity: low
 reason: O useEffect grava tokenValidado.current = token antes do fetch; em erro a fase vira 'erro' e o guard de early-return impede nova validação naquela aba. Estrutura copiada de VerificarEmailPage. Existe caminho de recuperação (botão "Solicitar novo link"), porém mais pesado (novo round-trip de e-mail). Falhas transitórias são pouco frequentes.
 status: open
+
+### DW-28: ValidarForcaSenha rejeita senha acima de 72 bytes com a mensagem "ao menos 8 caracteres, incluindo uma letra e um número" — enganosa para uma passphrase longa; a Story 1.10 propaga esse texto também a
+origin: spec-deferred 99225d7c096c
+location: backend/services/auth.go (ValidarForcaSenha) / frontend/src/lib/senha.ts
+source_spec: `spec-1-10-bloqueio-de-conta-e-politica-de-senha.md`
+severity: low
+reason: ValidarForcaSenha (services/auth.go) devolve ErrSenhaFraca tanto para <8 runes quanto para >72 bytes, e handlers/auth.go (Cadastro e Redefinir) + frontend (MENSAGEM_SENHA_FRACA em CadastroPage/RedefinirSenhaPage) exibem só o critério de mínimo. Um usuário colando uma passphrase forte de >72 bytes é informado de que ela é "curta". Comportamento pré-existente da Story 1.6, agora também visível no cadastro. Uma mensagem própria de "máximo 72 caracteres" resolveria.
+status: open
+
+### DW-29: POST /api/auth/esqueci-senha não tem limite de taxa — cada chamada enfileira um e-mail no outbox, servindo de vetor de e-mail-bomba contra um endereço conhecido.
+origin: spec-deferred ee83b54dbd7f
+location: backend/handlers/auth.go (EsqueciSenhaHandler) / services.SolicitarRedefinicaoSenha
+source_spec: `spec-1-10-bloqueio-de-conta-e-politica-de-senha.md`
+severity: low
+reason: EsqueciSenhaHandler (handlers/auth.go) responde sempre 200 e chama SolicitarRedefinicaoSenha, que enfileira uma linha em emails_pendentes por requisição (invalida tokens anteriores, mas não limita e-mails enviados). Gap pré-existente da Story 1.6; a Story 1.10 o torna mais relevante ao empurrar usuários bloqueados para esse endpoint. Fora do escopo de FR-36 (que só pede bloqueio no login por senha), mas merece uma passagem dedicada de segurança.
+status: open

@@ -205,7 +205,7 @@ func TestCadastrar_EmailDuplicado(t *testing.T) {
 	tokensAntes := contarLinhas(t, db, "tokens_acao")
 	emailsAntes := contarLinhas(t, db, "emails_pendentes")
 
-	_, err := Cadastrar(db, testEmailCfg, "Segundo", "DUPLICADO@Empresa.com", "outra-senha")
+	_, err := Cadastrar(db, testEmailCfg, "Segundo", "DUPLICADO@Empresa.com", "outra-senha1")
 	if !errors.Is(err, ErrEmailDuplicado) {
 		t.Fatalf("erro = %v, want ErrEmailDuplicado", err)
 	}
@@ -251,9 +251,12 @@ func TestCadastrar_CampoObrigatorioAusente(t *testing.T) {
 }
 
 // TestCadastrar_ValidacaoDeTamanho prova que nome/e-mail/senha acima dos
-// limites da coluna/do bcrypt mapeiam para ErrCadastroValidacao (400) em vez
-// de vazar um erro bruto do Postgres/bcrypt (500) — guards adicionados na
-// passagem de revisão desta story, sem cobertura própria até este teste.
+// limites da coluna/do bcrypt mapeiam para um erro de validação (400) em vez
+// de vazar um erro bruto do Postgres/bcrypt (500). Nome/e-mail longos ->
+// ErrCadastroValidacao; a partir da Story 1.10 a senha acima de 72 bytes é
+// rejeitada por ValidarForcaSenha como ErrSenhaFraca (o guard próprio de
+// tamanho em Cadastrar foi removido por redundância) — ambos 400
+// VALIDATION_ERROR na fronteira HTTP.
 func TestCadastrar_ValidacaoDeTamanho(t *testing.T) {
 	db := testDB(t)
 
@@ -262,21 +265,22 @@ func TestCadastrar_ValidacaoDeTamanho(t *testing.T) {
 	senhaGrande := strings.Repeat("a", 73)             // bcrypt rejeita > 72 bytes
 
 	casos := []struct {
-		nome  string
-		desc  string
-		email string
-		senha string
+		desc    string
+		nome    string
+		email   string
+		senha   string
+		wantErr error
 	}{
-		{desc: "nome maior que 255 caracteres", nome: nomeGrande, email: "nomegrande@empresa.com", senha: "senha-123456"},
-		{desc: "e-mail maior que 255 caracteres", nome: "Nome", email: emailGrande, senha: "senha-123456"},
-		{desc: "senha maior que 72 bytes", nome: "Nome", email: "senhagrande@empresa.com", senha: senhaGrande},
+		{desc: "nome maior que 255 caracteres", nome: nomeGrande, email: "nomegrande@empresa.com", senha: "senha-123456", wantErr: ErrCadastroValidacao},
+		{desc: "e-mail maior que 255 caracteres", nome: "Nome", email: emailGrande, senha: "senha-123456", wantErr: ErrCadastroValidacao},
+		{desc: "senha maior que 72 bytes", nome: "Nome", email: "senhagrande@empresa.com", senha: senhaGrande, wantErr: ErrSenhaFraca},
 	}
 	for _, c := range casos {
 		t.Run(c.desc, func(t *testing.T) {
 			antes := contarLinhas(t, db, "usuarios")
 			_, err := Cadastrar(db, testEmailCfg, c.nome, c.email, c.senha)
-			if !errors.Is(err, ErrCadastroValidacao) {
-				t.Fatalf("erro = %v, want ErrCadastroValidacao", err)
+			if !errors.Is(err, c.wantErr) {
+				t.Fatalf("erro = %v, want %v", err, c.wantErr)
 			}
 			if depois := contarLinhas(t, db, "usuarios"); depois != antes {
 				t.Errorf("count(usuarios) = %d, want %d — nenhuma escrita esperada", depois, antes)
@@ -1348,5 +1352,342 @@ func TestRedefinirSenha_Concorrente(t *testing.T) {
 	}
 	if ok != 1 || expirado != n-1 {
 		t.Errorf("ok=%d expirado=%d, want ok=1 expirado=%d", ok, expirado, n-1)
+	}
+}
+
+// --- Story 1.10: bloqueio de conta por excesso de tentativas de login ---
+
+// lerBloqueioLogin devolve o contador de falhas e o instante de bloqueio
+// persistidos para uma conta.
+func lerBloqueioLogin(t *testing.T, db *sql.DB, usuarioID string) (tentativas int, bloqueadoAte sql.NullTime) {
+	t.Helper()
+	if err := db.QueryRow(
+		`SELECT tentativas_login_falhas, bloqueado_ate FROM usuarios WHERE id = $1`, usuarioID,
+	).Scan(&tentativas, &bloqueadoAte); err != nil {
+		t.Fatalf("falha ao ler estado de bloqueio: %v", err)
+	}
+	return tentativas, bloqueadoAte
+}
+
+// TestLogin_BloqueiaNaQuintaFalhaERecusaSexta prova a linha "5ª falha
+// consecutiva" + "6ª tentativa (bloqueada), senha correta" da I/O Matrix: as 5
+// primeiras falhas retornam ErrCredenciaisInvalidas (a 5ª grava
+// bloqueado_ate ~15min à frente com tentativas=5); a 6ª tentativa, MESMO com a
+// senha correta, retorna ErrContaBloqueada sem tocar contador/prazo.
+func TestLogin_BloqueiaNaQuintaFalhaERecusaSexta(t *testing.T) {
+	db := testDB(t)
+	id := criarUsuarioParaLogin(t, db, "brute-force@empresa.com", "senha-correta1", true, true)
+
+	for i := 1; i <= 5; i++ {
+		_, err := Login(db, "brute-force@empresa.com", "senha-errada")
+		if !errors.Is(err, ErrCredenciaisInvalidas) {
+			t.Fatalf("falha %d: erro = %v, want ErrCredenciaisInvalidas", i, err)
+		}
+		tentativas, bloqueadoAte := lerBloqueioLogin(t, db, id)
+		if tentativas != i {
+			t.Fatalf("após falha %d: tentativas = %d, want %d", i, tentativas, i)
+		}
+		if i < 5 && bloqueadoAte.Valid {
+			t.Fatalf("após falha %d: bloqueado_ate preenchido antes do limite", i)
+		}
+		if i == 5 {
+			if !bloqueadoAte.Valid {
+				t.Fatal("após a 5ª falha: bloqueado_ate deveria estar preenchido")
+			}
+			want := time.Now().UTC().Add(duracaoBloqueioLogin)
+			if diff := want.Sub(bloqueadoAte.Time); diff < -time.Minute || diff > time.Minute {
+				t.Errorf("bloqueado_ate = %v, want ~%v (diff=%v)", bloqueadoAte.Time, want, diff)
+			}
+			// AC1 fixa "~15 min à frente". A checagem acima só prova que
+			// bloqueado_ate bate com duracaoBloqueioLogin seja qual for o valor
+			// da constante; este limite literal pega uma alteração silenciosa da
+			// janela de bloqueio (molde da checagem de ~30 min em
+			// TestSolicitarRedefinicaoSenha_ContaExiste).
+			if adiante := time.Until(bloqueadoAte.Time); adiante < 13*time.Minute || adiante > 17*time.Minute {
+				t.Errorf("bloqueado_ate está %v à frente, want ~15 min (AC1)", adiante)
+			}
+		}
+	}
+
+	// 6ª tentativa com a senha CORRETA: recusada como bloqueada, sem alterar
+	// contador nem prazo.
+	tentativasAntes, bloqueioAntes := lerBloqueioLogin(t, db, id)
+	_, err := Login(db, "brute-force@empresa.com", "senha-correta1")
+	if !errors.Is(err, ErrContaBloqueada) {
+		t.Fatalf("6ª tentativa: erro = %v, want ErrContaBloqueada", err)
+	}
+	tentativasDepois, bloqueioDepois := lerBloqueioLogin(t, db, id)
+	if tentativasDepois != tentativasAntes {
+		t.Errorf("tentativas mudou de %d para %d na tentativa bloqueada", tentativasAntes, tentativasDepois)
+	}
+	if !bloqueioDepois.Time.Equal(bloqueioAntes.Time) {
+		t.Errorf("bloqueado_ate estendido de %v para %v na tentativa bloqueada", bloqueioAntes.Time, bloqueioDepois.Time)
+	}
+}
+
+// TestLogin_SucessoAntesDoLimiteZeraContador prova a linha "Sucesso antes do
+// limite" da I/O Matrix: com tentativas=3, um login válido devolve o id e
+// zera tentativas/bloqueado_ate.
+func TestLogin_SucessoAntesDoLimiteZeraContador(t *testing.T) {
+	db := testDB(t)
+	id := criarUsuarioParaLogin(t, db, "reset-sucesso@empresa.com", "senha-correta1", true, true)
+
+	for i := 0; i < 3; i++ {
+		if _, err := Login(db, "reset-sucesso@empresa.com", "errada"); !errors.Is(err, ErrCredenciaisInvalidas) {
+			t.Fatalf("falha %d: erro = %v", i, err)
+		}
+	}
+	if tentativas, _ := lerBloqueioLogin(t, db, id); tentativas != 3 {
+		t.Fatalf("pré-condição: tentativas = %d, want 3", tentativas)
+	}
+
+	got, err := Login(db, "reset-sucesso@empresa.com", "senha-correta1")
+	if err != nil {
+		t.Fatalf("Login válido retornou erro: %v", err)
+	}
+	if got != id {
+		t.Errorf("usuarioID = %q, want %q", got, id)
+	}
+	tentativas, bloqueadoAte := lerBloqueioLogin(t, db, id)
+	if tentativas != 0 || bloqueadoAte.Valid {
+		t.Errorf("após sucesso: tentativas=%d bloqueado_ate.Valid=%v, want 0 / false", tentativas, bloqueadoAte.Valid)
+	}
+}
+
+// TestLogin_BloqueioExpiradoDestrava prova as linhas "Bloqueio expirado +
+// senha correta" e "Bloqueio expirado + senha errada" da I/O Matrix. O
+// bloqueio é forçado a expirar via UPDATE direto (evita time.Sleep).
+func TestLogin_BloqueioExpiradoDestrava(t *testing.T) {
+	t.Run("senha correta destrava e zera", func(t *testing.T) {
+		db := testDB(t)
+		id := criarUsuarioParaLogin(t, db, "expira-ok@empresa.com", "senha-correta1", true, true)
+		for i := 0; i < 5; i++ {
+			_, _ = Login(db, "expira-ok@empresa.com", "errada")
+		}
+		if _, err := db.Exec(`UPDATE usuarios SET bloqueado_ate = now() - interval '1 minute' WHERE id = $1`, id); err != nil {
+			t.Fatalf("falha ao expirar bloqueio: %v", err)
+		}
+
+		got, err := Login(db, "expira-ok@empresa.com", "senha-correta1")
+		if err != nil || got != id {
+			t.Fatalf("Login após expiração: id=%q err=%v, want id=%q nil", got, err, id)
+		}
+		tentativas, bloqueadoAte := lerBloqueioLogin(t, db, id)
+		if tentativas != 0 || bloqueadoAte.Valid {
+			t.Errorf("tentativas=%d bloqueado_ate.Valid=%v, want 0 / false", tentativas, bloqueadoAte.Valid)
+		}
+	})
+
+	t.Run("senha errada inicia novo streak", func(t *testing.T) {
+		db := testDB(t)
+		id := criarUsuarioParaLogin(t, db, "expira-erro@empresa.com", "senha-correta1", true, true)
+		for i := 0; i < 5; i++ {
+			_, _ = Login(db, "expira-erro@empresa.com", "errada")
+		}
+		if _, err := db.Exec(`UPDATE usuarios SET bloqueado_ate = now() - interval '1 minute' WHERE id = $1`, id); err != nil {
+			t.Fatalf("falha ao expirar bloqueio: %v", err)
+		}
+
+		if _, err := Login(db, "expira-erro@empresa.com", "ainda-errada"); !errors.Is(err, ErrCredenciaisInvalidas) {
+			t.Fatalf("erro = %v, want ErrCredenciaisInvalidas", err)
+		}
+		tentativas, bloqueadoAte := lerBloqueioLogin(t, db, id)
+		if tentativas != 1 || bloqueadoAte.Valid {
+			t.Errorf("tentativas=%d bloqueado_ate.Valid=%v, want 1 / false (streak novo)", tentativas, bloqueadoAte.Valid)
+		}
+	})
+}
+
+// TestLogin_FalhasNaoConsecutivasNuncaBloqueiam prova a linha "Falhas não
+// consecutivas" da I/O Matrix: 3 falhas, 1 sucesso (zera), 2 falhas — nunca
+// bloqueia; contador final = 2.
+func TestLogin_FalhasNaoConsecutivasNuncaBloqueiam(t *testing.T) {
+	db := testDB(t)
+	id := criarUsuarioParaLogin(t, db, "nao-consecutivas@empresa.com", "senha-correta1", true, true)
+
+	for i := 0; i < 3; i++ {
+		if _, err := Login(db, "nao-consecutivas@empresa.com", "errada"); !errors.Is(err, ErrCredenciaisInvalidas) {
+			t.Fatalf("falha %d: erro = %v", i, err)
+		}
+	}
+	if _, err := Login(db, "nao-consecutivas@empresa.com", "senha-correta1"); err != nil {
+		t.Fatalf("sucesso intermediário retornou erro: %v", err)
+	}
+	if tentativas, _ := lerBloqueioLogin(t, db, id); tentativas != 0 {
+		t.Fatalf("após sucesso: tentativas = %d, want 0", tentativas)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := Login(db, "nao-consecutivas@empresa.com", "errada"); !errors.Is(err, ErrCredenciaisInvalidas) {
+			t.Fatalf("falha pós-sucesso %d: erro = %v", i, err)
+		}
+	}
+	tentativas, bloqueadoAte := lerBloqueioLogin(t, db, id)
+	if tentativas != 2 || bloqueadoAte.Valid {
+		t.Errorf("tentativas=%d bloqueado_ate.Valid=%v, want 2 / false", tentativas, bloqueadoAte.Valid)
+	}
+}
+
+// TestLogin_EmailInexistenteMarteladoNaoBloqueia prova a linha "E-mail
+// inexistente martelado" da I/O Matrix: N tentativas contra um e-mail sem
+// linha sempre devolvem ErrCredenciaisInvalidas, sem panic e sem criar linha.
+func TestLogin_EmailInexistenteMarteladoNaoBloqueia(t *testing.T) {
+	db := testDB(t)
+	for i := 0; i < 8; i++ {
+		if _, err := Login(db, "fantasma@empresa.com", "qualquer"); !errors.Is(err, ErrCredenciaisInvalidas) {
+			t.Fatalf("tentativa %d: erro = %v, want ErrCredenciaisInvalidas", i, err)
+		}
+	}
+	if n := contarLinhas(t, db, "usuarios"); n != 0 {
+		t.Errorf("count(usuarios) = %d, want 0 — nenhuma linha criada por login de e-mail inexistente", n)
+	}
+}
+
+// TestLogin_SenhaCorretaEmContaNaoElegivelNaoIncrementa prova a linha "Conta
+// desativada/não verificada, senha correta" da I/O Matrix: a senha certa numa
+// conta inativa / não verificada não é sinal de força bruta e não mexe no
+// contador.
+func TestLogin_SenhaCorretaEmContaNaoElegivelNaoIncrementa(t *testing.T) {
+	casos := []struct {
+		nome            string
+		ativo           bool
+		emailVerificado bool
+	}{
+		{"conta desativada", false, true},
+		{"e-mail não verificado", true, false},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			db := testDB(t)
+			email := "nao-elegivel@empresa.com"
+			id := criarUsuarioParaLogin(t, db, email, "senha-correta1", c.ativo, c.emailVerificado)
+
+			if _, err := Login(db, email, "senha-correta1"); !errors.Is(err, ErrCredenciaisInvalidas) {
+				t.Fatalf("erro = %v, want ErrCredenciaisInvalidas", err)
+			}
+			tentativas, bloqueadoAte := lerBloqueioLogin(t, db, id)
+			if tentativas != 0 || bloqueadoAte.Valid {
+				t.Errorf("tentativas=%d bloqueado_ate.Valid=%v, want 0 / false", tentativas, bloqueadoAte.Valid)
+			}
+		})
+	}
+}
+
+// TestLogin_SenhaErradaEmContaNaoElegivelIncrementa fixa o outro lado da regra
+// de "Boundaries -> Always": o guard de incremento é `senhaHash.Valid &&
+// !senhaCorreta`, SEM condição de `ativo`/`emailVerificado`. Uma senha
+// REALMENTE errada contra uma conta com hash é sinal de força bruta mesmo que
+// a conta esteja desativada ou não verificada — e cinco delas bloqueiam. Sem
+// este teste, um refactor que apertasse o guard para exigir também
+// `ativo && emailVerificado` passaria em toda a suíte existente.
+func TestLogin_SenhaErradaEmContaNaoElegivelIncrementa(t *testing.T) {
+	casos := []struct {
+		nome            string
+		ativo           bool
+		emailVerificado bool
+	}{
+		{"conta desativada", false, true},
+		{"e-mail não verificado", true, false},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			db := testDB(t)
+			email := "nao-elegivel-brute@empresa.com"
+			id := criarUsuarioParaLogin(t, db, email, "senha-correta1", c.ativo, c.emailVerificado)
+
+			if _, err := Login(db, email, "senha-errada"); !errors.Is(err, ErrCredenciaisInvalidas) {
+				t.Fatalf("erro = %v, want ErrCredenciaisInvalidas", err)
+			}
+			if tentativas, _ := lerBloqueioLogin(t, db, id); tentativas != 1 {
+				t.Fatalf("após 1 senha errada: tentativas = %d, want 1", tentativas)
+			}
+
+			for i := 0; i < 4; i++ {
+				_, _ = Login(db, email, "senha-errada")
+			}
+			tentativas, bloqueadoAte := lerBloqueioLogin(t, db, id)
+			if tentativas != 5 || !bloqueadoAte.Valid {
+				t.Errorf("após 5 senhas erradas: tentativas=%d bloqueado_ate.Valid=%v, want 5 / true", tentativas, bloqueadoAte.Valid)
+			}
+		})
+	}
+}
+
+// TestCadastrar_SenhaFraca prova a linha "Cadastro com senha fraca" da I/O
+// Matrix: senha curta ou sem dígito reprova com ErrSenhaFraca e ZERO linhas
+// são escritas em usuarios/tokens_acao/emails_pendentes.
+func TestCadastrar_SenhaFraca(t *testing.T) {
+	for nome, senha := range map[string]string{"curta (<8)": "abc", "sem dígito": "abcdefgh"} {
+		t.Run(nome, func(t *testing.T) {
+			db := testDB(t)
+			_, err := Cadastrar(db, testEmailCfg, "Fulano", "fraca@empresa.com", senha)
+			if !errors.Is(err, ErrSenhaFraca) {
+				t.Fatalf("erro = %v, want ErrSenhaFraca", err)
+			}
+			for _, tabela := range []string{"usuarios", "tokens_acao", "emails_pendentes"} {
+				if n := contarLinhas(t, db, tabela); n != 0 {
+					t.Errorf("count(%s) = %d, want 0 — senha fraca não pode escrever nada", tabela, n)
+				}
+			}
+		})
+	}
+}
+
+// TestCadastrar_SenhaForteCriaConta prova a linha "Cadastro com senha forte"
+// da I/O Matrix: senha "abcd1234" cria a conta como usuario /
+// email_verificado=false.
+func TestCadastrar_SenhaForteCriaConta(t *testing.T) {
+	db := testDB(t)
+	id, err := Cadastrar(db, testEmailCfg, "Fulano", "forte@empresa.com", "abcd1234")
+	if err != nil {
+		t.Fatalf("Cadastrar retornou erro inesperado: %v", err)
+	}
+	var papel string
+	var emailVerificado bool
+	if err := db.QueryRow(`SELECT papel, email_verificado FROM usuarios WHERE id = $1`, id).Scan(&papel, &emailVerificado); err != nil {
+		t.Fatalf("falha ao reler usuario: %v", err)
+	}
+	if papel != "usuario" || emailVerificado {
+		t.Errorf("papel=%q email_verificado=%v, want usuario / false", papel, emailVerificado)
+	}
+}
+
+// TestLogin_FalhasConcorrentes prova que o contador de força bruta é
+// incrementado no banco de forma atômica (`tentativas_login_falhas =
+// tentativas_login_falhas + 1`), não por um read-modify-write em Go: dezenas
+// de tentativas simultâneas com a senha errada não podem "perder" incrementos
+// e deixar a conta destravada. Molde de TestRedefinirSenha_Concorrente.
+func TestLogin_FalhasConcorrentes(t *testing.T) {
+	db := testDB(t)
+	id := criarUsuarioParaLogin(t, db, "brute-concorrente@empresa.com", "senha-correta1", true, true)
+
+	const n = 20
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	results := make([]error, n)
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, results[i] = Login(db, "brute-concorrente@empresa.com", "senha-errada")
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	// Toda tentativa falhou como credencial inválida ou como conta já bloqueada
+	// — nunca sucesso, nunca panic, nunca outro erro.
+	for i, err := range results {
+		if !errors.Is(err, ErrCredenciaisInvalidas) && !errors.Is(err, ErrContaBloqueada) {
+			t.Fatalf("goroutine %d: erro = %v, want ErrCredenciaisInvalidas ou ErrContaBloqueada", i, err)
+		}
+	}
+
+	tentativas, bloqueadoAte := lerBloqueioLogin(t, db, id)
+	if tentativas < maxTentativasLogin {
+		t.Errorf("tentativas_login_falhas = %d, want >= %d — incrementos concorrentes foram perdidos", tentativas, maxTentativasLogin)
+	}
+	if !bloqueadoAte.Valid || !bloqueadoAte.Time.After(time.Now()) {
+		t.Errorf("bloqueado_ate = %v, want um instante no futuro — a conta deveria ter travado", bloqueadoAte)
 	}
 }

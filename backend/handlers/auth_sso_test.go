@@ -155,6 +155,53 @@ func TestKeycloakSSO_TrocaValida(t *testing.T) {
 	}
 }
 
+// TestKeycloakSSO_ContaBloqueadaPorSenhaAindaEntra prova a AC4 / a linha "SSO
+// com conta bloqueada por senha" da I/O Matrix: uma conta com
+// tentativas_login_falhas=5 e bloqueado_ate no futuro (bloqueio do login por
+// senha, Story 1.10) continua autenticando por SSO, e o caminho SSO não lê nem
+// altera essas colunas.
+func TestKeycloakSSO_ContaBloqueadaPorSenhaAindaEntra(t *testing.T) {
+	db := testDB(t)
+	priv := ssoGerarChave(t)
+	id := criarContaComPapel(t, db, "Carlos", "carlos@fc.com", "senha-123456", "usuario")
+	if _, err := db.Exec(
+		`UPDATE usuarios SET tentativas_login_falhas = 5, bloqueado_ate = now() + interval '15 minutes' WHERE id = $1`, id,
+	); err != nil {
+		t.Fatalf("falha ao bloquear conta: %v", err)
+	}
+
+	h := ssoHandler(t, db, priv, "")
+	w := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — SSO não deve ser afetado pelo bloqueio de senha (body=%s)", w.Code, w.Body.String())
+	}
+
+	var temCookie bool
+	for _, c := range w.Result().Cookies() {
+		if c.Name == refreshTokenCookieName {
+			temCookie = true
+		}
+	}
+	if !temCookie {
+		t.Fatal("Set-Cookie refresh_token ausente — a troca SSO deveria ter emitido sessão")
+	}
+
+	// As colunas de bloqueio continuam exatamente como antes: SSO não as tocou.
+	var tentativas int
+	var bloqueadoAte sql.NullTime
+	if err := db.QueryRow(
+		`SELECT tentativas_login_falhas, bloqueado_ate FROM usuarios WHERE id = $1`, id,
+	).Scan(&tentativas, &bloqueadoAte); err != nil {
+		t.Fatalf("reler colunas de bloqueio: %v", err)
+	}
+	if tentativas != 5 {
+		t.Errorf("tentativas_login_falhas = %d, want 5 (inalterado pelo SSO)", tentativas)
+	}
+	if !bloqueadoAte.Valid || !bloqueadoAte.Time.After(time.Now()) {
+		t.Errorf("bloqueado_ate = %v, want um instante no futuro (inalterado pelo SSO)", bloqueadoAte)
+	}
+}
+
 func TestKeycloakSSO_PapelPreservadoDoBanco(t *testing.T) {
 	db := testDB(t)
 	priv := ssoGerarChave(t)

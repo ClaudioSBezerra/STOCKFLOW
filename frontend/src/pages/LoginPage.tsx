@@ -30,6 +30,14 @@ function mensagemDeErro(codigo: string | undefined): string {
   if (codigo === 'VALIDATION_ERROR') {
     return 'Preencha e-mail e senha para continuar.';
   }
+  // ACCOUNT_LOCKED (Story 1.10): conta bloqueada após 5 tentativas falhas. A
+  // mensagem NUNCA revela o tempo restante e NÃO promete que redefinir a senha
+  // destrava a conta — só a expiração do prazo faz isso (RedefinirSenha não
+  // toca nas colunas de bloqueio). O link "Esqueci minha senha" segue visível
+  // no formulário para quem de fato esqueceu a senha.
+  if (codigo === 'ACCOUNT_LOCKED') {
+    return 'Muitas tentativas de login sem sucesso. Por segurança, novas tentativas ficam bloqueadas temporariamente. Tente novamente mais tarde.';
+  }
   return 'Não foi possível entrar. Tente novamente em instantes.';
 }
 

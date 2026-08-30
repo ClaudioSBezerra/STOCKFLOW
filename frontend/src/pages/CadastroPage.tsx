@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { senhaAtendePolitica } from '@/lib/senha';
 
 /**
  * Envelope de erro fixo (AD-14): {"error":{"code","message"}}. Só o código é
@@ -14,12 +15,28 @@ interface ErroEnvelope {
   error?: { code?: string; message?: string };
 }
 
+/**
+ * Critério da política mínima de força de senha (Story 1.10). String idêntica
+ * à de RedefinirSenhaPage.tsx — o backend usa a MESMA mensagem em
+ * CadastroHandler e RedefinirSenhaHandler.
+ */
+const MENSAGEM_SENHA_FRACA =
+  'A senha deve ter ao menos 8 caracteres, incluindo uma letra e um número.';
+
+const MENSAGEM_CAMPOS_OBRIGATORIOS = 'Preencha nome, e-mail e senha para continuar.';
+
 function mensagemDeErro(codigo: string | undefined): string {
   if (codigo === 'CONFLICT') {
     return 'Este e-mail já está cadastrado.';
   }
+  // O backend usa VALIDATION_ERROR tanto para "campo obrigatório" quanto para
+  // "senha fraca". `handleSubmit` já barra campos vazios no cliente antes de
+  // chamar a API, então um VALIDATION_ERROR que chega aqui só pode ser senha
+  // fraca (ou divergência do espelho `senhaAtendePolitica`) — mostrar o
+  // critério da política é sempre a mensagem correta. Molde de
+  // RedefinirSenhaPage.tsx.
   if (codigo === 'VALIDATION_ERROR') {
-    return 'Preencha nome, e-mail e senha para continuar.';
+    return MENSAGEM_SENHA_FRACA;
   }
   return 'Não foi possível concluir o cadastro. Tente novamente em instantes.';
 }
@@ -48,6 +65,24 @@ export function CadastroPage() {
       return;
     }
     setErro(null);
+
+    // Campos obrigatórios barrados no cliente com mensagem própria: sem isto,
+    // o VALIDATION_ERROR de campo vazio vindo do backend cairia no mapeamento
+    // de "senha fraca" abaixo e mostraria o critério de senha com os campos em
+    // branco.
+    if (!nome.trim() || !email.trim() || !senha) {
+      setErro(MENSAGEM_CAMPOS_OBRIGATORIOS);
+      return;
+    }
+
+    // Espelho da política do backend (molde de RedefinirSenhaPage): barra o
+    // submit sem chamar a API para uma senha obviamente fraca. O backend
+    // continua sendo a autoridade (revalida e devolve VALIDATION_ERROR).
+    if (!senhaAtendePolitica(senha)) {
+      setErro(MENSAGEM_SENHA_FRACA);
+      return;
+    }
+
     setEnviando(true);
 
     try {

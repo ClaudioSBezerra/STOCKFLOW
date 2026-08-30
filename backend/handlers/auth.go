@@ -1,9 +1,10 @@
 // Package handlers implementa a fronteira HTTP de autenticação: Story 1.3
 // (cadastro/verificação de e-mail), Story 1.4 (login, refresh de sessão e
-// `/me`) e Story 1.6 (esqueci-senha, validação de link de redefinição e
-// redefinição de senha) — decodifica/serializa JSON, mapeia erros de
-// `services/` para o envelope de erro fixo (AD-14), e nunca contém regra de
-// negócio própria.
+// `/me`), Story 1.6 (esqueci-senha, validação de link de redefinição e
+// redefinição de senha) e Story 1.10 (login de conta bloqueada por tentativas
+// -> 429 ACCOUNT_LOCKED; senha fraca no cadastro -> 400 VALIDATION_ERROR) —
+// decodifica/serializa JSON, mapeia erros de `services/` para o envelope de
+// erro fixo (AD-14), e nunca contém regra de negócio própria.
 package handlers
 
 import (
@@ -57,7 +58,10 @@ type cadastroRequest struct {
 }
 
 // CadastroHandler expõe POST /api/auth/cadastro: cria a conta sempre como
-// `usuario`, enfileira o e-mail de verificação e nunca usa `req.Papel`.
+// `usuario`, enfileira o e-mail de verificação e nunca usa `req.Papel`. Senha
+// que não cumpre a política mínima de força (Story 1.10) -> 400
+// VALIDATION_ERROR com o mesmo critério exibido em RedefinirSenhaHandler, sem
+// criar nenhuma linha.
 func CadastroHandler(db *sql.DB, emailCfg services.EmailConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, cadastroRequestMaxBytes)
@@ -79,6 +83,8 @@ func CadastroHandler(db *sql.DB, emailCfg services.EmailConfig) http.HandlerFunc
 			})
 		case errors.Is(err, services.ErrCadastroValidacao):
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "nome, e-mail e senha são obrigatórios")
+		case errors.Is(err, services.ErrSenhaFraca):
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "A senha deve ter ao menos 8 caracteres, incluindo uma letra e um número.")
 		case errors.Is(err, services.ErrEmailDuplicado):
 			escreverErro(w, http.StatusConflict, "CONFLICT", "Este e-mail já está cadastrado.")
 		default:
@@ -189,7 +195,10 @@ type loginRequest struct {
 // e o refresh token em cookie HttpOnly. Todo cenário de credencial inválida
 // (senha errada, e-mail inexistente, e-mail não verificado, conta
 // desativada, conta só-SSO) devolve a MESMA resposta 401 INVALID_CREDENTIALS
-// — nunca revela qual condição falhou nem se o e-mail existe.
+// — nunca revela qual condição falhou nem se o e-mail existe. Conta bloqueada
+// por excesso de tentativas (Story 1.10) é a única exceção: 429 ACCOUNT_LOCKED
+// com mensagem sem o tempo restante — só aparece para quem já fez 5 tentativas
+// falhas contra aquela conta.
 func LoginHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
@@ -209,6 +218,9 @@ func LoginHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 			return
 		case errors.Is(err, services.ErrCredenciaisInvalidas):
 			escreverErro(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "E-mail ou senha inválidos.")
+			return
+		case errors.Is(err, services.ErrContaBloqueada):
+			escreverErro(w, http.StatusTooManyRequests, "ACCOUNT_LOCKED", "Muitas tentativas de login sem sucesso. Por segurança, novas tentativas ficam bloqueadas temporariamente. Tente novamente mais tarde.")
 			return
 		default:
 			slog.Error("falha ao processar login", "error", err)
@@ -296,7 +308,8 @@ type esqueciSenhaRequest struct {
 // ou latência perceptível se um e-mail está cadastrado (sem bcrypt neste
 // caminho; sem ramo condicional após escrever a resposta). Só JSON malformado
 // -> 400 VALIDATION_ERROR; erro real de infraestrutura -> 500 INTERNAL_ERROR.
-// Não há limite de taxa aqui — é escopo da Story 1.10.
+// Não há limite de taxa aqui: FR-36 pede bloqueio só no login por senha, e a
+// Story 1.10 mantém a redefinição intocada mesmo para uma conta já bloqueada.
 func EsqueciSenhaHandler(db *sql.DB, emailCfg services.EmailConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)

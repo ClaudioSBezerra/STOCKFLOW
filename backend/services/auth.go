@@ -1,10 +1,13 @@
 // Package services concentra as regras de negócio de autenticação: Story 1.3
 // (autocadastro público sempre como `usuario`, verificação de e-mail via
 // token de uso único, outbox/worker de e-mail transacional — AD-4/AD-18),
-// Story 1.4 (login por e-mail/senha, emissão e rotação de sessão — AD-6) e
+// Story 1.4 (login por e-mail/senha, emissão e rotação de sessão — AD-6),
 // Story 1.6 (recuperação de senha por e-mail: solicitação com resposta
 // genérica + outbox, redefinição consumindo o token de uso único e revogando
-// todas as sessões da conta, política mínima de força de senha).
+// todas as sessões da conta, política mínima de força de senha) e Story 1.10
+// (bloqueio temporal da conta após N falhas consecutivas de senha no Login —
+// contador `usuarios.tentativas_login_falhas`/`usuarios.bloqueado_ate` — e
+// aplicação da política mínima de força de senha também no autocadastro).
 package services
 
 import (
@@ -13,6 +16,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode"
@@ -49,6 +53,16 @@ const (
 	RefreshTokenExpiracao = 2 * time.Hour
 )
 
+// Bloqueio de força bruta por conta (Story 1.10, FR-36/SM-6): após
+// maxTentativasLogin falhas de senha CONSECUTIVAS contra a mesma conta, o
+// login fica recusado por duracaoBloqueioLogin — mesmo com a senha correta e
+// sem revelar o tempo restante. Os valores 5 e 15min são o `[ASSUMPTION]` do
+// PRD §4.1, fixado aqui como constante (não há configuração runtime).
+const (
+	maxTentativasLogin   = 5
+	duracaoBloqueioLogin = 15 * time.Minute
+)
+
 var (
 	// ErrCadastroValidacao indica campo obrigatório ausente/vazio no payload
 	// de cadastro (nome, e-mail ou senha).
@@ -80,6 +94,16 @@ var (
 	// nunca pode distinguir qual condição falhou nem revelar se o e-mail
 	// existe (regra explícita do contexto do épico).
 	ErrCredenciaisInvalidas = errors.New("e-mail ou senha inválidos")
+	// ErrContaBloqueada indica que a conta tem `bloqueado_ate` no futuro por
+	// ter acumulado maxTentativasLogin falhas de senha consecutivas (Story
+	// 1.10). É a ÚNICA exceção deliberada e restrita à regra de não-enumeração
+	// do épico: senha errada / e-mail inexistente / conta desativada continuam
+	// todas em ErrCredenciaisInvalidas, mas o usuário legítimo que já fez 5
+	// tentativas falhas precisa entender por que não entra nem com a senha
+	// certa (ver Design Notes da spec-1-10). A mensagem nunca revela o tempo
+	// restante nem promete que redefinir a senha destrava a conta — só a
+	// expiração do prazo de 15 min faz isso.
+	ErrContaBloqueada = errors.New("conta temporariamente bloqueada por excesso de tentativas de login")
 	// ErrSessaoInvalida cobre refresh token ausente, expirado, já revogado ou
 	// inexistente — mapeado para 401 TOKEN_EXPIRED pelo handler.
 	ErrSessaoInvalida = errors.New("sessão inválida ou expirada")
@@ -123,6 +147,14 @@ func Cadastrar(db *sql.DB, emailCfg EmailConfig, nome, email, senha string) (usu
 	if nomeTrimado == "" || normalizedEmail == "" || strings.TrimSpace(senha) == "" {
 		return "", ErrCadastroValidacao
 	}
+	// Política mínima de força de senha (Story 1.10): o autocadastro passa a
+	// exigir 8+ caracteres com letra e dígito, igual à redefinição (Story 1.6).
+	// Feito ANTES de qualquer escrita — senha reprovada não deixa linha órfã em
+	// usuarios/tokens_acao/emails_pendentes. Também cobre o limite de 72 bytes
+	// do bcrypt, tornando redundante um guard próprio de tamanho.
+	if err := ValidarForcaSenha(senha); err != nil {
+		return "", err
+	}
 	// usuarios.nome e usuarios.email são VARCHAR(255) (migration 000001): sem
 	// estes guards, um valor maior que a coluna vira um erro bruto do
 	// Postgres (500) em vez do 400 VALIDATION_ERROR esperado para um input de
@@ -132,13 +164,6 @@ func Cadastrar(db *sql.DB, emailCfg EmailConfig, nome, email, senha string) (usu
 	// nome/e-mail com acentos (comuns em PT-BR) que caberia na coluna mas
 	// ultrapassa 255 bytes em UTF-8.
 	if utf8.RuneCountInString(nomeTrimado) > 255 || utf8.RuneCountInString(normalizedEmail) > 255 {
-		return "", ErrCadastroValidacao
-	}
-	// bcrypt.GenerateFromPassword rejeita senhas com mais de 72 bytes — sem
-	// este guard, esse erro cairia no branch genérico de Cadastrar e viraria
-	// 500 INTERNAL_ERROR em vez de 400 VALIDATION_ERROR para um input de
-	// cliente legítimo (ainda que incomum).
-	if len(senha) > 72 {
 		return "", ErrCadastroValidacao
 	}
 
@@ -289,6 +314,18 @@ type UsuarioSessao struct {
 // resultam TODOS em ErrCredenciaisInvalidas — a mesma resposta, para nunca
 // revelar qual condição falhou nem se o e-mail existe (regra explícita do
 // contexto do épico).
+//
+// Story 1.10 acrescenta o bloqueio de força bruta por conta: cada falha de
+// senha CONSECUTIVA incrementa `usuarios.tentativas_login_falhas` (UPDATE
+// atômico, nunca contador recalculado em Go); ao alcançar maxTentativasLogin
+// grava `bloqueado_ate = now() + duracaoBloqueioLogin`. Enquanto
+// `bloqueado_ate` está no futuro, toda tentativa é recusada com
+// ErrContaBloqueada — inclusive com a senha correta e sem revelar o tempo
+// restante. Um bloqueio já expirado é destravado e o fluxo segue normal; um
+// login bem-sucedido zera contador e prazo. A comparação bcrypt (real ou
+// dummy) SEMPRE roda para uma linha encontrada, ANTES de qualquer return
+// (inclusive no caminho "conta bloqueada"), para não regredir a defesa contra
+// side-channel de tempo da Story 1.4.
 func Login(db *sql.DB, email, senha string) (usuarioID string, err error) {
 	normalizedEmail := normalizeEmail(email)
 	if normalizedEmail == "" || strings.TrimSpace(senha) == "" {
@@ -298,11 +335,13 @@ func Login(db *sql.DB, email, senha string) (usuarioID string, err error) {
 	var id string
 	var senhaHash sql.NullString
 	var ativo, emailVerificado bool
+	var tentativas int
+	var bloqueadoAte sql.NullTime
 	const selectUsuario = `
-		SELECT id, senha_hash, ativo, email_verificado
+		SELECT id, senha_hash, ativo, email_verificado, tentativas_login_falhas, bloqueado_ate
 		FROM usuarios
 		WHERE lower(email) = $1`
-	err = db.QueryRow(selectUsuario, normalizedEmail).Scan(&id, &senhaHash, &ativo, &emailVerificado)
+	err = db.QueryRow(selectUsuario, normalizedEmail).Scan(&id, &senhaHash, &ativo, &emailVerificado, &tentativas, &bloqueadoAte)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			// Defesa contra side-channel de tempo: mesmo sem linha nenhuma para
@@ -331,11 +370,79 @@ func Login(db *sql.DB, email, senha string) (usuarioID string, err error) {
 	}
 	senhaCorreta := bcrypt.CompareHashAndPassword(hashParaComparar, []byte(senha)) == nil
 
+	// Bloqueio de força bruta (Story 1.10). Esta checagem fica DEPOIS do
+	// bcrypt.CompareHashAndPassword acima (real ou dummy): senão o caminho
+	// "conta bloqueada" responderia sem o custo do bcrypt e viraria um oráculo
+	// de tempo para "esta conta existe e está bloqueada".
+	agora := time.Now().UTC()
+	if bloqueadoAte.Valid && bloqueadoAte.Time.After(agora) {
+		// Conta bloqueada: recusa toda tentativa — mesmo com a senha correta —
+		// sem incrementar o contador nem estender o prazo.
+		return "", ErrContaBloqueada
+	}
+	if bloqueadoAte.Valid {
+		// Bloqueio expirado: destrava (zera contador/prazo) e segue o fluxo
+		// normal como conta destravada. O predicado `bloqueado_ate <= now()`
+		// fecha a corrida com uma tentativa concorrente que já tenha destravado
+		// ou re-bloqueado a linha nesse meio-tempo. Falha aqui é deliberadamente
+		// não-fatal — só registra para o operador, sem transformar o fluxo em
+		// 500.
+		if _, err := db.Exec(`UPDATE usuarios SET tentativas_login_falhas = 0, bloqueado_ate = NULL
+			WHERE id = $1 AND bloqueado_ate <= now()`, id); err != nil {
+			slog.Warn("falha ao destravar conta com bloqueio de login expirado", "usuario_id", id, "error", err)
+		}
+		// Zera os locais para o ramo de sucesso abaixo não re-disparar um UPDATE
+		// idêntico (e evita o footgun de local defasado).
+		tentativas = 0
+		bloqueadoAte = sql.NullTime{}
+	}
+
 	if !ativo || !emailVerificado || !senhaHash.Valid || !senhaCorreta {
+		// Só uma senha REALMENTE errada numa conta com senha conta como sinal de
+		// força bruta. Conta desativada / e-mail não verificado / conta só-SSO
+		// COM a senha correta não incrementam — puniria só o usuário legítimo.
+		// A escrita de bookkeeping é não-fatal: uma falha nela não pode
+		// transformar o 401 em 500, então só registramos.
+		if senhaHash.Valid && !senhaCorreta {
+			if err := registrarFalhaLogin(db, id); err != nil {
+				slog.Warn("falha ao registrar tentativa de login malsucedida", "usuario_id", id, "error", err)
+			}
+		}
 		return "", ErrCredenciaisInvalidas
 	}
 
+	if tentativas != 0 || bloqueadoAte.Valid {
+		// Idem: não-fatal. O login já teve sucesso; no pior caso o contador fica
+		// com um valor obsoleto até a próxima tentativa.
+		if _, err := db.Exec(`UPDATE usuarios SET tentativas_login_falhas = 0, bloqueado_ate = NULL WHERE id = $1`, id); err != nil {
+			slog.Warn("falha ao zerar contador de tentativas após login bem-sucedido", "usuario_id", id, "error", err)
+		}
+	}
+
 	return id, nil
+}
+
+// registrarFalhaLogin incrementa o contador de falhas consecutivas de senha da
+// conta e, quando o novo valor alcança maxTentativasLogin, grava
+// `bloqueado_ate = now() + duracaoBloqueioLogin` — tudo num único UPDATE
+// atômico no banco (nunca um `contador+1` calculado em Go e regravado), para
+// que duas tentativas concorrentes não percam incrementos nem sobrescrevam o
+// prazo uma da outra. O `CASE` só grava `bloqueado_ate` quando ele ainda é
+// NULL: assim uma rajada de falhas concorrentes exatamente na 5ª não empurra o
+// instante de desbloqueio um pouco além dos 15 min a cada escrita. `secs` (não
+// `mins`) preserva durações abaixo de um minuto, caso a constante seja
+// ajustada no futuro.
+func registrarFalhaLogin(db *sql.DB, usuarioID string) error {
+	const upd = `
+		UPDATE usuarios
+		SET tentativas_login_falhas = tentativas_login_falhas + 1,
+		    bloqueado_ate = CASE
+		        WHEN bloqueado_ate IS NULL AND tentativas_login_falhas + 1 >= $2 THEN now() + make_interval(secs => $3)
+		        ELSE bloqueado_ate
+		    END
+		WHERE id = $1`
+	_, err := db.Exec(upd, usuarioID, maxTentativasLogin, int(duracaoBloqueioLogin.Seconds()))
+	return err
 }
 
 // gerarAccessToken emite o JWT de acesso (AD-6): HS256, claim mínimo (`sub`

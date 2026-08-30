@@ -77,7 +77,7 @@ describe('CadastroPage', () => {
     expect(screen.getByLabelText('Nome')).toBeInTheDocument();
   });
 
-  it('mostra erro inline de validação no 400 VALIDATION_ERROR', async () => {
+  it('mapeia um 400 VALIDATION_ERROR do servidor para o critério de senha (campos já barrados no cliente)', async () => {
     const user = userEvent.setup();
     (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: false,
@@ -85,11 +85,45 @@ describe('CadastroPage', () => {
     });
     renderPage();
 
+    // preencherEEnviar usa uma senha que passa o espelho de política, então o
+    // fetch acontece e o 400 do servidor só pode significar senha fraca /
+    // divergência do espelho.
     await preencherEEnviar(user);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'A senha deve ter ao menos 8 caracteres, incluindo uma letra e um número.',
+    );
+  });
+
+  it('barra campos obrigatórios vazios no cliente com mensagem própria, sem chamar a API', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    // Só o nome preenchido; e-mail e senha vazios.
+    await user.type(screen.getByLabelText('Nome'), 'Fulano de Tal');
+    await user.click(screen.getByRole('button', { name: 'Criar conta' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Preencha nome, e-mail e senha para continuar.',
     );
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('barra o submit com senha fraca: erro inline com o critério, sem chamar a API', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.type(screen.getByLabelText('Nome'), 'Fulano de Tal');
+    await user.type(screen.getByLabelText('E-mail'), 'fulano@empresa.com');
+    await user.type(screen.getByLabelText('Senha'), 'abc');
+    await user.click(screen.getByRole('button', { name: 'Criar conta' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'A senha deve ter ao menos 8 caracteres, incluindo uma letra e um número.',
+    );
+    expect(fetch).not.toHaveBeenCalled();
+    // O formulário continua visível para correção.
+    expect(screen.getByLabelText('Senha')).toBeInTheDocument();
   });
 
   it('mostra mensagem genérica quando a requisição falha por erro de rede', async () => {

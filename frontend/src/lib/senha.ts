@@ -2,9 +2,13 @@
  * Espelho mínimo da política de força de senha do backend
  * (`services.ValidarForcaSenha`, spec-1-6). A duplicação entre linguagens é
  * deliberada e documentada — mesmo caso do espelho `rankPapel` da Story 1.5:
- * a AUTORIDADE é sempre o backend (`POST /api/auth/redefinir-senha` revalida
- * e é quem de fato decide). Aqui a checagem só evita uma ida à rede para uma
- * senha obviamente fraca, com feedback inline imediato.
+ * a AUTORIDADE é sempre o backend, que revalida e é quem de fato decide. Aqui
+ * a checagem só evita uma ida à rede para uma senha obviamente fraca, com
+ * feedback inline imediato.
+ *
+ * A partir da Story 1.10 este espelho cobre TAMBÉM o autocadastro
+ * (`CadastroPage` -> `POST /api/auth/cadastro`), não só a redefinição
+ * (`RedefinirSenhaPage` -> `POST /api/auth/redefinir-senha`).
  *
  * Regra: mínimo 8 caracteres, ao menos uma letra e ao menos um dígito, no
  * máximo 72 bytes (limite rígido do bcrypt). "Caracteres" são code points

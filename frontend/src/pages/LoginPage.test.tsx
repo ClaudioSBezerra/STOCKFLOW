@@ -154,6 +154,34 @@ describe('LoginPage', () => {
     expect(navigateMock).not.toHaveBeenCalled();
   });
 
+  it('mostra a mensagem de bloqueio (sem tempo restante) no 429 ACCOUNT_LOCKED', async () => {
+    const user = userEvent.setup();
+    loginResp = () =>
+      Promise.resolve({
+        ok: false,
+        json: async () => ({ error: { code: 'ACCOUNT_LOCKED', message: 'qualquer coisa do backend' } }),
+      });
+    renderPage();
+
+    await preencherEEnviar(user);
+
+    const alerta = await screen.findByRole('alert');
+    expect(alerta).toHaveTextContent(
+      'Muitas tentativas de login sem sucesso. Por segurança, novas tentativas ficam bloqueadas temporariamente. Tente novamente mais tarde.',
+    );
+    // A mensagem nunca revela o tempo restante e não promete recuperação via
+    // redefinição de senha.
+    expect(alerta.textContent ?? '').not.toMatch(/\d/);
+    expect(alerta.textContent ?? '').not.toMatch(/senha/i);
+    // O link "Esqueci minha senha" continua visível como saída.
+    expect(screen.getByRole('link', { name: 'Esqueci minha senha' })).toHaveAttribute(
+      'href',
+      '/esqueci-senha',
+    );
+    expect(getAccessToken()).toBeNull();
+    expect(navigateMock).not.toHaveBeenCalled();
+  });
+
   it('mostra erro inline de validação no 400 VALIDATION_ERROR', async () => {
     const user = userEvent.setup();
     loginResp = () =>
