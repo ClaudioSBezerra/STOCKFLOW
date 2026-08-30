@@ -51,6 +51,8 @@ function authHeaders(): Record<string, string> {
 const MENSAGEM_ERRO_SOLICITAR =
   'Não foi possível solicitar a promoção agora. Tente novamente em instantes.';
 const MENSAGEM_ERRO_DECISAO = 'Não foi possível concluir a decisão.';
+const MENSAGEM_ERRO_CARREGAR_MINHA =
+  'Não foi possível verificar o estado da sua solicitação. Recarregue a página.';
 
 export function ConfiguracoesPage() {
   const { usuario } = useAuth();
@@ -66,18 +68,25 @@ export function ConfiguracoesPage() {
   const [erroDecisao, setErroDecisao] = useState<string | null>(null);
   const [avisoDecisao, setAvisoDecisao] = useState<string | null>(null);
   const [erroCarregarPendentes, setErroCarregarPendentes] = useState<string | null>(null);
+  const [erroCarregarMinha, setErroCarregarMinha] = useState<string | null>(null);
 
   const carregarMinha = useCallback(async () => {
     try {
       const res = await fetch('/api/promocoes/minha', { headers: authHeaders() });
       if (!res.ok) {
+        // Sem este alerta, uma falha de carga deixaria uma conta com
+        // solicitação `pendente` vendo o botão habilitado — o clique seguinte
+        // só recebe um 409 disfarçado de erro transitório. Mesmo cuidado de
+        // `carregarPendentes`: nunca oferecer uma ação cuja pré-condição não
+        // foi verificada.
+        setErroCarregarMinha(MENSAGEM_ERRO_CARREGAR_MINHA);
         return;
       }
       const body = (await res.json()) as { solicitacao: MinhaSolicitacao | null };
       setMinha(body.solicitacao);
+      setErroCarregarMinha(null);
     } catch {
-      // Estado consultado sob demanda: uma falha aqui não bloqueia a página
-      // nem vira toast (spec-1-7, "Never").
+      setErroCarregarMinha(MENSAGEM_ERRO_CARREGAR_MINHA);
     }
   }, []);
 
@@ -155,6 +164,10 @@ export function ConfiguracoesPage() {
       await carregarPendentes();
     } catch {
       setErroDecisao(MENSAGEM_ERRO_DECISAO);
+      // Mesma razão do ramo `!res.ok`: uma falha aqui pode ter coincidido com
+      // o item já sendo decidido por outro gestor — recarrega a fila para a
+      // linha obsoleta cair em vez de ser retentada sem fim.
+      await carregarPendentes();
     } finally {
       setDecidindoId(null);
     }
@@ -195,7 +208,7 @@ export function ConfiguracoesPage() {
                 <Button
                   type="button"
                   onClick={solicitar}
-                  disabled={enviando || pendente}
+                  disabled={enviando || pendente || erroCarregarMinha !== null}
                   className="self-start"
                 >
                   {enviando ? 'Enviando...' : `Solicitar promoção para ${rotuloPapel(alvo)}`}
@@ -208,6 +221,11 @@ export function ConfiguracoesPage() {
                 {rejeitada && (
                   <p className="text-body text-muted-foreground">
                     Sua última solicitação foi recusada.
+                  </p>
+                )}
+                {erroCarregarMinha && (
+                  <p role="alert" className="text-body text-destructive">
+                    {erroCarregarMinha}
                   </p>
                 )}
                 {erroSolicitar && (

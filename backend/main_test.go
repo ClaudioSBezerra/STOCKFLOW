@@ -574,6 +574,121 @@ func TestNewMux_PromocoesRotasCarregamRequireRole(t *testing.T) {
 	})
 }
 
+// TestNewMux_PromocoesRotasAutenticadasAlcancamHandlers prova, pela mesma
+// instância de newMux usada por main(), que as duas rotas só-RequireAuth
+// (POST /api/promocoes e GET /api/promocoes/minha) chegam de fato aos seus
+// handlers com um token válido — não só que devolvem 401 sem token (Story
+// 1.7). Sem estes casos, trocar SolicitarPromocaoHandler por
+// MinhaSolicitacaoHandler em newMux (ou pendurar o handler no verbo errado)
+// compila e deixa a suíte inteira verde: TestNewMux_RegistraRotasDeAutenticacao
+// só exercita o ramo sem-token e os testes de handler recompõem o middleware
+// à mão, sem passar por newMux.
+func TestNewMux_PromocoesRotasAutenticadasAlcancamHandlers(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	mux := newMux(db, emailCfg, jwtSecret)
+
+	const senha = "senha-123456"
+	hash, err := bcrypt.GenerateFromPassword([]byte(senha), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
+		 VALUES ('Conta Teste', 'promo-mux-auth@empresa.com', $1, 'usuario', true, true)`,
+		string(hash),
+	); err != nil {
+		t.Fatalf("insert conta: %v", err)
+	}
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/auth/login",
+		strings.NewReader(`{"email":"promo-mux-auth@empresa.com","senha":"`+senha+`"}`))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginRec := httptest.NewRecorder()
+	mux.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("login: status = %d, want 200 (body=%s)", loginRec.Code, loginRec.Body.String())
+	}
+	var loginBody struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(loginRec.Body.Bytes(), &loginBody); err != nil {
+		t.Fatalf("login: decode: %v", err)
+	}
+
+	despachar := func(metodo, caminho string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(metodo, caminho, nil)
+		req.Header.Set("Authorization", "Bearer "+loginBody.Token)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	// GET /api/promocoes/minha antes de qualquer solicitação: o handler
+	// executou e devolveu {"solicitacao": null}, não 401/500 nem o corpo de
+	// outra rota.
+	wMinhaAntes := despachar(http.MethodGet, "/api/promocoes/minha")
+	if wMinhaAntes.Code != http.StatusOK {
+		t.Fatalf("GET /api/promocoes/minha (antes): status = %d, want 200 (body=%s)", wMinhaAntes.Code, wMinhaAntes.Body.String())
+	}
+	if got := strings.TrimSpace(wMinhaAntes.Body.String()); got != `{"solicitacao":null}` {
+		t.Errorf("GET /api/promocoes/minha (antes): body = %s, want {\"solicitacao\":null}", got)
+	}
+
+	// POST /api/promocoes: o handler executou, derivou o alvo do papel da
+	// sessão e persistiu uma linha.
+	wSolicitar := despachar(http.MethodPost, "/api/promocoes")
+	if wSolicitar.Code != http.StatusCreated {
+		t.Fatalf("POST /api/promocoes: status = %d, want 201 (body=%s)", wSolicitar.Code, wSolicitar.Body.String())
+	}
+	var solicitarBody struct {
+		Solicitacao struct {
+			ID        string `json:"id"`
+			PapelAlvo string `json:"papel_alvo"`
+			Status    string `json:"status"`
+		} `json:"solicitacao"`
+	}
+	if err := json.Unmarshal(wSolicitar.Body.Bytes(), &solicitarBody); err != nil {
+		t.Fatalf("POST /api/promocoes: decode: %v (body=%s)", err, wSolicitar.Body.String())
+	}
+	if solicitarBody.Solicitacao.PapelAlvo != "almoxarife" || solicitarBody.Solicitacao.Status != "pendente" {
+		t.Errorf("POST /api/promocoes: solicitacao = %+v, want papel_alvo=almoxarife status=pendente", solicitarBody.Solicitacao)
+	}
+	var linhas int
+	if err := db.QueryRow(
+		`SELECT count(*) FROM solicitacoes_promocao WHERE papel_alvo = 'almoxarife' AND status = 'pendente'`,
+	).Scan(&linhas); err != nil {
+		t.Fatalf("count solicitacoes_promocao: %v", err)
+	}
+	if linhas != 1 {
+		t.Errorf("linhas pendentes gravadas = %d, want 1", linhas)
+	}
+
+	// GET /api/promocoes/minha agora reflete a solicitação recém-criada —
+	// prova que essa rota chega ao MinhaSolicitacaoHandler, não a outro.
+	wMinhaDepois := despachar(http.MethodGet, "/api/promocoes/minha")
+	if wMinhaDepois.Code != http.StatusOK {
+		t.Fatalf("GET /api/promocoes/minha (depois): status = %d, want 200 (body=%s)", wMinhaDepois.Code, wMinhaDepois.Body.String())
+	}
+	var minhaBody struct {
+		Solicitacao *struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"solicitacao"`
+	}
+	if err := json.Unmarshal(wMinhaDepois.Body.Bytes(), &minhaBody); err != nil {
+		t.Fatalf("GET /api/promocoes/minha (depois): decode: %v", err)
+	}
+	if minhaBody.Solicitacao == nil || minhaBody.Solicitacao.ID != solicitarBody.Solicitacao.ID {
+		t.Errorf("GET /api/promocoes/minha (depois): solicitacao = %+v, want id = %q", minhaBody.Solicitacao, solicitarBody.Solicitacao.ID)
+	}
+}
+
 // TestRunMigrations_SolicitacoesPromocaoSchema prova que a migration 000004
 // (Story 1.7) cria os CHECK constraints e os índices de solicitacoes_promocao
 // — mesmo precedente das asserções de schema das migrations anteriores neste

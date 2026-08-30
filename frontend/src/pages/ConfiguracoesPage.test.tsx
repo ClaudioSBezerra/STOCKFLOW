@@ -202,6 +202,22 @@ describe('ConfiguracoesPage — Meu Perfil', () => {
       'Não foi possível solicitar a promoção agora. Tente novamente em instantes.',
     );
   });
+
+  it('falha ao carregar /minha: alerta inline e botão desabilitado (não oferece ação sem verificar a pré-condição)', async () => {
+    stubFetch((url) => {
+      if (url === '/api/promocoes/minha') {
+        return Promise.resolve({ ok: false, status: 500, json: async () => ({ error: { code: 'INTERNAL_ERROR' } }) });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    render(<ConfiguracoesPage />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Não foi possível verificar o estado da sua solicitação. Recarregue a página.',
+    );
+    expect(screen.getByRole('button', { name: 'Solicitar promoção para Almoxarife' })).toBeDisabled();
+  });
 });
 
 describe('ConfiguracoesPage — Decidir promoções', () => {
@@ -328,5 +344,43 @@ describe('ConfiguracoesPage — Decidir promoções', () => {
       'Não foi possível carregar as solicitações pendentes.',
     );
     expect(screen.queryByText('Nenhuma solicitação pendente.')).not.toBeInTheDocument();
+  });
+
+  it('decisão que lança erro de rede também recarrega a fila (paridade com o ramo !res.ok)', async () => {
+    let pendentesChamadas = 0;
+    stubFetch((url, init) => {
+      if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
+      if (url === '/api/promocoes' && (!init || init.method === undefined)) {
+        pendentesChamadas += 1;
+        return jsonOk({
+          solicitacoes:
+            pendentesChamadas === 1
+              ? [
+                  {
+                    id: 'p1',
+                    solicitante_nome: 'Bruno',
+                    solicitante_email: 'bruno@empresa.com',
+                    papel_atual: 'usuario',
+                    papel_alvo: 'almoxarife',
+                    criado_em: '2026-08-29T10:00:00Z',
+                  },
+                ]
+              : [],
+        });
+      }
+      if (url === '/api/promocoes/p1/decisao' && init?.method === 'POST') {
+        return Promise.reject(new Error('falha de rede'));
+      }
+      throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
+    });
+
+    const user = userEvent.setup();
+    render(<ConfiguracoesPage />);
+
+    await user.click(await screen.findByRole('button', { name: 'Aprovar promoção de Bruno' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Não foi possível concluir a decisão.');
+    await waitFor(() => expect(screen.queryByText('Bruno')).not.toBeInTheDocument());
+    expect(pendentesChamadas).toBe(2);
   });
 });
