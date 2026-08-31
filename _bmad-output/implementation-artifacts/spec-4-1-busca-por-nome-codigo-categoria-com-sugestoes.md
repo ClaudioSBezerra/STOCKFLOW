@@ -2,7 +2,7 @@
 title: 'Story 4.1 — Busca por nome/código/categoria com sugestões'
 type: 'feature'
 created: '2026-08-31'
-status: 'done'
+status: 'blocked'
 review_loop_iteration: 0
 followup_review_recommended: false
 baseline_revision: '62b98b201cba707582c192ae8583e4bc11021046'
@@ -264,4 +264,6 @@ deferred:
 - `cd backend && go test -p 1 -count=1 ./...` -- todos os pacotes `ok`; testes dependentes de Postgres (`TestBuscarProdutos_*` etc.) reportaram `SKIP` porque este ambiente de execução não tem Docker disponível para subir o banco -- nenhum código de backend foi alterado nesta passada, então isso não representa risco novo, só uma limitação deste ambiente de sandbox (não reproduz um problema do código).
 
 **Riscos residuais:** nenhum novo introduzido por esta passada. Os 3 itens em `deferred` (frontmatter) permanecem em aberto, todos em `docker-compose.yml`, todos pré-existentes a esta story.
+
+**Status final: `blocked` -- decisão humana necessária.** O patch (teste de espaços em branco) e o próprio `spec_file` já estão commitados (`61087ee`), então a revisão do código desta story está completa e não precisa ser refeita. O bloqueio é só de finalização de árvore de trabalho, não de conteúdo: ao terminar esta passada, `_bmad-output/implementation-artifacts/deferred-work.md` e `_bmad-output/implementation-artifacts/sprint-status.yaml` seguem modificados e não commitados na árvore de trabalho -- ambos são de propriedade do orquestrador (instrução explícita desta invocação: nunca escrever nem reverter esses dois arquivos), então este workflow não pode commitá-los nem descartá-los para limpar a árvore. A regra de Finalize deste workflow exige árvore limpa ao final ("Verify the version-controlled working copy is clean. Otherwise HALT... 'finalization left repository dirty'"), e como a única forma de limpá-la envolveria tocar arquivos fora da minha alçada, a decisão sobre o que fazer com essas duas modificações pendentes (commitar via outro processo, descartar, ou é trabalho em andamento de outra sessão concorrente -- HEAD avançou de `35be742` para `4a0b9b8` durante esta revisão com um commit não relacionado de outra sessão, "fix(mfa): send senhaAtual in confirmar-configuracao request") cabe a um humano ou ao próprio orquestrador, não a esta execução.
 
