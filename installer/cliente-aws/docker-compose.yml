@@ -1,0 +1,93 @@
+# stockflow - Cliente AWS (Ferreira Costa, servidor 172.16.249.77)
+#
+# Sincronizado para /opt/apps/stockflow/cliente-aws/docker-compose.yml a cada
+# deploy pelo workflow .github/workflows/deploy-cliente-aws.yml, que roda no
+# runner self-hosted registrado nessa mesma máquina (label "stockflow").
+#
+# Sem Redis (AD-2/AD-3 evitam broker/cache externo de propósito -- broadcaster
+# SSE in-process). Nomes de container distintos de fb_apu02/fb_apu04, que já
+# rodam no mesmo host.
+services:
+  api:
+    image: ghcr.io/claudiosbezerra/stockflow-api:latest
+    container_name: stockflow-api
+    restart: always
+    expose:
+      - "8080"
+    environment:
+      - DATABASE_URL=postgres://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}?sslmode=disable
+      - PORT=8080
+      - JWT_SECRET=${JWT_SECRET}
+      - FOTOS_DIR=/data/fotos
+      - APP_URL=${APP_URL}
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - SMTP_FROM=${SMTP_FROM}
+      # SSO Keycloak (Ferreira Costa, realm real em iam.fcxlabs.com) -- vazias
+      # até um admin provisionar o client dedicado do stockflow (Story 1.9,
+      # spec-1-9 "operator_actions"); sem elas o SSO fica desligado, mesmo
+      # comportamento do ambiente de teste em stockflow.fbtechia.com.
+      - IAM_BASE_URL=${IAM_BASE_URL}
+      - IAM_CLIENT_ID=${IAM_CLIENT_ID}
+      - IAM_REDIRECT_URI=${IAM_REDIRECT_URI}
+      - IAM_ALLOWED_CLIENT_IDS=${IAM_ALLOWED_CLIENT_IDS}
+      - IAM_SCOPES=${IAM_SCOPES}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - stockflow_fotos:/data/fotos
+    networks:
+      stockflow_net:
+        aliases:
+          - stockflow-api
+    healthcheck:
+      # 127.0.0.1, nunca localhost -- ver docker-compose.yml da raiz do
+      # projeto para o porquê (bug real de IPv4/IPv6 já corrigido lá).
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  web:
+    image: ghcr.io/claudiosbezerra/stockflow-web:latest
+    container_name: stockflow-web
+    restart: always
+    ports:
+      - "${WEB_PORT:-3008}:80"
+    depends_on:
+      - api
+    networks:
+      - stockflow_net
+
+  db:
+    image: postgres:15-alpine
+    container_name: stockflow-db
+    restart: always
+    environment:
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=${DB_NAME}
+    volumes:
+      - stockflow_db_data:/var/lib/postgresql/data
+    networks:
+      - stockflow_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+networks:
+  stockflow_net:
+    driver: bridge
+
+volumes:
+  stockflow_db_data:
+    driver: local
+  stockflow_fotos:
+    driver: local

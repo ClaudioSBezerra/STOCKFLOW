@@ -1,0 +1,155 @@
+name: Deploy to Cliente AWS (Ferreira Costa - suprimentos.fcxlabs.com)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - name: Run Go tests
+        run: go test ./...
+        working-directory: backend
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        run: npm ci
+        working-directory: frontend
+
+      - name: Run frontend tests
+        run: npm run test
+        working-directory: frontend
+
+  build-images:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (API)
+        id: meta-api
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-api
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha
+
+      - name: Extract metadata (Web)
+        id: meta-web
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-web
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: ${{ steps.meta-api.outputs.tags }}
+          labels: ${{ steps.meta-api.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+      - name: Build and push Web image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: ${{ steps.meta-web.outputs.tags }}
+          labels: ${{ steps.meta-web.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+  deploy-cliente-aws:
+    needs: build-images
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, stockflow]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Sync docker-compose.yml para o deploy
+        run: cp installer/cliente-aws/docker-compose.yml /opt/apps/stockflow/cliente-aws/docker-compose.yml
+
+      - name: Pull latest images from GHCR
+        working-directory: /opt/apps/stockflow/cliente-aws
+        run: docker compose pull
+
+      - name: Run migrations + restart containers
+        working-directory: /opt/apps/stockflow/cliente-aws
+        run: docker compose up -d --force-recreate
+
+      - name: Health check
+        run: |
+          echo "Aguardando sistema iniciar..."
+          WEB_PORT=$(grep '^WEB_PORT=' /opt/apps/stockflow/cliente-aws/.env | cut -d= -f2)
+          WEB_PORT=${WEB_PORT:-3008}
+          for i in $(seq 1 20); do
+            if curl -sf "http://localhost:${WEB_PORT}/api/health" > /dev/null 2>&1; then
+              echo "Deploy OK!"
+              curl -s "http://localhost:${WEB_PORT}/api/health"
+              exit 0
+            fi
+            echo "Tentativa $i/20..."
+            sleep 5
+          done
+          echo "Deploy falhou - health check nao respondeu."
+          docker compose --project-directory /opt/apps/stockflow/cliente-aws logs api --tail 50
+          exit 1
+
+      - name: Notify result
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "Deploy concluido com sucesso!"
+            echo "Commit: ${{ github.sha }}"
+            echo "URL: https://suprimentos.fcxlabs.com"
+          else
+            echo "Deploy falhou. Verifique os logs acima."
+          fi
