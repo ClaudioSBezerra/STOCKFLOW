@@ -1,0 +1,16 @@
+-- Story 3.7: migração de Produtos, Categorias e fotos legadas (AD-15, PRD §9).
+--
+-- dimensoes_pendentes_revisao: coluna JSONB nullable, sem default, que guarda
+-- campo->texto-original para cada dimensão do Produto migrado do legado cujo
+-- texto livre (ex. "cerca de 3 metros") não casou o parser único
+-- valor+unidade (parseDimensaoLegado, cmd/migrate-legado). Guardar o TEXTO
+-- ORIGINAL (não só o nome do campo) é o que dá à futura ferramenta de
+-- Normalização (Epic 6, FR-17/FR-18 — "sugestão identifica produto, campo,
+-- valor sugerido") algo acionável; um TEXT[] de nomes de campo perderia o
+-- dado que motivou a ambiguidade.
+--
+-- Dimensão ambígua NUNCA bloqueia a migração do Produto (AC1 desta story):
+-- as colunas estruturadas `{campo}_valor`/`{campo}_unidade` (migration
+-- 000011) ficam NULL para o campo ambíguo, e o texto original entra aqui,
+-- ex. `{"comprimento": "cerca de 3 metros"}`.
+ALTER TABLE produtos ADD COLUMN dimensoes_pendentes_revisao JSONB;

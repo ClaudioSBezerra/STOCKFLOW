@@ -131,6 +131,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	// FOTOS_DIR (Story 3.5/3.7): mesmo diretório lido pelo processo `api`
+	// (backend/main.go) para gravar fotos de Produto — nunca base64 no
+	// banco. Sem valor, mesmo default `./fotos` (dev local) usado pelo `api`.
+	fotosDir := os.Getenv("FOTOS_DIR")
+	if fotosDir == "" {
+		fotosDir = "./fotos"
+	}
+	if err := os.MkdirAll(fotosDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "erro: falha ao criar FOTOS_DIR (%s): %v\n", fotosDir, err)
+		os.Exit(1)
+	}
+
 	res, err := migrarEstoques(alvo, legado, *executar)
 	if err != nil {
 		switch {
@@ -166,6 +178,77 @@ func main() {
 	} else {
 		fmt.Fprintf(os.Stdout, "dry-run (nada escrito): migraria %d, já migrados %d, conflitos %d\n",
 			res.Migrados, res.JaMigrados, len(res.Conflitos))
+	}
+
+	// migrarProdutos roda SEMPRE depois de migrarEstoques na mesma execução
+	// (Story 3.7, spec-3-7): um erro em migrarEstoques já interrompeu antes
+	// de chegar aqui (o os.Exit(1) acima). Produtos legados referenciam
+	// Estoques pelo nome (addendum §F) — migrarEstoques precisa ter rodado
+	// primeiro para que a pré-checagem de Estoque desconhecido tenha o que
+	// casar.
+	resProdutos, err := migrarProdutos(alvo, legado, fotosDir, *executar)
+	if err != nil {
+		switch {
+		case len(resProdutos.NomesInvalidos) > 0:
+			fmt.Fprintln(os.Stderr, "erro: Produtos legados com nome inválido — corte abortado, nada foi escrito.")
+			fmt.Fprintln(os.Stderr, "Corrija os registros abaixo no banco legado antes de rodar de novo:")
+			for _, n := range resProdutos.NomesInvalidos {
+				fmt.Fprintf(os.Stderr, "    id_legado=%s  motivo: %s\n", n.IDLegado, n.Motivo)
+			}
+		case len(resProdutos.CategoriasDesconhecidas) > 0:
+			fmt.Fprintln(os.Stderr, "erro: Produtos legados com categoria sem correspondência em categorias.nome — corte abortado, nada foi escrito.")
+			fmt.Fprintln(os.Stderr, "Corrija os registros abaixo no banco legado (ou a lista de categorias) antes de rodar de novo:")
+			for _, c := range resProdutos.CategoriasDesconhecidas {
+				fmt.Fprintf(os.Stderr, "    id_legado=%s  categoria=%q\n", c.IDLegado, c.Categoria)
+			}
+		case len(resProdutos.EstoquesDesconhecidos) > 0:
+			fmt.Fprintln(os.Stderr, "erro: Produtos legados referenciam Estoques sem correspondência em estoques.nome_normalizado — corte abortado, nada foi escrito.")
+			fmt.Fprintln(os.Stderr, "Confirme se migrarEstoques já rodou e corrija os registros abaixo antes de rodar de novo:")
+			for _, e := range resProdutos.EstoquesDesconhecidos {
+				fmt.Fprintf(os.Stderr, "    id_legado=%s  estoque=%q\n", e.IDLegado, e.NomeEstoque)
+			}
+		case len(resProdutos.QuantidadesInvalidas) > 0:
+			fmt.Fprintln(os.Stderr, "erro: Produtos legados com quantidade de estoque inválida (negativa ou não-numérica) — corte abortado, nada foi escrito.")
+			for _, q := range resProdutos.QuantidadesInvalidas {
+				fmt.Fprintf(os.Stderr, "    id_legado=%s  estoque=%q  quantidade=%v  motivo: %s\n", q.IDLegado, q.NomeEstoque, q.Quantidade, q.Motivo)
+			}
+		case len(resProdutos.EstoquesColisaoNoProduto) > 0:
+			fmt.Fprintln(os.Stderr, "erro: Produtos legados com nomes de Estoque que colidem no mesmo Estoque do alvo dentro da própria linha — corte abortado, nada foi escrito.")
+			for _, c := range resProdutos.EstoquesColisaoNoProduto {
+				fmt.Fprintf(os.Stderr, "    id_legado=%s  nomes=%v\n", c.IDLegado, c.Nomes)
+			}
+		case len(resProdutos.CodigosDuplicadosLegado) > 0:
+			fmt.Fprintln(os.Stderr, "erro: códigos de Produto repetidos dentro do próprio lote legado — corte abortado, nada foi escrito.")
+			for _, c := range resProdutos.CodigosDuplicadosLegado {
+				fmt.Fprintf(os.Stderr, "    codigo=%q  ids_legado=%v\n", c.Codigo, c.IDs)
+			}
+		case len(resProdutos.CodigosColisaoAlvo) > 0:
+			fmt.Fprintln(os.Stderr, "erro: códigos de Produto legado já existem em produtos no banco alvo, fora do mapa — corte abortado, nada foi escrito.")
+			for _, c := range resProdutos.CodigosColisaoAlvo {
+				fmt.Fprintf(os.Stderr, "    id_legado=%s  codigo=%q\n", c.IDLegado, c.Codigo)
+			}
+		default:
+			// Diferente de migrarEstoques (uma transação para o lote
+			// inteiro), migrarProdutos usa uma transação POR LINHA — uma
+			// falha aqui (ex. backstop 23505) pode deixar linhas ANTERIORES
+			// desta mesma execução já commitadas. resProdutos.Migrados conta
+			// só o que este código do agente já processou.
+			fmt.Fprintf(os.Stderr, "erro: %v (Migrados=%d antes da falha — transação de Produtos é por linha, não por lote: linhas já commitadas nesta execução permanecem migradas)\n", err, resProdutos.Migrados)
+		}
+		os.Exit(1)
+	}
+
+	if *executar {
+		fmt.Fprintf(os.Stdout, "corte aplicado (produtos): Migrados=%d, JaMigrados=%d\n", resProdutos.Migrados, resProdutos.JaMigrados)
+		if len(resProdutos.FotosComFalha) > 0 {
+			fmt.Fprintf(os.Stdout, "atenção: %d foto(s) não puderam ser processadas (produto migrado sem foto, reenvio manual necessário):\n", len(resProdutos.FotosComFalha))
+			for _, f := range resProdutos.FotosComFalha {
+				fmt.Fprintf(os.Stdout, "    id_legado=%s  motivo: %s\n", f.IDLegado, f.Motivo)
+			}
+		}
+	} else {
+		fmt.Fprintf(os.Stdout, "dry-run (nada escrito, produtos): migraria %d, já migrados %d\n",
+			resProdutos.Migrados, resProdutos.JaMigrados)
 	}
 }
 

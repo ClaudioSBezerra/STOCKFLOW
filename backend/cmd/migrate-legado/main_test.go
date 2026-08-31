@@ -90,6 +90,30 @@ func testDB(t *testing.T) (alvo, legado *sql.DB) {
 		t.Fatalf("falha ao relaxar NOT NULL em legado.estoques.nome: %v", err)
 	}
 
+	// legado.produtos — Story 3.7 (spec-3-7). Fixture com todas as colunas
+	// documentadas no addendum §F: `id` textual (doc id do Firestore),
+	// `estoques` como map nome->quantidade (jsonb), e as 5 dimensões reais
+	// mais `lateral` como texto livre (o schema-alvo não tem par
+	// lateral_valor/lateral_unidade — precedente da Story 3.1).
+	if _, err := alvo.Exec(`CREATE TABLE IF NOT EXISTS legado.produtos (
+		id text primary key,
+		nome text,
+		codigo text,
+		categoria text,
+		comprimento text,
+		largura text,
+		diametro text,
+		altura text,
+		espessura text,
+		"lateral" text,
+		obs text,
+		foto text,
+		estoques jsonb,
+		criado_em timestamptz
+	)`); err != nil {
+		t.Fatalf("falha ao criar legado.produtos: %v", err)
+	}
+
 	legado, err = sql.Open("postgres", comSearchPath(dsn, "legado"))
 	if err != nil {
 		t.Fatalf("falha ao abrir conexão legado: %v", err)
@@ -107,8 +131,17 @@ func testDB(t *testing.T) (alvo, legado *sql.DB) {
 func limparTabelas(t *testing.T, alvo *sql.DB) {
 	t.Helper()
 	for _, stmt := range []string{
+		// legado.produtos e produto_estoque/produtos ANTES de
+		// legado.estoques/migracao_id_map/estoques: produto_estoque.produto_id
+		// referencia produtos(id) SEM CASCADE (migration 000012) — precisa ser
+		// esvaziada antes de um DELETE FROM produtos não esbarrar na FK.
+		// categorias/nomenclatura_templates NUNCA são limpas aqui — seed
+		// compartilhado com outras suítes (spec-3-7, Boundaries).
+		`DELETE FROM legado.produtos`,
 		`DELETE FROM legado.estoques`,
+		`DELETE FROM produto_estoque`,
 		`DELETE FROM migracao_id_map`,
+		`DELETE FROM produtos`,
 		`DELETE FROM estoques`,
 	} {
 		if _, err := alvo.Exec(stmt); err != nil {

@@ -63,7 +63,7 @@ development_status:
   3-4-importação-atualiza-por-código-não-só-cria: done
   3-5-upload-e-armazenamento-de-foto-do-produto: done
   3-6-galeria-e-visualização-ampliada-de-fotos-lightbox: done
-  3-7-migração-de-produtos-categorias-e-fotos-legadas: backlog
+  3-7-migração-de-produtos-categorias-e-fotos-legadas: awaiting-operator
   epic-3-retrospective: optional
 
   epic-4: backlog
