@@ -297,6 +297,14 @@ func CriarProduto(db *sql.DB, input CriarProdutoInput) (Produto, error) {
 		if errors.As(err, &pqErr) && (pqErr.Code == pqForeignKeyViolation || pqErr.Code == pqInvalidTextRepresentation) {
 			return Produto{}, &ErroProdutoValidacao{Mensagem: "categoria informada não existe"}
 		}
+		// Violação do índice único parcial `idx_produtos_codigo` (migration
+		// 000017, Story 3.4): `código` já não-nulo em outro Produto. A
+		// importação (services/importacoes.go) depende dessa unicidade para
+		// que o match por código de processarProximaLinha seja determinístico
+		// — o cadastro manual passa a respeitar a mesma regra.
+		if errors.As(err, &pqErr) && pqErr.Code == pqUniqueViolation {
+			return Produto{}, &ErroProdutoValidacao{Mensagem: "código já cadastrado"}
+		}
 		return Produto{}, fmt.Errorf("falha ao inserir produto: %w", err)
 	}
 

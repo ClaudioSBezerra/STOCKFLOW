@@ -85,7 +85,7 @@ func cabecalhoValido(linhas [][]string) bool {
 // progresso incremental — mesmo precedente das Stories 3.1/3.2).
 //
 // `201 {"importacao":{"id","status","total_linhas","proxima_linha_pendente"},
-// "relatorio":{"criados","rejeitados","linhas_rejeitadas":[{"linha","erro"}]}}`
+// "relatorio":{"criados","atualizados","rejeitados","linhas_rejeitadas":[{"linha","erro"}]}}`
 // no sucesso — mesmo no caso em que toda linha foi rejeitada (a importação em
 // si sempre "teve sucesso" em processar o arquivo; o relatório é que
 // discrimina). Cabeçalho fora do padrão, arquivo que não abre no excelize,

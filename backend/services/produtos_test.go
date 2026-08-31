@@ -510,6 +510,51 @@ func TestCriarProduto_CodigoAcimaDe255Caracteres(t *testing.T) {
 	}
 }
 
+// TestCriarProduto_CodigoJaCadastrado prova a Story 3.4 (spec-3-4): o índice
+// único parcial `idx_produtos_codigo` (migration 000017) barra um segundo
+// Produto com o mesmo `código` não-nulo — CriarProduto mapeia a violação de
+// unicidade (SQLSTATE 23505) para ErroProdutoValidacao "código já
+// cadastrado", nunca um 500 genérico; nenhum Produto novo é gravado.
+func TestCriarProduto_CodigoJaCadastrado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Codigo Duplicado")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+
+	_, err = CriarProduto(db, CriarProdutoInput{
+		Nome:              "Produto Codigo Original",
+		Codigo:            "SKU-DUP-MANUAL",
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		QuantidadeInicial: 1,
+	})
+	if err != nil {
+		t.Fatalf("seed CriarProduto (primeiro): %v", err)
+	}
+
+	_, err = CriarProduto(db, CriarProdutoInput{
+		Nome:              "Produto Codigo Repetido",
+		Codigo:            "SKU-DUP-MANUAL",
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		QuantidadeInicial: 1,
+	})
+	var erroValidacao *ErroProdutoValidacao
+	if !errors.As(err, &erroValidacao) {
+		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
+	}
+	if !strings.Contains(erroValidacao.Mensagem, "código já cadastrado") {
+		t.Errorf("mensagem = %q, want citar %q", erroValidacao.Mensagem, "código já cadastrado")
+	}
+	if n := contarProdutos(t, db); n != 1 {
+		t.Errorf("linhas em produtos = %d, want 1 (só o original, o segundo não foi gravado)", n)
+	}
+}
+
 // TestCriarProduto_NomeInvalido prova a validação de `nome`: vazio após o
 // trim -> ErroProdutoValidacao, nada gravado.
 func TestCriarProduto_NomeInvalido(t *testing.T) {

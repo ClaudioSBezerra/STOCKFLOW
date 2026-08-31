@@ -1,7 +1,19 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { ImportacaoProdutosSection } from './ImportacaoProdutosSection';
+
+// `ImportacaoProdutosSection` usa `<Link>` (react-router-dom) no CTA
+// "Verificar duplicatas agora" (Story 3.4, spec-3-4) — precisa de um Router
+// no ar, mesmo padrão de EsqueciSenhaPage.test.tsx/RedefinirSenhaPage.test.tsx.
+function renderComponente() {
+  return render(
+    <MemoryRouter>
+      <ImportacaoProdutosSection />
+    </MemoryRouter>,
+  );
+}
 
 const toastSuccess = vi.hoisted(() => vi.fn());
 vi.mock('sonner', () => ({ toast: { success: toastSuccess } }));
@@ -44,7 +56,7 @@ describe('ImportacaoProdutosSection — banner de retomada', () => {
       if (url === '/api/importacoes/ultima') return jsonOk(SEM_IMPORTACAO_ANTERIOR);
       throw new Error(`URL inesperada: ${url}`);
     });
-    render(<ImportacaoProdutosSection />);
+    renderComponente();
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/importacoes/ultima', expect.anything()));
     expect(screen.queryByText(/Continuar de onde parou/)).not.toBeInTheDocument();
@@ -62,7 +74,7 @@ describe('ImportacaoProdutosSection — banner de retomada', () => {
         });
       throw new Error(`URL inesperada: ${url}`);
     });
-    render(<ImportacaoProdutosSection />);
+    renderComponente();
 
     expect(await screen.findByText(/Última importação parou na linha 7 de 10\./)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Continuar importação' })).toBeInTheDocument();
@@ -77,7 +89,7 @@ describe('ImportacaoProdutosSection — banner de retomada', () => {
         });
       throw new Error(`URL inesperada: ${url}`);
     });
-    render(<ImportacaoProdutosSection />);
+    renderComponente();
 
     await waitFor(() => expect(fetch).toHaveBeenCalled());
     expect(screen.queryByText(/Continuar de onde parou/)).not.toBeInTheDocument();
@@ -95,7 +107,7 @@ describe('ImportacaoProdutosSection — banner de retomada', () => {
         });
       throw new Error(`URL inesperada: ${url}`);
     });
-    render(<ImportacaoProdutosSection />);
+    renderComponente();
 
     await waitFor(() => expect(fetch).toHaveBeenCalled());
     expect(screen.queryByText(/Continuar de onde parou/)).not.toBeInTheDocument();
@@ -120,19 +132,21 @@ describe('ImportacaoProdutosSection — banner de retomada', () => {
       if (url === '/api/importacoes/imp-1/continuar' && init?.method === 'POST') {
         return jsonOk({
           importacao: { id: 'imp-1', status: 'concluida', total_linhas: 5, proxima_linha_pendente: null },
-          relatorio: { criados: 5, rejeitados: 0, linhas_rejeitadas: [] },
+          relatorio: { criados: 4, atualizados: 1, rejeitados: 0, linhas_rejeitadas: [] },
         });
       }
       throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
     });
     const user = userEvent.setup();
-    render(<ImportacaoProdutosSection />);
+    renderComponente();
 
     await screen.findByText(/Última importação parou na linha 4 de 5\./);
     await user.click(screen.getByRole('button', { name: 'Continuar importação' }));
 
     await waitFor(() =>
-      expect(toastSuccess).toHaveBeenCalledWith('Importação concluída: 5 criado(s), 0 rejeitado(s).'),
+      expect(toastSuccess).toHaveBeenCalledWith(
+        'Importação concluída: 4 criado(s), 1 atualizado(s), 0 rejeitado(s).',
+      ),
     );
     expect(screen.queryByText(/Continuar de onde parou/)).not.toBeInTheDocument();
     expect(chamada(fetchMock, '/api/importacoes/imp-1/continuar', 'POST')).toBeTruthy();
@@ -157,7 +171,7 @@ describe('ImportacaoProdutosSection — botões mutuamente exclusivos', () => {
       throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
     });
     const user = userEvent.setup();
-    render(<ImportacaoProdutosSection />);
+    renderComponente();
     await screen.findByText(/Última importação parou na linha 3 de 5\./);
 
     const botaoImportar = screen.getByRole('button', { name: 'Importar planilha' });
@@ -177,7 +191,7 @@ describe('ImportacaoProdutosSection — botões mutuamente exclusivos', () => {
       ok: true,
       json: async () => ({
         importacao: { id: 'imp-1', status: 'concluida', total_linhas: 5, proxima_linha_pendente: null },
-        relatorio: { criados: 5, rejeitados: 0, linhas_rejeitadas: [] },
+        relatorio: { criados: 5, atualizados: 0, rejeitados: 0, linhas_rejeitadas: [] },
       }),
     });
 
@@ -195,7 +209,7 @@ describe('ImportacaoProdutosSection — upload da planilha', () => {
       if (url === '/api/importacoes/ultima') return jsonOk(SEM_IMPORTACAO_ANTERIOR);
       throw new Error(`URL inesperada: ${url}`);
     });
-    render(<ImportacaoProdutosSection />);
+    renderComponente();
 
     expect(screen.getByRole('button', { name: 'Importar planilha' })).toBeDisabled();
   });
@@ -208,6 +222,7 @@ describe('ImportacaoProdutosSection — upload da planilha', () => {
           importacao: { id: 'imp-2', status: 'concluida', total_linhas: 2 },
           relatorio: {
             criados: 1,
+            atualizados: 0,
             rejeitados: 1,
             linhas_rejeitadas: [{ linha: 3, erro: 'categoria "Inexistente" não encontrada' }],
           },
@@ -216,7 +231,7 @@ describe('ImportacaoProdutosSection — upload da planilha', () => {
       throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
     });
     const user = userEvent.setup();
-    render(<ImportacaoProdutosSection />);
+    renderComponente();
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/importacoes/ultima', expect.anything()));
 
     const arquivo = new File(['conteudo-fake'], 'planilha.xlsx', {
@@ -227,10 +242,13 @@ describe('ImportacaoProdutosSection — upload da planilha', () => {
     await user.click(screen.getByRole('button', { name: 'Importar planilha' }));
 
     await waitFor(() =>
-      expect(toastSuccess).toHaveBeenCalledWith('Importação concluída: 1 criado(s), 1 rejeitado(s).'),
+      expect(toastSuccess).toHaveBeenCalledWith(
+        'Importação concluída: 1 criado(s), 0 atualizado(s), 1 rejeitado(s).',
+      ),
     );
     expect(screen.getByText('3')).toBeInTheDocument();
     expect(screen.getByText('categoria "Inexistente" não encontrada')).toBeInTheDocument();
+    expect(screen.getByText(/1 criado\(s\), 0 atualizado\(s\), 1 rejeitado\(s\)\./)).toBeInTheDocument();
 
     const chamadaPost = chamada(fetchMock, '/api/importacoes', 'POST');
     expect(chamadaPost).toBeTruthy();
@@ -254,7 +272,7 @@ describe('ImportacaoProdutosSection — upload da planilha', () => {
       throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
     });
     const user = userEvent.setup();
-    render(<ImportacaoProdutosSection />);
+    renderComponente();
     await waitFor(() => expect(fetch).toHaveBeenCalled());
 
     const arquivo = new File(['ruim'], 'ruim.xlsx');
@@ -274,7 +292,7 @@ describe('ImportacaoProdutosSection — upload da planilha', () => {
       throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
     });
     const user = userEvent.setup();
-    render(<ImportacaoProdutosSection />);
+    renderComponente();
     await waitFor(() => expect(fetch).toHaveBeenCalled());
 
     const arquivo = new File(['x'], 'planilha.xlsx');
@@ -284,5 +302,43 @@ describe('ImportacaoProdutosSection — upload da planilha', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Não foi possível importar a planilha agora. Tente novamente em instantes.',
     );
+  });
+});
+
+describe('ImportacaoProdutosSection — relatório com atualizados e CTA de duplicatas (Story 3.4)', () => {
+  it('sem relatório ainda (nenhum envio feito): CTA "Verificar duplicatas agora" não aparece', async () => {
+    stubFetch((url) => {
+      if (url === '/api/importacoes/ultima') return jsonOk(SEM_IMPORTACAO_ANTERIOR);
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    renderComponente();
+
+    await waitFor(() => expect(fetch).toHaveBeenCalled());
+    expect(screen.queryByRole('link', { name: 'Verificar duplicatas agora' })).not.toBeInTheDocument();
+  });
+
+  it('após envio com sucesso: mostra criados/atualizados/rejeitados e o CTA aponta para /normalizacao', async () => {
+    stubFetch((url, init) => {
+      if (url === '/api/importacoes/ultima') return jsonOk(SEM_IMPORTACAO_ANTERIOR);
+      if (url === '/api/importacoes' && init?.method === 'POST') {
+        return jsonOk({
+          importacao: { id: 'imp-3', status: 'concluida', total_linhas: 3 },
+          relatorio: { criados: 1, atualizados: 2, rejeitados: 0, linhas_rejeitadas: [] },
+        });
+      }
+      throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
+    });
+    const user = userEvent.setup();
+    renderComponente();
+    await waitFor(() => expect(fetch).toHaveBeenCalled());
+
+    const arquivo = new File(['conteudo'], 'planilha.xlsx');
+    await user.upload(screen.getByLabelText('Planilha (.xlsx)'), arquivo);
+    await user.click(screen.getByRole('button', { name: 'Importar planilha' }));
+
+    expect(await screen.findByText('1 criado(s), 2 atualizado(s), 0 rejeitado(s).')).toBeInTheDocument();
+    const cta = screen.getByRole('link', { name: 'Verificar duplicatas agora' });
+    expect(cta).toBeInTheDocument();
+    expect(cta).toHaveAttribute('href', '/normalizacao');
   });
 });

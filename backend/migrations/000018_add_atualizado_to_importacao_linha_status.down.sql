@@ -1,0 +1,5 @@
+-- no-op: o Postgres não suporta `DROP VALUE` de um enum (nenhuma sintaxe
+-- reverte um `ALTER TYPE ... ADD VALUE`). Reverter esta migration de verdade
+-- exigiria recriar o tipo inteiro sem o valor 'atualizado' e migrar a coluna
+-- `importacao_linhas.status`, incluindo qualquer linha que já esteja gravada
+-- com esse valor — fora do escopo desta story (spec-3-4).

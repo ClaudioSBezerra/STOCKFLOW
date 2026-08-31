@@ -1,0 +1,12 @@
+-- Story 3.4: importação atualiza por código, não só cria (FR-11).
+--
+-- A migration 000011 (Story 3.1) já deixou `produtos.codigo` sem unicidade,
+-- de propósito, com o comentário "Story 3.4 decide o comportamento de
+-- 'atualiza por código'". Esta é essa decisão: um índice único PARCIAL (só
+-- sobre `codigo IS NOT NULL` — `codigo` continua opcional, e múltiplos
+-- Produtos sem código nunca colidem entre si) torna o match por código de
+-- `processarProximaLinha` (services/importacoes.go) determinístico — no
+-- máximo um Produto por `código` não-nulo — e estende a mesma regra ao
+-- cadastro manual (services.CriarProduto, que passa a mapear a violação de
+-- unicidade para ErroProdutoValidacao).
+CREATE UNIQUE INDEX idx_produtos_codigo ON produtos (codigo) WHERE codigo IS NOT NULL;

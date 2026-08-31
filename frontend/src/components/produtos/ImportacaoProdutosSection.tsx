@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { toast } from 'sonner';
+import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -7,7 +8,8 @@ import { Label } from '@/components/ui/label';
 import { getAccessToken } from '@/lib/session';
 
 /**
- * Seção "Importação" da `CatalogoPage` (Story 3.3, spec-3-3), visível só a
+ * Seção "Importação" da `CatalogoPage` (Story 3.3, spec-3-3; Story 3.4,
+ * spec-3-4 acrescenta `atualizados` e o CTA de duplicatas), visível só a
  * `almoxarife`+ (gate na própria página, mesmo padrão de
  * `CadastroProdutoSection`). Um `Card` com:
  *
@@ -17,15 +19,18 @@ import { getAccessToken } from '@/lib/session';
  *   Continuar de onde parou?" com um botão que chama
  *   `POST /api/importacoes/{id}/continuar`. `N` é `proxima_linha_pendente`
  *   devolvido pelo backend (o número REAL da linha na planilha, cabeçalho =
- *   1) — NUNCA `criados+rejeitados`: `numero_linha` começa em 2 e tem gaps
- *   (linhas em branco descartadas antes de gravar), então uma contagem de
- *   processadas nunca aponta pra célula certa ao reabrir o arquivo original.
+ *   1) — NUNCA `criados+atualizados+rejeitados`: `numero_linha` começa em 2 e
+ *   tem gaps (linhas em branco descartadas antes de gravar), então uma
+ *   contagem de processadas nunca aponta pra célula certa ao reabrir o
+ *   arquivo original.
  * - Formulário de upload: `<input type="file" accept=".xlsx">` + submit
  *   envia `FormData` (campo `planilha`) para `POST /api/importacoes` com
  *   header `Authorization` — SEM `Content-Type` manual, o browser define o
  *   boundary do multipart sozinho.
- * - Relatório do envio mais recente: contagem de criados/rejeitados e, se
- *   houver, uma tabela "linha/erro" das linhas rejeitadas.
+ * - Relatório do envio mais recente: contagem de criados/atualizados/
+ *   rejeitados, um CTA "Verificar duplicatas agora" (`/normalizacao`, rota já
+ *   cadastrada no nav — hoje `PlaceholderPage`, Epic 6 ainda não existe) e,
+ *   se houver, uma tabela "linha/erro" das linhas rejeitadas.
  *
  * "Importar planilha" e "Continuar importação" são mutuamente exclusivos —
  * os dois escrevem no mesmo estado de relatório exibido, então os dois
@@ -43,11 +48,11 @@ interface ImportacaoResumo {
   status: string;
   total_linhas: number;
   // Número REAL da linha (cabeçalho = 1) mais antiga ainda pendente/
-  // processando, ou `null` quando não sobra nenhuma. `criados+rejeitados`
-  // NUNCA é um substituto válido para este valor: `numero_linha` começa em 2
-  // e tem gaps (linhas em branco são descartadas antes de gravar), então uma
-  // simples contagem de processadas nunca aponta pra célula certa da
-  // planilha original.
+  // processando, ou `null` quando não sobra nenhuma.
+  // `criados+atualizados+rejeitados` NUNCA é um substituto válido para este
+  // valor: `numero_linha` começa em 2 e tem gaps (linhas em branco são
+  // descartadas antes de gravar), então uma simples contagem de processadas
+  // nunca aponta pra célula certa da planilha original.
   proxima_linha_pendente: number | null;
 }
 
@@ -58,6 +63,10 @@ interface LinhaRejeitada {
 
 interface RelatorioImportacao {
   criados: number;
+  // Linhas cujo código já casou com um Produto existente (Story 3.4,
+  // spec-3-4): o Produto é atualizado, não duplicado — nunca soma em
+  // `criados`.
+  atualizados: number;
   rejeitados: number;
   linhas_rejeitadas: LinhaRejeitada[];
 }
@@ -145,7 +154,7 @@ export function ImportacaoProdutosSection() {
       const body = (await res.json()) as RespostaImportacao;
       setRelatorio(body.relatorio);
       toast.success(
-        `Importação concluída: ${body.relatorio.criados} criado(s), ${body.relatorio.rejeitados} rejeitado(s).`,
+        `Importação concluída: ${body.relatorio.criados} criado(s), ${body.relatorio.atualizados} atualizado(s), ${body.relatorio.rejeitados} rejeitado(s).`,
       );
       setArquivo(null);
       setInputKey((k) => k + 1);
@@ -176,7 +185,7 @@ export function ImportacaoProdutosSection() {
       const body = (await res.json()) as RespostaImportacao;
       setRelatorio(body.relatorio);
       toast.success(
-        `Importação concluída: ${body.relatorio.criados} criado(s), ${body.relatorio.rejeitados} rejeitado(s).`,
+        `Importação concluída: ${body.relatorio.criados} criado(s), ${body.relatorio.atualizados} atualizado(s), ${body.relatorio.rejeitados} rejeitado(s).`,
       );
       await consultarUltima();
     } catch {
@@ -237,8 +246,18 @@ export function ImportacaoProdutosSection() {
         {relatorio && (
           <div className="flex flex-col gap-2">
             <p className="text-body">
-              {relatorio.criados} criado(s), {relatorio.rejeitados} rejeitado(s).
+              {relatorio.criados} criado(s), {relatorio.atualizados} atualizado(s),{' '}
+              {relatorio.rejeitados} rejeitado(s).
             </p>
+            {/*
+              CTA "Verificar duplicatas agora" (Story 3.4, spec-3-4): só
+              navega para `/normalizacao` (rota já cadastrada no nav,
+              PlaceholderPage até o Epic 6 existir) — nenhuma análise é
+              disparada por este link, escopo estritamente fora desta story.
+            */}
+            <Button asChild variant="outline" className="self-start">
+              <Link to="/normalizacao">Verificar duplicatas agora</Link>
+            </Button>
             {relatorio.linhas_rejeitadas.length > 0 && (
               <div className="overflow-x-auto">
                 <table className="w-full text-body">

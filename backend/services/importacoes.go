@@ -14,19 +14,37 @@ import (
 )
 
 // Handlers de Importação em massa via planilha padronizada (Story 3.3,
-// spec-3-3). Reaproveita, do mesmo pacote `services`, `validarDimensao`/
-// `unidadesDimensaoValidas`/`limiteNumeric103`/`limiteNumeric103Texto`
-// (produtos.go) e `pqInvalidTextRepresentation`/`ErrEstoqueValidacao`
-// (estoques.go) — nenhum dos dois arquivos é alterado por esta story.
+// spec-3-3) e atualização por código (Story 3.4, spec-3-4). Reaproveita, do
+// mesmo pacote `services`, `validarDimensao`/`unidadesDimensaoValidas`/
+// `limiteNumeric103`/`limiteNumeric103Texto`/`nomeValidoParaTemplate`
+// (produtos.go/nomenclatura.go) e `pqInvalidTextRepresentation`/
+// `ErrEstoqueValidacao` (estoques.go) — nenhum dos três arquivos é alterado
+// por esta story além do branch de unicidade em produtos.go/CriarProduto.
 //
-// `pqForeignKeyViolation`/`pqUniqueViolation` (também de estoques.go/
-// produtos.go) NÃO são referenciadas aqui, de propósito: `categoria_id` é
-// resolvido por SELECT e `estoque_id` por encontrarOuCriarEstoque, os dois
-// DENTRO da mesma transação e IMEDIATAMENTE antes dos INSERTs em
-// `produtos`/`produto_estoque` — quando esses INSERTs rodam, as duas FKs já
-// foram comprovadas válidas na mesma transação, então uma violação de FK ou
-// de unicidade nesse ponto não é um caminho praticamente alcançável (viraria
-// erro de infraestrutura genérico via `%w`, não um caso dedicado).
+// `pqForeignKeyViolation` (estoques.go/produtos.go) NÃO é referenciada aqui,
+// de propósito: `categoria_id` é resolvido por SELECT e `estoque_id` por
+// encontrarOuCriarEstoque, os dois DENTRO da mesma transação e IMEDIATAMENTE
+// antes dos INSERTs/UPDATEs em `produtos`/`produto_estoque` — quando essas
+// escritas rodam, as duas FKs já foram comprovadas válidas na mesma
+// transação, então uma violação de FK nesse ponto não é um caminho
+// praticamente alcançável (viraria erro de infraestrutura genérico via
+// `%w`, não um caso dedicado). O `UPDATE produtos` do ramo de atualização
+// também não pode violar `idx_produtos_codigo` (migration 000017): o Produto
+// encontrado já É o dono daquele `código` (é assim que foi encontrado), então
+// `codigo` sempre volta gravado com o mesmo valor que já tinha.
+//
+// `pqUniqueViolation` (auth.go) JÁ É referenciada aqui, também de propósito
+// (review pass pós-implementação): o caminho de CRIAÇÃO de
+// processarProximaLinha pode perder uma corrida contra outra transação
+// concorrente inserindo o MESMO código novo (duas linhas da mesma leva
+// disputando um código ainda inexistente, cada uma reivindicada por uma
+// chamada concorrente de continuar — `FOR UPDATE SKIP LOCKED` deixa as duas
+// avançarem). A segunda a tentar `INSERT INTO produtos` esbarra em
+// `idx_produtos_codigo`; em vez de abortar a linha inteira como erro de
+// infraestrutura, um `SAVEPOINT` antes do INSERT permite recuperar a
+// transação (`ROLLBACK TO SAVEPOINT`) e delegar essa linha para o mesmo
+// caminho de atualização que um match por código bem-sucedido usaria — ver
+// o comentário do SAVEPOINT em processarProximaLinha.
 //
 // O cabeçalho fixo da planilha É VALIDADO PELO HANDLER
 // (handlers/importacoes.go), não aqui: `CriarImportacao` assume `linhas[0]`
@@ -106,7 +124,13 @@ type LinhaRejeitada struct {
 // quando devolvido no meio de uma importação `em_andamento`
 // (GET /api/importacoes/ultima antes de continuar).
 type RelatorioImportacao struct {
-	Criados          int              `json:"criados"`
+	Criados int `json:"criados"`
+	// Atualizados conta as linhas cujo `código` casou com um Produto já
+	// existente (Story 3.4, FR-11) — o Produto é sobrescrito com os valores
+	// da linha, nunca duplicado. NUNCA soma em Criados, mesmo quando o
+	// `UPDATE` não muda nenhum valor observável (roda de qualquer forma,
+	// sem diff prévio contra o estado anterior).
+	Atualizados      int              `json:"atualizados"`
 	Rejeitados       int              `json:"rejeitados"`
 	LinhasRejeitadas []LinhaRejeitada `json:"linhas_rejeitadas"`
 }
@@ -340,6 +364,8 @@ func montarRelatorio(db *sql.DB, importacaoID string) (RelatorioImportacao, erro
 		switch status {
 		case "criado":
 			relatorio.Criados = n
+		case "atualizado":
+			relatorio.Atualizados = n
 		case "rejeitada":
 			relatorio.Rejeitados = n
 		}
@@ -491,6 +517,21 @@ func processarProximaLinha(db *sql.DB, importacaoID string) (bool, error) {
 		return false, fmt.Errorf("falha ao resolver categoria da linha %d: %w", numeroLinha, err)
 	}
 
+	// Match por código (Story 3.4, FR-11): só quando a linha traz um código
+	// não-vazio — vazio sempre segue para o caminho de criação abaixo, sem
+	// nenhuma busca (nunca casa por `nome`). `codigo = $1` é determinístico
+	// graças ao índice único parcial `idx_produtos_codigo` (migration
+	// 000017): no máximo uma linha em `produtos` pode ter esse `código`.
+	if validada.codigo.Valid {
+		produtoExistenteID, produtoExistenteTemplateID, encontrado, err := buscarProdutoPorCodigo(tx, validada.codigo.String)
+		if err != nil {
+			return false, fmt.Errorf("falha ao buscar produto existente por código da linha %d: %w", numeroLinha, err)
+		}
+		if encontrado {
+			return processarLinhaDeAtualizacao(tx, linhaID, numeroLinha, validada, categoriaID, produtoExistenteID, produtoExistenteTemplateID)
+		}
+	}
+
 	estoque, err := encontrarOuCriarEstoque(tx, validada.estoqueNome)
 	if errors.Is(err, ErrEstoqueValidacao) {
 		return true, rejeitarECommitar(tx, linhaID, numeroLinha, err.Error())
@@ -509,6 +550,27 @@ func processarProximaLinha(db *sql.DB, importacaoID string) (bool, error) {
 			espessura_valor, espessura_unidade
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		RETURNING id`
+	// SAVEPOINT antes do INSERT (Story 3.4, review pass): protege contra a
+	// corrida "duas linhas da mesma leva com o mesmo código NOVO, processadas
+	// por duas transações concorrentes" (ex. duas chamadas sobrepostas de
+	// POST /api/importacoes/{id}/continuar — FOR UPDATE SKIP LOCKED deixa
+	// cada uma reivindicar uma linha diferente). As duas fazem o match por
+	// código acima (linha ~508) e as duas erram (nenhuma commitou ainda), daí
+	// as duas caem neste caminho de criação; a segunda a chegar aqui esbarra
+	// em `idx_produtos_codigo` (migration 000017) ao tentar commitar o mesmo
+	// código. Sem SAVEPOINT, um erro de instrução deixa a transação INTEIRA
+	// "aborted" no Postgres — nenhum outro comando funciona depois disso,
+	// nem o re-SELECT que resolveria a corrida. `ROLLBACK TO SAVEPOINT`
+	// desfaz só o INSERT que falhou, devolvendo a transação a um estado
+	// utilizável para buscar o Produto que a transação vencedora acabou de
+	// commitar (agora visível) e delegar para o ramo de atualização — mesmo
+	// Produto, sem duplicar e sem abortar a linha inteira como erro de
+	// infraestrutura (mesma ideia do "duas instruções separadas" de
+	// encontrarOuCriarEstoque, adaptada aqui com SAVEPOINT porque a segunda
+	// instrução aqui precisa rodar DENTRO da mesma transação já iniciada).
+	if _, err := tx.Exec(`SAVEPOINT sp_insert_produto`); err != nil {
+		return false, fmt.Errorf("falha ao criar savepoint antes de inserir produto da linha %d: %w", numeroLinha, err)
+	}
 	var produtoID string
 	err = tx.QueryRow(insertProduto,
 		validada.nome, validada.codigo, categoriaID, validada.observacoes,
@@ -519,6 +581,23 @@ func processarProximaLinha(db *sql.DB, importacaoID string) (bool, error) {
 		validada.espessuraValor, validada.espessuraUnidade,
 	).Scan(&produtoID)
 	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == pqUniqueViolation {
+			if _, errRollback := tx.Exec(`ROLLBACK TO SAVEPOINT sp_insert_produto`); errRollback != nil {
+				return false, fmt.Errorf("falha ao reverter savepoint da linha %d: %w", numeroLinha, errRollback)
+			}
+			produtoExistenteID, produtoExistenteTemplateID, encontrado, errBusca := buscarProdutoPorCodigo(tx, validada.codigo.String)
+			if errBusca != nil {
+				return false, fmt.Errorf("falha ao buscar produto após corrida de código na linha %d: %w", numeroLinha, errBusca)
+			}
+			if !encontrado {
+				// Inalcançável na prática: a própria violação de unicidade
+				// prova que já existe uma linha commitada com esse código.
+				// Defesa em profundidade contra um estado inconsistente.
+				return false, fmt.Errorf("violação de unicidade de código na linha %d, mas produto não encontrado na re-busca", numeroLinha)
+			}
+			return processarLinhaDeAtualizacao(tx, linhaID, numeroLinha, validada, categoriaID, produtoExistenteID, produtoExistenteTemplateID)
+		}
 		return false, fmt.Errorf("falha ao inserir produto da linha %d: %w", numeroLinha, err)
 	}
 
@@ -540,9 +619,119 @@ func processarProximaLinha(db *sql.DB, importacaoID string) (bool, error) {
 	return true, nil
 }
 
+// buscarProdutoPorCodigo busca o Produto (id + template_id) cujo `codigo`
+// bate exatamente com `codigo` (já trimado, não-vazio) — usado tanto pelo
+// match inicial de processarProximaLinha (Story 3.4, FR-11) quanto pela
+// re-busca depois de uma corrida perdida no INSERT do caminho de criação
+// (violação de `idx_produtos_codigo`, ver o comentário do SAVEPOINT em
+// processarProximaLinha). `encontrado=false` (sql.ErrNoRows) nunca é erro —
+// significa "nenhum Produto com esse código ainda", que o chamador trata
+// como sinal para seguir o caminho de criação.
+func buscarProdutoPorCodigo(tx *sql.Tx, codigo string) (id string, templateID sql.NullString, encontrado bool, err error) {
+	const selectProdutoPorCodigo = `SELECT id, template_id FROM produtos WHERE codigo = $1`
+	err = tx.QueryRow(selectProdutoPorCodigo, codigo).Scan(&id, &templateID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", sql.NullString{}, false, nil
+	}
+	if err != nil {
+		return "", sql.NullString{}, false, err
+	}
+	return id, templateID, true, nil
+}
+
+// processarLinhaDeAtualizacao é o ramo de UPDATE de processarProximaLinha
+// (Story 3.4, FR-11): chamado quando o `código` da linha já casou com um
+// Produto existente (`produtoExistenteID`), dentro da MESMA transação de
+// reivindicação da linha. Nunca chama AtualizarNomeProduto (produtos.go) —
+// escreve via UPDATE próprio, mas replica a MESMA regra de revalidação de
+// template que aquela função aplica (Story 3.2): um `template_id` NÃO-nulo no
+// Produto encontrado exige que `validada.nome` case o formato desse template,
+// senão a linha é rejeitada e o Produto não é tocado.
+//
+// Sucesso: sobrescreve TODOS os campos que a planilha carrega (nome, código,
+// categoria, observações, as 5 dimensões) — `template_id` NUNCA é tocado, o
+// que já estava no Produto sobrevive. Também faz upsert em `produto_estoque`
+// (`ON CONFLICT (produto_id, estoque_id) DO UPDATE SET quantidade =
+// EXCLUDED.quantidade` — substitui, nunca soma, e só no par Produto/Estoque
+// desta linha; outros pares do mesmo Produto com outros Estoques ficam
+// intactos). Marca a linha `atualizado` (nunca `criado`) e commita.
+//
+// ORDEM DELIBERADA: o Estoque da linha é resolvido (encontrarOuCriarEstoque)
+// ANTES do `UPDATE produtos` — nunca depois. Um nome de Estoque inválido
+// rejeita a linha via `rejeitarECommitar`, que COMMITA a transação; se o
+// `UPDATE produtos` já tivesse rodado antes dessa checagem, esse commit
+// gravaria a atualização do Produto mesmo com a linha terminando `rejeitada`
+// (violando a garantia desta função: "o Produto não é alterado" numa
+// rejeição). Mesma ordem do caminho de criação em processarProximaLinha, que
+// resolve o Estoque antes do `INSERT INTO produtos` pelo mesmo motivo.
+func processarLinhaDeAtualizacao(
+	tx *sql.Tx, linhaID string, numeroLinha int, validada linhaValidada,
+	categoriaID string, produtoExistenteID string, produtoExistenteTemplateID sql.NullString,
+) (bool, error) {
+	if produtoExistenteTemplateID.Valid {
+		var templateTexto string
+		const selectTemplate = `SELECT template FROM nomenclatura_templates WHERE id = $1`
+		if err := tx.QueryRow(selectTemplate, produtoExistenteTemplateID.String).Scan(&templateTexto); err != nil {
+			return false, fmt.Errorf("falha ao buscar template aplicado ao produto da linha %d: %w", numeroLinha, err)
+		}
+		if !nomeValidoParaTemplate(templateTexto, validada.nome) {
+			return true, rejeitarECommitar(tx, linhaID, numeroLinha, "nome não corresponde ao formato do template aplicado a este produto")
+		}
+	}
+
+	estoque, err := encontrarOuCriarEstoque(tx, validada.estoqueNome)
+	if errors.Is(err, ErrEstoqueValidacao) {
+		return true, rejeitarECommitar(tx, linhaID, numeroLinha, err.Error())
+	}
+	if err != nil {
+		return false, fmt.Errorf("falha ao encontrar/criar estoque da linha %d: %w", numeroLinha, err)
+	}
+
+	const updateProduto = `
+		UPDATE produtos SET
+			nome = $1, codigo = $2, categoria_id = $3, observacoes = $4,
+			comprimento_valor = $5, comprimento_unidade = $6,
+			largura_valor = $7, largura_unidade = $8,
+			diametro_valor = $9, diametro_unidade = $10,
+			altura_valor = $11, altura_unidade = $12,
+			espessura_valor = $13, espessura_unidade = $14
+		WHERE id = $15`
+	if _, err := tx.Exec(updateProduto,
+		validada.nome, validada.codigo, categoriaID, validada.observacoes,
+		validada.comprimentoValor, validada.comprimentoUnidade,
+		validada.larguraValor, validada.larguraUnidade,
+		validada.diametroValor, validada.diametroUnidade,
+		validada.alturaValor, validada.alturaUnidade,
+		validada.espessuraValor, validada.espessuraUnidade,
+		produtoExistenteID,
+	); err != nil {
+		return false, fmt.Errorf("falha ao atualizar produto da linha %d: %w", numeroLinha, err)
+	}
+
+	const upsertProdutoEstoque = `
+		INSERT INTO produto_estoque (produto_id, estoque_id, quantidade)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (produto_id, estoque_id) DO UPDATE SET quantidade = EXCLUDED.quantidade`
+	if _, err := tx.Exec(upsertProdutoEstoque, produtoExistenteID, estoque.ID, validada.quantidade); err != nil {
+		return false, fmt.Errorf("falha ao upsert produto_estoque da linha %d: %w", numeroLinha, err)
+	}
+
+	const marcarAtualizada = `UPDATE importacao_linhas SET status = 'atualizado', produto_id = $1 WHERE id = $2`
+	if _, err := tx.Exec(marcarAtualizada, produtoExistenteID, linhaID); err != nil {
+		return false, fmt.Errorf("falha ao marcar linha %d como atualizada: %w", numeroLinha, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("falha ao commitar atualização da linha %d: %w", numeroLinha, err)
+	}
+	return true, nil
+}
+
 // rejeitarECommitar marca `linhaID` como `rejeitada` com `motivo` e commita a
-// transação — usado pelos 3 ramos de rejeição de processarProximaLinha
-// (campo inválido, categoria não encontrada, nome de Estoque inválido).
+// transação — usado pelos ramos de rejeição de processarProximaLinha (campo
+// inválido, categoria não encontrada, nome de Estoque inválido) e de
+// processarLinhaDeAtualizacao (Story 3.4: nome fora do formato do template
+// aplicado, nome de Estoque inválido).
 func rejeitarECommitar(tx *sql.Tx, linhaID string, numeroLinha int, motivo string) error {
 	const rejeitar = `UPDATE importacao_linhas SET status = 'rejeitada', erro = $1 WHERE id = $2`
 	if _, err := tx.Exec(rejeitar, motivo, linhaID); err != nil {

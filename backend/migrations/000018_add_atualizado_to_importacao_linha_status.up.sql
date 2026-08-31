@@ -1,0 +1,16 @@
+-- Story 3.4: importação atualiza por código, não só cria (FR-11).
+--
+-- Novo valor `atualizado` do enum `importacao_linha_status` (000016): marca
+-- uma linha cujo `código` casou com um Produto já existente e por isso
+-- disparou um UPDATE nele, em vez de um INSERT novo — nunca conta em
+-- `criados` no relatório agregado (services.montarRelatorio).
+--
+-- ESTA MIGRATION FICA SOZINHA NO ARQUIVO, DE PROPÓSITO: o Postgres não
+-- permite usar um valor de enum recém-adicionado dentro da MESMA transação
+-- em que ele foi criado (mesmo a partir do Postgres 12, que passou a
+-- permitir `ALTER TYPE ... ADD VALUE` dentro de uma transação). Como
+-- golang-migrate executa cada arquivo de migration dentro de uma única
+-- transação, qualquer outra instrução neste arquivo que tentasse gravar
+-- `'atualizado'` falharia. Nenhuma outra instrução deste arquivo referencia
+-- esse valor.
+ALTER TYPE importacao_linha_status ADD VALUE 'atualizado';
