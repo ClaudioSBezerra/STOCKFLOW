@@ -2,6 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronDown, ChevronRight, LayoutGrid, Table2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { getAccessToken } from '@/lib/session';
 import {
   formatarQuantidade,
@@ -39,11 +42,27 @@ import {
  * distintos (mesmo nome+dimensões, categorias diferentes), sem um único `id`
  * de destino — a discriminação por Estoque ao expandir já cobre essa
  * necessidade sem depender do detalhe.
+ *
+ * Filtros combináveis (Story 4.2, spec-4-2): prop `termo` (já trimado,
+ * repassado por `CatalogoPage` a partir de `BuscaCatalogo`, debounçado lá) +
+ * 3 controles próprios — `<Select>` de categoria, `<Select>` de Estoque
+ * (opções carregadas uma vez no mount de `GET /api/categorias`/`GET
+ * /api/estoques`; falha de qualquer um dos dois degrada silenciosamente para
+ * só a opção sentinela "Todas"/"Todos", nunca bloqueia a listagem em si) e
+ * `Checkbox` "Com estoque disponível". Os 4 filtros (`q`, `categoriaId`,
+ * `estoqueId`, `comEstoque`) combinam sempre por E lógico na query string.
+ * Qualquer mudança de filtro OU do `termo` (prop) volta `pagina` para 1 e
+ * redispara o `fetch` (mesmo padrão de `alternarModo`).
  */
 
 interface CategoriaCatalogo {
   id: string;
   codigo: string;
+  nome: string;
+}
+
+interface EstoqueFiltro {
+  id: string;
   nome: string;
 }
 
@@ -87,12 +106,30 @@ const MENSAGEM_ERRO = 'Não foi possível carregar o catálogo. Tente novamente 
 const MENSAGEM_VAZIO = 'Nenhum produto no catálogo.';
 const MENSAGEM_SEM_ESTOQUE_REGISTRADO = 'Sem quantidade registrada por estoque.';
 
+// SEM_CATEGORIA/SEM_ESTOQUE são os valores sentinela das opções "Todas as
+// categorias"/"Todos os Estoques" — Radix `Select.Item` proíbe `value=""`
+// (usado internamente para representar "nada selecionado"), mesmo padrão
+// `SEM_TEMPLATE` de CadastroProdutoSection.
+const SEM_CATEGORIA = '__todas-categorias__';
+const SEM_ESTOQUE = '__todos-estoques__';
+
 function authHeaders(): Record<string, string> {
   const token = getAccessToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-export function CatalogoListagem() {
+interface FiltrosAtivos {
+  categoriaId: string;
+  estoqueId: string;
+  comEstoque: boolean;
+  termo: string;
+}
+
+interface CatalogoListagemProps {
+  termo?: string;
+}
+
+export function CatalogoListagem({ termo = '' }: CatalogoListagemProps = {}) {
   const [modo, setModo] = useState<Modo>('grade');
   // Estado inicial derivado direto do matchMedia (não de um setState no
   // efeito): o alternador só existe em >=768px. O efeito abaixo só mantém
@@ -104,6 +141,14 @@ export function CatalogoListagem() {
       window.matchMedia(MEDIA_QUERY).matches,
   );
   const [pagina, setPagina] = useState(1);
+
+  // Filtros (Story 4.2, spec-4-2): '' = sem filtro de categoria/Estoque
+  // (opção sentinela "Todas"/"Todos" selecionada).
+  const [categoriaId, setCategoriaId] = useState('');
+  const [estoqueId, setEstoqueId] = useState('');
+  const [comEstoque, setComEstoque] = useState(false);
+  const [categorias, setCategorias] = useState<CategoriaCatalogo[]>([]);
+  const [estoques, setEstoques] = useState<EstoqueFiltro[]>([]);
 
   const [itens, setItens] = useState<CatalogoItem[]>([]);
   const [grupos, setGrupos] = useState<CatalogoGrupo[]>([]);
@@ -136,16 +181,30 @@ export function CatalogoListagem() {
     return () => mql.removeEventListener?.('change', aoMudarViewport);
   }, []);
 
-  const carregar = useCallback(async (modoAtual: Modo, paginaAtual: number) => {
+  // carregar recebe modo/página/filtros como parâmetros explícitos (não lidos
+  // de closure) — mesmo cuidado contra stale closure já usado neste
+  // componente; os efeitos abaixo passam sempre os valores atuais de state.
+  const carregar = useCallback(async (modoAtual: Modo, paginaAtual: number, filtrosAtuais: FiltrosAtivos) => {
     const seq = ++seqRef.current;
     setCarregando(true);
     setErro(false);
     try {
       const agrupar = modoAtual === 'tabela';
-      const res = await fetch(
-        `/api/produtos/catalogo?agrupar=${agrupar}&pagina=${paginaAtual}`,
-        { headers: authHeaders() },
-      );
+      let query = `agrupar=${agrupar}&pagina=${paginaAtual}`;
+      const termoTrimado = filtrosAtuais.termo.trim();
+      if (termoTrimado !== '') {
+        query += `&q=${encodeURIComponent(termoTrimado)}`;
+      }
+      if (filtrosAtuais.categoriaId !== '') {
+        query += `&categoriaId=${encodeURIComponent(filtrosAtuais.categoriaId)}`;
+      }
+      if (filtrosAtuais.estoqueId !== '') {
+        query += `&estoqueId=${encodeURIComponent(filtrosAtuais.estoqueId)}`;
+      }
+      if (filtrosAtuais.comEstoque) {
+        query += `&comEstoque=true`;
+      }
+      const res = await fetch(`/api/produtos/catalogo?${query}`, { headers: authHeaders() });
       if (seq !== seqRef.current) {
         return;
       }
@@ -181,17 +240,90 @@ export function CatalogoListagem() {
     }
   }, []);
 
+  // Ajusta `pagina` para 1 quando `termo` (prop) muda — DURANTE o render,
+  // não num `useEffect` (padrão recomendado do React para "ajustar estado
+  // quando uma prop muda": https://react.dev/learn/you-might-not-need-an-effect).
+  // `termo` chega via prop (não por um setState local como os outros
+  // filtros), então não dá para resetar `pagina` no mesmo evento que o
+  // alterou (mesmo padrão batched de `alternarModo`); ajustar aqui, antes do
+  // commit, evita tanto um efeito dedicado quanto uma chamada extra a
+  // `carregar` com a combinação errada (página velha + termo novo) que um
+  // `useEffect([termo])` separado produziria.
+  const [termoAnterior, setTermoAnterior] = useState(termo);
+  if (termo !== termoAnterior) {
+    setTermoAnterior(termo);
+    setPagina(1);
+  }
+
   useEffect(() => {
     void (async () => {
-      await carregar(modo, pagina);
+      await carregar(modo, pagina, { categoriaId, estoqueId, comEstoque, termo });
     })();
-  }, [carregar, modo, pagina]);
+  }, [carregar, modo, pagina, categoriaId, estoqueId, comEstoque, termo]);
+
+  // Carrega as listas de categoria/Estoque uma vez no mount para popular os
+  // dois `<Select>` de filtro (mesmo padrão de
+  // CadastroProdutoSection.carregarListas) — falha de qualquer um dos dois
+  // degrada silenciosamente SÓ NAQUELE campo (o `<Select>` correspondente
+  // mostra só a opção sentinela "Todas"/"Todos"), nunca bloqueia a listagem
+  // em si NEM o outro `<Select>`. As duas buscas usam `try/catch`
+  // independentes (não `Promise.all` num único bloco) de propósito: com
+  // `Promise.all`, uma falha de rede isolada em SÓ UM dos dois endpoints
+  // rejeitaria a promise combinada e derrubaria os DOIS `<Select>` para a
+  // opção sentinela, mesmo quando o outro respondeu com sucesso — achado
+  // pelo Blind Hunter na revisão desta story.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetch('/api/categorias', { headers: authHeaders() });
+        if (res.ok) {
+          const body = (await res.json()) as { categorias?: CategoriaCatalogo[] };
+          setCategorias(Array.isArray(body.categorias) ? body.categorias : []);
+        }
+      } catch {
+        // Falha de rede isolada em categorias — degrada silenciosamente
+        // (Always, spec-4-2): a listagem e o Select de Estoque não dependem
+        // dela.
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetch('/api/estoques', { headers: authHeaders() });
+        if (res.ok) {
+          const body = (await res.json()) as { estoques?: EstoqueFiltro[] };
+          setEstoques(Array.isArray(body.estoques) ? body.estoques : []);
+        }
+      } catch {
+        // Falha de rede isolada em Estoques — degrada silenciosamente
+        // (Always, spec-4-2): a listagem e o Select de categoria não
+        // dependem dela.
+      }
+    })();
+  }, []);
 
   function alternarModo(novoModo: Modo) {
     if (novoModo === modo) {
       return;
     }
     setModo(novoModo);
+    setPagina(1);
+  }
+
+  function aoMudarCategoria(valor: string) {
+    setCategoriaId(valor === SEM_CATEGORIA ? '' : valor);
+    setPagina(1);
+  }
+
+  function aoMudarEstoque(valor: string) {
+    setEstoqueId(valor === SEM_ESTOQUE ? '' : valor);
+    setPagina(1);
+  }
+
+  function aoMudarComEstoque(estado: boolean | 'indeterminate') {
+    setComEstoque(estado === true);
     setPagina(1);
   }
 
@@ -238,6 +370,55 @@ export function CatalogoListagem() {
           </Button>
         </div>
       )}
+
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="flex flex-col gap-1">
+          <Label htmlFor="catalogo-filtro-categoria" className="text-label text-muted-foreground">
+            Categoria
+          </Label>
+          <Select value={categoriaId === '' ? SEM_CATEGORIA : categoriaId} onValueChange={aoMudarCategoria}>
+            <SelectTrigger id="catalogo-filtro-categoria" className="min-h-touch-target-min">
+              <SelectValue placeholder="Todas as categorias" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={SEM_CATEGORIA}>Todas as categorias</SelectItem>
+              {categorias.map((categoria) => (
+                <SelectItem key={categoria.id} value={categoria.id}>
+                  {categoria.nome}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <Label htmlFor="catalogo-filtro-estoque" className="text-label text-muted-foreground">
+            Estoque
+          </Label>
+          <Select value={estoqueId === '' ? SEM_ESTOQUE : estoqueId} onValueChange={aoMudarEstoque}>
+            <SelectTrigger id="catalogo-filtro-estoque" className="min-h-touch-target-min">
+              <SelectValue placeholder="Todos os Estoques" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={SEM_ESTOQUE}>Todos os Estoques</SelectItem>
+              {estoques.map((estoque) => (
+                <SelectItem key={estoque.id} value={estoque.id}>
+                  {estoque.nome}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="flex min-h-touch-target-min items-center gap-2">
+          <Checkbox
+            id="catalogo-filtro-com-estoque"
+            checked={comEstoque}
+            onCheckedChange={aoMudarComEstoque}
+          />
+          <Label htmlFor="catalogo-filtro-com-estoque">Com estoque disponível</Label>
+        </div>
+      </div>
 
       {erro && (
         <p role="alert" className="text-body text-destructive">

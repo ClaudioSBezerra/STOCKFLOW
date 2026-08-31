@@ -3,6 +3,7 @@ package handlers
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1143,6 +1144,256 @@ func TestListarCatalogoHandler_200ParaUsuario(t *testing.T) {
 	w := getProdutosCatalogo(db, "Bearer "+token, "agrupar=false&pagina=1")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d (body=%s) — rota não deveria exigir RequireRole", w.Code, http.StatusOK, w.Body.String())
+	}
+}
+
+// --- Story 4.2: Filtros por categoria, estoque e disponibilidade ----------
+
+// catalogoRespostaProdutos decodifica o envelope `{"produtos":[...],"paginacao":{...}}`
+// devolvido por GET /api/produtos/catalogo (agrupar=false) para os testes de
+// filtro do handler.
+type catalogoRespostaProdutos struct {
+	Produtos []struct {
+		ID   string `json:"id"`
+		Nome string `json:"nome"`
+	} `json:"produtos"`
+	Paginacao struct {
+		Total int `json:"total"`
+	} `json:"paginacao"`
+}
+
+func decodeCatalogoProdutos(t *testing.T, w *httptest.ResponseRecorder) catalogoRespostaProdutos {
+	t.Helper()
+	var resp catalogoRespostaProdutos
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	return resp
+}
+
+// TestListarCatalogoHandler_FiltroCategoriaIsolado prova a linha "Filtro por
+// categoria isolado" da matriz via HTTP: `?categoriaId=<id>` -> 200 só com
+// Produtos dessa categoria.
+func TestListarCatalogoHandler_FiltroCategoriaIsolado(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	civil := categoriaIDPorCodigoHandler(t, db, "04.001")
+	eletrico := categoriaIDPorCodigoHandler(t, db, "04.002")
+	criarContaComPapel(t, db, "Catalogo FiltroCat", "catalogo-filtrocat@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "catalogo-filtrocat@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Canteiro Handler FiltroCat")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	seedProdutoCatalogoHandler(t, db, estoque.ID, "Cimento", civil, 1)
+	seedProdutoCatalogoHandler(t, db, estoque.ID, "Cabo Flexível", eletrico, 1)
+
+	w := getProdutosCatalogo(db, "Bearer "+token, "categoriaId="+civil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+	resp := decodeCatalogoProdutos(t, w)
+	if resp.Paginacao.Total != 1 || len(resp.Produtos) != 1 || resp.Produtos[0].Nome != "Cimento" {
+		t.Fatalf("resp = %+v, want só 'Cimento'", resp)
+	}
+}
+
+// TestListarCatalogoHandler_FiltroEstoqueIsolado prova a linha "Filtro por
+// Estoque isolado" da matriz via HTTP.
+func TestListarCatalogoHandler_FiltroEstoqueIsolado(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	criarContaComPapel(t, db, "Catalogo FiltroEst", "catalogo-filtroest@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "catalogo-filtroest@empresa.com", "senha-123456")
+
+	estA, err := services.CriarEstoque(db, "Estoque Handler FiltroEst A")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque A: %v", err)
+	}
+	estB, err := services.CriarEstoque(db, "Estoque Handler FiltroEst B")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque B: %v", err)
+	}
+	seedProdutoCatalogoHandler(t, db, estA.ID, "Só em A", categoriaID, 0)
+	seedProdutoCatalogoHandler(t, db, estB.ID, "Só em B", categoriaID, 5)
+
+	w := getProdutosCatalogo(db, "Bearer "+token, "estoqueId="+estA.ID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+	resp := decodeCatalogoProdutos(t, w)
+	if resp.Paginacao.Total != 1 || len(resp.Produtos) != 1 || resp.Produtos[0].Nome != "Só em A" {
+		t.Fatalf("resp = %+v, want só 'Só em A' (linha existe, quantidade 0 não importa)", resp)
+	}
+}
+
+// TestListarCatalogoHandler_FiltroComEstoqueIsolado prova a linha "Filtro
+// 'Com estoque' isolado" da matriz via HTTP.
+func TestListarCatalogoHandler_FiltroComEstoqueIsolado(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	criarContaComPapel(t, db, "Catalogo FiltroDisp", "catalogo-filtrodisp@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "catalogo-filtrodisp@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Canteiro Handler FiltroDisp")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	seedProdutoCatalogoHandler(t, db, estoque.ID, "Disponível", categoriaID, 3)
+	seedProdutoCatalogoHandler(t, db, estoque.ID, "Zerado", categoriaID, 0)
+
+	w := getProdutosCatalogo(db, "Bearer "+token, "comEstoque=true")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+	resp := decodeCatalogoProdutos(t, w)
+	if resp.Paginacao.Total != 1 || len(resp.Produtos) != 1 || resp.Produtos[0].Nome != "Disponível" {
+		t.Fatalf("resp = %+v, want só 'Disponível'", resp)
+	}
+}
+
+// TestListarCatalogoHandler_TodosFiltrosCombinados prova a linha "Todos os
+// filtros + q combinados" da matriz via HTTP: os 4 juntos (E lógico).
+func TestListarCatalogoHandler_TodosFiltrosCombinados(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	outraCategoria := categoriaIDPorCodigoHandler(t, db, "04.002")
+	criarContaComPapel(t, db, "Catalogo FiltroTodos", "catalogo-filtrotodos@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "catalogo-filtrotodos@empresa.com", "senha-123456")
+
+	estAlvo, err := services.CriarEstoque(db, "Estoque Handler Alvo Todos")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque alvo: %v", err)
+	}
+	estOutro, err := services.CriarEstoque(db, "Estoque Handler Outro Todos")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque outro: %v", err)
+	}
+	alvo := seedProdutoCatalogoHandler(t, db, estAlvo.ID, "Parafuso Sextavado", categoriaID, 10)
+	seedProdutoCatalogoHandler(t, db, estAlvo.ID, "Parafuso Allen", outraCategoria, 10)
+	seedProdutoCatalogoHandler(t, db, estOutro.ID, "Parafuso Philips", categoriaID, 10)
+	seedProdutoCatalogoHandler(t, db, estAlvo.ID, "Arruela Lisa", categoriaID, 10)
+
+	query := fmt.Sprintf("q=paraf&categoriaId=%s&estoqueId=%s&comEstoque=true", categoriaID, estAlvo.ID)
+	w := getProdutosCatalogo(db, "Bearer "+token, query)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+	resp := decodeCatalogoProdutos(t, w)
+	if resp.Paginacao.Total != 1 || len(resp.Produtos) != 1 || resp.Produtos[0].ID != alvo {
+		t.Fatalf("resp = %+v, want só %q (Parafuso Sextavado)", resp, alvo)
+	}
+}
+
+// TestListarCatalogoHandler_400ComEstoqueInvalido prova a linha "comEstoque
+// inválido" da matriz: qualquer valor fora de {true,false,ausente} -> 400
+// VALIDATION_ERROR "parâmetro comEstoque inválido".
+func TestListarCatalogoHandler_400ComEstoqueInvalido(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Catalogo ComEstInv", "catalogo-comestinv@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "catalogo-comestinv@empresa.com", "senha-123456")
+
+	for _, comEstoque := range []string{"talvez", "1", "TRUE", "yes"} {
+		w := getProdutosCatalogo(db, "Bearer "+token, "comEstoque="+comEstoque)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("comEstoque=%q: status = %d, want %d (body=%s)", comEstoque, w.Code, http.StatusBadRequest, w.Body.String())
+		}
+		env := decodeErro(t, w.Body.Bytes())
+		if env.Error.Code != "VALIDATION_ERROR" || env.Error.Message != "parâmetro comEstoque inválido" {
+			t.Errorf("comEstoque=%q: erro = %+v, want VALIDATION_ERROR / 'parâmetro comEstoque inválido'", comEstoque, env.Error)
+		}
+	}
+}
+
+// TestListarCatalogoHandler_400QMuitoLongo prova a linha "q maior que 255
+// runes" da matriz: mesmo teto/mensagem de BuscarProdutosHandler.
+func TestListarCatalogoHandler_400QMuitoLongo(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Catalogo QLongo", "catalogo-qlongo@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "catalogo-qlongo@empresa.com", "senha-123456")
+
+	termo := strings.Repeat("a", 256)
+	w := getProdutosCatalogo(db, "Bearer "+token, "q="+termo)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "VALIDATION_ERROR" || env.Error.Message != "termo de busca muito longo" {
+		t.Errorf("erro = %+v, want VALIDATION_ERROR / 'termo de busca muito longo'", env.Error)
+	}
+}
+
+// TestListarCatalogoHandler_200VazioParaIDMalformado prova a linha
+// "categoriaId/estoqueId malformado (não-UUID)" da matriz via HTTP: NUNCA
+// 500, sempre 200 com lista vazia.
+func TestListarCatalogoHandler_200VazioParaIDMalformado(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	criarContaComPapel(t, db, "Catalogo IDMalformado", "catalogo-idmalformado@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "catalogo-idmalformado@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Canteiro Handler IDMalformado")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	seedProdutoCatalogoHandler(t, db, estoque.ID, "Qualquer", categoriaID, 1)
+
+	for _, query := range []string{"categoriaId=abc", "estoqueId=xyz"} {
+		w := getProdutosCatalogo(db, "Bearer "+token, query)
+		if w.Code != http.StatusOK {
+			t.Fatalf("query=%q: status = %d, want %d (body=%s)", query, w.Code, http.StatusOK, w.Body.String())
+		}
+		resp := decodeCatalogoProdutos(t, w)
+		if resp.Paginacao.Total != 0 || len(resp.Produtos) != 0 {
+			t.Errorf("query=%q: resp = %+v, want lista vazia / total 0", query, resp)
+		}
+	}
+}
+
+// TestListarCatalogoHandler_FiltroComAgrupar prova que `agrupar=true`
+// combina com um filtro ponta a ponta pelo HANDLER (não só na camada de
+// serviço, já coberta em catalogo_test.go) — a query string precisa chegar
+// intacta até `ListarCatalogoAgrupado` pelo mesmo caminho de parsing usado
+// no modo grade. Achado pelo Blind Hunter na revisão desta story.
+func TestListarCatalogoHandler_FiltroComAgrupar(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	civil := categoriaIDPorCodigoHandler(t, db, "04.001")
+	eletrico := categoriaIDPorCodigoHandler(t, db, "04.002")
+	criarContaComPapel(t, db, "Catalogo FiltroAgrupar", "catalogo-filtroagrupar@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "catalogo-filtroagrupar@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Canteiro Handler FiltroAgrupar")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	seedProdutoCatalogoHandler(t, db, estoque.ID, "Bucha", civil, 10)
+	seedProdutoCatalogoHandler(t, db, estoque.ID, "Cabo Flexível", eletrico, 10)
+
+	w := getProdutosCatalogo(db, "Bearer "+token, "agrupar=true&categoriaId="+civil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+	var resp struct {
+		Grupos []struct {
+			Nome string `json:"nome"`
+		} `json:"grupos"`
+		Paginacao struct {
+			Total int `json:"total"`
+		} `json:"paginacao"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if resp.Paginacao.Total != 1 || len(resp.Grupos) != 1 || resp.Grupos[0].Nome != "Bucha" {
+		t.Fatalf("resp = %+v, want só o grupo 'Bucha'", resp)
 	}
 }
 

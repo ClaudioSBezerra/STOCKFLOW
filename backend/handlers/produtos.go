@@ -246,10 +246,11 @@ func BuscarProdutosHandler(db *sql.DB) http.HandlerFunc {
 	}
 }
 
-// ListarCatalogoHandler expõe GET /api/produtos/catalogo?agrupar=<>&pagina=<>
-// (Story 4.3, spec-4-3, FR-6): só RequireAuth, qualquer papel (`usuario`+) —
-// sem RequireRole, mesmo padrão de GET /api/produtos/busca / GET
-// /api/categorias.
+// ListarCatalogoHandler expõe GET
+// /api/produtos/catalogo?agrupar=<>&pagina=<>&q=<>&categoriaId=<>&estoqueId=<>&comEstoque=<>
+// (Story 4.3, spec-4-3, FR-6; filtros da Story 4.2, spec-4-2): só
+// RequireAuth, qualquer papel (`usuario`+) — sem RequireRole, mesmo padrão
+// de GET /api/produtos/busca / GET /api/categorias.
 //
 // `pagina`: inteiro >=1; ausente/vazio -> `1`; `0`, negativo ou não-numérico
 // -> `400 VALIDATION_ERROR` "página inválida", NENHUMA consulta ao banco.
@@ -258,6 +259,17 @@ func BuscarProdutosHandler(db *sql.DB) http.HandlerFunc {
 //
 // `agrupar`: só `true`, `false` ou ausente (-> `false`); qualquer outro
 // valor -> `400 VALIDATION_ERROR` "parâmetro agrupar inválido", sem consulta.
+//
+// `q` (Story 4.2): `strings.TrimSpace`; ausente/vazio -> sem filtro de texto.
+// Trimado com mais de 255 runes (mesmo teto de BuscarProdutosHandler) ->
+// `400 VALIDATION_ERROR` "termo de busca muito longo", sem consulta.
+// `categoriaId`/`estoqueId` (Story 4.2): repassados como estão para
+// services.FiltrosCatalogo, sem validação de formato — um valor malformado
+// (não-UUID) colapsa em página vazia no service/banco, nunca um erro aqui.
+// `comEstoque` (Story 4.2): só `true`, `false` ou ausente (-> sem filtro);
+// qualquer outro valor -> `400 VALIDATION_ERROR` "parâmetro comEstoque
+// inválido" (mesmo padrão de `agrupar`), sem consulta. Todos os filtros
+// combinam por E lógico entre si e com `agrupar`/`pagina`.
 //
 // Sucesso `agrupar=false`: `200 {"produtos":[...],"paginacao":{...}}` (grade,
 // um Produto por linha). Sucesso `agrupar=true`: `200
@@ -292,8 +304,33 @@ func ListarCatalogoHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
+		termo := strings.TrimSpace(r.URL.Query().Get("q"))
+		if utf8.RuneCountInString(termo) > 255 {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "termo de busca muito longo")
+			return
+		}
+
+		filtros := services.FiltrosCatalogo{
+			Q:           termo,
+			CategoriaID: r.URL.Query().Get("categoriaId"),
+			EstoqueID:   r.URL.Query().Get("estoqueId"),
+		}
+		switch r.URL.Query().Get("comEstoque") {
+		case "":
+			// ausente -> sem filtro (ComEstoque permanece nil).
+		case "true":
+			v := true
+			filtros.ComEstoque = &v
+		case "false":
+			v := false
+			filtros.ComEstoque = &v
+		default:
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "parâmetro comEstoque inválido")
+			return
+		}
+
 		if agrupar {
-			grupos, paginacao, err := services.ListarCatalogoAgrupado(db, pagina)
+			grupos, paginacao, err := services.ListarCatalogoAgrupado(db, pagina, filtros)
 			if err != nil {
 				slog.Error("falha ao listar catálogo agrupado", "error", err)
 				escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao listar catálogo")
@@ -303,7 +340,7 @@ func ListarCatalogoHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		produtos, paginacao, err := services.ListarCatalogoGrade(db, pagina)
+		produtos, paginacao, err := services.ListarCatalogoGrade(db, pagina, filtros)
 		if err != nil {
 			slog.Error("falha ao listar catálogo", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao listar catálogo")

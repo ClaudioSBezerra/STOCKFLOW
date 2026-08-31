@@ -419,13 +419,21 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 		handlers.BuscarProdutosHandler(db)))
 
 	// Visualização em grade e tabela agrupada do Catálogo — Story 4.3
-	// (FR-6). GET /api/produtos/catalogo leva só RequireAuth, mesmo padrão
-	// de GET /api/produtos/busca: qualquer conta autenticada (`usuario`+),
-	// sem RequireRole. Listagem paginada (`TamanhoPaginaCatalogo` fixo) em
-	// dois modos: `agrupar=false` (grade, um Produto por linha) e
-	// `agrupar=true` (tabela, Produtos de mesmo nome + dimensões colapsados,
-	// com a quantidade discriminada por Estoque para a expansão). `pagina`
-	// inválida / `agrupar` inválido -> 400 VALIDATION_ERROR.
+	// (FR-6), com filtros combináveis por categoria/Estoque/disponibilidade
+	// e busca — Story 4.2 (FR-6). GET /api/produtos/catalogo leva só
+	// RequireAuth, mesmo padrão de GET /api/produtos/busca: qualquer conta
+	// autenticada (`usuario`+), sem RequireRole. Listagem paginada
+	// (`TamanhoPaginaCatalogo` fixo) em dois modos: `agrupar=false` (grade,
+	// um Produto por linha) e `agrupar=true` (tabela, Produtos de mesmo nome
+	// + dimensões colapsados, com a quantidade discriminada por Estoque para
+	// a expansão). 4 query params opcionais, combináveis por E lógico entre
+	// si e com `agrupar`/`pagina`: `q` (substring em nome/código/categoria,
+	// mesmo teto de 255 runes de GET /api/produtos/busca), `categoriaId`,
+	// `estoqueId` (id malformado -> resultado vazio, nunca erro) e
+	// `comEstoque` (`true`/`false`, sempre soma GLOBAL do Produto — nunca
+	// escopado a `estoqueId` na mesma chamada). `pagina` inválida / `agrupar`
+	// inválido / `comEstoque` inválido / `q` muito longo -> 400
+	// VALIDATION_ERROR.
 	mux.HandleFunc("GET /api/produtos/catalogo", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarCatalogoHandler(db)))
 

@@ -71,7 +71,7 @@ func TestListarCatalogoGrade_PaginacaoEOrdem(t *testing.T) {
 		})
 	}
 
-	itens, pag, err := ListarCatalogoGrade(db, 1)
+	itens, pag, err := ListarCatalogoGrade(db, 1, FiltrosCatalogo{})
 	if err != nil {
 		t.Fatalf("ListarCatalogoGrade(1): %v", err)
 	}
@@ -85,7 +85,7 @@ func TestListarCatalogoGrade_PaginacaoEOrdem(t *testing.T) {
 		t.Errorf("ordem = [%q .. %q], want [Produto 00 .. Produto 23]", itens[0].Nome, itens[23].Nome)
 	}
 
-	itens2, pag2, err := ListarCatalogoGrade(db, 2)
+	itens2, pag2, err := ListarCatalogoGrade(db, 2, FiltrosCatalogo{})
 	if err != nil {
 		t.Fatalf("ListarCatalogoGrade(2): %v", err)
 	}
@@ -124,7 +124,7 @@ func TestListarCatalogoGrade_ProdutoSemEstoque(t *testing.T) {
 		EstoqueID: estoque.ID, QuantidadeInicial: 7,
 	})
 
-	itens, pag, err := ListarCatalogoGrade(db, 1)
+	itens, pag, err := ListarCatalogoGrade(db, 1, FiltrosCatalogo{})
 	if err != nil {
 		t.Fatalf("ListarCatalogoGrade: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestListarCatalogoGrade_QuantidadeSomadaEDimensoes(t *testing.T) {
 	})
 	setQuantidade(t, db, id, estoqueB.ID, 5)
 
-	itens, _, err := ListarCatalogoGrade(db, 1)
+	itens, _, err := ListarCatalogoGrade(db, 1, FiltrosCatalogo{})
 	if err != nil {
 		t.Fatalf("ListarCatalogoGrade: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestListarCatalogoGrade_PaginaAlemDaUltima(t *testing.T) {
 		Nome: "Único", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	})
 
-	itens, pag, err := ListarCatalogoGrade(db, 99)
+	itens, pag, err := ListarCatalogoGrade(db, 99, FiltrosCatalogo{})
 	if err != nil {
 		t.Fatalf("ListarCatalogoGrade(99): %v", err)
 	}
@@ -223,7 +223,7 @@ func TestListarCatalogoGrade_CatalogoVazio(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	itens, pag, err := ListarCatalogoGrade(db, 1)
+	itens, pag, err := ListarCatalogoGrade(db, 1, FiltrosCatalogo{})
 	if err != nil {
 		t.Fatalf("ListarCatalogoGrade: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestListarCatalogoAgrupado_AgrupaPorNomeEDimensoes(t *testing.T) {
 	})
 	limparEstoqueDe(t, db, p3)
 
-	grupos, pag, err := ListarCatalogoAgrupado(db, 1)
+	grupos, pag, err := ListarCatalogoAgrupado(db, 1, FiltrosCatalogo{})
 	if err != nil {
 		t.Fatalf("ListarCatalogoAgrupado: %v", err)
 	}
@@ -325,7 +325,7 @@ func TestListarCatalogoAgrupado_DimensoesDistintas(t *testing.T) {
 		Comprimento: &DimensaoInput{Valor: ptrFloat(30), Unidade: ptrStr("mm")},
 	})
 
-	grupos, pag, err := ListarCatalogoAgrupado(db, 1)
+	grupos, pag, err := ListarCatalogoAgrupado(db, 1, FiltrosCatalogo{})
 	if err != nil {
 		t.Fatalf("ListarCatalogoAgrupado: %v", err)
 	}
@@ -362,7 +362,7 @@ func TestListarCatalogoAgrupado_DimensoesTodasNulas(t *testing.T) {
 		Nome: "Cimento", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 50,
 	})
 
-	grupos, pag, err := ListarCatalogoAgrupado(db, 1)
+	grupos, pag, err := ListarCatalogoAgrupado(db, 1, FiltrosCatalogo{})
 	if err != nil {
 		t.Fatalf("ListarCatalogoAgrupado: %v", err)
 	}
@@ -401,7 +401,7 @@ func TestListarCatalogoAgrupado_GrupoSemLinhasDeEstoque(t *testing.T) {
 	limparEstoqueDe(t, db, a)
 	limparEstoqueDe(t, db, b)
 
-	grupos, pag, err := ListarCatalogoAgrupado(db, 1)
+	grupos, pag, err := ListarCatalogoAgrupado(db, 1, FiltrosCatalogo{})
 	if err != nil {
 		t.Fatalf("ListarCatalogoAgrupado: %v", err)
 	}
@@ -442,7 +442,7 @@ func TestListarCatalogoAgrupado_PaginacaoSobreGrupos(t *testing.T) {
 		})
 	}
 
-	g1, pag1, err := ListarCatalogoAgrupado(db, 1)
+	g1, pag1, err := ListarCatalogoAgrupado(db, 1, FiltrosCatalogo{})
 	if err != nil {
 		t.Fatalf("ListarCatalogoAgrupado(1): %v", err)
 	}
@@ -453,7 +453,7 @@ func TestListarCatalogoAgrupado_PaginacaoSobreGrupos(t *testing.T) {
 		t.Errorf("página 1 ordem = [%q .. %q]", g1[0].Nome, g1[23].Nome)
 	}
 
-	g2, pag2, err := ListarCatalogoAgrupado(db, 2)
+	g2, pag2, err := ListarCatalogoAgrupado(db, 2, FiltrosCatalogo{})
 	if err != nil {
 		t.Fatalf("ListarCatalogoAgrupado(2): %v", err)
 	}
@@ -485,7 +485,7 @@ func TestListarCatalogoAgrupado_PaginaAlemDaUltima(t *testing.T) {
 		})
 	}
 
-	grupos, pag, err := ListarCatalogoAgrupado(db, 99)
+	grupos, pag, err := ListarCatalogoAgrupado(db, 99, FiltrosCatalogo{})
 	if err != nil {
 		t.Fatalf("ListarCatalogoAgrupado(99): %v", err)
 	}
@@ -521,7 +521,7 @@ func TestListarCatalogoAgrupado_NomeIgualDimensaoParcialSepara(t *testing.T) {
 		Nome: "Cano", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	})
 
-	grupos, pag, err := ListarCatalogoAgrupado(db, 1)
+	grupos, pag, err := ListarCatalogoAgrupado(db, 1, FiltrosCatalogo{})
 	if err != nil {
 		t.Fatalf("ListarCatalogoAgrupado: %v", err)
 	}
@@ -647,5 +647,458 @@ func TestObterProdutoDetalhe_IDMalformado(t *testing.T) {
 	_, err := ObterProdutoDetalhe(db, "isto-nao-e-um-uuid")
 	if !errors.Is(err, ErrProdutoNaoEncontrado) {
 		t.Fatalf("erro = %v, want ErrProdutoNaoEncontrado", err)
+	}
+}
+
+// --- Story 4.2: Filtros por categoria, estoque e disponibilidade ----------
+
+// TestListarCatalogoGrade_FiltroCategoria prova a linha "Filtro por categoria
+// isolado" da matriz: só Produtos da categoria filtrada aparecem.
+func TestListarCatalogoGrade_FiltroCategoria(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Filtro Categoria")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	civil := categoriaIDPorCodigo(t, db, "04.001")
+	eletrico := categoriaIDPorCodigo(t, db, "04.002")
+
+	criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Cimento", CategoriaID: civil, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+	})
+	criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Cabo Flexível", CategoriaID: eletrico, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+	})
+
+	itens, pag, err := ListarCatalogoGrade(db, 1, FiltrosCatalogo{CategoriaID: civil})
+	if err != nil {
+		t.Fatalf("ListarCatalogoGrade: %v", err)
+	}
+	if pag.Total != 1 || len(itens) != 1 {
+		t.Fatalf("total = %d, len = %d, want 1/1", pag.Total, len(itens))
+	}
+	if itens[0].Nome != "Cimento" {
+		t.Errorf("nome = %q, want Cimento", itens[0].Nome)
+	}
+}
+
+// TestListarCatalogoGrade_FiltroEstoque_LinhaComQuantidadeZero prova a linha
+// "Filtro por Estoque isolado" da matriz: uma linha `produto_estoque` com
+// quantidade 0 ainda casa o filtro — presença de linha, não de saldo.
+func TestListarCatalogoGrade_FiltroEstoque_LinhaComQuantidadeZero(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estA, err := CriarEstoque(db, "Estoque Filtro A")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque A: %v", err)
+	}
+	estB, err := CriarEstoque(db, "Estoque Filtro B")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque B: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+
+	p1 := criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Zerado em A", CategoriaID: categoriaID, EstoqueID: estA.ID, QuantidadeInicial: 0,
+	})
+	criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Só em B", CategoriaID: categoriaID, EstoqueID: estB.ID, QuantidadeInicial: 5,
+	})
+
+	itens, pag, err := ListarCatalogoGrade(db, 1, FiltrosCatalogo{EstoqueID: estA.ID})
+	if err != nil {
+		t.Fatalf("ListarCatalogoGrade: %v", err)
+	}
+	if pag.Total != 1 || len(itens) != 1 {
+		t.Fatalf("total = %d, len = %d, want 1/1", pag.Total, len(itens))
+	}
+	if itens[0].ID != p1 || itens[0].QuantidadeTotal != 0 {
+		t.Errorf("item = %+v, want id %s / quantidadeTotal 0", itens[0], p1)
+	}
+}
+
+// TestListarCatalogoGrade_FiltroComEstoque prova a linha "Filtro 'Com
+// estoque' isolado" da matriz para `true`, e a simetria de teste para
+// `false` (Always: backend suporta `comEstoque=false`, mesmo a UI só
+// expondo a versão "on" do checkbox).
+func TestListarCatalogoGrade_FiltroComEstoque(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Com Estoque")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+
+	criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Disponível", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 3,
+	})
+	semEstoque := criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Zerado", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 0,
+	})
+
+	comEstoqueTrue := true
+	itens, pag, err := ListarCatalogoGrade(db, 1, FiltrosCatalogo{ComEstoque: &comEstoqueTrue})
+	if err != nil {
+		t.Fatalf("ListarCatalogoGrade(true): %v", err)
+	}
+	if pag.Total != 1 || len(itens) != 1 || itens[0].Nome != "Disponível" {
+		t.Fatalf("comEstoque=true -> itens = %+v, total = %d, want só 'Disponível'", itens, pag.Total)
+	}
+
+	comEstoqueFalse := false
+	itens2, pag2, err := ListarCatalogoGrade(db, 1, FiltrosCatalogo{ComEstoque: &comEstoqueFalse})
+	if err != nil {
+		t.Fatalf("ListarCatalogoGrade(false): %v", err)
+	}
+	if pag2.Total != 1 || len(itens2) != 1 || itens2[0].ID != semEstoque {
+		t.Fatalf("comEstoque=false -> itens = %+v, total = %d, want só 'Zerado'", itens2, pag2.Total)
+	}
+}
+
+// TestListarCatalogoGrade_TodosOsFiltrosComQCombinados prova a linha "Todos
+// os filtros + q combinados" da matriz: só o Produto que satisfaz as 4
+// condições simultaneamente (E lógico) sobrevive, mesmo com outros Produtos
+// quase-correspondentes (cada um falhando em exatamente 1 dos 4 critérios).
+func TestListarCatalogoGrade_TodosOsFiltrosComQCombinados(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estAlvo, err := CriarEstoque(db, "Estoque Alvo Combinado")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque alvo: %v", err)
+	}
+	estOutro, err := CriarEstoque(db, "Estoque Outro Combinado")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque outro: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+	outraCategoria := categoriaIDPorCodigo(t, db, "04.002")
+
+	// Único produto que casa TODOS os 4 filtros.
+	alvo := criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Parafuso Sextavado", CategoriaID: categoriaID, EstoqueID: estAlvo.ID, QuantidadeInicial: 10,
+	})
+	// Casa q/estoque/comEstoque, falha na categoria.
+	criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Parafuso Allen", CategoriaID: outraCategoria, EstoqueID: estAlvo.ID, QuantidadeInicial: 10,
+	})
+	// Casa q/categoria/comEstoque, falha no estoque.
+	criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Parafuso Philips", CategoriaID: categoriaID, EstoqueID: estOutro.ID, QuantidadeInicial: 10,
+	})
+	// Casa q/categoria/estoque, falha em comEstoque (zerado em todo lugar).
+	criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Parafuso Fenda", CategoriaID: categoriaID, EstoqueID: estAlvo.ID, QuantidadeInicial: 0,
+	})
+	// Casa categoria/estoque/comEstoque, falha no termo de busca.
+	criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Arruela Lisa", CategoriaID: categoriaID, EstoqueID: estAlvo.ID, QuantidadeInicial: 10,
+	})
+
+	comEstoque := true
+	itens, pag, err := ListarCatalogoGrade(db, 1, FiltrosCatalogo{
+		Q: "paraf", CategoriaID: categoriaID, EstoqueID: estAlvo.ID, ComEstoque: &comEstoque,
+	})
+	if err != nil {
+		t.Fatalf("ListarCatalogoGrade: %v", err)
+	}
+	if pag.Total != 1 || len(itens) != 1 || itens[0].ID != alvo {
+		t.Fatalf("itens = %+v, total = %d, want só %q (Parafuso Sextavado)", itens, pag.Total, alvo)
+	}
+}
+
+// TestListarCatalogoGrade_EstoqueEComEstoqueSemSobreposicao prova a linha
+// "Estoque + 'Com estoque' sem sobreposição" da matriz: `estoqueId` casa uma
+// linha zerada NESSE Estoque; `comEstoque=true` casa a soma GLOBAL (> 0 em
+// outro Estoque) — os dois são independentes, o Produto aparece.
+func TestListarCatalogoGrade_EstoqueEComEstoqueSemSobreposicao(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estFiltrado, err := CriarEstoque(db, "Estoque Filtrado SemSobrep")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque filtrado: %v", err)
+	}
+	estOutro, err := CriarEstoque(db, "Estoque Outro SemSobrep")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque outro: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+
+	produtoID := criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Disperso", CategoriaID: categoriaID, EstoqueID: estFiltrado.ID, QuantidadeInicial: 0,
+	})
+	setQuantidade(t, db, produtoID, estOutro.ID, 5)
+
+	comEstoque := true
+	itens, pag, err := ListarCatalogoGrade(db, 1, FiltrosCatalogo{EstoqueID: estFiltrado.ID, ComEstoque: &comEstoque})
+	if err != nil {
+		t.Fatalf("ListarCatalogoGrade: %v", err)
+	}
+	if pag.Total != 1 || len(itens) != 1 || itens[0].ID != produtoID {
+		t.Fatalf("itens = %+v, total = %d, want só %q", itens, pag.Total, produtoID)
+	}
+	if itens[0].QuantidadeTotal != 5 {
+		t.Errorf("quantidadeTotal = %v, want 5 (soma global, comEstoque NUNCA escopado ao estoqueId filtrado)", itens[0].QuantidadeTotal)
+	}
+}
+
+// TestListarCatalogoGrade_CategoriaEstoqueMalformadosColapsamEmZero prova a
+// linha "categoriaId/estoqueId malformado (não-UUID)" da matriz: nunca um
+// erro (nunca 500), sempre página vazia.
+func TestListarCatalogoGrade_CategoriaEstoqueMalformadosColapsamEmZero(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Malformado Grade")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+	criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Qualquer", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+	})
+
+	itens, pag, err := ListarCatalogoGrade(db, 1, FiltrosCatalogo{CategoriaID: "abc"})
+	if err != nil {
+		t.Fatalf("categoriaId malformado: err = %v, want nil (colapso em zero linhas)", err)
+	}
+	if itens == nil || len(itens) != 0 || pag.Total != 0 {
+		t.Errorf("categoriaId malformado: itens = %v, total = %d, want [] / 0", itens, pag.Total)
+	}
+
+	itens2, pag2, err := ListarCatalogoGrade(db, 1, FiltrosCatalogo{EstoqueID: "xyz"})
+	if err != nil {
+		t.Fatalf("estoqueId malformado: err = %v, want nil (colapso em zero linhas)", err)
+	}
+	if itens2 == nil || len(itens2) != 0 || pag2.Total != 0 {
+		t.Errorf("estoqueId malformado: itens = %v, total = %d, want [] / 0", itens2, pag2.Total)
+	}
+}
+
+// TestListarCatalogoGrade_FiltroQBuscaPorCategoria prova que `q` também casa
+// por `categorias.nome` na grade, mesmos 3 campos de BuscarProdutos (Story
+// 4.1).
+func TestListarCatalogoGrade_FiltroQBuscaPorCategoria(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Q Categoria Grade")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	eletrico := categoriaIDPorCodigo(t, db, "04.002") // "Materiais Elétricos"
+	civil := categoriaIDPorCodigo(t, db, "04.001")
+
+	criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Disjuntor", CategoriaID: eletrico, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+	})
+	criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Cimento", CategoriaID: civil, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+	})
+
+	itens, pag, err := ListarCatalogoGrade(db, 1, FiltrosCatalogo{Q: "Elétric"})
+	if err != nil {
+		t.Fatalf("ListarCatalogoGrade: %v", err)
+	}
+	if pag.Total != 1 || len(itens) != 1 || itens[0].Nome != "Disjuntor" {
+		t.Fatalf("itens = %+v, total = %d, want só 'Disjuntor' (match por categorias.nome)", itens, pag.Total)
+	}
+}
+
+// TestListarCatalogoGrade_PaginacaoSobreConjuntoFiltrado prova que a
+// paginação pagina sobre o CONJUNTO JÁ FILTRADO, não sobre o total sem
+// filtro: 30 Produtos casam o filtro de categoria + 5 não casam;
+// `paginacao.total`/`totalPaginas` refletem só os 30, e a página 2 traz o
+// recorte 25-30 do conjunto filtrado — nenhum Produto da categoria
+// excluída aparece em nenhuma das duas páginas. Achado pelo Blind Hunter na
+// revisão desta story (a numeração dinâmica de placeholders de
+// `LIMIT`/`OFFSET` nunca era exercitada numa página >1 com filtro ativo).
+func TestListarCatalogoGrade_PaginacaoSobreConjuntoFiltrado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Paginacao Filtrada")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	civil := categoriaIDPorCodigo(t, db, "04.001")
+	eletrico := categoriaIDPorCodigo(t, db, "04.002")
+
+	for i := 29; i >= 0; i-- {
+		criarProdutoCat(t, db, CriarProdutoInput{
+			Nome:              fmt.Sprintf("Civil %02d", i),
+			CategoriaID:       civil,
+			EstoqueID:         estoque.ID,
+			QuantidadeInicial: 1,
+		})
+	}
+	for i := 0; i < 5; i++ {
+		criarProdutoCat(t, db, CriarProdutoInput{
+			Nome:              fmt.Sprintf("Eletrico %02d", i),
+			CategoriaID:       eletrico,
+			EstoqueID:         estoque.ID,
+			QuantidadeInicial: 1,
+		})
+	}
+
+	filtros := FiltrosCatalogo{CategoriaID: civil}
+
+	pagina1, pag1, err := ListarCatalogoGrade(db, 1, filtros)
+	if err != nil {
+		t.Fatalf("ListarCatalogoGrade(1): %v", err)
+	}
+	if pag1 != (Paginacao{Pagina: 1, Tamanho: 24, Total: 30, TotalPaginas: 2}) {
+		t.Fatalf("paginacao página 1 = %+v, want {1 24 30 2} (só os 30 'Civil', nunca os 5 'Eletrico')", pag1)
+	}
+	if len(pagina1) != 24 || pagina1[0].Nome != "Civil 00" || pagina1[23].Nome != "Civil 23" {
+		t.Fatalf("página 1 = [%q .. %q] (len %d), want [Civil 00 .. Civil 23] (len 24)", pagina1[0].Nome, pagina1[23].Nome, len(pagina1))
+	}
+
+	pagina2, pag2, err := ListarCatalogoGrade(db, 2, filtros)
+	if err != nil {
+		t.Fatalf("ListarCatalogoGrade(2): %v", err)
+	}
+	if pag2 != (Paginacao{Pagina: 2, Tamanho: 24, Total: 30, TotalPaginas: 2}) {
+		t.Fatalf("paginacao página 2 = %+v, want {2 24 30 2}", pag2)
+	}
+	if len(pagina2) != 6 || pagina2[0].Nome != "Civil 24" || pagina2[5].Nome != "Civil 29" {
+		t.Fatalf("página 2 = [%q .. %q] (len %d), want [Civil 24 .. Civil 29] (len 6) — nunca um 'Eletrico'", pagina2[0].Nome, pagina2[5].Nome, len(pagina2))
+	}
+	for _, item := range append(append([]CatalogoItem{}, pagina1...), pagina2...) {
+		if item.Categoria.ID != civil {
+			t.Errorf("item %q com categoria %q vazou o filtro (want só %q)", item.Nome, item.Categoria.ID, civil)
+		}
+	}
+}
+
+// TestListarCatalogoAgrupado_FiltroParcialMostraSoQuemCasou prova a linha
+// "agrupar=true com filtro que esvazia um grupo" da matriz: o grupo aparece
+// só com a soma dos Produtos que casaram o filtro.
+func TestListarCatalogoAgrupado_FiltroParcialMostraSoQuemCasou(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Grupo Filtro Parcial")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	civil := categoriaIDPorCodigo(t, db, "04.001")
+	eletrico := categoriaIDPorCodigo(t, db, "04.002")
+
+	// 2 Produtos "Parafuso", mesmo nome + dimensões nulas (agrupam juntos),
+	// categorias diferentes.
+	criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Parafuso", CategoriaID: civil, EstoqueID: estoque.ID, QuantidadeInicial: 10,
+	})
+	criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Parafuso", CategoriaID: eletrico, EstoqueID: estoque.ID, QuantidadeInicial: 5,
+	})
+
+	grupos, pag, err := ListarCatalogoAgrupado(db, 1, FiltrosCatalogo{CategoriaID: civil})
+	if err != nil {
+		t.Fatalf("ListarCatalogoAgrupado: %v", err)
+	}
+	if pag.Total != 1 || len(grupos) != 1 {
+		t.Fatalf("total = %d, len = %d, want 1/1", pag.Total, len(grupos))
+	}
+	if grupos[0].QuantidadeTotal != 10 {
+		t.Errorf("quantidadeTotal = %v, want 10 (só o produto que casou a categoria civil)", grupos[0].QuantidadeTotal)
+	}
+}
+
+// TestListarCatalogoAgrupado_FiltroRemoveGrupoInteiro prova a linha
+// "agrupar=true com filtro que remove o grupo inteiro" da matriz: grupo
+// não aparece, `paginacao.total` não o conta.
+func TestListarCatalogoAgrupado_FiltroRemoveGrupoInteiro(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Grupo Removido")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	civil := categoriaIDPorCodigo(t, db, "04.001")
+	eletrico := categoriaIDPorCodigo(t, db, "04.002")
+
+	criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Cabo", CategoriaID: eletrico, EstoqueID: estoque.ID, QuantidadeInicial: 10,
+	})
+
+	grupos, pag, err := ListarCatalogoAgrupado(db, 1, FiltrosCatalogo{CategoriaID: civil})
+	if err != nil {
+		t.Fatalf("ListarCatalogoAgrupado: %v", err)
+	}
+	if grupos == nil || len(grupos) != 0 || pag.Total != 0 {
+		t.Errorf("grupos = %v, total = %d, want [] / 0 (grupo inteiro removido pelo filtro)", grupos, pag.Total)
+	}
+}
+
+// TestListarCatalogoAgrupado_FiltroQBuscaPorCategoria prova que `q` também
+// casa por `categorias.nome` na tabela agrupada — exige o `JOIN categorias`
+// que catalogoGrupoQuery/catalogoGrupoCountQuery ganharam nesta story (Code
+// Map, spec-4-2).
+func TestListarCatalogoAgrupado_FiltroQBuscaPorCategoria(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Grupo Q Categoria")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	eletrico := categoriaIDPorCodigo(t, db, "04.002")
+	civil := categoriaIDPorCodigo(t, db, "04.001")
+
+	criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Disjuntor", CategoriaID: eletrico, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+	})
+	criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Cimento", CategoriaID: civil, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+	})
+
+	grupos, pag, err := ListarCatalogoAgrupado(db, 1, FiltrosCatalogo{Q: "Elétric"})
+	if err != nil {
+		t.Fatalf("ListarCatalogoAgrupado: %v", err)
+	}
+	if pag.Total != 1 || len(grupos) != 1 || grupos[0].Nome != "Disjuntor" {
+		t.Fatalf("grupos = %+v, total = %d, want só 'Disjuntor'", grupos, pag.Total)
+	}
+}
+
+// TestListarCatalogoAgrupado_CategoriaEstoqueMalformadosColapsamEmZero prova
+// a mesma linha da matriz que TestListarCatalogoGrade_..., para o modo
+// agrupado.
+func TestListarCatalogoAgrupado_CategoriaEstoqueMalformadosColapsamEmZero(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Malformado Agrupado")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+	criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Qualquer", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+	})
+
+	grupos, pag, err := ListarCatalogoAgrupado(db, 1, FiltrosCatalogo{CategoriaID: "abc"})
+	if err != nil {
+		t.Fatalf("categoriaId malformado: err = %v, want nil", err)
+	}
+	if grupos == nil || len(grupos) != 0 || pag.Total != 0 {
+		t.Errorf("categoriaId malformado: grupos = %v, total = %d, want [] / 0", grupos, pag.Total)
+	}
+
+	grupos2, pag2, err := ListarCatalogoAgrupado(db, 1, FiltrosCatalogo{EstoqueID: "xyz"})
+	if err != nil {
+		t.Fatalf("estoqueId malformado: err = %v, want nil", err)
+	}
+	if grupos2 == nil || len(grupos2) != 0 || pag2.Total != 0 {
+		t.Errorf("estoqueId malformado: grupos = %v, total = %d, want [] / 0", grupos2, pag2.Total)
 	}
 }

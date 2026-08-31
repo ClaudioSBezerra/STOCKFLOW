@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { CatalogoListagem } from './CatalogoListagem';
@@ -10,10 +10,12 @@ vi.mock('@/lib/session', () => ({
 
 // renderCatalogo envolve o componente num MemoryRouter — os cards da grade
 // (Story 4.4, spec-4-4) agora são `<Link>`, que exige um contexto de rota.
-function renderCatalogo() {
+// `termo` (Story 4.2, spec-4-2) é opcional, default '' (nenhum filtro de
+// texto).
+function renderCatalogo(termo?: string) {
   return render(
     <MemoryRouter>
-      <CatalogoListagem />
+      <CatalogoListagem termo={termo} />
     </MemoryRouter>,
   );
 }
@@ -521,5 +523,321 @@ describe('CatalogoListagem — tabela agrupada (viewport ≥ 768px)', () => {
     // Alternador some e a grade volta (o card volta a aparecer).
     expect(screen.queryByRole('button', { name: 'Tabela' })).not.toBeInTheDocument();
     expect(await screen.findByText(/Construção Civil/)).toBeInTheDocument();
+  });
+});
+
+describe('CatalogoListagem — filtros (Story 4.2)', () => {
+  const CATEGORIAS = [
+    { id: 'c1', codigo: '04.001', nome: 'Materiais Civis' },
+    { id: 'c2', codigo: '04.002', nome: 'Materiais Elétricos' },
+  ];
+  const ESTOQUES = [
+    { id: 'e1', nome: 'Canteiro A' },
+    { id: 'e2', nome: 'Canteiro B' },
+  ];
+
+  // stubFetchComFiltros diferencia por URL: /api/categorias e /api/estoques
+  // devolvem as listas passadas (ou rejeitam, simulando falha de rede,
+  // quando o argumento correspondente é `'erro'`); qualquer outra URL (o
+  // catálogo) devolve uma página vazia por padrão — o suficiente para os
+  // testes desta seção, que verificam a URL da CHAMADA, não o conteúdo
+  // renderizado da grade.
+  function stubFetchComFiltros(opts?: {
+    categorias?: typeof CATEGORIAS | 'erro';
+    estoques?: typeof ESTOQUES | 'erro';
+  }) {
+    const categorias = opts?.categorias ?? CATEGORIAS;
+    const estoques = opts?.estoques ?? ESTOQUES;
+    const fetchMock = vi.fn((url: string) => {
+      if (url === '/api/categorias') {
+        return categorias === 'erro'
+          ? Promise.reject(new Error('rede'))
+          : Promise.resolve({ ok: true, json: async () => ({ categorias }) });
+      }
+      if (url === '/api/estoques') {
+        return estoques === 'erro'
+          ? Promise.reject(new Error('rede'))
+          : Promise.resolve({ ok: true, json: async () => ({ estoques }) });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          produtos: [],
+          paginacao: { pagina: 1, tamanho: 24, total: 0, totalPaginas: 0 },
+        }),
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  it('busca /api/categorias e /api/estoques no mount e popula os selects', async () => {
+    stubFetchComFiltros();
+    const user = userEvent.setup();
+    renderCatalogo();
+
+    await screen.findByText('Nenhum produto no catálogo.');
+
+    await user.click(screen.getByRole('combobox', { name: 'Categoria' }));
+    expect(await screen.findByRole('option', { name: 'Todas as categorias' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Materiais Civis' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Materiais Elétricos' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('option', { name: 'Materiais Civis' }));
+    await user.click(screen.getByRole('combobox', { name: 'Estoque' }));
+    expect(await screen.findByRole('option', { name: 'Todos os Estoques' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Canteiro A' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Canteiro B' })).toBeInTheDocument();
+  });
+
+  it('selecionar uma categoria dispara o fetch com categoriaId', async () => {
+    const fetchMock = stubFetchComFiltros();
+    const user = userEvent.setup();
+    renderCatalogo();
+
+    await screen.findByText('Nenhum produto no catálogo.');
+    fetchMock.mockClear();
+
+    await user.click(screen.getByRole('combobox', { name: 'Categoria' }));
+    await user.click(await screen.findByRole('option', { name: 'Materiais Civis' }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/produtos/catalogo?agrupar=false&pagina=1&categoriaId=c1',
+        expect.anything(),
+      ),
+    );
+  });
+
+  it('selecionar um Estoque dispara o fetch com estoqueId', async () => {
+    const fetchMock = stubFetchComFiltros();
+    const user = userEvent.setup();
+    renderCatalogo();
+
+    await screen.findByText('Nenhum produto no catálogo.');
+    fetchMock.mockClear();
+
+    await user.click(screen.getByRole('combobox', { name: 'Estoque' }));
+    await user.click(await screen.findByRole('option', { name: 'Canteiro B' }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/produtos/catalogo?agrupar=false&pagina=1&estoqueId=e2',
+        expect.anything(),
+      ),
+    );
+  });
+
+  it('marcar "Com estoque disponível" dispara o fetch com comEstoque=true', async () => {
+    const fetchMock = stubFetchComFiltros();
+    const user = userEvent.setup();
+    renderCatalogo();
+
+    await screen.findByText('Nenhum produto no catálogo.');
+    fetchMock.mockClear();
+
+    await user.click(screen.getByRole('checkbox', { name: 'Com estoque disponível' }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/produtos/catalogo?agrupar=false&pagina=1&comEstoque=true',
+        expect.anything(),
+      ),
+    );
+  });
+
+  it('categoria + Estoque + "Com estoque" + termo combinados aparecem juntos numa única chamada', async () => {
+    const fetchMock = stubFetchComFiltros();
+    const user = userEvent.setup();
+    renderCatalogo('parafuso');
+
+    await screen.findByText('Nenhum produto no catálogo.');
+    fetchMock.mockClear();
+
+    await user.click(screen.getByRole('combobox', { name: 'Categoria' }));
+    await user.click(await screen.findByRole('option', { name: 'Materiais Civis' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    fetchMock.mockClear();
+
+    await user.click(screen.getByRole('combobox', { name: 'Estoque' }));
+    await user.click(await screen.findByRole('option', { name: 'Canteiro A' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    fetchMock.mockClear();
+
+    await user.click(screen.getByRole('checkbox', { name: 'Com estoque disponível' }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/produtos/catalogo?agrupar=false&pagina=1&q=parafuso&categoriaId=c1&estoqueId=e1&comEstoque=true',
+        expect.anything(),
+      ),
+    );
+  });
+
+  it('trocar de filtro volta a paginação para a página 1', async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url === '/api/categorias') return Promise.resolve({ ok: true, json: async () => ({ categorias: CATEGORIAS }) });
+      if (url === '/api/estoques') return Promise.resolve({ ok: true, json: async () => ({ estoques: ESTOQUES }) });
+      const pagina2 = url.includes('pagina=2');
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          produtos: [
+            {
+              id: pagina2 ? 'p2' : 'p1',
+              nome: pagina2 ? 'Produto Página 2' : 'Produto Página 1',
+              codigo: null,
+              categoria: { id: 'c1', codigo: '04.001', nome: 'Materiais Civis' },
+              dimensoes: DIMENSOES_NULAS,
+              quantidadeTotal: 1,
+              disponivel: true,
+            },
+          ],
+          paginacao: { pagina: pagina2 ? 2 : 1, tamanho: 24, total: 30, totalPaginas: 2 },
+        }),
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    renderCatalogo();
+
+    expect(await screen.findByText('Produto Página 1')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Próxima' }));
+    expect(await screen.findByText('Produto Página 2')).toBeInTheDocument();
+
+    fetchMock.mockClear();
+    await user.click(screen.getByRole('combobox', { name: 'Categoria' }));
+    await user.click(await screen.findByRole('option', { name: 'Materiais Civis' }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/produtos/catalogo?agrupar=false&pagina=1&categoriaId=c1',
+        expect.anything(),
+      ),
+    );
+    // Nunca uma chamada intermediária com a página velha (2) + o filtro novo.
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('pagina=2&categoriaId=c1'),
+      expect.anything(),
+    );
+  });
+
+  it('falha ao carregar categorias/Estoques não impede a listagem (degrada para só a opção sentinela)', async () => {
+    stubFetchComFiltros({ categorias: 'erro', estoques: 'erro' });
+    const user = userEvent.setup();
+    renderCatalogo();
+
+    expect(await screen.findByText('Nenhum produto no catálogo.')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('combobox', { name: 'Categoria' }));
+    expect(await screen.findByRole('option', { name: 'Todas as categorias' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'Materiais Civis' })).not.toBeInTheDocument();
+  });
+
+  // Degradação é POR CAMPO, não tudo-ou-nada: falha só em /api/categorias
+  // não pode derrubar também o Select de Estoque (achado do Blind Hunter na
+  // revisão desta story — as duas buscas não podem usar um único
+  // Promise.all/try-catch combinado).
+  it('falha só em categorias não impede o Select de Estoque de popular normalmente', async () => {
+    stubFetchComFiltros({ categorias: 'erro' });
+    const user = userEvent.setup();
+    renderCatalogo();
+
+    expect(await screen.findByText('Nenhum produto no catálogo.')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('combobox', { name: 'Categoria' }));
+    expect(await screen.findByRole('option', { name: 'Todas as categorias' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'Materiais Civis' })).not.toBeInTheDocument();
+    await user.keyboard('{Escape}');
+
+    await user.click(screen.getByRole('combobox', { name: 'Estoque' }));
+    expect(await screen.findByRole('option', { name: 'Canteiro A' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Canteiro B' })).toBeInTheDocument();
+  });
+
+  it('falha só em Estoques não impede o Select de categoria de popular normalmente', async () => {
+    stubFetchComFiltros({ estoques: 'erro' });
+    const user = userEvent.setup();
+    renderCatalogo();
+
+    expect(await screen.findByText('Nenhum produto no catálogo.')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('combobox', { name: 'Categoria' }));
+    expect(await screen.findByRole('option', { name: 'Materiais Civis' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Materiais Elétricos' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+
+    await user.click(screen.getByRole('combobox', { name: 'Estoque' }));
+    expect(await screen.findByRole('option', { name: 'Todos os Estoques' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'Canteiro A' })).not.toBeInTheDocument();
+  });
+
+  // NFR de usabilidade em campo (alvo de toque mínimo 48px, mesmo padrão de
+  // asserção já usado na Story 4.1) nos 3 novos controles de filtro.
+  it('os 3 controles de filtro têm a classe de alvo de toque mínimo', async () => {
+    stubFetchComFiltros();
+    renderCatalogo();
+
+    await screen.findByText('Nenhum produto no catálogo.');
+
+    expect(screen.getByRole('combobox', { name: 'Categoria' })).toHaveClass('min-h-touch-target-min');
+    expect(screen.getByRole('combobox', { name: 'Estoque' })).toHaveClass('min-h-touch-target-min');
+    expect(screen.getByRole('checkbox', { name: 'Com estoque disponível' }).closest('div')).toHaveClass(
+      'min-h-touch-target-min',
+    );
+  });
+
+  it('termo (prop) mudando dispara refetch com q e volta a paginação para 1', async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url === '/api/categorias') return Promise.resolve({ ok: true, json: async () => ({ categorias: CATEGORIAS }) });
+      if (url === '/api/estoques') return Promise.resolve({ ok: true, json: async () => ({ estoques: ESTOQUES }) });
+      const pagina2 = url.includes('pagina=2');
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          produtos: [
+            {
+              id: pagina2 ? 'p2' : 'p1',
+              nome: pagina2 ? 'Produto Página 2' : 'Produto Página 1',
+              codigo: null,
+              categoria: { id: 'c1', codigo: '04.001', nome: 'Materiais Civis' },
+              dimensoes: DIMENSOES_NULAS,
+              quantidadeTotal: 1,
+              disponivel: true,
+            },
+          ],
+          paginacao: { pagina: pagina2 ? 2 : 1, tamanho: 24, total: 30, totalPaginas: 2 },
+        }),
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    const { rerender } = renderCatalogo('');
+
+    expect(await screen.findByText('Produto Página 1')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Próxima' }));
+    expect(await screen.findByText('Produto Página 2')).toBeInTheDocument();
+
+    fetchMock.mockClear();
+    rerender(
+      <MemoryRouter>
+        <CatalogoListagem termo="parafuso" />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/produtos/catalogo?agrupar=false&pagina=1&q=parafuso',
+        expect.anything(),
+      ),
+    );
+    // Nunca uma chamada intermediária com a página velha (2) + o termo novo.
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('pagina=2&q=parafuso'),
+      expect.anything(),
+    );
   });
 });

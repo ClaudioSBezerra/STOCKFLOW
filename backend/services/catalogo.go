@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/lib/pq"
 )
@@ -119,12 +120,97 @@ func (p parDimensao) paraDimensao() *DimensaoValor {
 	return &DimensaoValor{Valor: p.valor.Float64, Unidade: p.unidade.String}
 }
 
-// catalogoGradeQuery devolve uma página de Produtos (Story 4.3, `agrupar=false`):
-// um Produto por linha, `quantidadeTotal` = SUM(produto_estoque.quantidade)
-// do Produto (0 quando não há nenhuma linha, via LEFT JOIN + COALESCE),
-// ordenado por `nome ASC, id ASC`. Sem índice novo: ~8.000 linhas com um
-// LEFT JOIN a um agregado é volume trivial para o Postgres (Design Notes).
-const catalogoGradeQuery = `
+// FiltrosCatalogo agrupa os 4 filtros opcionais combináveis por E lógico do
+// Catálogo (Story 4.2, spec-4-2), aplicados ANTES do `GROUP BY` nas 3 queries
+// (grade, contagem de grupos, grupos) — decidem QUAIS Produtos entram, nunca
+// recortam o que é mostrado sobre quem entrou (Design Notes). Zero-value
+// (`FiltrosCatalogo{}`) = nenhum filtro, comportamento idêntico à Story 4.3
+// (sem regressão). `Q` já deve chegar trimado e validado (<=255 runes) pelo
+// chamador (handler) — aqui só é usado, nunca revalidado. `ComEstoque == nil`
+// significa "sem filtro"; `*ComEstoque` distingue `true`/`false`.
+type FiltrosCatalogo struct {
+	Q           string
+	CategoriaID string
+	EstoqueID   string
+	ComEstoque  *bool
+}
+
+// filtroUUIDInvalido reconhece o SQLSTATE 22P02 (invalid_text_representation)
+// do Postgres — dispara quando `categoriaId`/`estoqueId` malformado (não-UUID)
+// tenta comparar com uma coluna `uuid`. Mesmo padrão de colapso de
+// ObterProdutoDetalhe/ExcluirEstoque: NUNCA um erro 500, sempre "zero linhas"
+// (Always, spec-4-2) — o chamador usa isto para devolver uma página vazia em
+// vez de propagar o erro.
+func filtroUUIDInvalido(err error) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation
+}
+
+// montarFiltrosCatalogo monta o fragmento `WHERE ...` (com a palavra-chave
+// incluída, ou "" quando nenhum filtro está presente) e os argumentos
+// correspondentes a partir de FiltrosCatalogo, numerando os placeholders a
+// partir de `primeiroPlaceholder`. Os filtros combinam sempre por E lógico
+// (AND) entre si — nenhum substitui outro (Always, spec-4-2). Espera `p`
+// (produtos) e `c` (categorias) como aliases já presentes na query alvo.
+//
+//   - `Q`: substring case-insensitive em nome/código/categoria, mesmo padrão
+//     ILIKE...ESCAPE '\' de buscarProdutosQuery (Story 4.1), sem ranking.
+//   - `CategoriaID`: igualdade exata com `p.categoria_id`.
+//   - `EstoqueID`: `EXISTS` em `produto_estoque` para esse Estoque, qualquer
+//     quantidade (inclusive 0) — presença de linha, não de saldo.
+//   - `ComEstoque`: SEMPRE global (soma de TODOS os Estoques do Produto,
+//     nunca escopado a `EstoqueID` — Design Notes); comparação com uma
+//     constante SQL (">"/"=" 0), nunca com um placeholder de usuário, então
+//     não consome um número de placeholder.
+func montarFiltrosCatalogo(f FiltrosCatalogo, primeiroPlaceholder int) (string, []any) {
+	var condicoes []string
+	var args []any
+	n := primeiroPlaceholder
+
+	if f.Q != "" {
+		condicoes = append(condicoes, fmt.Sprintf(
+			`(p.nome ILIKE $%d ESCAPE '\' OR p.codigo ILIKE $%d ESCAPE '\' OR c.nome ILIKE $%d ESCAPE '\')`,
+			n, n, n,
+		))
+		args = append(args, "%"+escaparCoringasLike(f.Q)+"%")
+		n++
+	}
+	if f.CategoriaID != "" {
+		condicoes = append(condicoes, fmt.Sprintf("p.categoria_id = $%d", n))
+		args = append(args, f.CategoriaID)
+		n++
+	}
+	if f.EstoqueID != "" {
+		condicoes = append(condicoes, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM produto_estoque fe WHERE fe.produto_id = p.id AND fe.estoque_id = $%d)", n,
+		))
+		args = append(args, f.EstoqueID)
+		n++
+	}
+	if f.ComEstoque != nil {
+		op := ">"
+		if !*f.ComEstoque {
+			op = "="
+		}
+		condicoes = append(condicoes, fmt.Sprintf(
+			"COALESCE((SELECT SUM(fc.quantidade) FROM produto_estoque fc WHERE fc.produto_id = p.id), 0) %s 0", op,
+		))
+	}
+
+	if len(condicoes) == 0 {
+		return "", nil
+	}
+	return " WHERE " + strings.Join(condicoes, " AND "), args
+}
+
+// catalogoGradeQueryBase é a parte fixa da grade (Story 4.3) — sem `WHERE`
+// nem `LIMIT`/`OFFSET`, que ListarCatalogoGrade acrescenta dinamicamente
+// conforme os filtros presentes (Story 4.2, spec-4-2): o `WHERE` (quando há
+// algum filtro) entra ANTES do `ORDER BY`, com placeholders numerados a
+// partir de $1; `LIMIT`/`OFFSET` sempre ficam com os dois últimos
+// placeholders da query final. Sem índice novo: ~8.000 linhas com um LEFT
+// JOIN a um agregado é volume trivial para o Postgres (Design Notes).
+const catalogoGradeQueryBase = `
 	SELECT
 		p.id, p.nome, p.codigo,
 		c.id, c.codigo, c.nome,
@@ -140,27 +226,39 @@ const catalogoGradeQuery = `
 		SELECT produto_id, SUM(quantidade) AS total
 		FROM produto_estoque
 		GROUP BY produto_id
-	) pe ON pe.produto_id = p.id
-	ORDER BY p.nome ASC, p.id ASC
-	LIMIT $1 OFFSET $2`
+	) pe ON pe.produto_id = p.id`
 
 // ListarCatalogoGrade devolve a página `pagina` da grade do Catálogo e o
-// bloco de paginação (contagem sobre `produtos`). `pagina` é assumido >=1
-// (validado pelo handler). Página além da última -> slice vazio (nunca
-// `nil`), paginação ainda com `total`/`totalPaginas` corretos.
-func ListarCatalogoGrade(db *sql.DB, pagina int) ([]CatalogoItem, Paginacao, error) {
+// bloco de paginação (contagem sobre `produtos`, já com os `filtros`
+// aplicados). `pagina` é assumido >=1 (validado pelo handler). Página além da
+// última -> slice vazio (nunca `nil`), paginação ainda com
+// `total`/`totalPaginas` corretos. `categoriaId`/`estoqueId` malformado
+// (não-UUID) colapsa em página vazia, nunca erro (filtroUUIDInvalido).
+func ListarCatalogoGrade(db *sql.DB, pagina int, filtros FiltrosCatalogo) ([]CatalogoItem, Paginacao, error) {
 	if pagina < 1 {
 		pagina = 1
 	}
 
+	where, args := montarFiltrosCatalogo(filtros, 1)
+
 	var total int
-	if err := db.QueryRow(`SELECT count(*) FROM produtos`).Scan(&total); err != nil {
+	countQuery := "SELECT count(*) FROM produtos p JOIN categorias c ON c.id = p.categoria_id" + where
+	if err := db.QueryRow(countQuery, args...).Scan(&total); err != nil {
+		if filtroUUIDInvalido(err) {
+			return make([]CatalogoItem, 0), novaPaginacao(pagina, 0), nil
+		}
 		return nil, Paginacao{}, fmt.Errorf("falha ao contar produtos do catálogo: %w", err)
 	}
 	paginacao := novaPaginacao(pagina, total)
 
-	rows, err := db.Query(catalogoGradeQuery, TamanhoPaginaCatalogo, (pagina-1)*TamanhoPaginaCatalogo)
+	limitArgs := append(append([]any{}, args...), TamanhoPaginaCatalogo, (pagina-1)*TamanhoPaginaCatalogo)
+	query := catalogoGradeQueryBase + where +
+		fmt.Sprintf(" ORDER BY p.nome ASC, p.id ASC LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
+	rows, err := db.Query(query, limitArgs...)
 	if err != nil {
+		if filtroUUIDInvalido(err) {
+			return make([]CatalogoItem, 0), paginacao, nil
+		}
 		return nil, Paginacao{}, fmt.Errorf("falha ao listar grade do catálogo: %w", err)
 	}
 	defer rows.Close()
@@ -207,31 +305,47 @@ func ListarCatalogoGrade(db *sql.DB, pagina int) ([]CatalogoItem, Paginacao, err
 }
 
 // colunasChaveGrupo são as 11 colunas que definem um grupo da tabela
-// agrupada: `nome` + o par (valor, unidade) das 5 dimensões estruturadas.
-// `NULL` agrupa com `NULL` (semântica de `GROUP BY` do Postgres).
-const colunasChaveGrupo = `nome,
-	comprimento_valor, comprimento_unidade,
-	largura_valor, largura_unidade,
-	diametro_valor, diametro_unidade,
-	altura_valor, altura_unidade,
-	espessura_valor, espessura_unidade`
+// agrupada: `nome` + o par (valor, unidade) das 5 dimensões estruturadas,
+// qualificadas com `p.` (Story 4.2: a query de grupo ganhou `JOIN categorias
+// c`, que também tem uma coluna `nome` — sem qualificar, `nome` ficaria
+// ambíguo). `NULL` agrupa com `NULL` (semântica de `GROUP BY` do Postgres).
+const colunasChaveGrupo = `p.nome,
+	p.comprimento_valor, p.comprimento_unidade,
+	p.largura_valor, p.largura_unidade,
+	p.diametro_valor, p.diametro_unidade,
+	p.altura_valor, p.altura_unidade,
+	p.espessura_valor, p.espessura_unidade`
 
-// catalogoGrupoCountQuery conta GRUPOS (não Produtos) — a unidade sobre a
-// qual `agrupar=true` pagina.
-const catalogoGrupoCountQuery = `
+// catalogoGrupoCountQueryBase é a parte fixa da contagem de GRUPOS (não
+// Produtos) — a unidade sobre a qual `agrupar=true` pagina. Ganha o mesmo
+// `JOIN categorias c` da query de grupo (Story 4.2, spec-4-2) para que o
+// filtro `q` sobre `categorias.nome` também valha na contagem; sem `WHERE`,
+// que ListarCatalogoAgrupado acrescenta dinamicamente entre esta base e
+// catalogoGrupoCountQuerySuffix.
+const catalogoGrupoCountQueryBase = `
 	SELECT count(*) FROM (
-		SELECT 1 FROM produtos GROUP BY ` + colunasChaveGrupo + `
+		SELECT 1 FROM produtos p
+		JOIN categorias c ON c.id = p.categoria_id`
+
+// catalogoGrupoCountQuerySuffix fecha a subquery de contagem de grupos
+// (GROUP BY pelas mesmas colunas da query de grupo).
+const catalogoGrupoCountQuerySuffix = `
+	GROUP BY ` + colunasChaveGrupo + `
 	) t`
 
-// catalogoGrupoQuery devolve uma página de grupos. `chave` = md5 estável da
+// catalogoGrupoQueryBase é a parte fixa da query de grupos — sem `WHERE` nem
+// `GROUP BY`/`ORDER BY`/`LIMIT`/`OFFSET`, que ListarCatalogoAgrupado
+// acrescenta dinamicamente (Story 4.2, spec-4-2). `chave` = md5 estável da
 // concatenação de `nome` + os 10 valores de dimensão (delimitados por chr(31)
 // para que um valor contendo o delimitador não colida com outro grupo),
 // serve de `key` no React. `quantidade_total` = soma de TODAS as linhas
 // `produto_estoque` de TODOS os Produtos do grupo (LEFT JOIN + COALESCE).
 // `produto_ids` = ids de Produto do grupo, para resolver o `porEstoque` numa
-// segunda query com `WHERE pe.produto_id = ANY(...)`. Ordena por `nome`,
-// depois pelas colunas de dimensão de forma determinística, depois `chave`.
-const catalogoGrupoQuery = `
+// segunda query com `WHERE pe.produto_id = ANY(...)`. Ganha `JOIN categorias
+// c` (ausente antes da Story 4.2) para suportar o filtro `q` sobre
+// `categorias.nome` — join 1:1 pela FK `categoria_id`, nunca multiplica
+// linhas (não afeta o `GROUP BY`/agregados abaixo).
+const catalogoGrupoQueryBase = `
 	SELECT
 		md5(
 			coalesce(p.nome, '') || chr(31) ||
@@ -250,7 +364,13 @@ const catalogoGrupoQuery = `
 		COALESCE(SUM(pe.quantidade), 0) AS quantidade_total,
 		array_agg(DISTINCT p.id::text) AS produto_ids
 	FROM produtos p
-	LEFT JOIN produto_estoque pe ON pe.produto_id = p.id
+	JOIN categorias c ON c.id = p.categoria_id
+	LEFT JOIN produto_estoque pe ON pe.produto_id = p.id`
+
+// catalogoGrupoQuerySuffix fecha a query de grupo (GROUP BY/ORDER BY), sem
+// `LIMIT`/`OFFSET` — ListarCatalogoAgrupado acrescenta os dois com
+// placeholders numerados depois dos do `WHERE`.
+const catalogoGrupoQuerySuffix = `
 	GROUP BY
 		p.nome,
 		p.comprimento_valor, p.comprimento_unidade,
@@ -265,8 +385,7 @@ const catalogoGrupoQuery = `
 		p.diametro_valor ASC NULLS FIRST, p.diametro_unidade ASC NULLS FIRST,
 		p.altura_valor ASC NULLS FIRST, p.altura_unidade ASC NULLS FIRST,
 		p.espessura_valor ASC NULLS FIRST, p.espessura_unidade ASC NULLS FIRST,
-		chave ASC
-	LIMIT $1 OFFSET $2`
+		chave ASC`
 
 // catalogoPorEstoqueQuery devolve, para os Produtos da página de grupos, a
 // quantidade por Estoque — só Estoques onde o Produto tem linha
@@ -279,24 +398,38 @@ const catalogoPorEstoqueQuery = `
 	WHERE pe.produto_id = ANY($1)`
 
 // ListarCatalogoAgrupado devolve a página `pagina` da tabela agrupada do
-// Catálogo e o bloco de paginação (contagem sobre GRUPOS). Um grupo =
-// Produtos com o mesmo `nome` e as mesmas 5 dimensões estruturadas.
+// Catálogo e o bloco de paginação (contagem sobre GRUPOS, já com os
+// `filtros` aplicados ANTES do agrupamento — Design Notes, spec-4-2). Um
+// grupo = Produtos com o mesmo `nome` e as mesmas 5 dimensões estruturadas.
 // `pagina` é assumido >=1 (validado pelo handler). Página além da última ->
 // slice vazio (nunca `nil`). `porEstoque` de um grupo é sempre não-`nil`
-// (pode ser `[]`).
-func ListarCatalogoAgrupado(db *sql.DB, pagina int) ([]CatalogoGrupo, Paginacao, error) {
+// (pode ser `[]`). `categoriaId`/`estoqueId` malformado (não-UUID) colapsa em
+// página vazia, nunca erro (filtroUUIDInvalido).
+func ListarCatalogoAgrupado(db *sql.DB, pagina int, filtros FiltrosCatalogo) ([]CatalogoGrupo, Paginacao, error) {
 	if pagina < 1 {
 		pagina = 1
 	}
 
+	where, args := montarFiltrosCatalogo(filtros, 1)
+
 	var total int
-	if err := db.QueryRow(catalogoGrupoCountQuery).Scan(&total); err != nil {
+	countQuery := catalogoGrupoCountQueryBase + where + catalogoGrupoCountQuerySuffix
+	if err := db.QueryRow(countQuery, args...).Scan(&total); err != nil {
+		if filtroUUIDInvalido(err) {
+			return make([]CatalogoGrupo, 0), novaPaginacao(pagina, 0), nil
+		}
 		return nil, Paginacao{}, fmt.Errorf("falha ao contar grupos do catálogo: %w", err)
 	}
 	paginacao := novaPaginacao(pagina, total)
 
-	rows, err := db.Query(catalogoGrupoQuery, TamanhoPaginaCatalogo, (pagina-1)*TamanhoPaginaCatalogo)
+	limitArgs := append(append([]any{}, args...), TamanhoPaginaCatalogo, (pagina-1)*TamanhoPaginaCatalogo)
+	query := catalogoGrupoQueryBase + where + catalogoGrupoQuerySuffix +
+		fmt.Sprintf(" LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
+	rows, err := db.Query(query, limitArgs...)
 	if err != nil {
+		if filtroUUIDInvalido(err) {
+			return make([]CatalogoGrupo, 0), paginacao, nil
+		}
 		return nil, Paginacao{}, fmt.Errorf("falha ao listar tabela agrupada do catálogo: %w", err)
 	}
 	defer rows.Close()
@@ -429,8 +562,9 @@ type ProdutoDetalhe struct {
 }
 
 // produtoDetalheQuery devolve um único Produto por `id` — mesmas colunas de
-// catalogoGradeQuery, trocando LIMIT/OFFSET por WHERE p.id = $1 (sem
-// paginação: só 1 linha, no máximo).
+// catalogoGradeQueryBase, trocando LIMIT/OFFSET por WHERE p.id = $1 (sem
+// paginação: só 1 linha, no máximo). Sem filtros da Story 4.2: Story 4.4 é
+// sempre "um Produto específico por id", nunca uma listagem filtrável.
 const produtoDetalheQuery = `
 	SELECT
 		p.id, p.nome, p.codigo,

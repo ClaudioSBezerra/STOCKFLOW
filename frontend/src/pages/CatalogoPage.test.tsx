@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { CatalogoPage } from './CatalogoPage';
 
@@ -67,8 +67,13 @@ describe('CatalogoPage — gate de papel', () => {
       expect.stringContaining('/api/produtos/catalogo'),
       expect.anything(),
     );
-    // O gate `podeCadastrar` continua fechado: nada de categorias/estoques.
-    expect(fetch).not.toHaveBeenCalledWith('/api/categorias', expect.anything());
+    // O gate `podeCadastrar` continua fechado: SEM CadastroProdutoSection —
+    // já verificado acima ('Cadastrar Produto' ausente). GET
+    // /api/categorias/GET /api/estoques SÃO chamados mesmo para `usuario`
+    // agora (Story 4.2): CatalogoListagem busca as duas listas para popular
+    // seus próprios `<Select>` de filtro, independente do gate de cadastro.
+    expect(fetch).toHaveBeenCalledWith('/api/categorias', expect.anything());
+    expect(fetch).toHaveBeenCalledWith('/api/estoques', expect.anything());
   });
 
   it.each(['almoxarife', 'gestor', 'adm'])(
@@ -105,5 +110,41 @@ describe('CatalogoPage — abas Cadastro/Importação (Story 3.3)', () => {
     await user.click(screen.getByRole('tab', { name: 'Importação' }));
 
     expect(await screen.findByText('Importar Produtos')).toBeInTheDocument();
+  });
+});
+
+describe('CatalogoPage — ponte busca->filtro (Story 4.2)', () => {
+  it('termo digitado em BuscaCatalogo reflete em ?q= na chamada de /api/produtos/catalogo após o debounce', async () => {
+    authState.papel = 'usuario';
+    const user = userEvent.setup();
+    render(<CatalogoPage />);
+
+    await screen.findByText('Nenhum produto no catálogo.');
+    (fetch as ReturnType<typeof vi.fn>).mockClear();
+
+    await user.type(screen.getByLabelText('Buscar produtos'), 'parafuso');
+
+    // Logo após digitar, o debounce (300ms) ainda não decorreu — nenhuma
+    // chamada nova a /api/produtos/catalogo com `q=` ainda.
+    expect(fetch).not.toHaveBeenCalledWith(
+      expect.stringContaining('/api/produtos/catalogo?agrupar=false&pagina=1&q=parafuso'),
+      expect.anything(),
+    );
+
+    await waitFor(
+      () =>
+        expect(fetch).toHaveBeenCalledWith(
+          '/api/produtos/catalogo?agrupar=false&pagina=1&q=parafuso',
+          expect.anything(),
+        ),
+      { timeout: 2000 },
+    );
+
+    // BuscaCatalogo continua funcionando de forma independente (suas
+    // próprias até-7 sugestões, sem depender dos filtros).
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/produtos/busca?q=parafuso'),
+      expect.anything(),
+    );
   });
 });

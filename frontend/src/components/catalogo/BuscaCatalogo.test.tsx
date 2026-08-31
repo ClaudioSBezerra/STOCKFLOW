@@ -344,3 +344,54 @@ describe('BuscaCatalogo — atalho de teclado "/"', () => {
     expect(screen.getByLabelText('Buscar produtos')).not.toHaveFocus();
   });
 });
+
+describe('BuscaCatalogo — onTermoChange (Story 4.2)', () => {
+  it('chama onTermoChange a cada digitação, com o valor BRUTO (não trimado)', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: async () => ({ produtos: [] }) })));
+    const onTermoChange = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <BuscaCatalogo onTermoChange={onTermoChange} />
+      </MemoryRouter>,
+    );
+
+    await user.type(screen.getByLabelText('Buscar produtos'), 'ab');
+
+    expect(onTermoChange).toHaveBeenCalledTimes(2);
+    expect(onTermoChange).toHaveBeenNthCalledWith(1, 'a');
+    expect(onTermoChange).toHaveBeenNthCalledWith(2, 'ab');
+  });
+
+  it('chama onTermoChange com o valor bruto (com espaços), mesmo quando o termo trimado é vazio', async () => {
+    vi.stubGlobal('fetch', vi.fn());
+    const onTermoChange = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <BuscaCatalogo onTermoChange={onTermoChange} />
+      </MemoryRouter>,
+    );
+
+    await user.type(screen.getByLabelText('Buscar produtos'), '  ');
+
+    expect(onTermoChange).toHaveBeenCalledTimes(2);
+    expect(onTermoChange).toHaveBeenNthCalledWith(2, '  ');
+    // Termo trimado vazio -> nenhuma busca de sugestões própria disparada
+    // (comportamento de BuscaCatalogo inalterado por onTermoChange).
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('funciona normalmente sem onTermoChange (prop opcional)', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: async () => ({ produtos: [] }) })));
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <BuscaCatalogo />
+      </MemoryRouter>,
+    );
+
+    await user.type(screen.getByLabelText('Buscar produtos'), 'x');
+    expect(screen.getByLabelText('Buscar produtos')).toHaveValue('x');
+  });
+});

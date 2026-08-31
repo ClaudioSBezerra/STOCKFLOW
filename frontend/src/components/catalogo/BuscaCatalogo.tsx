@@ -35,6 +35,14 @@ import { getAccessToken } from '@/lib/session';
  * Atalho de teclado `/` (desktop, UX epic-level) foca o campo quando o foco
  * não está em outro campo editável (`input`/`textarea`/`[contenteditable]`)
  * e nenhum modificador (`ctrl`/`meta`/`alt`) está pressionado.
+ *
+ * `onTermoChange` (Story 4.2, spec-4-2, opcional) é chamado a cada digitação
+ * com o valor BRUTO (não trimado — quem debounça/trima é `CatalogoPage`),
+ * de dentro do PRÓPRIO handler `aoDigitar` já existente: nenhuma outra
+ * lógica deste componente (debounce/descarte de resposta obsoleta das
+ * SUAS PRÓPRIAS sugestões) muda — as duas requisições (sugestão aqui,
+ * listagem filtrada em `CatalogoListagem`) coexistem, cada uma no seu
+ * próprio debounce independente.
  */
 
 interface CategoriaBusca {
@@ -66,7 +74,11 @@ function elementoEhEditavel(elemento: Element | null): boolean {
   return elemento instanceof HTMLElement && elemento.isContentEditable;
 }
 
-export function BuscaCatalogo() {
+interface BuscaCatalogoProps {
+  onTermoChange?: (valor: string) => void;
+}
+
+export function BuscaCatalogo({ onTermoChange }: BuscaCatalogoProps = {}) {
   const [termo, setTermo] = useState('');
   const [resultados, setResultados] = useState<ProdutoBusca[] | null>(null);
   const [termoBuscado, setTermoBuscado] = useState<string | null>(null);
@@ -106,6 +118,7 @@ export function BuscaCatalogo() {
   function aoDigitar(evento: ChangeEvent<HTMLInputElement>) {
     const valor = evento.target.value;
     setTermo(valor);
+    onTermoChange?.(valor);
 
     const termoTrimado = valor.trim();
     termoAtualRef.current = termoTrimado;
