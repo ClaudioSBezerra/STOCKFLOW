@@ -4,7 +4,7 @@ type: 'feature'
 created: '2026-08-31'
 status: 'done'
 review_loop_iteration: 0
-followup_review_recommended: true
+followup_review_recommended: false
 baseline_revision: '62b98b201cba707582c192ae8583e4bc11021046'
 context: ['{project-root}/_bmad-output/implementation-artifacts/epic-4-context.md']
 warnings: ['oversized']
@@ -42,6 +42,29 @@ deferred:
       `stockflow-fotos-data` (perdidas num restart). Achado pelo Edge Case
       Hunter na revisão de follow-up da Story 4.1; não é causado por esta
       story.
+    location: >-
+      docker-compose.yml
+    severity: low
+  - summary: >-
+      docker-compose.yml removeu a publicação de porta no host para
+      db/api/web (substituída por expose interno), restaurada só de forma
+      opt-in via docker-compose.override.yml.example — quem roda `docker
+      compose up` sem copiar esse arquivo perde acesso via localhost aos
+      três serviços.
+    evidence: |-
+      Confirmado no diff: docker-compose.yml remove `ports: ['5432:5432']`
+      (db), `ports: ['8080:8080']` (api) e `ports: ['8081:80']` (web),
+      substituindo por `expose`; docker-compose.override.yml.example (novo)
+      documenta que ele precisa ser copiado manualmente para restaurar esses
+      mapeamentos. Qualquer fluxo baseado em host — por exemplo
+      `backend/main_test.go` (comentário de testDB orienta exportar
+      DATABASE_URL apontando para localhost:5432) ou o proxy do dev server
+      do frontend para localhost:8080 — para de funcionar silenciosamente
+      sem esse arquivo copiado. Achado independentemente pelo Edge Case
+      Hunter e pelo Verification Gap Reviewer na revisão de follow-up 2 da
+      Story 4.1; falha de forma clara (conexão recusada), não incorreta, e
+      não é causado por esta story (introduzido nos commits de
+      docker-compose anteriores à implementação desta story).
     location: >-
       docker-compose.yml
     severity: low
@@ -178,6 +201,32 @@ deferred:
   - `[reject]` `epic-4-context.md`/a própria spec desta story não têm nenhuma checagem automatizada cruzando as decisões documentadas (ex. infraestrutura de SSE do épico) com o código realmente alterado por esta story — nenhuma AC/NFR pede esse tipo de checagem de consistência documentação-código, e o próprio arquivo já se declara regenerável ("Regenerate with compile-epic-context if planning docs change").
   - `[reject]` Atalho `/` não trata `evento.isComposing` (IME) — premissa questionável: o atalho só age quando `document.activeElement` NÃO é um campo editável (`elementoEhEditavel`), e composição de IME só fica ativa num elemento editável focado; o estado descrito (IME compondo fora de um campo editável) não é alcançável pela própria guarda já existente.
 
+### 2026-08-31 — Review pass (follow-up 2)
+- intent_gap: 0
+- bad_spec: 0
+- patch: 1 (high 0, medium 0, low 1)
+- defer: 1 (medium 0, low 1)
+- reject: 17 (low 17)
+- addressed_findings:
+  - `[low]` `[patch]` Nenhum teste do lado do cliente travava o caminho "digitar só espaços -> termo trimado fica vazio -> nenhuma requisição disparada" em `BuscaCatalogo.tsx` — só o estado inicial (sem nenhuma digitação) tinha teste para "termo vazio"; o branch `termoTrimado === ''` dentro de `aoDigitar`, alcançado só depois de digitar espaços, ficava sem cobertura de regressão. Achado pelo Blind Hunter. Corrigido com um novo teste (`digitar só espaços não dispara requisição`) em `BuscaCatalogo.test.tsx`.
+  - `[reject]` Sem correção de acento (busca não é insensível a acento) — já rejeitado na primeira passada de revisão desta story, mesma justificativa (decisão deliberada de escopo, sem `unaccent`/migração).
+  - `[reject]` Nenhum estado de carregamento entre o debounce disparar e a resposta chegar — já rejeitado na primeira passada, mesma justificativa (nenhuma AC/NFR exige, latência real ~13ms).
+  - `[reject]` Requisições em voo não são canceladas via `AbortController` — já rejeitado na passada de revisão anterior, mesma justificativa (corrida já neutralizada do lado do cliente, sem resultado incorreto).
+  - `[reject]` Ausência de rate limiting no endpoint — já rejeitado na primeira passada, mesma justificativa (nenhum outro endpoint do backend tem rate limiting).
+  - `[reject]` Nenhum teste automatizado mede a NFR de 300ms p95 sob 8.000 produtos — a própria spec documenta essa checagem como manual (`EXPLAIN ANALYZE`, seção Verification), decisão deliberada registrada nas Design Notes; não é uma lacuna desta revisão.
+  - `[reject]` `JOIN categorias` (sem `LEFT JOIN`) esconderia Produtos com `categoria_id` nulo/órfão — premissa falsa: `categoria_id` é `NOT NULL` na migração (`backend/migrations/000011_create_produtos.up.sql`), confirmado pelo Verification Gap Reviewer; o estado descrito não é alcançável.
+  - `[reject]` Toda resposta não-OK (incluindo um eventual 401) cai na mesma mensagem genérica de erro — já rejeitado na passada de revisão anterior, mesmo padrão de qualquer outro `fetch` local no app hoje.
+  - `[reject]` Nenhum teste isola rank 1 via prefixo de `codigo` (só `nome` é testado isoladamente em `TestBuscarProdutos_MatchPorPrefixo`) — cobertura desproporcional ao risco: `TestBuscarProdutos_MatchExatoVemPrimeiro` já exercita indiretamente um match de prefixo por `codigo` (`"PAR-0010"` contra o termo `"PAR-001"`) dentro do mesmo teste; a lógica SQL é simétrica entre `nome`/`codigo` no mesmo `OR`.
+  - `[reject]` Nenhum teste isola o ramo de igualdade exata de `categorias.nome` no rank 2 (só o ramo de prefixo é exercitado por `TestBuscarProdutos_MatchSoPorCategoria`) — cobertura desproporcional ao risco: um termo igual ao nome completo da categoria também bate no padrão de prefixo (`ILIKE 'termo%'`), então os dois ramos produzem o mesmo rank observável: não há divergência de comportamento a proteger com um teste dedicado.
+  - `[reject]` Ausência de `aria-live` anunciando resultados/erro da busca — já rejeitado na primeira passada, mesma justificativa (nenhuma AC/NFR exige, único `aria-live` do épico é o toast SSE da Story 4.4).
+  - `[reject]` Assimetria em `docker-compose.yml`: `api`/`web` ganharam bloco `expose`, `db` só teve `ports` removido sem `expose` equivalente — cosmético, sem efeito funcional (rede interna do Docker não exige `expose` explícito para comunicação entre serviços); `docker-compose.yml` não é tocado por esta story (Code Map) e a alteração vem de commits anteriores de infraestrutura, não desta story.
+  - `[reject]` Nenhuma documentação OpenAPI/API externa para `GET /api/produtos/busca` fora dos doc-comments em Go — nenhum outro endpoint do repositório tem documentação OpenAPI/externa; não é uma convenção existente que esta story deveria introduzir isoladamente.
+  - `[reject]` Nenhum teste combina o limite de 255 runes com espaços nas pontas que trimam para exatamente 255 — cobertura desproporcional ao risco: o trim acontece antes da contagem de runes tanto no handler quanto nos testes já existentes (`TestBuscarProdutosHandler_400TermoMuitoLongo` já usa um termo sem espaços de 256 runes); a interação específica não muda o comportamento do código, só duplicaria asserção já coberta.
+  - `[reject]` `produto.categoria.nome` acessado em `BuscaCatalogo.tsx` sem validar a forma de cada item da resposta (só `Array.isArray(data.produtos)` é checado) — mesmo padrão de confiança já usado por todo componente irmão que consome a própria API backend do projeto (nenhum componente do repositório faz validação de schema por item de uma resposta própria); não é uma convenção existente nem uma regressão introduzida por esta story.
+  - `[reject]` Leitura "R1" do Intent Alignment Auditor: o teto de 255 runes em `q` contradiria "nenhuma AC fixa um mínimo" — leitura equivocada: a frase da spec fala explicitamente de tamanho MÍNIMO ("Nenhum tamanho mínimo de caracteres é exigido"), nunca de máximo; um teto máximo não contradiz essa frase, e já foi decidido corretamente como patch na primeira passada de revisão.
+  - `[reject]` Leitura do Intent Alignment Auditor sobre o desempate `p.id ASC`: o texto da spec ("ORDER BY rank ASC, nome ASC") não proibiria um desempate adicional determinístico — já justificado e decidido corretamente como patch na primeira passada (necessário para estabilidade do `LIMIT 7` em empates), não contradiz o texto, só o complementa.
+  - `[reject]` Leitura do Intent Alignment Auditor sobre a UX de erro de busca ser "superfície de produto não autorizada": tratar falha de rede/resposta não-OK é comportamento mínimo necessário para qualquer `fetch` funcionar (mesmo padrão de outros componentes do app); já endereçado e mantido como escopo correto na passada de revisão anterior desta própria story.
+
 ## Design Notes
 
 - **Sem dropdown flutuante, resultado inline na tela**: a AC "a tela mostra 'Nenhum produto encontrado...'" fala da TELA, não de um menu suspenso — e como a Story 4.3 (grade/tabela) e a Story 4.4 (detalhe, destino de um clique) ainda não existem, tratar os até-7 resultados como uma lista informativa simples (sem link/clique) evita inventar uma navegação que esta story não tem para onde levar, e evita descartar depois um componente de dropdown/combobox que a 4.3 substituiria de qualquer forma.
@@ -197,25 +246,22 @@ deferred:
 
 ## Auto Run Result
 
-**Resumo:** Passada de revisão de follow-up (invocada com a spec já `done`, `followup_review_recommended: true` da passada anterior). Nenhuma mudança de comportamento novo foi implementada nesta passada — a implementação da Story 4.1 (busca por nome/código/categoria com sugestões, backend + frontend) já estava completa; esta passada rodou os 4 revisores em paralelo sobre o diff acumulado desde `baseline_revision`, endereçou os `patch` encontrados e coletou 2 achados pré-existentes (não causados por esta story) como `deferred`.
+**Resumo da mudança implementada:** Story 4.1 já estava implementada e revisada (2 passadas anteriores). Esta execução é a passada de follow-up automática disparada por reabrir uma spec `done` (rotina do bmad-build-auto): reconstruiu o diff desde `baseline_revision`, rodou as 4 camadas de revisão (Blind Hunter, Edge Case Hunter, Verification Gap Reviewer, Intent Alignment Auditor) e aplicou o único patch real encontrado.
 
 **Arquivos alterados nesta passada:**
-- `frontend/src/components/catalogo/BuscaCatalogo.tsx` -- corrige corrida de resposta obsoleta: recheca `termoAtualRef` também depois do `await res.json()` (antes só `montadoRef` era rechecado ali), evitando que uma resposta atrasada de um termo já superado sobrescreva a lista com dado do termo antigo.
-- `frontend/src/components/catalogo/BuscaCatalogo.test.tsx` -- 3 testes novos: `type="search"` travado, desmontar antes do debounce disparar (fetch nunca chamado), transição erro -> sucesso remove a mensagem de alerta.
-- `backend/services/produtos_test.go` -- novo `TestBuscarProdutos_EmpateDeRankENomeDesempataPorID` (regressão do desempate `p.id ASC` para mesmo rank + mesmo nome); corrige typo de aspa no comentário de `TestBuscarProdutos_CoringasLiteraisNaoViramWildcard`.
+- `frontend/src/components/catalogo/BuscaCatalogo.test.tsx` -- novo teste `digitar só espaços não dispara requisição (termo trimado fica vazio)`, cobrindo o branch `termoTrimado === ''` de `aoDigitar` alcançado só depois de digitar espaços (antes só o estado inicial sem digitação tinha teste).
 
-**Achados da revisão:**
-- `patch` (5, aplicados): 1 medium (corrida de resposta obsoleta pós-`await res.json()`), 4 low (3 gaps de cobertura de teste no frontend + 1 typo de comentário no backend). Ver Review Triage Log acima para o detalhe de cada um.
-- `defer` (2, pré-existentes, não causados por esta story -- ambos em `docker-compose.yml`, de commits anteriores à implementação desta story): fallback silencioso de `JWT_SECRET` para o segredo de dev (medium); healthcheck do `api`/volume de fotos com porta/diretório hardcoded em vez de referenciar `${PORT}`/`${FOTOS_DIR}` (low). Registrados em `deferred` no frontmatter.
-- `reject` (9): descartados por já serem neutralizados por design, cobertura desproporcional ao risco, premissa falsa/estado inalcançável, ou fora do escopo desta story por intent -- detalhe de cada um no Review Triage Log acima.
+**Review findings breakdown:**
+- patch: 1 (low 1) -- aplicado (teste de espaços em branco acima).
+- defer: 1 (low 1) -- `docker-compose.yml` removeu publicação de porta no host para `db`/`api`/`web` (restaurada só via `docker-compose.override.yml.example`, opt-in); fluxos baseados em host (`go test` local, proxy do dev server do frontend) param de conectar sem esse arquivo copiado. Pré-existente (commits de infraestrutura anteriores a esta story), não causado pela busca.
+- reject: 17 (low 17) -- 11 duplicatas de achados já rejeitados nas duas passadas anteriores desta story (mesma justificativa, sem mudança); 4 novos achados de cobertura desproporcional ao risco ou premissa falsa (`categoria_id` confirmado `NOT NULL`, rank por prefixo/código já exercitado indiretamente, ramo de igualdade exata de categoria indistinguível do ramo de prefixo em resultado observável, sem convenção de doc OpenAPI no repo); 3 leituras alternativas de intenção levantadas pelo Intent Alignment Auditor (teto de 255 runes, desempate `p.id ASC`, mensagem de erro de busca) -- todas já decididas corretamente como patches necessários/consistentes nas passadas anteriores, sem contradição real com o texto da spec.
+- intent_gap: 0, bad_spec: 0.
 
-**Verificação executada (todos os comandos de `## Verification`, mais o suite completo):**
-- `cd backend && gofmt -l . && go build ./... && go vet ./...` -- sem saída de `gofmt` (após `gofmt -w` no arquivo de teste editado), build/vet limpos.
-- `cd backend && DATABASE_URL=postgres://stockflow:stockflow@127.0.0.1:5432/stockflow?sslmode=disable go test -p 1 -count=1 ./...` -- todos os pacotes `ok` (`services` 66.9s, `handlers` 79.2s, incluindo o novo teste de desempate e toda a suíte pré-existente da Story 4.1).
-- `cd frontend && npm run lint && npm run build && npm run test -- --run` -- `oxlint` sem achados; `tsc`+`vite build` sem erro; `vitest run` -- 27 arquivos / 269 testes, todos passando (incluindo os 3 testes novos desta passada).
-- Checagem manual de `EXPLAIN ANALYZE`/UI end-to-end (docker compose) não repetida nesta passada -- nenhuma mudança nesta passada afeta a query de ranking, o volume de dados ou o fluxo de UI já validados na implementação original.
+**Verificação executada:**
+- `cd frontend && npm run test -- --run BuscaCatalogo` -- 15/15 passou (inclui o novo teste).
+- `cd frontend && npm run lint && npm run build && npm run test` -- `oxlint` limpo, `tsc`+`vite build` ok, suíte completa 271/271 passou.
+- `cd backend && gofmt -l . && go build ./... && go vet ./...` -- sem saída de `gofmt`, build/vet limpos.
+- `cd backend && go test -p 1 -count=1 ./...` -- todos os pacotes `ok`; testes dependentes de Postgres (`TestBuscarProdutos_*` etc.) reportaram `SKIP` porque este ambiente de execução não tem Docker disponível para subir o banco -- nenhum código de backend foi alterado nesta passada, então isso não representa risco novo, só uma limitação deste ambiente de sandbox (não reproduz um problema do código).
 
-**Riscos residuais:**
-- A corrida de resposta obsoleta corrigida nesta passada tem uma janela de tempo estreita (entre a resposta HTTP chegar e `res.json()` resolver) -- o novo teste de erro->sucesso e a suíte de "descarte de resposta obsoleta" cobrem os caminhos relacionados, mas nenhum teste força especificamente essa janela estreita (exigiria instrumentar o `await` de `res.json()`), então a cobertura é indireta (por revisão de código), não uma reprodução determinística da corrida.
-- Os 2 itens `deferred` (docker-compose) permanecem sem dono até uma story/passada que toque `docker-compose.yml` explicitamente os endereçar.
+**Riscos residuais:** nenhum novo introduzido por esta passada. Os 3 itens em `deferred` (frontmatter) permanecem em aberto, todos em `docker-compose.yml`, todos pré-existentes a esta story.
 

@@ -38,6 +38,22 @@ describe('BuscaCatalogo — termo vazio', () => {
     expect(screen.queryByText(/Nenhum produto encontrado/)).not.toBeInTheDocument();
   });
 
+  it('digitar só espaços não dispara requisição (termo trimado fica vazio)', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    render(<BuscaCatalogo />);
+
+    await user.type(screen.getByLabelText('Buscar produtos'), '   ');
+
+    // Dá tempo bastante para o debounce (300ms) ter disparado, se o termo
+    // trimado (vazio) estivesse sendo tratado como não-vazio.
+    await new Promise((r) => setTimeout(r, 400));
+
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('campo de busca usa type="search" (botão nativo de limpar, teclado/IME mobile apropriado)', () => {
     render(<BuscaCatalogo />);
 
