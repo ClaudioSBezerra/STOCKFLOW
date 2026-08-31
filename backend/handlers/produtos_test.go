@@ -71,6 +71,57 @@ func getCategorias(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
 	return w
 }
 
+// getNomenclaturaTemplates despacha GET /api/nomenclatura-templates pela
+// MESMA composição de newMux (RequireAuth apenas — Story 3.2).
+func getNomenclaturaTemplates(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/nomenclatura-templates",
+		middleware.RequireAuth(db, testJWTSecret)(
+			ListarNomenclaturaTemplatesHandler(db)))
+	r := httptest.NewRequest(http.MethodGet, "/api/nomenclatura-templates", nil)
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+// postRenomear despacha POST /api/produtos/{id}/renomear pela MESMA
+// composição de newMux (RequireAuth -> RequireRole(almoxarife) ->
+// AtualizarNomeProdutoHandler — Story 3.2).
+func postRenomear(db *sql.DB, authHeader, id, body string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/produtos/{id}/renomear",
+		middleware.RequireAuth(db, testJWTSecret)(
+			middleware.RequireRole(services.PapelAlmoxarife)(
+				AtualizarNomeProdutoHandler(db))))
+	var r *http.Request
+	if body != "" {
+		r = httptest.NewRequest(http.MethodPost, "/api/produtos/"+id+"/renomear", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+	} else {
+		r = httptest.NewRequest(http.MethodPost, "/api/produtos/"+id+"/renomear", nil)
+	}
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+// templateIDPorSubtipoHandler devolve o id de um dos 28 templates fixos de
+// seed (migração 000013), pelo `subtipo` (addendum §G).
+func templateIDPorSubtipoHandler(t *testing.T, db *sql.DB, subtipo string) string {
+	t.Helper()
+	var id string
+	if err := db.QueryRow(`SELECT id FROM nomenclatura_templates WHERE subtipo = $1`, subtipo).Scan(&id); err != nil {
+		t.Fatalf("falha ao buscar template %q: %v", subtipo, err)
+	}
+	return id
+}
+
 // TestCriarProdutoHandler_201ParaAlmoxarifeGestorAdm prova a AC1 na fronteira
 // HTTP: uma sessão `almoxarife`+ com corpo válido (incluindo as 5 dimensões
 // pareadas) recebe 201 e o corpo `{"produto":{"id","nome"}}`.
@@ -329,5 +380,360 @@ func TestListarCategoriasHandler_401SemToken(t *testing.T) {
 	w := getCategorias(db, "")
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+}
+
+// --- Story 3.2: Nomenclatura Guiada por subtipo -----------------------------
+
+// TestCriarProdutoHandler_201ComTemplateValido prova a AC1 na fronteira: um
+// `template_id` válido + `nome` preenchendo todos os placeholders -> 201.
+func TestCriarProdutoHandler_201ComTemplateValido(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	templateID := templateIDPorSubtipoHandler(t, db, "Tubo — PEAD/PPR")
+	criarContaComPapel(t, db, "Almox", "prod-tpl-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "prod-tpl-almox@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Canteiro Template Válido")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+
+	corpo := `{
+		"nome": "TUBO PEAD PN80 DN50",
+		"categoria_id": "` + categoriaID + `",
+		"estoque_id": "` + estoque.ID + `",
+		"template_id": "` + templateID + `",
+		"quantidade_inicial": 1
+	}`
+	w := postProdutos(db, "Bearer "+token, corpo)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
+	}
+}
+
+// TestCriarProdutoHandler_400TemplateNaoCorrespondeAoNome prova a AC2 na
+// fronteira: `nome` que não preenche o formato do `template_id` selecionado
+// -> 400 VALIDATION_ERROR, nada gravado.
+func TestCriarProdutoHandler_400TemplateNaoCorrespondeAoNome(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	templateID := templateIDPorSubtipoHandler(t, db, "Tubo — PEAD/PPR")
+	criarContaComPapel(t, db, "Almox", "prod-tpl-invalido-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "prod-tpl-invalido-almox@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Canteiro Template Inválido")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+
+	corpo := `{
+		"nome": "TUBO PEAD PN80",
+		"categoria_id": "` + categoriaID + `",
+		"estoque_id": "` + estoque.ID + `",
+		"template_id": "` + templateID + `",
+		"quantidade_inicial": 1
+	}`
+	w := postProdutos(db, "Bearer "+token, corpo)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "VALIDATION_ERROR" {
+		t.Errorf("code = %q, want VALIDATION_ERROR", env.Error.Code)
+	}
+
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM produtos`).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("linhas em produtos = %d, want 0", n)
+	}
+}
+
+// TestCriarProdutoHandler_400TemplateInexistente prova a linha "Cadastro com
+// template_id inexistente" da I/O Matrix na fronteira HTTP: UUID válido sem
+// linha em nomenclatura_templates -> 400 VALIDATION_ERROR "template
+// selecionado não existe", nada gravado. TestCriarProduto_TemplateInexistente
+// (produtos_test.go) já prova o mesmo na camada de serviço; este teste fecha
+// a lacuna no boundary HTTP.
+func TestCriarProdutoHandler_400TemplateInexistente(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	criarContaComPapel(t, db, "Almox", "prod-tpl-inexistente-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "prod-tpl-inexistente-almox@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Canteiro Template Inexistente")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+
+	corpo := `{
+		"nome": "TUBO PEAD PN80 DN50",
+		"categoria_id": "` + categoriaID + `",
+		"estoque_id": "` + estoque.ID + `",
+		"template_id": "00000000-0000-4000-8000-000000000000",
+		"quantidade_inicial": 1
+	}`
+	w := postProdutos(db, "Bearer "+token, corpo)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "VALIDATION_ERROR" {
+		t.Errorf("code = %q, want VALIDATION_ERROR", env.Error.Code)
+	}
+	if !strings.Contains(env.Error.Message, "template selecionado não existe") {
+		t.Errorf("message = %q, want conter %q", env.Error.Message, "template selecionado não existe")
+	}
+
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM produtos`).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("linhas em produtos = %d, want 0", n)
+	}
+}
+
+// TestListarNomenclaturaTemplatesHandler_200PorQualquerPapel prova que
+// qualquer conta autenticada — inclusive `usuario` — recebe 200 com os 28
+// templates fixos.
+func TestListarNomenclaturaTemplatesHandler_200PorQualquerPapel(t *testing.T) {
+	db := testDB(t)
+
+	for _, papel := range []string{"usuario", "almoxarife", "gestor", "adm"} {
+		t.Run(papel, func(t *testing.T) {
+			email := "tpl-" + papel + "@empresa.com"
+			criarContaComPapel(t, db, "Conta "+papel, email, "senha-123456", papel)
+			token := tokenDeLogin(t, db, email, "senha-123456")
+
+			w := getNomenclaturaTemplates(db, "Bearer "+token)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+			}
+			var resp struct {
+				Templates []map[string]any `json:"templates"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+			}
+			if len(resp.Templates) != 28 {
+				t.Errorf("len(templates) = %d, want 28", len(resp.Templates))
+			}
+
+			var subtipoAnterior string
+			for i, tpl := range resp.Templates {
+				id, _ := tpl["id"].(string)
+				subtipo, _ := tpl["subtipo"].(string)
+				template, _ := tpl["template"].(string)
+				if id == "" || subtipo == "" || template == "" {
+					t.Errorf("templates[%d] com campo vazio: %+v", i, tpl)
+				}
+				if i > 0 && subtipo < subtipoAnterior {
+					t.Errorf("templates fora de ordem: %q veio depois de %q, want ORDER BY subtipo ASC", subtipo, subtipoAnterior)
+				}
+				subtipoAnterior = subtipo
+			}
+		})
+	}
+}
+
+// TestListarNomenclaturaTemplatesHandler_401SemToken prova que GET
+// /api/nomenclatura-templates sem Authorization -> 401.
+func TestListarNomenclaturaTemplatesHandler_401SemToken(t *testing.T) {
+	db := testDB(t)
+
+	w := getNomenclaturaTemplates(db, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+}
+
+// TestAtualizarNomeProdutoHandler_200AlmoxarifeSucesso prova a AC3/AC4 na
+// fronteira: `almoxarife` renomeando um Produto sem template com um nome
+// válido -> 200 {"produto":{"id","nome"}}.
+func TestAtualizarNomeProdutoHandler_200AlmoxarifeSucesso(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.002")
+	criarContaComPapel(t, db, "Almox", "renomear-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "renomear-almox@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Canteiro Renomear Handler")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	produto, err := services.CriarProduto(db, services.CriarProdutoInput{
+		Nome:              "Nome Original",
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		QuantidadeInicial: 1,
+	})
+	if err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+
+	w := postRenomear(db, "Bearer "+token, produto.ID, `{"nome":"Nome Renomeado"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+	var resp struct {
+		Produto map[string]any `json:"produto"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if resp.Produto["nome"] != "Nome Renomeado" {
+		t.Errorf("produto.nome = %v, want %q", resp.Produto["nome"], "Nome Renomeado")
+	}
+}
+
+// TestAtualizarNomeProdutoHandler_400NomeIncompativelComTemplate prova a AC3:
+// Produto com template aplicado, novo nome que não bate mais com o template
+// -> 400 VALIDATION_ERROR, nome no banco permanece o anterior.
+func TestAtualizarNomeProdutoHandler_400NomeIncompativelComTemplate(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.003")
+	templateID := templateIDPorSubtipoHandler(t, db, "Tubo — PEAD/PPR")
+	criarContaComPapel(t, db, "Almox", "renomear-tpl-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "renomear-tpl-almox@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Canteiro Renomear Template Handler")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	produto, err := services.CriarProduto(db, services.CriarProdutoInput{
+		Nome:              "TUBO PEAD PN80 DN50",
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		TemplateID:        templateID,
+		QuantidadeInicial: 1,
+	})
+	if err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+
+	w := postRenomear(db, "Bearer "+token, produto.ID, `{"nome":"TUBO PEAD PN80"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "VALIDATION_ERROR" {
+		t.Errorf("code = %q, want VALIDATION_ERROR", env.Error.Code)
+	}
+
+	var nomeGravado string
+	if err := db.QueryRow(`SELECT nome FROM produtos WHERE id = $1`, produto.ID).Scan(&nomeGravado); err != nil {
+		t.Fatalf("falha ao ler produto: %v", err)
+	}
+	if nomeGravado != "TUBO PEAD PN80 DN50" {
+		t.Errorf("nome gravado = %q, want o nome original preservado", nomeGravado)
+	}
+}
+
+// TestAtualizarNomeProdutoHandler_404IDInexistente prova que um `id` sem
+// linha correspondente -> 404 NOT_FOUND.
+func TestAtualizarNomeProdutoHandler_404IDInexistente(t *testing.T) {
+	db := testDB(t)
+	criarContaComPapel(t, db, "Almox", "renomear-404-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "renomear-404-almox@empresa.com", "senha-123456")
+
+	w := postRenomear(db, "Bearer "+token, "00000000-0000-4000-8000-000000000000", `{"nome":"Nome Qualquer"}`)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusNotFound, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "NOT_FOUND" {
+		t.Errorf("code = %q, want NOT_FOUND", env.Error.Code)
+	}
+}
+
+// TestAtualizarNomeProdutoHandler_400PayloadInvalido prova que um corpo JSON
+// malformado em POST /api/produtos/{id}/renomear -> 400 VALIDATION_ERROR
+// "payload inválido", sem chegar a tocar o banco.
+func TestAtualizarNomeProdutoHandler_400PayloadInvalido(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.002")
+	criarContaComPapel(t, db, "Almox", "renomear-payload-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "renomear-payload-almox@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Canteiro Renomear Payload Inválido")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	produto, err := services.CriarProduto(db, services.CriarProdutoInput{
+		Nome:              "Nome Original",
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		QuantidadeInicial: 1,
+	})
+	if err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+
+	w := postRenomear(db, "Bearer "+token, produto.ID, `{"nome":`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "VALIDATION_ERROR" {
+		t.Errorf("code = %q, want VALIDATION_ERROR", env.Error.Code)
+	}
+
+	var nomeGravado string
+	if err := db.QueryRow(`SELECT nome FROM produtos WHERE id = $1`, produto.ID).Scan(&nomeGravado); err != nil {
+		t.Fatalf("falha ao ler produto: %v", err)
+	}
+	if nomeGravado != "Nome Original" {
+		t.Errorf("nome gravado = %q, want %q (nada deveria ter sido alterado)", nomeGravado, "Nome Original")
+	}
+}
+
+// TestAtualizarNomeProdutoHandler_403ParaUsuario prova a AC5: papel `usuario`
+// chamando POST /api/produtos/{id}/renomear direto -> 403 FORBIDDEN, nada é
+// gravado.
+func TestAtualizarNomeProdutoHandler_403ParaUsuario(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.004")
+	criarContaComPapel(t, db, "Usuária", "renomear-forb-usuario@empresa.com", "senha-123456", "usuario")
+	tokenUsuario := tokenDeLogin(t, db, "renomear-forb-usuario@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Canteiro Renomear Proibido")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	produto, err := services.CriarProduto(db, services.CriarProdutoInput{
+		Nome:              "Nome Original",
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		QuantidadeInicial: 1,
+	})
+	if err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+
+	w := postRenomear(db, "Bearer "+tokenUsuario, produto.ID, `{"nome":"Nome Trocado Por Usuario"}`)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusForbidden, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "FORBIDDEN" {
+		t.Errorf("code = %q, want FORBIDDEN", env.Error.Code)
+	}
+
+	var nomeGravado string
+	if err := db.QueryRow(`SELECT nome FROM produtos WHERE id = $1`, produto.ID).Scan(&nomeGravado); err != nil {
+		t.Fatalf("falha ao ler produto: %v", err)
+	}
+	if nomeGravado != "Nome Original" {
+		t.Errorf("nome gravado = %q, want %q (nada deveria ter sido alterado)", nomeGravado, "Nome Original")
 	}
 }

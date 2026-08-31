@@ -14,20 +14,30 @@ import {
 import { getAccessToken } from '@/lib/session';
 
 /**
- * Seção "Cadastrar Produto" da `CatalogoPage` (Story 3.1, spec-3-1), visível
- * só a `almoxarife`+ (gate na própria página). Um `Card` com formulário:
- * `nome`/`codigo`/`observacoes` (`Input`), `categoria`/`estoque` (`Select`,
- * carregados de `GET /api/categorias` e `GET /api/estoques` no mount) e as 5
+ * Seção "Cadastrar Produto" da `CatalogoPage` (Story 3.1, spec-3-1; Story 3.2,
+ * spec-3-2, acrescenta a Nomenclatura Guiada), visível só a `almoxarife`+
+ * (gate na própria página). Um `Card` com formulário: `nome`/`codigo`/
+ * `observacoes` (`Input`), `categoria`/`estoque`/`template de nomenclatura`
+ * (`Select`, os dois primeiros obrigatórios, o terceiro opcional — carregados
+ * de `GET /api/categorias`/`GET /api/estoques` (`Promise.all`, obrigatórios)
+ * e, isoladamente, `GET /api/nomenclatura-templates` — uma falha só nesse
+ * endpoint opcional não bloqueia os dois primeiros) e as 5
  * dimensões pareadas (`Input` numérico + `Select` de unidade `mm/cm/m`),
  * todas opcionais — AD-9. `quantidade_inicial` é `Input` numérico obrigatório.
+ *
+ * Quando um template é selecionado, um texto de apoio abaixo do campo Nome
+ * mostra o formato exato esperado (ex. "Formato: CABO [TIPO] [TENSÃO] ...")
+ * — só orientação visual, nenhuma validação de formato roda no cliente; o
+ * servidor (`services.CriarProduto`) é a única fonte de verdade (Story 3.2,
+ * AC1/AC2).
  *
  * Submit -> `POST /api/produtos`. Sucesso: `toast.success('Produto
  * cadastrado.')` (molde de `LocaisEstoqueSection`) e o formulário é limpo.
  * `400` -> `<p role="alert">` com a mensagem devolvida pelo servidor (nomeia
- * o campo específico quando aplicável, ex. dimensão incompleta); qualquer
- * outro erro (rede, 500) -> `<p role="alert">` genérico. Botão desabilitado
- * durante o envio ou com `nome`/`categoria_id`/`estoque_id`/
- * `quantidade_inicial` em branco.
+ * o campo específico quando aplicável, ex. dimensão incompleta, ou o nome não
+ * corresponder ao template selecionado); qualquer outro erro (rede, 500) ->
+ * `<p role="alert">` genérico. Botão desabilitado durante o envio ou com
+ * `nome`/`categoria_id`/`estoque_id`/`quantidade_inicial` em branco.
  *
  * Categoria é sempre selecionada da lista fixa de `GET /api/categorias`
  * (AC4) — nunca um campo de texto livre.
@@ -44,6 +54,12 @@ interface Estoque {
   nome: string;
 }
 
+interface NomenclaturaTemplate {
+  id: string;
+  subtipo: string;
+  template: string;
+}
+
 interface DimensaoEstado {
   valor: string;
   unidade: string;
@@ -51,6 +67,13 @@ interface DimensaoEstado {
 
 const DIMENSAO_VAZIA: DimensaoEstado = { valor: '', unidade: '' };
 const UNIDADES = ['mm', 'cm', 'm'] as const;
+
+// SEM_TEMPLATE é o valor sentinela da opção "nome livre" do `<Select>` de
+// template — Radix `Select.Item` proíbe `value=""` (usado internamente para
+// representar "nada selecionado"), então a opção vazia descrita na spec-3-2
+// precisa de um valor não-vazio próprio, traduzido de volta para `''`
+// (estado `templateId`) no `onValueChange`.
+const SEM_TEMPLATE = '__sem-template__';
 
 function authHeaders(): Record<string, string> {
   const token = getAccessToken();
@@ -132,6 +155,7 @@ export function CadastroProdutoSection() {
   const [observacoes, setObservacoes] = useState('');
   const [categoriaId, setCategoriaId] = useState('');
   const [estoqueId, setEstoqueId] = useState('');
+  const [templateId, setTemplateId] = useState('');
   const [quantidadeInicial, setQuantidadeInicial] = useState('');
   const [comprimento, setComprimento] = useState<DimensaoEstado>(DIMENSAO_VAZIA);
   const [largura, setLargura] = useState<DimensaoEstado>(DIMENSAO_VAZIA);
@@ -141,6 +165,7 @@ export function CadastroProdutoSection() {
 
   const [categorias, setCategorias] = useState<Categoria[]>([]);
   const [estoques, setEstoques] = useState<Estoque[]>([]);
+  const [templates, setTemplates] = useState<NomenclaturaTemplate[]>([]);
   const [erroCarregar, setErroCarregar] = useState<string | null>(null);
 
   const [enviando, setEnviando] = useState(false);
@@ -163,6 +188,23 @@ export function CadastroProdutoSection() {
       setErroCarregar(null);
     } catch {
       setErroCarregar(MENSAGEM_ERRO_CARREGAR);
+      return;
+    }
+
+    // Template de nomenclatura é opcional (Story 3.2, AC2) — buscado FORA do
+    // Promise.all acima, com seu próprio try/catch: nem uma resposta não-ok
+    // nem a própria fetch rejeitando (falha de rede isolada nesse endpoint)
+    // pode bloquear o cadastro inteiro, que não depende dela. Degrada
+    // silenciosamente para "nenhum template disponível" (o `<Select>` mostra
+    // só a opção "Nome livre"), sem acionar `erroCarregar`.
+    try {
+      const resTemplates = await fetch('/api/nomenclatura-templates', { headers: authHeaders() });
+      if (resTemplates.ok) {
+        const bodyTemplates = (await resTemplates.json()) as { templates: NomenclaturaTemplate[] };
+        setTemplates(bodyTemplates.templates ?? []);
+      }
+    } catch {
+      // Falha de rede isolada em templates — mantém "Nome livre" (templates == []).
     }
   }, []);
 
@@ -178,6 +220,7 @@ export function CadastroProdutoSection() {
     setObservacoes('');
     setCategoriaId('');
     setEstoqueId('');
+    setTemplateId('');
     setQuantidadeInicial('');
     setComprimento(DIMENSAO_VAZIA);
     setLargura(DIMENSAO_VAZIA);
@@ -185,6 +228,8 @@ export function CadastroProdutoSection() {
     setAltura(DIMENSAO_VAZIA);
     setEspessura(DIMENSAO_VAZIA);
   }
+
+  const templateSelecionado = templates.find((t) => t.id === templateId);
 
   const desabilitado =
     enviando ||
@@ -212,6 +257,7 @@ export function CadastroProdutoSection() {
           observacoes: observacoes.trim() === '' ? undefined : observacoes.trim(),
           categoria_id: categoriaId,
           estoque_id: estoqueId,
+          template_id: templateId === '' ? undefined : templateId,
           quantidade_inicial: Number(quantidadeInicial),
           comprimento: montarDimensao(comprimento),
           largura: montarDimensao(largura),
@@ -250,7 +296,37 @@ export function CadastroProdutoSection() {
 
           <div className="flex flex-col gap-2">
             <Label htmlFor="produto-nome">Nome</Label>
-            <Input id="produto-nome" value={nome} onChange={(event) => setNome(event.target.value)} />
+            <Input
+              id="produto-nome"
+              value={nome}
+              onChange={(event) => setNome(event.target.value)}
+              aria-describedby={templateSelecionado ? 'produto-nome-formato' : undefined}
+            />
+            {templateSelecionado && (
+              <p id="produto-nome-formato" className="text-label text-muted-foreground">
+                Formato: {templateSelecionado.template}
+              </p>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="produto-template">Template de nomenclatura (opcional)</Label>
+            <Select
+              value={templateId === '' ? SEM_TEMPLATE : templateId}
+              onValueChange={(valor) => setTemplateId(valor === SEM_TEMPLATE ? '' : valor)}
+            >
+              <SelectTrigger id="produto-template">
+                <SelectValue placeholder="Nome livre (sem template)" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={SEM_TEMPLATE}>Nome livre (sem template)</SelectItem>
+                {templates.map((template) => (
+                  <SelectItem key={template.id} value={template.id}>
+                    {template.subtipo}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="flex flex-col gap-2">

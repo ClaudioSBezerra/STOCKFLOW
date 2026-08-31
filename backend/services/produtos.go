@@ -64,14 +64,20 @@ type DimensaoInput struct {
 }
 
 // CriarProdutoInput agrupa os campos aceitos por CriarProduto (Story 3.1,
-// FR-8). `EstoqueID`/`QuantidadeInicial` alimentam o INSERT em
-// `produto_estoque` feito na mesma transação do INSERT em `produtos`.
+// FR-8; `TemplateID` acrescentado pela Story 3.2). `EstoqueID`/
+// `QuantidadeInicial` alimentam o INSERT em `produto_estoque` feito na mesma
+// transação do INSERT em `produtos`.
+//
+// `TemplateID` vazio (após trim) preserva o comportamento da Story 3.1: nome
+// livre, sem validação de estrutura. Preenchido, `nome` deve casar o formato
+// do template referenciado (Story 3.2, AC1/AC2) — ver nomeValidoParaTemplate.
 type CriarProdutoInput struct {
 	Nome              string
 	Codigo            string
 	Observacoes       string
 	CategoriaID       string
 	EstoqueID         string
+	TemplateID        string
 	QuantidadeInicial float64
 	Comprimento       *DimensaoInput
 	Largura           *DimensaoInput
@@ -93,6 +99,12 @@ type ErroProdutoValidacao struct {
 }
 
 func (e *ErroProdutoValidacao) Error() string { return e.Mensagem }
+
+// ErrProdutoNaoEncontrado indica `id` de Produto inexistente OU malformado
+// (não-UUID, `pq` SQLSTATE 22P02) — os dois colapsam no mesmo erro, mesmo
+// padrão de ErrEstoqueNaoEncontrado/ErrContaNaoEncontrada. Mapeado para
+// 404 NOT_FOUND por AtualizarNomeProdutoHandler (Story 3.2).
+var ErrProdutoNaoEncontrado = errors.New("produto não encontrado")
 
 // ErroEstoqueComResiduo indica que o Estoque alvo de ExcluirEstoque
 // (estoques.go, mesmo pacote) tem ao menos um Produto com quantidade
@@ -143,23 +155,28 @@ func validarDimensao(campo string, d *DimensaoInput) (sql.NullFloat64, sql.NullS
 	return sql.NullFloat64{Float64: *d.Valor, Valid: true}, sql.NullString{String: *d.Unidade, Valid: true}, nil
 }
 
-// CriarProduto valida e insere um novo Produto (Story 3.1, FR-8). Toda a
-// validação acontece ANTES de qualquer escrita — nome, categoria/estoque
-// (presença), quantidade inicial e as 5 dimensões pareadas — de modo que um
-// erro de validação NUNCA deixa um Produto parcialmente gravado.
+// CriarProduto valida e insere um novo Produto (Story 3.1, FR-8; Story 3.2
+// acrescenta a Nomenclatura Guiada). Toda a validação acontece ANTES de
+// qualquer escrita — nome, categoria/estoque (presença), quantidade inicial,
+// as 5 dimensões pareadas e, quando `TemplateID` é informado, o formato do
+// nome contra o template (ver o bloco de validação de Nomenclatura Guiada
+// abaixo) — de modo que um erro de validação NUNCA deixa um Produto
+// parcialmente gravado.
 //
 // Sucesso: uma única transação insere a linha em `produtos` (`RETURNING id,
-// nome`) seguida da linha em `produto_estoque` vinculando o Produto recém-
-// criado ao Estoque informado com a quantidade inicial, e comita as duas
-// juntas. `categoria_id`/`estoque_id` que não correspondem a nenhuma linha
-// (violação de FK, SQLSTATE 23503) ou que não são UUID válido (SQLSTATE
-// 22P02, mesma constante pqInvalidTextRepresentation de promocao.go)
-// colapsam em ErroProdutoValidacao — nunca um 500: input de cliente inválido
-// não é erro de servidor. O INSERT em `produtos` só pode falhar por causa de
-// `categoria_id`; o INSERT em `produto_estoque` (rodando depois, já com um
-// `produto_id` válido) só pode falhar por causa de `estoque_id` — por isso a
-// mensagem de cada ramo já nomeia o campo certo sem precisar inspecionar o
-// nome da constraint.
+// nome`, incluindo `template_id` quando informado) seguida da linha em
+// `produto_estoque` vinculando o Produto recém-criado ao Estoque informado
+// com a quantidade inicial, e comita as duas juntas. `categoria_id`/
+// `estoque_id` que não correspondem a nenhuma linha (violação de FK,
+// SQLSTATE 23503) ou que não são UUID válido (SQLSTATE 22P02, mesma
+// constante pqInvalidTextRepresentation de promocao.go) colapsam em
+// ErroProdutoValidacao — nunca um 500: input de cliente inválido não é erro
+// de servidor. `template_id` já foi validado (existência + formato do nome)
+// antes da transação abrir, então na prática o INSERT em `produtos` só pode
+// falhar por causa de `categoria_id`; o INSERT em `produto_estoque` (rodando
+// depois, já com um `produto_id` válido) só pode falhar por causa de
+// `estoque_id` — por isso a mensagem de cada ramo já nomeia o campo certo
+// sem precisar inspecionar o nome da constraint.
 func CriarProduto(db *sql.DB, input CriarProdutoInput) (Produto, error) {
 	nomeTrimado := strings.TrimSpace(input.Nome)
 	if nomeTrimado == "" || utf8.RuneCountInString(nomeTrimado) > 255 {
@@ -215,6 +232,32 @@ func CriarProduto(db *sql.DB, input CriarProdutoInput) (Produto, error) {
 		return Produto{}, err
 	}
 
+	// Validação de Nomenclatura Guiada (Story 3.2, AC1/AC2) — feita AQUI,
+	// ainda antes de abrir a transação, junto às demais validações: um
+	// `template_id` vazio (após trim) preserva o comportamento da Story 3.1
+	// (nome livre); preenchido, exige que `nome` case o formato do template.
+	var templateID sql.NullString
+	templateIDTrimado := strings.TrimSpace(input.TemplateID)
+	if templateIDTrimado != "" {
+		var templateTexto string
+		err := db.QueryRow(
+			`SELECT template FROM nomenclatura_templates WHERE id = $1`, templateIDTrimado,
+		).Scan(&templateTexto)
+		if err != nil {
+			var pqErr *pq.Error
+			if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
+				return Produto{}, &ErroProdutoValidacao{Mensagem: "template selecionado não existe"}
+			}
+			return Produto{}, fmt.Errorf("falha ao buscar template de nomenclatura: %w", err)
+		}
+		if !nomeValidoParaTemplate(templateTexto, nomeTrimado) {
+			return Produto{}, &ErroProdutoValidacao{
+				Mensagem: "nome não corresponde ao formato do template selecionado",
+			}
+		}
+		templateID = sql.NullString{String: templateIDTrimado, Valid: true}
+	}
+
 	var codigo sql.NullString
 	if codigoTrimado != "" {
 		codigo = sql.NullString{String: codigoTrimado, Valid: true}
@@ -232,17 +275,17 @@ func CriarProduto(db *sql.DB, input CriarProdutoInput) (Produto, error) {
 
 	const insertProduto = `
 		INSERT INTO produtos (
-			nome, codigo, categoria_id, observacoes,
+			nome, codigo, categoria_id, observacoes, template_id,
 			comprimento_valor, comprimento_unidade,
 			largura_valor, largura_unidade,
 			diametro_valor, diametro_unidade,
 			altura_valor, altura_unidade,
 			espessura_valor, espessura_unidade
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		RETURNING id, nome`
 	var p Produto
 	err = tx.QueryRow(insertProduto,
-		nomeTrimado, codigo, categoriaID, observacoes,
+		nomeTrimado, codigo, categoriaID, observacoes, templateID,
 		comprimentoValor, comprimentoUnidade,
 		larguraValor, larguraUnidade,
 		diametroValor, diametroUnidade,
@@ -270,6 +313,70 @@ func CriarProduto(db *sql.DB, input CriarProdutoInput) (Produto, error) {
 
 	if err := tx.Commit(); err != nil {
 		return Produto{}, fmt.Errorf("falha ao commitar cadastro de produto: %w", err)
+	}
+	return p, nil
+}
+
+// AtualizarNomeProduto edita SÓ o `nome` de um Produto existente (Story 3.2,
+// AC3) — escopo deliberadamente estreito: dimensões/categoria/estoque/
+// observações ficam fora, sem endpoint de edição para eles nesta story (não
+// existe, em nenhum épico do roadmap, uma tela geral de edição de Produto).
+//
+// `novoNome` é validado com a MESMA regra de CriarProduto (trim, 1..255
+// runes) -> ErroProdutoValidacao se falhar, nenhuma leitura/escrita
+// acontece.
+//
+// `id` inexistente OU malformado (não-UUID, `pq` SQLSTATE 22P02) ->
+// ErrProdutoNaoEncontrado. Quando o Produto tem `template_id` aplicado, o
+// novo nome é revalidado contra esse MESMO template (nomeValidoParaTemplate)
+// antes do UPDATE — a regra da Story 3.2 não pode ser burlada editando o
+// nome depois do cadastro; inválido -> ErroProdutoValidacao, `nome` no banco
+// permanece o anterior (nenhum UPDATE roda). Produto sem template
+// (`template_id IS NULL`) aceita qualquer texto que passe na validação
+// básica acima.
+func AtualizarNomeProduto(db *sql.DB, id string, novoNome string) (Produto, error) {
+	nomeTrimado := strings.TrimSpace(novoNome)
+	if nomeTrimado == "" || utf8.RuneCountInString(nomeTrimado) > 255 {
+		return Produto{}, &ErroProdutoValidacao{
+			Mensagem: "nome é obrigatório e deve ter no máximo 255 caracteres",
+		}
+	}
+
+	var templateID sql.NullString
+	err := db.QueryRow(`SELECT template_id FROM produtos WHERE id = $1`, id).Scan(&templateID)
+	if err != nil {
+		var pqErr *pq.Error
+		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
+			return Produto{}, ErrProdutoNaoEncontrado
+		}
+		return Produto{}, fmt.Errorf("falha ao buscar produto para renomear: %w", err)
+	}
+
+	if templateID.Valid {
+		var templateTexto string
+		if err := db.QueryRow(
+			`SELECT template FROM nomenclatura_templates WHERE id = $1`, templateID.String,
+		).Scan(&templateTexto); err != nil {
+			return Produto{}, fmt.Errorf("falha ao buscar template aplicado ao produto: %w", err)
+		}
+		if !nomeValidoParaTemplate(templateTexto, nomeTrimado) {
+			return Produto{}, &ErroProdutoValidacao{
+				Mensagem: "nome não corresponde ao formato do template aplicado a este produto",
+			}
+		}
+	}
+
+	var p Produto
+	if err := db.QueryRow(
+		`UPDATE produtos SET nome = $1 WHERE id = $2 RETURNING id, nome`, nomeTrimado, id,
+	).Scan(&p.ID, &p.Nome); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Inalcançável na prática: o SELECT acima já provou que a linha
+			// existe. Mantido como defesa em profundidade contra uma
+			// exclusão concorrente entre o SELECT e o UPDATE.
+			return Produto{}, ErrProdutoNaoEncontrado
+		}
+		return Produto{}, fmt.Errorf("falha ao atualizar nome do produto: %w", err)
 	}
 	return p, nil
 }

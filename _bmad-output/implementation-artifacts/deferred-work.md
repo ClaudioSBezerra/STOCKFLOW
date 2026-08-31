@@ -285,3 +285,19 @@ source_spec: `spec-3-1-cadastro-manual-de-produto-com-dimensoes-estruturadas.md`
 severity: low
 reason: Mesmo padrão já presente em LocaisEstoqueSection.tsx (Story 2.1, pré- existente) — nenhuma seção do projeto usa um guard de "still mounted" nos efeitos de carregamento inicial. Baixo risco prático: são as primeiras telas carregadas após navegação, raramente desmontadas antes do fetch resolver.
 status: open
+
+### DW-37: A tabela `nomenclatura_templates` (seed fixo dos 28 templates) usa `subtipo` (texto livre com em-dash, ex. "Cabos — Elétrico") como único handle natural para uma futura migração legada (Story 3.7) ree
+origin: spec-deferred 1746e011bd7a
+location: backend/migrations/000013_create_nomenclatura_templates.up.sql
+source_spec: `spec-3-2-nomenclatura-guiada-por-subtipo.md`
+severity: low
+reason: Comentário da migration 000013 e do Code Map da spec-3-2 citam explicitamente addendum §G como fonte única e a Story 3.7 como quem "encontra as linhas já gravadas e não as reinsere" — mas nada além do texto de `subtipo` amarra essa expectativa. Achado do Blind Hunter (review automatizado) na primeira revisão desta story.
+status: open
+
+### DW-38: Follow-up review still recommended for 3-2-nomenclatura-guiada-por-subtipo after the damping cap was spent
+origin: review-budget-followup
+location: n/a
+source_spec: `spec-3-2-nomenclatura-guiada-por-subtipo.md`
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260830-172544-5790; this entry preserves the lingering recommendation for a deliberate later review.
+status: open

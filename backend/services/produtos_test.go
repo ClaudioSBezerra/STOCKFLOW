@@ -29,6 +29,19 @@ func categoriaIDPorCodigo(t *testing.T, db *sql.DB, codigo string) string {
 	return id
 }
 
+// templatePorSubtipo devolve o id e o texto de um dos 28 templates fixos de
+// seed (migração 000013), pelo `subtipo` (addendum §G) — usado como
+// `template_id`/texto esperado nos testes de Nomenclatura Guiada.
+func templatePorSubtipo(t *testing.T, db *sql.DB, subtipo string) (id, texto string) {
+	t.Helper()
+	if err := db.QueryRow(
+		`SELECT id, template FROM nomenclatura_templates WHERE subtipo = $1`, subtipo,
+	).Scan(&id, &texto); err != nil {
+		t.Fatalf("falha ao buscar template %q: %v", subtipo, err)
+	}
+	return id, texto
+}
+
 func contarProdutos(t *testing.T, db *sql.DB) int {
 	t.Helper()
 	var n int
@@ -539,5 +552,285 @@ func TestListarCategorias_Todas25OrdenadasPorCodigo(t *testing.T) {
 	primeira := categorias[0]
 	if primeira.Codigo != "04.001" || primeira.Nome != "Materiais Civis" || primeira.ID == "" {
 		t.Errorf("primeira categoria = %+v, want {codigo:04.001 nome:Materiais Civis}", primeira)
+	}
+}
+
+// --- Story 3.2: Nomenclatura Guiada por subtipo -----------------------------
+
+// TestCriarProduto_ComTemplateNomeCompleto prova a AC1: `template_id` válido
+// + `nome` preenchendo todos os placeholders na mesma ordem -> sucesso, e
+// `produtos.template_id` grava o template escolhido.
+func TestCriarProduto_ComTemplateNomeCompleto(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Template Completo")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.002")
+	templateID, _ := templatePorSubtipo(t, db, "Tubo — PEAD/PPR")
+
+	p, err := CriarProduto(db, CriarProdutoInput{
+		Nome:              "TUBO PEAD PN80 DN50",
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		TemplateID:        templateID,
+		QuantidadeInicial: 1,
+	})
+	if err != nil {
+		t.Fatalf("CriarProduto erro inesperado: %v", err)
+	}
+
+	var templateIDGravado sql.NullString
+	if err := db.QueryRow(`SELECT template_id FROM produtos WHERE id = $1`, p.ID).Scan(&templateIDGravado); err != nil {
+		t.Fatalf("falha ao ler produto gravado: %v", err)
+	}
+	if !templateIDGravado.Valid || templateIDGravado.String != templateID {
+		t.Errorf("template_id gravado = %v, want %q", templateIDGravado, templateID)
+	}
+}
+
+// TestCriarProduto_ComTemplatePlaceholderFaltando prova a AC2: `nome` que não
+// preenche todos os placeholders do template selecionado -> ErroProdutoValidacao,
+// nada gravado.
+func TestCriarProduto_ComTemplatePlaceholderFaltando(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Template Incompleto")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.002")
+	templateID, _ := templatePorSubtipo(t, db, "Tubo — PEAD/PPR")
+
+	_, err = CriarProduto(db, CriarProdutoInput{
+		Nome:              "TUBO PEAD PN80", // falta o segmento DN[XX]
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		TemplateID:        templateID,
+		QuantidadeInicial: 1,
+	})
+	var erroValidacao *ErroProdutoValidacao
+	if !errors.As(err, &erroValidacao) {
+		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
+	}
+	if !strings.Contains(erroValidacao.Mensagem, "template") {
+		t.Errorf("mensagem = %q, want citar %q", erroValidacao.Mensagem, "template")
+	}
+	if n := contarProdutos(t, db); n != 0 {
+		t.Errorf("linhas em produtos = %d, want 0", n)
+	}
+}
+
+// TestCriarProduto_TemplateInexistente prova a AC2: `template_id` que é UUID
+// válido sem linha correspondente, OU malformado, -> ErroProdutoValidacao
+// "template selecionado não existe", nada gravado.
+func TestCriarProduto_TemplateInexistente(t *testing.T) {
+	db := testDB(t)
+
+	casos := map[string]string{
+		"uuid válido sem linha": "00000000-0000-4000-8000-000000000000",
+		"id malformado":         "não-e-um-uuid",
+	}
+	for nome, templateID := range casos {
+		t.Run(nome, func(t *testing.T) {
+			limparProdutos(t, db)
+			estoque, err := CriarEstoque(db, "Canteiro Template Ausente "+nome)
+			if err != nil {
+				t.Fatalf("seed CriarEstoque: %v", err)
+			}
+			categoriaID := categoriaIDPorCodigo(t, db, "04.003")
+
+			_, err = CriarProduto(db, CriarProdutoInput{
+				Nome:              "Produto Template Ausente",
+				CategoriaID:       categoriaID,
+				EstoqueID:         estoque.ID,
+				TemplateID:        templateID,
+				QuantidadeInicial: 1,
+			})
+			var erroValidacao *ErroProdutoValidacao
+			if !errors.As(err, &erroValidacao) {
+				t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
+			}
+			if !strings.Contains(erroValidacao.Mensagem, "template selecionado não existe") {
+				t.Errorf("mensagem = %q, want %q", erroValidacao.Mensagem, "template selecionado não existe")
+			}
+			if n := contarProdutos(t, db); n != 0 {
+				t.Errorf("linhas em produtos = %d, want 0", n)
+			}
+		})
+	}
+}
+
+// TestCriarProduto_SemTemplateGravaTemplateIDNulo prova a regressão da Story
+// 3.1: `template_id` ausente -> sucesso, sem exigência de estrutura, e a
+// coluna `template_id` fica NULL.
+func TestCriarProduto_SemTemplateGravaTemplateIDNulo(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Sem Template")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.004")
+
+	p, err := CriarProduto(db, CriarProdutoInput{
+		Nome:              "qualquer texto livre, sem estrutura nenhuma",
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		QuantidadeInicial: 1,
+	})
+	if err != nil {
+		t.Fatalf("CriarProduto erro inesperado: %v", err)
+	}
+
+	var templateID sql.NullString
+	if err := db.QueryRow(`SELECT template_id FROM produtos WHERE id = $1`, p.ID).Scan(&templateID); err != nil {
+		t.Fatalf("falha ao ler produto gravado: %v", err)
+	}
+	if templateID.Valid {
+		t.Errorf("template_id = %v, want NULL", templateID)
+	}
+}
+
+// TestAtualizarNomeProduto_SemTemplateAceitaQualquerNome prova que renomear
+// um Produto sem `template_id` aceita qualquer texto (validado só pela regra
+// básica de nome).
+func TestAtualizarNomeProduto_SemTemplateAceitaQualquerNome(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Renomear Sem Template")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.005")
+	p, err := CriarProduto(db, CriarProdutoInput{
+		Nome:              "Nome Original",
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		QuantidadeInicial: 1,
+	})
+	if err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+
+	atualizado, err := AtualizarNomeProduto(db, p.ID, "Qualquer Nome Novo Sem Estrutura")
+	if err != nil {
+		t.Fatalf("AtualizarNomeProduto erro inesperado: %v", err)
+	}
+	if atualizado.Nome != "Qualquer Nome Novo Sem Estrutura" {
+		t.Errorf("Nome = %q, want %q", atualizado.Nome, "Qualquer Nome Novo Sem Estrutura")
+	}
+
+	var nomeGravado string
+	if err := db.QueryRow(`SELECT nome FROM produtos WHERE id = $1`, p.ID).Scan(&nomeGravado); err != nil {
+		t.Fatalf("falha ao ler produto: %v", err)
+	}
+	if nomeGravado != "Qualquer Nome Novo Sem Estrutura" {
+		t.Errorf("nome gravado = %q, want %q", nomeGravado, "Qualquer Nome Novo Sem Estrutura")
+	}
+}
+
+// TestAtualizarNomeProduto_ComTemplateRevalida prova a AC3/AC4: Produto com
+// `template_id` aplicado — um novo nome que preenche o mesmo template ->
+// sucesso e `produtos.nome` atualizado; um novo nome que NÃO preenche ->
+// ErroProdutoValidacao e o `nome` gravado permanece o anterior.
+func TestAtualizarNomeProduto_ComTemplateRevalida(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Renomear Com Template")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.006")
+	templateID, _ := templatePorSubtipo(t, db, "Tubo — PEAD/PPR")
+
+	p, err := CriarProduto(db, CriarProdutoInput{
+		Nome:              "TUBO PEAD PN80 DN50",
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		TemplateID:        templateID,
+		QuantidadeInicial: 1,
+	})
+	if err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+
+	// Nome inválido contra o mesmo template -> erro, nome antigo preservado.
+	_, err = AtualizarNomeProduto(db, p.ID, "TUBO PEAD PN80")
+	var erroValidacao *ErroProdutoValidacao
+	if !errors.As(err, &erroValidacao) {
+		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
+	}
+	if !strings.Contains(erroValidacao.Mensagem, "template aplicado a este produto") {
+		t.Errorf("mensagem = %q, want citar %q", erroValidacao.Mensagem, "template aplicado a este produto")
+	}
+	var nomeAposFalha string
+	if err := db.QueryRow(`SELECT nome FROM produtos WHERE id = $1`, p.ID).Scan(&nomeAposFalha); err != nil {
+		t.Fatalf("falha ao ler produto: %v", err)
+	}
+	if nomeAposFalha != "TUBO PEAD PN80 DN50" {
+		t.Errorf("nome após falha = %q, want o nome original preservado", nomeAposFalha)
+	}
+
+	// Nome válido contra o mesmo template -> sucesso.
+	atualizado, err := AtualizarNomeProduto(db, p.ID, "TUBO PEAD PN100 DN75")
+	if err != nil {
+		t.Fatalf("AtualizarNomeProduto erro inesperado: %v", err)
+	}
+	if atualizado.Nome != "TUBO PEAD PN100 DN75" {
+		t.Errorf("Nome = %q, want %q", atualizado.Nome, "TUBO PEAD PN100 DN75")
+	}
+}
+
+// TestAtualizarNomeProduto_IDInexistente prova que um `id` sem linha
+// correspondente (UUID válido ou malformado) -> ErrProdutoNaoEncontrado.
+func TestAtualizarNomeProduto_IDInexistente(t *testing.T) {
+	db := testDB(t)
+
+	casos := map[string]string{
+		"uuid válido sem linha": "00000000-0000-4000-8000-000000000000",
+		"id malformado":         "não-e-um-uuid",
+	}
+	for nome, id := range casos {
+		t.Run(nome, func(t *testing.T) {
+			_, err := AtualizarNomeProduto(db, id, "Nome Qualquer")
+			if !errors.Is(err, ErrProdutoNaoEncontrado) {
+				t.Fatalf("erro = %v, want ErrProdutoNaoEncontrado", err)
+			}
+		})
+	}
+}
+
+// TestAtualizarNomeProduto_NomeInvalido prova que a validação básica de nome
+// (vazio após trim) roda ANTES de tocar o banco -> ErroProdutoValidacao.
+func TestAtualizarNomeProduto_NomeInvalido(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Renomear Nome Invalido")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.007")
+	p, err := CriarProduto(db, CriarProdutoInput{
+		Nome:              "Nome Original",
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		QuantidadeInicial: 1,
+	})
+	if err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+
+	_, err = AtualizarNomeProduto(db, p.ID, "   ")
+	var erroValidacao *ErroProdutoValidacao
+	if !errors.As(err, &erroValidacao) {
+		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
 	}
 }

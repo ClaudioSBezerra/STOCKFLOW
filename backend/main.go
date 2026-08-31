@@ -30,7 +30,13 @@
 // numa única transação; GET /api/categorias para qualquer conta autenticada
 // lista as 25 categorias fixas de seed; o guard de quantidade residual da
 // Story 2.2 passa a ser exercitado de verdade, agora que `produto_estoque`
-// existe).
+// existe) e a Nomenclatura Guiada por subtipo — Story 3.2 (GET
+// /api/nomenclatura-templates para qualquer conta autenticada lista os 28
+// templates fixos de seed; POST /api/produtos ganha `template_id` opcional,
+// validando `nome` contra o formato do template quando informado; POST
+// /api/produtos/{id}/renomear, mínimo `almoxarife`, é o único endpoint de
+// edição de Produto — escopo restrito a `nome`, revalidado contra o template
+// aplicado quando existir).
 package main
 
 import (
@@ -296,6 +302,19 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 			handlers.CriarProdutoHandler(db))))
 	mux.HandleFunc("GET /api/categorias", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarCategoriasHandler(db)))
+
+	// Nomenclatura Guiada por subtipo — Story 3.2 (FR-9). GET
+	// /api/nomenclatura-templates leva só RequireAuth, mesmo padrão de GET
+	// /api/categorias — a lista fixa dos 28 templates é liberada a qualquer
+	// conta autenticada (o formulário de cadastro precisa dela). POST
+	// /api/produtos/{id}/renomear fica atrás de RequireRole(almoxarife): é o
+	// único endpoint de edição de Produto que existe hoje, restrito a `nome`,
+	// mesmo mínimo de papel do cadastro.
+	mux.HandleFunc("GET /api/nomenclatura-templates", middleware.RequireAuth(db, jwtSecret)(
+		handlers.ListarNomenclaturaTemplatesHandler(db)))
+	mux.HandleFunc("POST /api/produtos/{id}/renomear", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAlmoxarife)(
+			handlers.AtualizarNomeProdutoHandler(db))))
 
 	// Login federado via Keycloak — SSO Ferreira Costa (Story 1.9, AD-7).
 	// /api/auth/sso/config e /api/auth/logout são SEMPRE registrados (o
