@@ -71,7 +71,11 @@ services:
       db:
         condition: service_healthy
     healthcheck:
-      test: ['CMD', 'wget', '--spider', '-q', 'http://localhost:8080/api/health']
+      # 127.0.0.1, não `localhost` (ver o healthcheck de `web` abaixo para o
+      # porquê) — este passa por acaso hoje porque o servidor Go escuta em
+      # modo dual-stack, mas usar o literal IPv4 remove a dependência dessa
+      # coincidência.
+      test: ['CMD', 'wget', '--spider', '-q', 'http://127.0.0.1:8080/api/health']
       interval: 10s
       timeout: 5s
       retries: 5
@@ -91,7 +95,18 @@ services:
       api:
         condition: service_healthy
     healthcheck:
-      test: ['CMD', 'wget', '--spider', '-q', 'http://localhost:80/']
+      # 127.0.0.1, NUNCA `localhost`: a imagem `nginx:alpine` só escuta em
+      # IPv4 (`listen 80;`, sem `[::]:80` -- o script padrão da imagem que
+      # adicionaria o listener IPv6 detecta que `nginx.conf` é customizado e
+      # pula essa etapa, visível no log de start: "default.conf differs from
+      # the packaged version"). Se `localhost` resolver para `::1` primeiro
+      # (comportamento comum de getaddrinfo em musl/Alpine), o wget nunca
+      # encontra nada ali e falha para sempre com "Connection refused",
+      # mesmo com o nginx saudável e escutando certinho em 0.0.0.0:80 --
+      # bug real observado em produção (Coolify/Traefik reportava "no
+      # available server" porque o Docker nunca marcava o container como
+      # healthy). 127.0.0.1 no lugar de `localhost` remove a ambiguidade.
+      test: ['CMD', 'wget', '--spider', '-q', 'http://127.0.0.1:80/']
       interval: 10s
       timeout: 5s
       retries: 5
