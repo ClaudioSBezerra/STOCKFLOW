@@ -8,7 +8,43 @@ followup_review_recommended: true
 baseline_revision: '62b98b201cba707582c192ae8583e4bc11021046'
 context: ['{project-root}/_bmad-output/implementation-artifacts/epic-4-context.md']
 warnings: ['oversized']
-deferred: []
+deferred:
+  - summary: >-
+      docker-compose.yml deixa JWT_SECRET cair silenciosamente no segredo de
+      desenvolvimento quando a variável não está definida no ambiente, em vez
+      de falhar rápido.
+    evidence: |-
+      Confirmado lendo docker-compose.yml:36: `JWT_SECRET:
+      ${JWT_SECRET:-dev-jwt-secret-nao-usar-em-producao}`. Se um operador
+      esquecer de configurar JWT_SECRET no Coolify, o container sobe em
+      produção assinando/verificando JWTs com um segredo conhecido
+      publicamente no repositório, sem nunca falhar — contradiz o padrão
+      fail-fast que o próprio main.go documenta para DATABASE_URL/JWT_SECRET.
+      Achado independentemente pelo Blind Hunter e pelo Edge Case Hunter na
+      revisão de follow-up da Story 4.1; não é causado por esta story
+      (introduzido em commits de docker-compose anteriores à implementação
+      desta story).
+    location: >-
+      docker-compose.yml:36
+    severity: medium
+  - summary: >-
+      docker-compose.yml usa valores hardcoded (porta 8080, diretório
+      /data/fotos) no healthcheck do `api` e no volume de fotos, em vez de
+      referenciar as próprias variáveis PORT/FOTOS_DIR que esses mesmos
+      serviços expõem.
+    evidence: |-
+      Confirmado lendo docker-compose.yml: linhas 32/40 definem
+      `${PORT:-8080}`/`${FOTOS_DIR:-/data/fotos}`, mas a linha 78 (healthcheck
+      do `api`) usa `http://127.0.0.1:8080/...` literal e a linha 69 (volume)
+      usa `/data/fotos` literal. Se um operador sobrescrever PORT ou
+      FOTOS_DIR, o healthcheck passa a testar a porta errada (api nunca fica
+      "healthy") e/ou fotos gravadas fora do volume persistente
+      `stockflow-fotos-data` (perdidas num restart). Achado pelo Edge Case
+      Hunter na revisão de follow-up da Story 4.1; não é causado por esta
+      story.
+    location: >-
+      docker-compose.yml
+    severity: low
 ---
 
 <intent-contract>
@@ -120,6 +156,28 @@ deferred: []
   - `[reject]` Atalho `/` testado só isoladamente, nunca dentro da árvore real de `CatalogoPage` (com `Tabs`/formulários coexistindo) — a lógica de guarda (campo editável/modificador) já está coberta a nível de unidade, que é a superfície de risco real; um teste de integração redundante seria cobertura desproporcional ao risco (mesmo padrão de rejeição já usado na Story 3.5 para nitpicks de cobertura desproporcional).
   - `[reject]` Guarda de campo editável (`elementoEhEditavel`) testada só para `<input>`, não para `<textarea>`/`[contenteditable]` — o próprio Verification Gap Reviewer marcou este ponto como não atingindo a régua de achado por si só.
 
+### 2026-08-31 — Review pass (follow-up)
+- intent_gap: 0
+- bad_spec: 0
+- patch: 5 (high 0, medium 1, low 4)
+- defer: 2 (medium 1, low 1)
+- reject: 9 (low 9)
+- addressed_findings:
+  - `[medium]` `[patch]` `BuscaCatalogo.tsx` só rechecava `montadoRef` depois do `await res.json()`, nunca `termoAtualRef` — se o Usuário digitasse um termo novo exatamente durante o parse do JSON da resposta anterior (janela entre a checagem de `termoAtualRef` pré-`await` e o `await` resolver), a resposta obsoleta ainda sobrescrevia a lista/mensagem com um resultado que não correspondia mais ao termo atual, violando o `Always` da spec sobre descarte de resposta obsoleta. Achado pelo Edge Case Hunter. Corrigido acrescentando um segundo recheck de `termoAtualRef` logo após o `await res.json()`, antes de `setResultados`/`setTermoBuscado`.
+  - `[low]` `[patch]` Nenhum teste travava o `type="search"` do campo de busca — fix aplicado na passada de revisão anterior desta própria story, sem cobertura de regressão. Achado pelo Blind Hunter. Corrigido com um teste dedicado (`toHaveAttribute('type', 'search')`).
+  - `[low]` `[patch]` Nenhum teste cobria a transição erro -> sucesso: a mensagem `role="alert"` deveria desaparecer assim que uma busca seguinte resolve com sucesso, mas nenhum caso do `describe` de erro exercitava esse caminho. Achado pelo Blind Hunter. Corrigido com um novo teste (resposta não-ok seguida de uma busca com resultado).
+  - `[low]` `[patch]` Nenhum teste cobria desmontar o componente ANTES do debounce (300ms) disparar — só "desmontar com fetch já em voo" estava coberto; o cleanup que cancela o `setTimeout` pendente (`clearTimeout(debounceRef.current)`) ficava sem nenhuma asserção de que `fetch` nunca é chamado nesse caso. Achado pelo Blind Hunter. Corrigido com um novo teste.
+  - `[low]` `[patch]` O desempate final `p.id ASC` em `buscarProdutosQuery` (adicionado na passada de revisão anterior desta própria story, para dois Produtos com mesmo rank e mesmo `nome`) não tinha nenhum teste de regressão cobrindo exatamente esse caso — nenhum teste da suíte cria dois Produtos com rank E nome idênticos, então `p.nome ASC` sozinho já ordena toda a suíte hoje sem nunca exercitar o `p.id`. Achado pelo Verification Gap Reviewer. Corrigido com `TestBuscarProdutos_EmpateDeRankENomeDesempataPorID` (dois Produtos com mesmo `nome`/mesmo rank, resultado esperado em ordem ascendente por `id`).
+  - `[low]` `[patch]` Comentário em `produtos_test.go` (`TestBuscarProdutos_CoringasLiteraisNaoViramWildcard`) misturava aspa reta com aspa curva (`ESCAPE '\”`), typo cosmético sem efeito funcional. Achado pelo Blind Hunter. Corrigido.
+  - `[reject]` Requisições `fetch` em voo de um debounce anterior não são canceladas via `AbortController` quando um termo mais novo dispara ou o componente desmonta — a corrida já é neutralizada do lado do cliente (`termoAtualRef`/`montadoRef` descartam a resposta), então a única consequência é trabalho de rede desperdiçado, não um resultado incorreto; nenhuma AC/NFR exige cancelamento de requisição, mesmo padrão de rejeição de escopo já usado nesta story para itens sem AC correspondente.
+  - `[reject]` `services.BuscarProdutos` não valida o tamanho de `termo` por conta própria (só o handler valida) — hoje o único chamador é `BuscarProdutosHandler`, que já valida; um guard duplicado no service defenderia contra um chamador hipotético que não existe no repositório.
+  - `[reject]` `buscarProdutosQuery` avalia os padrões `ILIKE` de prefixo/substring duas vezes por linha (uma no `CASE` de rank, outra no `WHERE`) — redundante, mas a checagem manual de NFR já feita nesta story (8.000 linhas, ~13ms) confirma que isso não compromete o orçamento de 300ms p95; otimizar seria trabalho sem benefício mensurável no volume real.
+  - `[reject]` `CategoriaBusca.codigo` é lido do envelope de resposta pelo frontend mas nunca renderizado na lista de resultados — premissa de "dado morto" incorreta: a spec define explicitamente `"categoria":{"id","codigo","nome"}` como o formato de resposta (mesmo padrão de `ListarCategorias`); o frontend só usa `nome` porque nenhuma AC pede o código da categoria na UI, não porque o campo é supérfluo no contrato.
+  - `[reject]` Nenhum teste cobre `authHeaders()` retornando `{}` quando não há token de acesso — o caminho "sem token" já resulta em 401 do backend, e o branch de erro genérico (`res.ok === false`) já tem cobertura própria; um teste adicional só para a origem específica do 401 seria cobertura desproporcional ao risco, mesmo padrão de rejeição já usado nesta story.
+  - `[reject]` Comentário do healthcheck do `api` em `docker-compose.yml` reconhece que o serviço "passa por acidente hoje" (Go escuta dual-stack) sem abrir um item de acompanhamento formal para essa coincidência — o comentário já documenta o risco no próprio código; não é uma lacuna introduzida por esta story nem algo que esta story deveria resolver (não toca `docker-compose.yml` por intent).
+  - `[reject]` `epic-4-context.md`/a própria spec desta story não têm nenhuma checagem automatizada cruzando as decisões documentadas (ex. infraestrutura de SSE do épico) com o código realmente alterado por esta story — nenhuma AC/NFR pede esse tipo de checagem de consistência documentação-código, e o próprio arquivo já se declara regenerável ("Regenerate with compile-epic-context if planning docs change").
+  - `[reject]` Atalho `/` não trata `evento.isComposing` (IME) — premissa questionável: o atalho só age quando `document.activeElement` NÃO é um campo editável (`elementoEhEditavel`), e composição de IME só fica ativa num elemento editável focado; o estado descrito (IME compondo fora de um campo editável) não é alcançável pela própria guarda já existente.
+
 ## Design Notes
 
 - **Sem dropdown flutuante, resultado inline na tela**: a AC "a tela mostra 'Nenhum produto encontrado...'" fala da TELA, não de um menu suspenso — e como a Story 4.3 (grade/tabela) e a Story 4.4 (detalhe, destino de um clique) ainda não existem, tratar os até-7 resultados como uma lista informativa simples (sem link/clique) evita inventar uma navegação que esta story não tem para onde levar, e evita descartar depois um componente de dropdown/combobox que a 4.3 substituiria de qualquer forma.
@@ -139,33 +197,25 @@ deferred: []
 
 ## Auto Run Result
 
-**Resumo da implementação:** Story 4.1 entregue de ponta a ponta — novo endpoint `GET /api/produtos/busca?q=<termo>` (só `RequireAuth`, qualquer papel `usuario`+) rankeando até 7 Produtos por relevância (exato > prefixo > categoria > substring) via `CASE`/`ILIKE` com escaping de coringas, sem migração/índice novo; no frontend, `BuscaCatalogo` (novo componente) fica sempre visível no topo de `CatalogoPage`, com debounce de 300ms, descarte de resposta obsoleta (por termo E por desmontagem), atalho de teclado `/`, e mensagem exata de "nenhum produto encontrado" — sem dropdown/navegação (fora do escopo, depende da Story 4.4).
+**Resumo:** Passada de revisão de follow-up (invocada com a spec já `done`, `followup_review_recommended: true` da passada anterior). Nenhuma mudança de comportamento novo foi implementada nesta passada — a implementação da Story 4.1 (busca por nome/código/categoria com sugestões, backend + frontend) já estava completa; esta passada rodou os 4 revisores em paralelo sobre o diff acumulado desde `baseline_revision`, endereçou os `patch` encontrados e coletou 2 achados pré-existentes (não causados por esta story) como `deferred`.
 
-**Arquivos alterados:**
-- `backend/services/produtos.go` -- `ProdutoBusca`, `escaparCoringasLike`, `buscarProdutosQuery` (rank por `CASE`, `LIMIT 7`, desempate final por `id`), `BuscarProdutos`.
-- `backend/services/produtos_test.go` -- 7 novos testes cobrindo a matriz de I/O (ranking, limite de 7, coringas literais, código ausente).
-- `backend/handlers/produtos.go` -- `BuscarProdutosHandler` (trim, teto de 255 runes, `400`/`200`, sem `RequireRole`).
-- `backend/handlers/produtos_test.go` -- 6 novos testes (200 com/sem resultado, 400 termo vazio, 400 termo muito longo, 401, 200 para `usuario`).
-- `backend/main.go` -- registro de `GET /api/produtos/busca` (só `RequireAuth`) + doc comments atualizados.
-- `backend/main_test.go` -- `TestNewMux_ProdutosBuscaRotaSoRequireAuth` (prova que a rota real não leva `RequireRole`).
-- `frontend/src/components/catalogo/BuscaCatalogo.tsx` (novo) -- campo de busca, debounce, guarda de corrida por termo E por desmontagem, atalho `/`, lista de resultados, mensagem de vazio/erro, `type="search"`.
-- `frontend/src/components/catalogo/BuscaCatalogo.test.tsx` (novo) -- 11 testes (vazio, debounce, campos exibidos, mensagem vazia, corrida por termo, desmontagem com fetch pendente, erro `ok:false`/rede, atalho `/` em 3 variações).
-- `frontend/src/pages/CatalogoPage.tsx` -- integra `<BuscaCatalogo />` no topo; texto residual "Visualização em grade e tabela chega em breve."
-- `frontend/src/pages/CatalogoPage.test.tsx`, `frontend/src/App.test.tsx` -- assertions do texto antigo atualizadas.
-- `_bmad-output/implementation-artifacts/epic-4-context.md` (novo) -- contexto do Epic 4 compilado para esta e futuras stories do épico.
+**Arquivos alterados nesta passada:**
+- `frontend/src/components/catalogo/BuscaCatalogo.tsx` -- corrige corrida de resposta obsoleta: recheca `termoAtualRef` também depois do `await res.json()` (antes só `montadoRef` era rechecado ali), evitando que uma resposta atrasada de um termo já superado sobrescreva a lista com dado do termo antigo.
+- `frontend/src/components/catalogo/BuscaCatalogo.test.tsx` -- 3 testes novos: `type="search"` travado, desmontar antes do debounce disparar (fetch nunca chamado), transição erro -> sucesso remove a mensagem de alerta.
+- `backend/services/produtos_test.go` -- novo `TestBuscarProdutos_EmpateDeRankENomeDesempataPorID` (regressão do desempate `p.id ASC` para mesmo rank + mesmo nome); corrige typo de aspa no comentário de `TestBuscarProdutos_CoringasLiteraisNaoViramWildcard`.
 
-**Findings da revisão:** 4 reviewers em paralelo (Blind Hunter, Edge Case Hunter, Verification Gap Reviewer, Intent Alignment Auditor) contra o diff completo desde `baseline_revision`. 5 patches aplicados (0 alta, 1 média, 4 baixas): desempate final por `id` no ranking, teto de 255 runes em `q`, guarda contra `setState` pós-desmontagem (+ teste), cobertura de teste do estado de erro (+ asserção de alvo de toque), `type="search"`. 14 achados rejeitados (busca sem acento, categoria por código, ausência de "mais resultados", sem loading, 401 genérico, sem `aria-live`, sem padrão combobox, itens inertes, sem rate limiting, sem `Esc`, código vazio impossível, atalho `/` só testado isolado, guarda de campo editável parcialmente testada, tamanho mínimo de termo) — todos com justificativa registrada no `## Review Triage Log`, a maioria por decisão explícita já documentada na própria spec (`Never`/`Design Notes`) ou por ausência de exigência em qualquer documento de planejamento. 0 intent_gap, 0 bad_spec, 0 defer.
+**Achados da revisão:**
+- `patch` (5, aplicados): 1 medium (corrida de resposta obsoleta pós-`await res.json()`), 4 low (3 gaps de cobertura de teste no frontend + 1 typo de comentário no backend). Ver Review Triage Log acima para o detalhe de cada um.
+- `defer` (2, pré-existentes, não causados por esta story -- ambos em `docker-compose.yml`, de commits anteriores à implementação desta story): fallback silencioso de `JWT_SECRET` para o segredo de dev (medium); healthcheck do `api`/volume de fotos com porta/diretório hardcoded em vez de referenciar `${PORT}`/`${FOTOS_DIR}` (low). Registrados em `deferred` no frontmatter.
+- `reject` (9): descartados por já serem neutralizados por design, cobertura desproporcional ao risco, premissa falsa/estado inalcançável, ou fora do escopo desta story por intent -- detalhe de cada um no Review Triage Log acima.
 
-**Recomendação de revisão de acompanhamento:** `true` — patches desta passada: 0 alta, 1 média, 4 baixas; `3×1 + 1×4 = 7 ≥ 5`.
-
-**Verificação realizada:**
-- `cd backend && gofmt -l . && go build ./... && go vet ./...` -- limpo (re-executado de forma independente após os patches).
-- `cd backend && go test -p 1 -count=1 ./...` -- todos os 7 pacotes `ok`, incluindo os testes novos/patchados, verificados individualmente com `-v -run`.
-- `cd frontend && npm run lint && npm run build && npm run test` -- `oxlint` limpo, `tsc`+`vite build` limpo, 266/266 testes passando (11/11 em `BuscaCatalogo.test.tsx`, verificados individualmente com `--reporter=verbose`).
-- NFR de desempenho (≤300ms p95, 8.000 Produtos): checagem manual feita durante a etapa de Verify (antes dos patches) -- ~8.000 linhas semeadas em Postgres local, `EXPLAIN ANALYZE` na query de `BuscarProdutos` (termo estreito e termo pior-caso batendo tudo) reportou ~13ms, bem abaixo do limite; dados de seed removidos após a checagem.
-- Auditoria da Matrix de I/O: as 9 linhas da matriz têm cobertura de teste que executou e passou (checado nominalmente, não só por inferência).
+**Verificação executada (todos os comandos de `## Verification`, mais o suite completo):**
+- `cd backend && gofmt -l . && go build ./... && go vet ./...` -- sem saída de `gofmt` (após `gofmt -w` no arquivo de teste editado), build/vet limpos.
+- `cd backend && DATABASE_URL=postgres://stockflow:stockflow@127.0.0.1:5432/stockflow?sslmode=disable go test -p 1 -count=1 ./...` -- todos os pacotes `ok` (`services` 66.9s, `handlers` 79.2s, incluindo o novo teste de desempate e toda a suíte pré-existente da Story 4.1).
+- `cd frontend && npm run lint && npm run build && npm run test -- --run` -- `oxlint` sem achados; `tsc`+`vite build` sem erro; `vitest run` -- 27 arquivos / 269 testes, todos passando (incluindo os 3 testes novos desta passada).
+- Checagem manual de `EXPLAIN ANALYZE`/UI end-to-end (docker compose) não repetida nesta passada -- nenhuma mudança nesta passada afeta a query de ranking, o volume de dados ou o fluxo de UI já validados na implementação original.
 
 **Riscos residuais:**
-- Busca não é insensível a acento (decisão consciente, ver Review Triage Log) -- pode gerar alguma frustração real de usuário buscando "eletrico" sem achar "Elétrico"; resolver direito exigiria a extensão `unaccent` (migração), fora do `Never` desta spec.
-- Nenhuma navegação ao selecionar um resultado -- intencional (Story 4.4 ainda não existe), mas o valor prático da busca fica limitado até a Story 4.4 landar.
-- Flakiness observada anteriormente em `CadastroProdutoSection.test.tsx` (arquivo não tocado por esta story) sob carga da suíte completa não se repetiu nas execuções finais (266/266 passando) -- não investigada a fundo por ser não-relacionada ao escopo desta story.
+- A corrida de resposta obsoleta corrigida nesta passada tem uma janela de tempo estreita (entre a resposta HTTP chegar e `res.json()` resolver) -- o novo teste de erro->sucesso e a suíte de "descarte de resposta obsoleta" cobrem os caminhos relacionados, mas nenhum teste força especificamente essa janela estreita (exigiria instrumentar o `await` de `res.json()`), então a cobertura é indireta (por revisão de código), não uma reprodução determinística da corrida.
+- Os 2 itens `deferred` (docker-compose) permanecem sem dono até uma story/passada que toque `docker-compose.yml` explicitamente os endereçar.
+

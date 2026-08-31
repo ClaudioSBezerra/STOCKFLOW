@@ -136,6 +136,7 @@ export function BuscaCatalogo() {
           }
           const data = (await res.json()) as { produtos?: ProdutoBusca[] };
           if (!montadoRef.current) return; // desmontou durante o await de res.json()
+          if (termoAtualRef.current !== termoTrimado) return; // termo mudou durante o await de res.json() — resposta obsoleta
           setResultados(Array.isArray(data.produtos) ? data.produtos : []);
           setTermoBuscado(termoTrimado);
         })

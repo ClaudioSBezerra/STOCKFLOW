@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -1133,5 +1134,42 @@ func TestBuscarProdutos_CodigoAusenteDevolveNilNoPonteiro(t *testing.T) {
 	}
 	if resultado[0].Codigo != nil {
 		t.Errorf("Codigo = %v, want nil", *resultado[0].Codigo)
+	}
+}
+
+// TestBuscarProdutos_EmpateDeRankENomeDesempataPorID prova o desempate final
+// `p.id ASC` (Review Triage Log de 2026-08-31): dois Produtos com MESMO rank
+// (ambos batem só por prefixo em `nome`) e MESMO `nome` não têm ordem
+// garantida por `ORDER BY rank, nome` sozinho — sem o desempate por `id`, a
+// ordem entre execuções não é determinística, o que pode mudar QUAIS
+// Produtos aparecem quando o empate cai na fronteira do `LIMIT 7`. Aqui o
+// volume é pequeno (2 Produtos, bem abaixo do limite), então o que esta
+// prova é a ORDEM relativa entre eles, sempre ascendente por `id`.
+func TestBuscarProdutos_EmpateDeRankENomeDesempataPorID(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Busca Empate")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+
+	primeiro := criarProdutoBusca(t, db, estoque.ID, "Empate Duplicado", "", categoriaID)
+	segundo := criarProdutoBusca(t, db, estoque.ID, "Empate Duplicado", "", categoriaID)
+
+	idsEsperados := []string{primeiro.ID, segundo.ID}
+	sort.Strings(idsEsperados)
+
+	resultado, err := BuscarProdutos(db, "empate duplicado")
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if len(resultado) != 2 {
+		t.Fatalf("len(resultado) = %d, want 2", len(resultado))
+	}
+	if resultado[0].ID != idsEsperados[0] || resultado[1].ID != idsEsperados[1] {
+		t.Errorf("ordem = [%q, %q], want [%q, %q] (desempate por id ASC)",
+			resultado[0].ID, resultado[1].ID, idsEsperados[0], idsEsperados[1])
 	}
 }

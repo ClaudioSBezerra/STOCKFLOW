@@ -37,6 +37,29 @@ describe('BuscaCatalogo — termo vazio', () => {
     expect(fetch).not.toHaveBeenCalled();
     expect(screen.queryByText(/Nenhum produto encontrado/)).not.toBeInTheDocument();
   });
+
+  it('campo de busca usa type="search" (botão nativo de limpar, teclado/IME mobile apropriado)', () => {
+    render(<BuscaCatalogo />);
+
+    expect(screen.getByLabelText('Buscar produtos')).toHaveAttribute('type', 'search');
+  });
+
+  it('desmontar antes do debounce (300ms) disparar nunca chama fetch', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    const { unmount } = render(<BuscaCatalogo />);
+
+    await user.type(screen.getByLabelText('Buscar produtos'), 'parafuso');
+    unmount();
+
+    // Dá tempo bastante para o debounce (300ms) ter disparado, se o cleanup
+    // não tivesse cancelado o timer pendente.
+    await new Promise((r) => setTimeout(r, 400));
+
+    expect(fetch).not.toHaveBeenCalled();
+  });
 });
 
 describe('BuscaCatalogo — debounce e resultados', () => {
@@ -207,6 +230,27 @@ describe('BuscaCatalogo — erro na busca', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Não foi possível buscar agora. Tente novamente em instantes.',
     );
+  });
+
+  it('uma busca com sucesso após um erro anterior remove a mensagem de erro', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, json: async () => ({}) })
+      .mockImplementationOnce(() => respostaOk([produtoParafuso]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    render(<BuscaCatalogo />);
+    const input = screen.getByLabelText('Buscar produtos');
+
+    await user.type(input, 'a');
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+
+    await user.clear(input);
+    await user.type(input, 'parafuso');
+
+    expect(await screen.findByText('Parafuso Sextavado M8')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });
 
