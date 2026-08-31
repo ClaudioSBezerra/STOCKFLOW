@@ -123,11 +123,21 @@ def set_issue_open_state(issue_number, done, dry_run):
     # issue is already in the target state — check first so a stale cache
     # (or a crash-lost prior run) never turns into a hard failure.
     current = get_issue_state(issue_number)
-    if done and current == "OPEN":
-        run(["gh", "issue", "close", str(issue_number), "--repo", REPO])
-    elif not done and current == "CLOSED":
-        # Reopen defensively — covers a story/epic moved back out of 'done'.
-        run(["gh", "issue", "reopen", str(issue_number), "--repo", REPO])
+    target = "CLOSED" if done else "OPEN"
+    if current == target:
+        return
+    cmd = "close" if done else "reopen"
+    try:
+        run(["gh", "issue", cmd, str(issue_number), "--repo", REPO])
+    except RuntimeError:
+        # Observed once (issue #27, 2026-08-31): gh reported "Could not
+        # close/reopen the issue" (GraphQL) even though the mutation had
+        # already landed server-side — a write-succeeded/ack-failed race,
+        # not a real failure. Re-check state before propagating: if the
+        # server already reflects the target, the mutation worked and the
+        # local error was noise. Only a genuine mismatch re-raises.
+        if get_issue_state(issue_number) != target:
+            raise
 
 
 def main():
