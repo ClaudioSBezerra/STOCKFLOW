@@ -522,6 +522,7 @@ describe('ConfiguracoesPage — Segurança (MFA, Story 1.11)', () => {
     );
 
     expect(await screen.findByText('JBSWY3DPEHPK3PXP')).toBeInTheDocument();
+    await user.type(screen.getByLabelText('Senha atual'), 'senha-correta-123');
     const inputCodigo = screen.getByLabelText('Código de verificação');
     await user.type(inputCodigo, '123456');
     await user.click(screen.getByRole('button', { name: 'Confirmar' }));
@@ -537,6 +538,7 @@ describe('ConfiguracoesPage — Segurança (MFA, Story 1.11)', () => {
     expect(JSON.parse(confirmarInit?.body as string)).toEqual({
       segredo: 'JBSWY3DPEHPK3PXP',
       codigo: '123456',
+      senhaAtual: 'senha-correta-123',
     });
 
     await waitFor(() =>
@@ -569,6 +571,7 @@ describe('ConfiguracoesPage — Segurança (MFA, Story 1.11)', () => {
     );
     await screen.findByText('JBSWY3DPEHPK3PXP');
 
+    await user.type(screen.getByLabelText('Senha atual'), 'senha-correta-123');
     await user.type(screen.getByLabelText('Código de verificação'), '000000');
     await user.click(screen.getByRole('button', { name: 'Confirmar' }));
 
@@ -576,6 +579,38 @@ describe('ConfiguracoesPage — Segurança (MFA, Story 1.11)', () => {
       'Código de autenticação inválido. Confira o código no seu aplicativo e tente novamente.',
     );
     // O QR/segredo continua visível para nova tentativa — nada foi gravado.
+    expect(screen.getByText('JBSWY3DPEHPK3PXP')).toBeInTheDocument();
+    expect(atualizarUsuarioMock).not.toHaveBeenCalled();
+  });
+
+  it('senha atual incorreta: mostra erro inline específico, mantém o QR para nova tentativa', async () => {
+    authState.mfaHabilitado = false;
+    stubFetchBase((url, init) => {
+      if (url === '/api/auth/mfa/iniciar' && init?.method === 'POST') {
+        return jsonOk({ segredo: 'JBSWY3DPEHPK3PXP', otpauthUrl: 'otpauth://totp/StockFlow:ana@empresa.com?secret=JBSWY3DPEHPK3PXP' });
+      }
+      if (url === '/api/auth/mfa/confirmar' && init?.method === 'POST') {
+        return Promise.resolve({
+          ok: false,
+          json: async () => ({ error: { code: 'INVALID_CREDENTIALS' } }),
+        });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    const user = userEvent.setup();
+    render(<ConfiguracoesPage />);
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Configurar autenticação em duas etapas' }),
+    );
+    await screen.findByText('JBSWY3DPEHPK3PXP');
+
+    await user.type(screen.getByLabelText('Senha atual'), 'senha-errada');
+    await user.type(screen.getByLabelText('Código de verificação'), '123456');
+    await user.click(screen.getByRole('button', { name: 'Confirmar' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Senha atual incorreta.');
     expect(screen.getByText('JBSWY3DPEHPK3PXP')).toBeInTheDocument();
     expect(atualizarUsuarioMock).not.toHaveBeenCalled();
   });

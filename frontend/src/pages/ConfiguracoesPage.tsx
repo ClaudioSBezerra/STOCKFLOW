@@ -103,6 +103,7 @@ function SegurancaCard() {
   const [segredo, setSegredo] = useState('');
   const [otpauthUrl, setOtpauthUrl] = useState('');
   const [codigo, setCodigo] = useState('');
+  const [senhaAtual, setSenhaAtual] = useState('');
   const [iniciando, setIniciando] = useState(false);
   const [confirmando, setConfirmando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -123,6 +124,7 @@ function SegurancaCard() {
       setSegredo(body.segredo);
       setOtpauthUrl(body.otpauthUrl);
       setCodigo('');
+      setSenhaAtual('');
       setEtapa('configurando');
     } catch {
       setErro('Não foi possível iniciar a configuração agora. Tente novamente em instantes.');
@@ -142,12 +144,14 @@ function SegurancaCard() {
       const res = await fetch('/api/auth/mfa/confirmar', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ segredo, codigo }),
+        body: JSON.stringify({ segredo, codigo, senhaAtual }),
       });
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: { code?: string } };
         if (body.error?.code === 'MFA_CODIGO_INVALIDO') {
           setErro('Código de autenticação inválido. Confira o código no seu aplicativo e tente novamente.');
+        } else if (body.error?.code === 'INVALID_CREDENTIALS') {
+          setErro('Senha atual incorreta.');
         } else {
           setErro('Não foi possível confirmar a configuração agora. Tente novamente em instantes.');
         }
@@ -206,6 +210,17 @@ function SegurancaCard() {
               <span className="font-mono text-body break-all">{segredo}</span>
             </div>
             <div className="flex flex-col gap-2">
+              <Label htmlFor="mfa-senha-atual">Senha atual</Label>
+              <Input
+                id="mfa-senha-atual"
+                type="password"
+                autoComplete="current-password"
+                required
+                value={senhaAtual}
+                onChange={(event) => setSenhaAtual(event.target.value)}
+              />
+            </div>
+            <div className="flex flex-col gap-2">
               <Label htmlFor="mfa-codigo">Código de verificação</Label>
               <Input
                 id="mfa-codigo"
@@ -236,6 +251,7 @@ function SegurancaCard() {
                 onClick={() => {
                   setEtapa('inicial');
                   setErro(null);
+                  setSenhaAtual('');
                 }}
               >
                 Cancelar
