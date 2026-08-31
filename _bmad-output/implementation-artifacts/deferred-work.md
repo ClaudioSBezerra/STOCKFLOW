@@ -341,3 +341,19 @@ source_spec: `spec-3-6-galeria-e-visualizacao-ampliada-de-fotos-lightbox.md`
 severity: low
 reason: carregarFotos (CadastroProdutoSection.tsx) grava cada Object URL resolvido em objectUrlCacheRef.current dentro do for, mas só publica `fotos` (setFotos) depois do loop inteiro terminar com sucesso; se uma foto posterior falhar, a função retorna false antes do setFotos, e o Object URL da foto anterior nunca é exibido nem revogado até o componente desmontar (quando todo o cache é revogado em bloco) — vazamento pequeno e limitado a essa sessão de tela, sem impacto funcional visível.
 status: open
+
+### DW-44: docker-compose.yml deixa JWT_SECRET cair silenciosamente no segredo de desenvolvimento quando a variável não está definida no ambiente, em vez de falhar rápido.
+origin: spec-deferred a2e567d75dc1
+location: docker-compose.yml:36
+source_spec: `spec-4-1-busca-por-nome-codigo-categoria-com-sugestoes.md`
+severity: medium
+reason: Confirmado lendo docker-compose.yml:36: `JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-nao-usar-em-producao}`. Se um operador esquecer de configurar JWT_SECRET no Coolify, o container sobe em produção assinando/verificando JWTs com um segredo conhecido publicamente no repositório, sem nunca falhar — contradiz o padrão fail-fast que o próprio main.go documenta para DATABASE_URL/JWT_SECRET. Achado independentemente pelo Blind Hunter e pelo Edge Case Hunter na revisão de follow-up da Story 4.1; não é causado por esta story (introduzido em commits de docker-compose anteriores à implementação desta story).
+status: open
+
+### DW-45: docker-compose.yml usa valores hardcoded (porta 8080, diretório /data/fotos) no healthcheck do `api` e no volume de fotos, em vez de referenciar as próprias variáveis PORT/FOTOS_DIR que esses mesmos s
+origin: spec-deferred 82a6e75d5262
+location: docker-compose.yml
+source_spec: `spec-4-1-busca-por-nome-codigo-categoria-com-sugestoes.md`
+severity: low
+reason: Confirmado lendo docker-compose.yml: linhas 32/40 definem `${PORT:-8080}`/`${FOTOS_DIR:-/data/fotos}`, mas a linha 78 (healthcheck do `api`) usa `http://127.0.0.1:8080/...` literal e a linha 69 (volume) usa `/data/fotos` literal. Se um operador sobrescrever PORT ou FOTOS_DIR, o healthcheck passa a testar a porta errada (api nunca fica "healthy") e/ou fotos gravadas fora do volume persistente `stockflow-fotos-data` (perdidas num restart). Achado pelo Edge Case Hunter na revisão de follow-up da Story 4.1; não é causado por esta story.
+status: open

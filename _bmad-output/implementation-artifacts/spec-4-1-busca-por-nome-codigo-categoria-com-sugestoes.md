@@ -2,7 +2,7 @@
 title: 'Story 4.1 — Busca por nome/código/categoria com sugestões'
 type: 'feature'
 created: '2026-08-31'
-status: 'blocked'
+status: 'done'
 review_loop_iteration: 0
 followup_review_recommended: false
 baseline_revision: '62b98b201cba707582c192ae8583e4bc11021046'
