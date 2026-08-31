@@ -96,10 +96,13 @@ func ListarEstoquesHandler(db *sql.DB) http.HandlerFunc {
 // ExcluirEstoqueHandler expõe DELETE /api/estoques/{id}: remove um local de
 // estoque. `204 No Content` **sem corpo** no sucesso (molde de LogoutHandler);
 // `404 NOT_FOUND` com o envelope de erro para `id` inexistente ou malformado
-// (não-UUID) — os dois colapsam em services.ErrEstoqueNaoEncontrado; qualquer
-// outra falha -> `500 INTERNAL_ERROR` + slog. Sem corpo de requisição — não
-// lê `r.Body`. O 403 para papel abaixo de `almoxarife` é decidido inteiramente
-// por RequireRole; este handler só executa quando o papel já passou nesse gate.
+// (não-UUID) — os dois colapsam em services.ErrEstoqueNaoEncontrado; `409
+// CONFLICT` quando o Estoque tem Produto com quantidade residual
+// (services.ErroEstoqueComResiduo, Story 3.1) — a mensagem já cita os nomes;
+// qualquer outra falha -> `500 INTERNAL_ERROR` + slog. Sem corpo de
+// requisição — não lê `r.Body`. O 403 para papel abaixo de `almoxarife` é
+// decidido inteiramente por RequireRole; este handler só executa quando o
+// papel já passou nesse gate.
 func ExcluirEstoqueHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := middleware.UsuarioDaSessao(r.Context()); !ok {
@@ -109,11 +112,14 @@ func ExcluirEstoqueHandler(db *sql.DB) http.HandlerFunc {
 		}
 
 		err := services.ExcluirEstoque(db, r.PathValue("id"))
+		var residuo *services.ErroEstoqueComResiduo
 		switch {
 		case err == nil:
 			w.WriteHeader(http.StatusNoContent)
 		case errors.Is(err, services.ErrEstoqueNaoEncontrado):
 			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "estoque não encontrado")
+		case errors.As(err, &residuo):
+			escreverErro(w, http.StatusConflict, "CONFLICT", residuo.Error())
 		default:
 			slog.Error("falha ao excluir estoque", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao excluir estoque")

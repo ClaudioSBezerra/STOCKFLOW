@@ -263,6 +263,59 @@ describe('<App /> — wiring real de AuthProvider + RotaProtegida', () => {
     expect(screen.queryByText('Em construção')).not.toBeInTheDocument();
   });
 
+  it('/ renderiza CatalogoPage dentro do shell, não a PlaceholderPage (papel usuario: só o aviso)', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/api/auth/refresh') {
+        return Promise.resolve({ ok: true, json: async () => ({ token: 'access-abc' }) });
+      }
+      if (url === '/api/auth/me') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ id: '1', nome: 'Fulano', email: 'f@empresa.com', papel: 'usuario' }),
+        });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    render(<App />);
+
+    expect(
+      await screen.findByText('Busca e visualização do catálogo chegam em breve.'),
+    ).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/');
+    expect(screen.queryByText('Em construção')).not.toBeInTheDocument();
+    expect(screen.queryByText('Cadastrar Produto')).not.toBeInTheDocument();
+  });
+
+  it('/ com papel almoxarife+ também renderiza CadastroProdutoSection', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/api/auth/refresh') {
+        return Promise.resolve({ ok: true, json: async () => ({ token: 'access-abc' }) });
+      }
+      if (url === '/api/auth/me') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ id: '1', nome: 'Fulano', email: 'f@empresa.com', papel: 'almoxarife' }),
+        });
+      }
+      if (url === '/api/categorias') {
+        return Promise.resolve({ ok: true, json: async () => ({ categorias: [] }) });
+      }
+      if (url === '/api/estoques') {
+        return Promise.resolve({ ok: true, json: async () => ({ estoques: [] }) });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    render(<App />);
+
+    expect(
+      await screen.findByText('Busca e visualização do catálogo chegam em breve.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Cadastrar Produto')).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/');
+  });
+
   it('cookie válido: refresh + /me resolvem e o AppShell é renderizado em /', async () => {
     fetchMock.mockImplementation((url: string) => {
       if (url === '/api/auth/refresh') {

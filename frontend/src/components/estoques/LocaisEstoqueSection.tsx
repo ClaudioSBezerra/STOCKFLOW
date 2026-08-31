@@ -25,11 +25,16 @@ import { getAccessToken } from '@/lib/session';
  * Exclusão (Story 2.2): "Excluir" numa linha abre o `ConfirmDialog`
  * reutilizável (nunca `window.confirm`); ao confirmar, `DELETE
  * /api/estoques/{id}` com `authHeaders()`. `204`/`res.ok` ->
- * `toast.success('Estoque excluído.')`; qualquer `!res.ok` ->
- * `MENSAGEM_ERRO_EXCLUIR` no `<p role="alert">`. A lista é sempre recarregada
- * (sucesso E falha, molde de `GestaoUsuariosSection` — a linha obsoleta cai
- * sozinha após um 404 de corrida). Os guards de estoque residual (Epic 3) e
- * Pedido pendente (Epic 7) entram nas Stories 3.1 e 7.2, no backend.
+ * `toast.success('Estoque excluído.')`; `409` (guard de quantidade residual,
+ * Story 3.1: o Estoque tem Produto com resíduo) -> `<p role="alert">` com a
+ * mensagem do PRÓPRIO servidor (já cita os Produtos, ex. "estoque possui
+ * quantidade residual de: Tubo PVC 100mm") — mesma ideia do `409` de nome
+ * duplicado no cadastro logo acima, mas aqui a mensagem não é fixa no
+ * cliente porque ela varia por Estoque; qualquer outro `!res.ok` ->
+ * `MENSAGEM_ERRO_EXCLUIR` genérico no `<p role="alert">`. A lista é sempre
+ * recarregada (sucesso E falha, molde de `GestaoUsuariosSection` — a linha
+ * obsoleta cai sozinha após um 404 de corrida). O guard de Pedido pendente
+ * (Epic 7) entra na Story 7.2, no backend.
  *
  * Sem eventos SSE nesta story (o registry `realtime/` ainda não existe): a
  * tela só busca no mount.
@@ -132,6 +137,12 @@ export function LocaisEstoqueSection() {
       });
       if (res.status === 204 || res.ok) {
         toast.success('Estoque excluído.');
+      } else if (res.status === 409) {
+        // Guard de quantidade residual (Story 3.1): a mensagem do servidor já
+        // cita os Produtos com resíduo — não é um texto fixo como o 409 de
+        // nome duplicado do cadastro, porque varia por Estoque.
+        const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+        setErro(body.error?.message ?? MENSAGEM_ERRO_EXCLUIR);
       } else {
         setErro(MENSAGEM_ERRO_EXCLUIR);
       }

@@ -3,6 +3,7 @@ import { AppShell } from '@/components/shell/AppShell';
 import { AuthProvider, useAuth } from '@/lib/auth';
 import { rankPapel } from '@/components/shell/nav-items';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
+import { CatalogoPage } from '@/pages/CatalogoPage';
 import { CadastroPage } from '@/pages/CadastroPage';
 import { VerificarEmailPage } from '@/pages/VerificarEmailPage';
 import { LoginPage } from '@/pages/LoginPage';
@@ -13,10 +14,13 @@ import { EstoquesPage } from '@/pages/EstoquesPage';
 import { AuthCallbackPage } from '@/pages/AuthCallbackPage';
 
 /**
- * Rota raiz usa `AppShell` como layout; todo caminho não-raiz reaproveita a
- * mesma página placeholder — nenhuma tela de produto real existe ainda
- * (ver spec-1-2). Itens de navegação do shell continuam clicáveis mesmo sem
- * uma rota "de verdade" atrás deles.
+ * Rota raiz usa `AppShell` como layout. A raiz (`/`) deixou de ser
+ * `PlaceholderPage` na Story 3.1 (spec-3-1): agora é `CatalogoPage` — aviso de
+ * "busca em breve" (Epic 4) para qualquer papel, mais a seção de cadastro de
+ * Produto para `almoxarife`+. Todo caminho não-raiz e não-listado continua
+ * reaproveitando `PlaceholderPage` — nenhuma outra tela de produto real existe
+ * ainda (ver spec-1-2). Itens de navegação do shell continuam clicáveis mesmo
+ * sem uma rota "de verdade" atrás deles.
  *
  * `/cadastro`, `/verificar-email` (Story 1.3), `/login` (Story 1.4),
  * `/esqueci-senha` + `/redefinir-senha` (Story 1.6) e `/auth/callback`
@@ -87,7 +91,7 @@ export const router = createBrowserRouter([
     path: '/',
     element: <RotaProtegida />,
     children: [
-      { index: true, element: <PlaceholderPage /> },
+      { index: true, element: <CatalogoPage /> },
       { path: 'configuracoes', element: <ConfiguracoesPage /> },
       { path: 'estoques', element: <EstoquesPage /> },
       { path: '*', element: <PlaceholderPage /> },

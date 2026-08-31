@@ -17,9 +17,13 @@ import (
 // POST /api/estoques -> RequireAuth -> RequireRole(almoxarife) -> handler.
 // GET /api/estoques -> RequireAuth -> handler (SEM RequireRole).
 
+// limparEstoquesHandler trunca `produto_estoque`/`produtos`/`estoques` juntos
+// (mesma FK de produto_estoque.estoque_id -> estoques(id) que exige truncar
+// as três na mesma instrução — Story 3.1). `categorias` nunca é truncada:
+// seed fixo da migração 000010.
 func limparEstoquesHandler(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.Exec(`TRUNCATE TABLE estoques`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE produto_estoque, produtos, estoques`); err != nil {
 		t.Fatalf("falha ao limpar estoques: %v", err)
 	}
 }
@@ -397,5 +401,51 @@ func TestExcluirEstoqueHandler_401SemToken(t *testing.T) {
 	w := deleteEstoques(db, "", "00000000-0000-4000-8000-000000000000")
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+}
+
+// TestExcluirEstoqueHandler_409ComResiduo prova a AC5 (Story 3.1, completando
+// o guard pendente da Story 2.2) na fronteira HTTP: um Estoque com Produto em
+// quantidade residual -> 409 CONFLICT, mensagem citando o nome do Produto; o
+// Estoque continua existindo.
+func TestExcluirEstoqueHandler_409ComResiduo(t *testing.T) {
+	db := testDB(t)
+	limparEstoquesHandler(t, db)
+	criarContaComPapel(t, db, "Almox", "del-residuo-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "del-residuo-almox@empresa.com", "senha-123456")
+
+	e, err := services.CriarEstoque(db, "Canteiro Com Resíduo Handler")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.005")
+	produto, err := services.CriarProduto(db, services.CriarProdutoInput{
+		Nome:              "Tubo PVC 100mm",
+		CategoriaID:       categoriaID,
+		EstoqueID:         e.ID,
+		QuantidadeInicial: 5,
+	})
+	if err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+
+	w := deleteEstoques(db, "Bearer "+token, e.ID)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusConflict, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "CONFLICT" {
+		t.Errorf("code = %q, want CONFLICT", env.Error.Code)
+	}
+	if !strings.Contains(env.Error.Message, produto.Nome) {
+		t.Errorf("message = %q, want conter %q", env.Error.Message, produto.Nome)
+	}
+
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM estoques WHERE id = $1`, e.ID).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("linhas em estoques com id = %d, want 1 (nada removido)", n)
 	}
 }

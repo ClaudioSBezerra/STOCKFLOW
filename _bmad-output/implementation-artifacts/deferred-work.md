@@ -269,3 +269,19 @@ source_spec: `spec-2-2-exclusao-de-estoque-trata-residuos-e-pedidos-pendentes.md
 severity: low
 reason: LocaisEstoqueSection.tsx `excluir()`: o contrato da story (intent-contract > Boundaries > Always) determina "qualquer `!res.ok` → setErro( MENSAGEM_ERRO_EXCLUIR)", então 404 cai no ramo de erro. Como o `finally` sempre chama carregar(), o usuário vê simultaneamente a linha sumir e um alerta vermelho de falha. Baixa frequência (exige exclusão concorrente do mesmo id). Correção provável: tratar `res.status === 404` como sucesso idempotente (toast de sucesso + recarga), sem alerta — mas isso desvia do texto literal do intent-contract e deve ser confirmado por um humano.
 status: open
+
+### DW-35: Nenhuma chamada ao banco (services/produtos.go, services/estoques.go) propaga *Context a partir de r.Context() do handler, então uma requisição cancelada/ expirada não interrompe a transação em andame
+origin: spec-deferred 34228004349e
+location: backend/services/produtos.go, backend/services/estoques.go
+source_spec: `spec-3-1-cadastro-manual-de-produto-com-dimensoes-estruturadas.md`
+severity: low
+reason: Padrão pré-existente em todo o pacote services (CriarEstoque, ExcluirEstoque antes desta story, ListarUsuarios, etc.) — nenhum usa QueryContext/ExecContext/ BeginTx com contexto. Esta story replica o padrão já estabelecido, não o introduz.
+status: open
+
+### DW-36: Componentes de seção que buscam dados no mount (CadastroProdutoSection e irmãos) não guardam contra setState após unmount durante um fetch em andamento.
+origin: spec-deferred 5427cc2a5364
+location: frontend/src/components/produtos/CadastroProdutoSection.tsx
+source_spec: `spec-3-1-cadastro-manual-de-produto-com-dimensoes-estruturadas.md`
+severity: low
+reason: Mesmo padrão já presente em LocaisEstoqueSection.tsx (Story 2.1, pré- existente) — nenhuma seção do projeto usa um guard de "still mounted" nos efeitos de carregamento inicial. Baixo risco prático: são as primeiras telas carregadas após navegação, raramente desmontadas antes do fetch resolver.
+status: open

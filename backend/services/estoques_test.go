@@ -8,12 +8,17 @@ import (
 	"testing"
 )
 
-// limparEstoques zera a tabela `estoques` entre os testes desta suíte —
-// `testDB` só trunca `usuarios CASCADE`, e `estoques` não tem FK para
-// `usuarios`, então não é alcançada pelo CASCADE.
+// limparEstoques zera `estoques` entre os testes desta suíte — `testDB` só
+// trunca `usuarios CASCADE`, e nenhuma das tabelas abaixo tem FK para
+// `usuarios`, então não são alcançadas por aquele CASCADE. `produto_estoque`
+// e `produtos` entram na mesma TRUNCATE (Story 3.1): `produto_estoque` tem FK
+// para `estoques`, então truncar só `estoques` falharia (0A000) sempre que
+// algum teste desta suíte tiver deixado uma linha de resíduo para trás (ex.
+// TestExcluirEstoque_ComResiduo, que prova exatamente que a linha NÃO é
+// removida).
 func limparEstoques(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.Exec(`TRUNCATE TABLE estoques`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE produto_estoque, produtos, estoques`); err != nil {
 		t.Fatalf("falha ao limpar estoques: %v", err)
 	}
 }
@@ -215,6 +220,190 @@ func TestExcluirEstoque_IdMalformado(t *testing.T) {
 	err := ExcluirEstoque(db, "nao-e-uuid")
 	if !errors.Is(err, ErrEstoqueNaoEncontrado) {
 		t.Fatalf("erro = %v, want ErrEstoqueNaoEncontrado", err)
+	}
+}
+
+// TestExcluirEstoque_ComResiduo prova a AC5 (Story 3.1, completando o guard
+// pendente da Story 2.2): um Estoque com uma linha de `produto_estoque`
+// vinculada e `quantidade > 0` -> *ErroEstoqueComResiduo citando o nome do
+// Produto; nenhuma linha é removida (nem de `estoques` nem de
+// `produto_estoque`).
+func TestExcluirEstoque_ComResiduo(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Com Residuo")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.007")
+	produto, err := CriarProduto(db, CriarProdutoInput{
+		Nome:              "Tubo PVC 100mm",
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		QuantidadeInicial: 5,
+	})
+	if err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+
+	err = ExcluirEstoque(db, estoque.ID)
+	var residuo *ErroEstoqueComResiduo
+	if !errors.As(err, &residuo) {
+		t.Fatalf("erro = %v, want *ErroEstoqueComResiduo", err)
+	}
+	if len(residuo.Produtos) != 1 || residuo.Produtos[0] != produto.Nome {
+		t.Errorf("Produtos = %v, want [%q]", residuo.Produtos, produto.Nome)
+	}
+
+	var nEstoques, nProdutoEstoque int
+	if err := db.QueryRow(`SELECT count(*) FROM estoques WHERE id = $1`, estoque.ID).Scan(&nEstoques); err != nil {
+		t.Fatalf("count estoques: %v", err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM produto_estoque WHERE estoque_id = $1`, estoque.ID).Scan(&nProdutoEstoque); err != nil {
+		t.Fatalf("count produto_estoque: %v", err)
+	}
+	if nEstoques != 1 {
+		t.Errorf("linhas em estoques = %d, want 1 (nada removido)", nEstoques)
+	}
+	if nProdutoEstoque != 1 {
+		t.Errorf("linhas em produto_estoque = %d, want 1 (nada removido)", nProdutoEstoque)
+	}
+}
+
+// TestExcluirEstoque_SemResiduoAposProdutoEstoqueZerado prova que uma linha de
+// `produto_estoque` com `quantidade = 0` para o Estoque NÃO bloqueia a
+// exclusão (Story 2.2 continua funcionando normalmente, agora exercitada de
+// verdade com a tabela existindo).
+func TestExcluirEstoque_SemResiduoAposProdutoEstoqueZerado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Sem Residuo")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "05.001")
+	if _, err := CriarProduto(db, CriarProdutoInput{
+		Nome:              "Capacete",
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		QuantidadeInicial: 0,
+	}); err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+
+	if err := ExcluirEstoque(db, estoque.ID); err != nil {
+		t.Fatalf("ExcluirEstoque erro inesperado: %v", err)
+	}
+	if n := contarEstoques(t, db); n != 0 {
+		t.Errorf("linhas em estoques = %d, want 0", n)
+	}
+}
+
+// TestExcluirEstoque_CorridaComCriarProdutoResidual prova que o
+// `SELECT ... FOR UPDATE` no início de ExcluirEstoque fecha a janela de
+// corrida com um CriarProduto concorrente: as duas goroutines abaixo disparam
+// ao mesmo tempo — uma exclui o Estoque, a outra cadastra um Produto nesse
+// mesmo Estoque com quantidade inicial > 0 (isto é, cria uma linha de
+// resíduo). Sem o lock, era possível o SELECT de resíduo de ExcluirEstoque
+// rodar ANTES do INSERT de CriarProduto committar, e o DELETE (com
+// ON DELETE CASCADE em produto_estoque.estoque_id) apagar silenciosamente a
+// linha de resíduo recém-criada junto do Estoque — as duas operações
+// "tendo sucesso" ao mesmo tempo, com o dado de resíduo perdido sem erro
+// nenhum. Mesmo padrão de orquestração por canal de
+// TestSolicitarPromocao_CorridaIndicePartial (promocao_test.go).
+//
+// Com o lock, só duas ordens de chegada são possíveis, e ambas são seguras:
+//   - ExcluirEstoque trava a linha primeiro: se ele chega a commitar (sem
+//     resíduo visto), o INSERT de CriarProduto (que ficou bloqueado
+//     esperando o lock) roda depois contra um `estoque_id` que já não existe
+//     mais -> falha com erro de validação (referência inválida). O Estoque
+//     nunca teve uma linha de resíduo perdida — ela nunca chegou a existir.
+//   - CriarProduto commita primeiro (sua própria escrita em produto_estoque
+//     também exige, implicitamente, um lock em modo KEY SHARE sobre a linha
+//     de `estoques` referenciada, que conflita com o FOR UPDATE seguinte):
+//     ExcluirEstoque só adquire o lock depois, e o SELECT de resíduo dentro
+//     da mesma transação já enxerga a linha nova -> ErroEstoqueComResiduo,
+//     sem DELETE.
+//
+// A asserção central: as duas operações NUNCA terminam com sucesso
+// simultâneo — o que seria a assinatura da corrida com dado perdido.
+func TestExcluirEstoque_CorridaComCriarProdutoResidual(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Corrida Residuo")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var errExcluir, errCriar error
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		errExcluir = ExcluirEstoque(db, estoque.ID)
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		_, errCriar = CriarProduto(db, CriarProdutoInput{
+			Nome:              "Produto Corrida Residuo",
+			CategoriaID:       categoriaID,
+			EstoqueID:         estoque.ID,
+			QuantidadeInicial: 5,
+		})
+	}()
+	close(start)
+	wg.Wait()
+
+	excluiuComSucesso := errExcluir == nil
+	criouComSucesso := errCriar == nil
+
+	if excluiuComSucesso && criouComSucesso {
+		t.Fatalf(
+			"as duas operações tiveram sucesso simultâneo — sinal de dado de resíduo perdido silenciosamente (errExcluir=%v errCriar=%v)",
+			errExcluir, errCriar,
+		)
+	}
+
+	if excluiuComSucesso {
+		// A exclusão vem primeiro: o cadastro concorrente deve ter falhado
+		// referenciando um Estoque que já não existe mais.
+		var erroValidacao *ErroProdutoValidacao
+		if !errors.As(errCriar, &erroValidacao) {
+			t.Fatalf("CriarProduto deveria falhar com *ErroProdutoValidacao quando a exclusão vence a corrida, got %v", errCriar)
+		}
+		if n := contarEstoques(t, db); n != 0 {
+			t.Errorf("estoque deveria ter sido removido, linhas = %d, want 0", n)
+		}
+	} else {
+		// O cadastro vem primeiro: a exclusão deve ter sido barrada pelo
+		// guard de resíduo, e a linha residual deve continuar íntegra.
+		var residuo *ErroEstoqueComResiduo
+		if !errors.As(errExcluir, &residuo) {
+			t.Fatalf("ExcluirEstoque deveria falhar com *ErroEstoqueComResiduo quando o cadastro vence a corrida, got %v", errExcluir)
+		}
+		if !criouComSucesso {
+			t.Fatalf("CriarProduto deveria ter tido sucesso quando vence a corrida, got %v", errCriar)
+		}
+		if n := contarEstoques(t, db); n != 1 {
+			t.Errorf("estoque deveria continuar existindo, linhas = %d, want 1", n)
+		}
+		var nResiduo int
+		if err := db.QueryRow(
+			`SELECT count(*) FROM produto_estoque WHERE estoque_id = $1 AND quantidade > 0`, estoque.ID,
+		).Scan(&nResiduo); err != nil {
+			t.Fatalf("count produto_estoque residual: %v", err)
+		}
+		if nResiduo != 1 {
+			t.Errorf("linha residual deveria continuar presente, count = %d, want 1", nResiduo)
+		}
 	}
 }
 

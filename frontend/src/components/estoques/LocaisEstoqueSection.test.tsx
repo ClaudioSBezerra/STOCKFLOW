@@ -243,6 +243,45 @@ describe('LocaisEstoqueSection', () => {
     await waitFor(() => expect(gets).toBe(2));
   });
 
+  it('DELETE 409 (guard de quantidade residual) mostra a mensagem específica do servidor, não a genérica', async () => {
+    let gets = 0;
+    stubFetch((url, init) => {
+      if (url === '/api/estoques' && (init?.method ?? 'GET') === 'GET') {
+        gets += 1;
+        return jsonOk({ estoques: ESTOQUES });
+      }
+      if (url === '/api/estoques/e-1' && init?.method === 'DELETE') {
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: async () => ({
+            error: {
+              code: 'CONFLICT',
+              message: 'estoque possui quantidade residual de: Tubo PVC 100mm',
+            },
+          }),
+        });
+      }
+      throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
+    });
+
+    const user = userEvent.setup();
+    render(<LocaisEstoqueSection />);
+    await screen.findByText('Almoxarifado Central');
+
+    await user.click(
+      screen.getByRole('button', { name: 'Excluir estoque Almoxarifado Central' }),
+    );
+    const dialog = await screen.findByRole('alertdialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Excluir' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'estoque possui quantidade residual de: Tubo PVC 100mm',
+    );
+    expect(toastSuccess).not.toHaveBeenCalled();
+    await waitFor(() => expect(gets).toBe(2));
+  });
+
   it('nome de estoque muito longo (~255 chars) não remove nem esconde o botão "Excluir" da linha', async () => {
     const nomeLongo = 'L'.repeat(255);
     stubFetch((url, init) => {

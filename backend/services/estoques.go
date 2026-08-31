@@ -88,23 +88,106 @@ func ListarEstoques(db *sql.DB) ([]Estoque, error) {
 }
 
 // ExcluirEstoque remove o local de estoque de `id` (DELETE /api/estoques/{id},
-// Story 2.2, FR12). Um único `DELETE ... WHERE id = $1`: um `id` não-UUID
-// (`pq` SQLSTATE 22P02, reusa a constante de pacote pqInvalidTextRepresentation)
-// ou um `id` UUID válido sem linha correspondente (`RowsAffected() == 0`)
-// colapsam em ErrEstoqueNaoEncontrado — a mesma decisão de
-// carregarAlvoParaGestao (gestao_usuarios.go) e DecidirSolicitacao
-// (promocao.go): input de cliente inválido não vira 500 e não se vaza "este id
-// existe mas está errado". Uma linha removida -> nil.
+// Story 2.2, FR12). Um `id` não-UUID (`pq` SQLSTATE 22P02, reusa a constante
+// de pacote pqInvalidTextRepresentation) ou um `id` UUID válido sem linha
+// correspondente (`RowsAffected() == 0`) colapsam em ErrEstoqueNaoEncontrado —
+// a mesma decisão de carregarAlvoParaGestao (gestao_usuarios.go) e
+// DecidirSolicitacao (promocao.go): input de cliente inválido não vira 500 e
+// não se vaza "este id existe mas está errado".
 //
-// Os guards de integridade referencial — quantidade residual de Produto
-// (PRODUTO_ESTOQUE, Epic 3) e Pedido `pendente` (PEDIDOS, Epic 7) — são
-// acrescentados pelas Stories 3.1 e 7.2 quando essas tabelas existirem,
-// envolvendo o DELETE numa transação; não fazem parte desta story.
+// Guard de quantidade residual (Story 3.1, completando o guard que a Story
+// 2.2 deixou pendente até `produto_estoque` existir): numa única transação, um
+// SELECT junta `produto_estoque`/`produtos` para os Produtos com quantidade
+// positiva nesse Estoque, ordenados por nome. Se houver alguma linha, a
+// transação é desfeita (ROLLBACK, via o `defer tx.Rollback()` — o `DELETE`
+// nunca chega a rodar) e o erro devolvido é *ErroEstoqueComResiduo, com os
+// nomes; lista vazia segue para o `DELETE` já existente, mesma transação. O
+// guard de Pedido `pendente` (PEDIDOS, Epic 7) é acrescentado pela Story 7.2
+// quando essa tabela existir.
+//
+// Corrida com services.CriarProduto (revisão pós-implementação, Story 3.1):
+// sem travar a linha de `estoques` ANTES do SELECT de resíduo, um
+// CriarProduto concorrente podia commitar um INSERT em `produto_estoque`
+// (quantidade > 0) para este `estoque_id` bem depois do SELECT abaixo já ter
+// visto "sem resíduo" mas antes do `DELETE` final commitar — e como
+// `produto_estoque.estoque_id` é `ON DELETE CASCADE`, essa linha de resíduo
+// recém-criada seria apagada silenciosamente junto do Estoque, furando o
+// guard por completo sem qualquer erro. Por isso a primeira coisa que esta
+// função faz, ainda antes do SELECT de resíduo, é `SELECT ... FOR UPDATE` na
+// própria linha do Estoque: Postgres exige um lock em modo KEY SHARE sobre a
+// linha referenciada para qualquer INSERT que a referencie via FK (o INSERT
+// em `produto_estoque` feito por CriarProduto), e KEY SHARE conflita com
+// FOR UPDATE — então um CriarProduto concorrente fica bloqueado até esta
+// transação commitar (e aí sua própria FK falha, porque o Estoque já não
+// existe mais -> CriarProduto devolve erro de validação) ou desfazer (e aí
+// CriarProduto segue normalmente, e o SELECT de resíduo desta chamada —
+// que já teria sido refeito, pois só roda depois do lock ser adquirido —
+// enxerga a linha nova). As duas ordens de chegada são seguras; a janela que
+// perdia dado silenciosamente deixa de existir.
 func ExcluirEstoque(db *sql.DB, id string) error {
-	res, err := db.Exec(`DELETE FROM estoques WHERE id = $1`, id)
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("falha ao iniciar transação: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
+
+	var idTravado string
+	if err := tx.QueryRow(`SELECT id FROM estoques WHERE id = $1 FOR UPDATE`, id).Scan(&idTravado); err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation {
+			return ErrEstoqueNaoEncontrado
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrEstoqueNaoEncontrado
+		}
+		return fmt.Errorf("falha ao travar estoque para exclusão: %w", err)
+	}
+
+	// Daqui em diante `id` já foi provado UUID válido e existente pelo lock
+	// acima (mantido sob a mesma transação) — os ramos de
+	// pqInvalidTextRepresentation abaixo, e o `RowsAffected() == 0` do
+	// DELETE, ficam como defesa em profundidade (nunca deveriam disparar na
+	// prática, mas custam nada e blindam contra o formato do lock acima mudar
+	// no futuro sem que este comentário seja atualizado junto).
+	const selectResiduo = `
+		SELECT p.nome
+		FROM produto_estoque pe
+		JOIN produtos p ON p.id = pe.produto_id
+		WHERE pe.estoque_id = $1 AND pe.quantidade > 0
+		ORDER BY p.nome`
+	rows, err := tx.Query(selectResiduo, id)
 	if err != nil {
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation {
+			return ErrEstoqueNaoEncontrado
+		}
+		return fmt.Errorf("falha ao verificar quantidade residual do estoque: %w", err)
+	}
+	produtos := make([]string, 0)
+	for rows.Next() {
+		var nome string
+		if err := rows.Scan(&nome); err != nil {
+			rows.Close()
+			return fmt.Errorf("falha ao ler produto com resíduo: %w", err)
+		}
+		produtos = append(produtos, nome)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("falha ao iterar produtos com resíduo: %w", err)
+	}
+	rows.Close()
+	if len(produtos) > 0 {
+		return &ErroEstoqueComResiduo{Produtos: produtos}
+	}
+
+	res, err := tx.Exec(`DELETE FROM estoques WHERE id = $1`, id)
+	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation {
+			// Inalcançável na prática: o SELECT ... FOR UPDATE acima já
+			// validou que `id` é um UUID sintaticamente válido antes de
+			// chegarmos aqui. Mantido como defesa em profundidade.
 			return ErrEstoqueNaoEncontrado
 		}
 		return fmt.Errorf("falha ao excluir estoque: %w", err)
@@ -114,7 +197,14 @@ func ExcluirEstoque(db *sql.DB, id string) error {
 		return fmt.Errorf("falha ao ler linhas afetadas na exclusão de estoque: %w", err)
 	}
 	if linhas == 0 {
+		// Também inalcançável na prática pelo mesmo motivo: o lock acima
+		// garante que a linha existe e permanece sob esta transação até o
+		// commit/rollback. Mantido como defesa em profundidade.
 		return ErrEstoqueNaoEncontrado
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("falha ao commitar exclusão de estoque: %w", err)
 	}
 	return nil
 }

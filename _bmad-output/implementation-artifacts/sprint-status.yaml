@@ -57,7 +57,7 @@ development_status:
   epic-2-retrospective: optional
 
   epic-3: backlog
-  3-1-cadastro-manual-de-produto-com-dimensões-estruturadas: backlog
+  3-1-cadastro-manual-de-produto-com-dimensões-estruturadas: done
   3-2-nomenclatura-guiada-por-subtipo: backlog
   3-3-importação-em-massa-via-planilha-padronizada: backlog
   3-4-importação-atualiza-por-código-não-só-cria: backlog

@@ -23,8 +23,14 @@
 // e a espaçamento — imposto pelo índice único sobre a coluna gerada
 // `nome_normalizado`) e a exclusão de Estoque — Story 2.2
 // (DELETE /api/estoques/{id}, mínimo `almoxarife`: 204 no sucesso, 404 para id
-// inexistente ou malformado; os guards de estoque residual e Pedido pendente
-// entram nas Stories 3.1 e 7.2, sem reabrir a Story 2.2).
+// inexistente ou malformado; o guard de estoque residual entra na Story 3.1 e
+// o de Pedido pendente na Story 7.2, sem reabrir a Story 2.2) e o cadastro
+// manual de Produto com dimensões estruturadas — Story 3.1 (POST /api/produtos,
+// mínimo `almoxarife`: cria o Produto e a linha inicial de `produto_estoque`
+// numa única transação; GET /api/categorias para qualquer conta autenticada
+// lista as 25 categorias fixas de seed; o guard de quantidade residual da
+// Story 2.2 passa a ser exercitado de verdade, agora que `produto_estoque`
+// existe).
 package main
 
 import (
@@ -277,6 +283,19 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	mux.HandleFunc("DELETE /api/estoques/{id}", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.ExcluirEstoqueHandler(db))))
+
+	// Cadastro manual de Produto com dimensões estruturadas — Story 3.1
+	// (FR-8). POST /api/produtos fica atrás de RequireRole(almoxarife): criar
+	// Produto é restrito a `almoxarife`+, decisão do middleware (403 para
+	// papéis abaixo, mesmo em chamada direta à API). GET /api/categorias leva
+	// só RequireAuth — a lista fixa de categorias é liberada a qualquer conta
+	// autenticada, mesmo padrão de GET /api/estoques (o formulário de cadastro
+	// e as telas de catálogo do Epic 4 precisam dela).
+	mux.HandleFunc("POST /api/produtos", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAlmoxarife)(
+			handlers.CriarProdutoHandler(db))))
+	mux.HandleFunc("GET /api/categorias", middleware.RequireAuth(db, jwtSecret)(
+		handlers.ListarCategoriasHandler(db)))
 
 	// Login federado via Keycloak — SSO Ferreira Costa (Story 1.9, AD-7).
 	// /api/auth/sso/config e /api/auth/logout são SEMPRE registrados (o

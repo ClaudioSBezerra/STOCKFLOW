@@ -619,7 +619,10 @@ func TestNewMux_EstoquesRotaCarregaRequireRole(t *testing.T) {
 	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 		t.Fatalf("truncate usuarios: %v", err)
 	}
-	if _, err := db.Exec(`TRUNCATE TABLE estoques`); err != nil {
+	// `produto_estoque`/`produtos` entram na mesma TRUNCATE que `estoques`:
+	// Postgres recusa truncar uma tabela referenciada por FK de outra (mesmo
+	// vazia) a menos que todas entrem na mesma instrução (Story 3.1).
+	if _, err := db.Exec(`TRUNCATE TABLE produto_estoque, produtos, estoques`); err != nil {
 		t.Fatalf("truncate estoques: %v", err)
 	}
 
@@ -738,6 +741,97 @@ func TestNewMux_EstoquesRotaCarregaRequireRole(t *testing.T) {
 		}
 	})
 
+}
+
+// TestNewMux_ProdutosRotaCarregaRequireRole prova, despachando pela mesma
+// instância de newMux usada por main() (Story 3.1), que:
+//   - POST /api/produtos está atrás de RequireRole(almoxarife): token
+//     `usuario` -> 403 FORBIDDEN; token `almoxarife` passa do gate (201,
+//     nunca 403).
+//   - GET /api/categorias NÃO leva RequireRole: um token `usuario` -> 200.
+//
+// Sem estes casos, remover `middleware.RequireRole(services.PapelAlmoxarife)`
+// do POST — ou adicioná-lo indevidamente ao GET — deixaria a suíte verde (o
+// único caso pré-existente em main_test.go, sem token -> 401, é produzido só
+// por RequireAuth).
+func TestNewMux_ProdutosRotaCarregaRequireRole(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate usuarios: %v", err)
+	}
+	if _, err := db.Exec(`TRUNCATE TABLE produto_estoque, produtos, estoques`); err != nil {
+		t.Fatalf("truncate produtos: %v", err)
+	}
+
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
+
+	const senha = "senha-123456"
+	segredos := map[string]string{}
+
+	despachar := func(metodo, caminho, token, corpo string) *httptest.ResponseRecorder {
+		var req *http.Request
+		if corpo != "" {
+			req = httptest.NewRequest(metodo, caminho, strings.NewReader(corpo))
+			req.Header.Set("Content-Type", "application/json")
+		} else {
+			req = httptest.NewRequest(metodo, caminho, nil)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	seedContaMux(t, db, "prod-mux-usuario@empresa.com", "usuario", senha, segredos)
+	seedContaMux(t, db, "prod-mux-almox@empresa.com", "almoxarife", senha, segredos)
+
+	var categoriaID string
+	if err := db.QueryRow(`SELECT id FROM categorias WHERE codigo = '04.001'`).Scan(&categoriaID); err != nil {
+		t.Fatalf("buscar categoria de seed: %v", err)
+	}
+	estoque, err := services.CriarEstoque(db, "Canteiro Mux Produtos")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+
+	t.Run("POST: papel usuario -> 403 FORBIDDEN", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "prod-mux-usuario@empresa.com", senha, segredos)
+		corpo := `{"nome":"Produto Vetado","categoria_id":"` + categoriaID + `","estoque_id":"` + estoque.ID + `","quantidade_inicial":1}`
+		w := despachar(http.MethodPost, "/api/produtos", token, corpo)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusForbidden, w.Body.String())
+		}
+		var env struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+			t.Fatalf("decode envelope: %v", err)
+		}
+		if env.Error.Code != "FORBIDDEN" {
+			t.Errorf("code = %q, want FORBIDDEN", env.Error.Code)
+		}
+	})
+
+	t.Run("POST: almoxarife passa do gate (nunca 403)", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "prod-mux-almox@empresa.com", senha, segredos)
+		corpo := `{"nome":"Produto Almox","categoria_id":"` + categoriaID + `","estoque_id":"` + estoque.ID + `","quantidade_inicial":1}`
+		w := despachar(http.MethodPost, "/api/produtos", token, corpo)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
+		}
+	})
+
+	t.Run("GET categorias: papel usuario -> 200 (rota sem RequireRole)", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "prod-mux-usuario@empresa.com", senha, segredos)
+		w := despachar(http.MethodGet, "/api/categorias", token, "")
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+		}
+	})
 }
 
 // TestNewMux_LogsAcessoRotaCarregaRequireRole prova, despachando pela mesma
