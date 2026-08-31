@@ -307,7 +307,8 @@ func TestNewMux_RegistraRotasDeAutenticacao(t *testing.T) {
 	db := testDB(t)
 	emailCfg := services.CarregarEmailConfig()
 	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
-	mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
+	fotosDir := t.TempDir()
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, fotosDir)
 
 	casos := []struct {
 		nome         string
@@ -556,7 +557,8 @@ func TestNewMux_UsuariosRotaCarregaRequireRole(t *testing.T) {
 
 	emailCfg := services.CarregarEmailConfig()
 	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
-	mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
+	fotosDir := t.TempDir()
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, fotosDir)
 
 	const senha = "senha-123456"
 	segredos := map[string]string{}
@@ -632,7 +634,8 @@ func TestNewMux_EstoquesRotaCarregaRequireRole(t *testing.T) {
 
 	emailCfg := services.CarregarEmailConfig()
 	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
-	mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
+	fotosDir := t.TempDir()
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, fotosDir)
 
 	const senha = "senha-123456"
 	segredos := map[string]string{}
@@ -771,7 +774,8 @@ func TestNewMux_ProdutosRotaCarregaRequireRole(t *testing.T) {
 
 	emailCfg := services.CarregarEmailConfig()
 	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
-	mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
+	fotosDir := t.TempDir()
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, fotosDir)
 
 	const senha = "senha-123456"
 	segredos := map[string]string{}
@@ -875,7 +879,8 @@ func TestNewMux_ProdutosRenomearRotaCarregaRequireRole(t *testing.T) {
 
 	emailCfg := services.CarregarEmailConfig()
 	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
-	mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
+	fotosDir := t.TempDir()
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, fotosDir)
 
 	const senha = "senha-123456"
 	segredos := map[string]string{}
@@ -999,7 +1004,8 @@ func TestNewMux_ImportacoesRotaCarregaRequireRole(t *testing.T) {
 
 	emailCfg := services.CarregarEmailConfig()
 	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
-	mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
+	fotosDir := t.TempDir()
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, fotosDir)
 
 	const senha = "senha-123456"
 	segredos := map[string]string{}
@@ -1107,7 +1113,8 @@ func TestNewMux_LogsAcessoRotaCarregaRequireRole(t *testing.T) {
 
 	emailCfg := services.CarregarEmailConfig()
 	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
-	mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
+	fotosDir := t.TempDir()
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, fotosDir)
 
 	const senha = "senha-123456"
 	segredos := map[string]string{}
@@ -1169,7 +1176,8 @@ func TestNewMux_PromocoesRotasCarregamRequireRole(t *testing.T) {
 
 	emailCfg := services.CarregarEmailConfig()
 	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
-	mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
+	fotosDir := t.TempDir()
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, fotosDir)
 
 	const senha = "senha-123456"
 	segredos := map[string]string{}
@@ -1246,7 +1254,8 @@ func TestNewMux_GestaoUsuariosRotasCarregamRequireRole(t *testing.T) {
 
 	emailCfg := services.CarregarEmailConfig()
 	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
-	mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
+	fotosDir := t.TempDir()
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, fotosDir)
 
 	const senha = "senha-123456"
 	segredos := map[string]string{}
@@ -1322,7 +1331,8 @@ func TestNewMux_PromocoesRotasAutenticadasAlcancamHandlers(t *testing.T) {
 
 	emailCfg := services.CarregarEmailConfig()
 	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
-	mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
+	fotosDir := t.TempDir()
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, fotosDir)
 
 	const senha = "senha-123456"
 	hash, err := bcrypt.GenerateFromPassword([]byte(senha), bcrypt.DefaultCost)
@@ -1509,7 +1519,8 @@ func TestRunMigrations_SolicitacoesPromocaoSchema(t *testing.T) {
 // mostrar o botão de SSO num servidor sem realm configurado.
 func TestNewMux_SSOConfigSempreRegistrada(t *testing.T) {
 	db := testDB(t)
-	mux := newMux(db, services.CarregarEmailConfig(), []byte("segredo-de-teste"), iam.Config{})
+	fotosDir := t.TempDir()
+	mux := newMux(db, services.CarregarEmailConfig(), []byte("segredo-de-teste"), iam.Config{}, fotosDir)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/sso/config", nil)
 	w := httptest.NewRecorder()
@@ -1535,9 +1546,10 @@ func TestNewMux_SSOKeycloakRegistradaSomenteComConfig(t *testing.T) {
 	db := testDB(t)
 	emailCfg := services.CarregarEmailConfig()
 	jwtSecret := []byte("segredo-de-teste")
+	fotosDir := t.TempDir()
 
 	t.Run("sem config -> 404", func(t *testing.T) {
-		mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
+		mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, fotosDir)
 		req := httptest.NewRequest(http.MethodPost, "/api/auth/sso/keycloak", nil)
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, req)
@@ -1550,7 +1562,7 @@ func TestNewMux_SSOKeycloakRegistradaSomenteComConfig(t *testing.T) {
 		mux := newMux(db, emailCfg, jwtSecret, iam.Config{
 			RealmURL:         "https://kc.example/realms/ferreiracosta",
 			AllowedClientIDs: []string{"stockflow-web"},
-		})
+		}, fotosDir)
 		req := httptest.NewRequest(http.MethodPost, "/api/auth/sso/keycloak", nil)
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, req)
@@ -1564,7 +1576,8 @@ func TestNewMux_SSOKeycloakRegistradaSomenteComConfig(t *testing.T) {
 // independentemente da config de SSO e é idempotente sem cookie (204).
 func TestNewMux_LogoutSempreRegistrada(t *testing.T) {
 	db := testDB(t)
-	mux := newMux(db, services.CarregarEmailConfig(), []byte("segredo-de-teste"), iam.Config{})
+	fotosDir := t.TempDir()
+	mux := newMux(db, services.CarregarEmailConfig(), []byte("segredo-de-teste"), iam.Config{}, fotosDir)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
 	w := httptest.NewRecorder()

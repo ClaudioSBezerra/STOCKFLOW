@@ -43,7 +43,14 @@
 // automaticamente; GET /api/importacoes/ultima, mínimo `almoxarife`, indica
 // até onde uma importação interrompida chegou; POST
 // /api/importacoes/{id}/continuar, mínimo `almoxarife`, retoma só as linhas
-// ainda pendentes).
+// ainda pendentes) e o upload e armazenamento de foto do Produto — Story 3.5
+// (POST /api/produtos/{id}/fotos, mínimo `almoxarife`: multipart, campo
+// `foto`, decodifica JPG/PNG/WEBP pelo conteúdo real, redimensiona a 500px no
+// maior lado — só reduz, nunca amplia — e recomprime em JPEG q=82,
+// gravado em `FOTOS_DIR` sem overwrite; GET
+// /api/produtos/{id}/fotos/{arquivo}, qualquer conta autenticada, serve o
+// arquivo salvo. `FOTOS_DIR` segue o mesmo fail-fast de DATABASE_URL/
+// JWT_SECRET: sem valor usa `./fotos`, e o diretório é criado no startup).
 package main
 
 import (
@@ -97,6 +104,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	// FOTOS_DIR (Story 3.5): diretório onde as fotos de Produto são gravadas
+	// em disco — nunca base64 no banco. Sem valor, default `./fotos` (dev
+	// local); em docker-compose, `/data/fotos` num volume nomeado persistente.
+	// Mesmo tratamento fail-fast de DATABASE_URL/JWT_SECRET acima: o processo
+	// nunca sobe incapaz de gravar fotos.
+	fotosDir := os.Getenv("FOTOS_DIR")
+	if fotosDir == "" {
+		fotosDir = "./fotos"
+	}
+	if err := os.MkdirAll(fotosDir, 0o755); err != nil {
+		slog.Error("falha ao criar FOTOS_DIR", "fotos_dir", fotosDir, "error", err)
+		os.Exit(1)
+	}
+
 	db, err := sql.Open("postgres", databaseURL)
 	if err != nil {
 		slog.Error("falha ao abrir conexão com o banco", "error", err)
@@ -136,7 +157,7 @@ func main() {
 	pararWorkerEmail := services.IniciarWorkerEmail(db, emailCfg, services.IntervaloPollingEmail)
 	defer pararWorkerEmail()
 
-	mux := newMux(db, emailCfg, []byte(jwtSecret), iamCfg)
+	mux := newMux(db, emailCfg, []byte(jwtSecret), iamCfg, fotosDir)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -227,7 +248,7 @@ func runMigrations(db *sql.DB) error {
 // testes possam despachar requisições através do mux real (mesmos padrões de
 // método+rota registrados em produção), em vez de chamar cada handler
 // diretamente e nunca exercitar o registro em si.
-func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg iam.Config) *http.ServeMux {
+func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg iam.Config, fotosDir string) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", healthHandler(db))
 	mux.HandleFunc("POST /api/auth/cadastro", handlers.CadastroHandler(db, emailCfg))
@@ -340,6 +361,20 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	mux.HandleFunc("POST /api/importacoes/{id}/continuar", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.ContinuarImportacaoHandler(db))))
+
+	// Upload e armazenamento de foto do Produto — Story 3.5 (FR-27/FR-28).
+	// POST /api/produtos/{id}/fotos fica atrás de RequireRole(almoxarife),
+	// mesmo mínimo de papel do cadastro/importação: enviar foto é restrito a
+	// `almoxarife`+. GET /api/produtos/{id}/fotos/{arquivo} leva só
+	// RequireAuth — visualização de foto é liberada a qualquer conta
+	// autenticada, mesmo padrão de GET /api/categorias/GET /api/estoques.
+	// Nenhuma tabela nova: o nome do arquivo é o único vínculo com o Produto;
+	// listagem/galeria fica para a Story 3.6.
+	mux.HandleFunc("POST /api/produtos/{id}/fotos", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAlmoxarife)(
+			handlers.EnviarFotoProdutoHandler(db, fotosDir))))
+	mux.HandleFunc("GET /api/produtos/{id}/fotos/{arquivo}", middleware.RequireAuth(db, jwtSecret)(
+		handlers.ServirFotoProdutoHandler(fotosDir)))
 
 	// Login federado via Keycloak — SSO Ferreira Costa (Story 1.9, AD-7).
 	// /api/auth/sso/config e /api/auth/logout são SEMPRE registrados (o

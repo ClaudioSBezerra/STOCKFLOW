@@ -24,6 +24,10 @@ services:
       # Valor de desenvolvimento explícito (Story 1.4, AD-6) — nunca usado em
       # produção; cada ambiente real deve definir o próprio segredo.
       JWT_SECRET: dev-jwt-secret-nao-usar-em-producao
+      # Diretório onde as fotos de Produto são gravadas em disco — nunca
+      # base64 no banco (Story 3.5, AD-11/AD-13). Monta em cima do volume
+      # nomeado `stockflow-fotos-data` abaixo, persistente entre `up`/`down`.
+      FOTOS_DIR: /data/fotos
       # Login federado via Keycloak — SSO Ferreira Costa (Story 1.9, AD-7).
       # NÃO definido aqui de propósito: sem IAM_BASE_URL o SSO fica desligado e
       # este compose sobe idêntico ao comportamento atual. No ambiente de deploy
@@ -32,6 +36,8 @@ services:
       # IAM_SCOPES) — ver .env.example e spec-1-9 "operator_actions".
     ports:
       - '8080:8080'
+    volumes:
+      - stockflow-fotos-data:/data/fotos
     depends_on:
       db:
         condition: service_healthy
@@ -59,3 +65,4 @@ services:
 
 volumes:
   stockflow-db-data:
+  stockflow-fotos-data:

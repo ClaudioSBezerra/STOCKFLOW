@@ -10,6 +10,9 @@ _bmad-output/implementation-artifacts/.telegram-notify-state.txt
 # Backend (Go)
 .env
 backend/*.env
+# FOTOS_DIR default local (Story 3.5) — main.go grava fotos de Produto aqui
+# quando FOTOS_DIR não está definido (execução fora do docker compose).
+backend/fotos/
 
 # Frontend (Node)
 frontend/node_modules/

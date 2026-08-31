@@ -41,6 +41,20 @@ import { getAccessToken } from '@/lib/session';
  *
  * Categoria é sempre selecionada da lista fixa de `GET /api/categorias`
  * (AC4) — nunca um campo de texto livre.
+ *
+ * Upload de foto (Story 3.5, spec-3-5): o `201` de `POST /api/produtos`
+ * guarda `{id, nome}` do Produto recém-criado em estado local (não afeta a
+ * limpeza do formulário acima) e passa a exibir um bloco "Adicionar foto" —
+ * único ponto da UI hoje com um `produto_id` em mãos, já que o Catálogo
+ * (Epic 4) ainda não existe. `<input type="file" accept="image/jpeg,
+ * image/png,image/webp" capture>` seleciona o arquivo; o botão "Enviar foto"
+ * dispara `POST /api/produtos/{id}/fotos` (multipart, campo `foto`, mesmo
+ * `authHeaders()`). Sucesso -> `toast.success` e busca
+ * `GET /api/produtos/{id}/fotos/{nome}` via `fetch` com `Authorization`,
+ * montando um Object URL (`URL.createObjectURL`) para a miniatura — nunca um
+ * `<img src="/api/...">` direto, que não carrega o header de auth. Erro
+ * (`400`/`404`/rede) -> `<p role="alert">` com a mensagem do servidor (ou
+ * genérica); botão "Enviar foto" desabilitado durante o envio.
  */
 
 interface Categoria {
@@ -84,6 +98,13 @@ const MENSAGEM_ERRO_CARREGAR =
   'Não foi possível carregar categorias/estoques. Recarregue a página.';
 const MENSAGEM_ERRO_CADASTRO =
   'Não foi possível cadastrar o produto agora. Tente novamente em instantes.';
+const MENSAGEM_ERRO_FOTO =
+  'Não foi possível enviar a foto agora. Tente novamente em instantes.';
+
+interface ProdutoCriado {
+  id: string;
+  nome: string;
+}
 
 /**
  * Converte o estado local de uma dimensão para o par aceito por
@@ -170,6 +191,28 @@ export function CadastroProdutoSection() {
 
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+
+  // Upload de foto (Story 3.5) — só existe depois de um cadastro bem-sucedido
+  // nesta mesma sessão de tela (`produtoCriado`). `fotoInputKey` força
+  // desmontar/remontar o `<input type="file">` após um envio bem-sucedido
+  // (`components/ui/input.tsx` não encaminha `ref`, mesmo padrão de
+  // `ImportacaoProdutosSection`).
+  const [produtoCriado, setProdutoCriado] = useState<ProdutoCriado | null>(null);
+  const [fotoInputKey, setFotoInputKey] = useState(0);
+  const [arquivoFoto, setArquivoFoto] = useState<File | null>(null);
+  const [enviandoFoto, setEnviandoFoto] = useState(false);
+  const [erroFoto, setErroFoto] = useState<string | null>(null);
+  const [fotoThumbUrl, setFotoThumbUrl] = useState<string | null>(null);
+
+  // O Object URL da miniatura é revogado sempre que troca ou quando o
+  // componente desmonta — evita vazar memória entre uploads/telas.
+  useEffect(() => {
+    return () => {
+      if (fotoThumbUrl) {
+        URL.revokeObjectURL(fotoThumbUrl);
+      }
+    };
+  }, [fotoThumbUrl]);
 
   const carregarListas = useCallback(async () => {
     try {
@@ -271,12 +314,75 @@ export function CadastroProdutoSection() {
         setErro(body.error?.message ?? MENSAGEM_ERRO_CADASTRO);
         return;
       }
+      const body = (await res.json()) as { produto: ProdutoCriado };
       toast.success('Produto cadastrado.');
       limparFormulario();
+
+      // Bloco "Adicionar foto" (Story 3.5) passa a apontar para o Produto
+      // recém-criado — qualquer upload/miniatura de um cadastro anterior é
+      // descartado junto.
+      setProdutoCriado(body.produto);
+      setArquivoFoto(null);
+      setErroFoto(null);
+      setFotoInputKey((k) => k + 1);
+      setFotoThumbUrl((anterior) => {
+        if (anterior) {
+          URL.revokeObjectURL(anterior);
+        }
+        return null;
+      });
     } catch {
       setErro(MENSAGEM_ERRO_CADASTRO);
     } finally {
       setEnviando(false);
+    }
+  }
+
+  // Envia `arquivoFoto` para POST /api/produtos/{id}/fotos (Story 3.5).
+  // Sucesso: busca o arquivo salvo via GET (mesma sessão Bearer, `fetch` +
+  // `authHeaders()`) e monta um Object URL para a miniatura — nunca um
+  // `<img src="/api/...">` direto, que não carregaria o header `Authorization`.
+  async function enviarFoto() {
+    if (!produtoCriado || !arquivoFoto || enviandoFoto) {
+      return;
+    }
+    setErroFoto(null);
+    setEnviandoFoto(true);
+    try {
+      const formData = new FormData();
+      formData.append('foto', arquivoFoto);
+      const res = await fetch(`/api/produtos/${produtoCriado.id}/fotos`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: formData,
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+        setErroFoto(body.error?.message ?? MENSAGEM_ERRO_FOTO);
+        return;
+      }
+      const body = (await res.json()) as { foto: { nome: string; url: string } };
+
+      const resFoto = await fetch(body.foto.url, { headers: authHeaders() });
+      if (!resFoto.ok) {
+        setErroFoto(MENSAGEM_ERRO_FOTO);
+        return;
+      }
+      const blob = await resFoto.blob();
+      setFotoThumbUrl((anterior) => {
+        if (anterior) {
+          URL.revokeObjectURL(anterior);
+        }
+        return URL.createObjectURL(blob);
+      });
+
+      toast.success('Foto enviada.');
+      setArquivoFoto(null);
+      setFotoInputKey((k) => k + 1);
+    } catch {
+      setErroFoto(MENSAGEM_ERRO_FOTO);
+    } finally {
+      setEnviandoFoto(false);
     }
   }
 
@@ -433,6 +539,44 @@ export function CadastroProdutoSection() {
             {enviando ? 'Cadastrando...' : 'Cadastrar produto'}
           </Button>
         </form>
+
+        {produtoCriado && (
+          <div className="mt-4 flex flex-col gap-2 rounded-md border border-border p-4">
+            <p className="text-body font-medium">Adicionar foto — {produtoCriado.nome}</p>
+            <Input
+              key={fotoInputKey}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              capture
+              aria-label="Foto do produto"
+              onChange={(event) => setArquivoFoto(event.target.files?.[0] ?? null)}
+            />
+
+            {erroFoto && (
+              <p role="alert" className="text-body text-destructive">
+                {erroFoto}
+              </p>
+            )}
+
+            <Button
+              type="button"
+              variant="outline"
+              disabled={enviandoFoto || !arquivoFoto}
+              onClick={() => void enviarFoto()}
+              className="self-start"
+            >
+              {enviandoFoto ? 'Enviando...' : 'Enviar foto'}
+            </Button>
+
+            {fotoThumbUrl && (
+              <img
+                src={fotoThumbUrl}
+                alt={`Foto de ${produtoCriado.nome}`}
+                className="h-24 w-24 rounded-md border border-border object-cover"
+              />
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   );
