@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { XIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/card';
+import { Dialog, DialogClose, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -49,12 +51,28 @@ import { getAccessToken } from '@/lib/session';
  * (Epic 4) ainda não existe. `<input type="file" accept="image/jpeg,
  * image/png,image/webp" capture>` seleciona o arquivo; o botão "Enviar foto"
  * dispara `POST /api/produtos/{id}/fotos` (multipart, campo `foto`, mesmo
- * `authHeaders()`). Sucesso -> `toast.success` e busca
- * `GET /api/produtos/{id}/fotos/{nome}` via `fetch` com `Authorization`,
- * montando um Object URL (`URL.createObjectURL`) para a miniatura — nunca um
- * `<img src="/api/...">` direto, que não carrega o header de auth. Erro
- * (`400`/`404`/rede) -> `<p role="alert">` com a mensagem do servidor (ou
- * genérica); botão "Enviar foto" desabilitado durante o envio.
+ * `authHeaders()`). Erro (`400`/`404`/rede) -> `<p role="alert">` com a
+ * mensagem do servidor (ou genérica); botão "Enviar foto" desabilitado
+ * durante o envio.
+ *
+ * Galeria e lightbox (Story 3.6, spec-3-6): cada upload bem-sucedido rebusca
+ * `GET /api/produtos/{id}/fotos` (nunca guarda só a última foto) e, para
+ * cada `nome` ainda sem Object URL em cache local (`objectUrlCacheRef`),
+ * busca `GET /api/produtos/{id}/fotos/{nome}` (mesmo `authHeaders()`) e
+ * monta `URL.createObjectURL` — miniaturas já resolvidas não são
+ * rebuscadas; nunca um `<img src="/api/...">` direto, que não carregaria o
+ * header de auth. O `toast.success('Foto enviada.')`/reset do input
+ * confirmam o upload assim que o `201` chega — ANTES dessa rebusca —
+ * porque o arquivo já está salvo no servidor nesse ponto; se só a rebusca
+ * falhar depois, `erroFoto` mostra uma mensagem DISTINTA (nunca a de erro
+ * de upload) para não sugerir um reenvio que duplicaria o arquivo. A
+ * galeria é uma grade de `<button>` (miniatura + `aria-label="Ampliar foto
+ * N de M"`); clicar numa abre um `Dialog` (`components/ui/dialog.tsx`) em
+ * tela cheia (`sm:!max-w-none` força a largura total mesmo >= 640px, onde o
+ * `sm:max-w-lg` padrão do `Dialog` venceria por especificidade) com a foto
+ * ampliada — fechar (clique fora, `Esc`, ou o botão "Fechar" com cor clara
+ * explícita, próprio deste call site por causa do fundo escuro) só muda
+ * estado local, nunca navega nem recarrega a página.
  */
 
 interface Categoria {
@@ -100,10 +118,28 @@ const MENSAGEM_ERRO_CADASTRO =
   'Não foi possível cadastrar o produto agora. Tente novamente em instantes.';
 const MENSAGEM_ERRO_FOTO =
   'Não foi possível enviar a foto agora. Tente novamente em instantes.';
+// MENSAGEM_ERRO_GALERIA (Story 3.6) é DISTINTA de MENSAGEM_ERRO_FOTO de
+// propósito: só aparece quando o upload em si já teve sucesso (`201`) e
+// SÓ a rebusca da galeria (GET /api/produtos/{id}/fotos ou uma das buscas
+// de blob por foto) falhou depois — nunca implica que o arquivo não foi
+// salvo, para não induzir o usuário a reenviar (duplicando o arquivo no
+// servidor, que nunca sobrescreve).
+const MENSAGEM_ERRO_GALERIA =
+  'Foto enviada, mas não foi possível atualizar a galeria agora. Recarregue a página para vê-la.';
 
 interface ProdutoCriado {
   id: string;
   nome: string;
+}
+
+// FotoGaleria é uma entrada resolvida da galeria (Story 3.6): `nome`/`url`
+// vêm de GET /api/produtos/{id}/fotos; `objectUrl` é o Object URL montado a
+// partir de GET /api/produtos/{id}/fotos/{nome} (cache local — nunca
+// rebuscado enquanto o `nome` não mudar).
+interface FotoGaleria {
+  nome: string;
+  url: string;
+  objectUrl: string;
 }
 
 /**
@@ -202,17 +238,29 @@ export function CadastroProdutoSection() {
   const [arquivoFoto, setArquivoFoto] = useState<File | null>(null);
   const [enviandoFoto, setEnviandoFoto] = useState(false);
   const [erroFoto, setErroFoto] = useState<string | null>(null);
-  const [fotoThumbUrl, setFotoThumbUrl] = useState<string | null>(null);
 
-  // O Object URL da miniatura é revogado sempre que troca ou quando o
-  // componente desmonta — evita vazar memória entre uploads/telas.
+  // Galeria (Story 3.6): `fotos` é a lista completa (já com Object URL
+  // resolvido) devolvida pela última rebusca de GET /api/produtos/{id}/fotos.
+  // `objectUrlCacheRef` guarda o Object URL por `nome` — mutável (não dispara
+  // render sozinho) para que `carregarFotos` possa decidir SEM rebuscar uma
+  // miniatura já resolvida, mesmo entre uploads sucessivos. `lightboxIndex`
+  // é o índice em `fotos` cuja foto está ampliada no momento; `null` ==
+  // lightbox fechado.
+  const [fotos, setFotos] = useState<FotoGaleria[]>([]);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const objectUrlCacheRef = useRef<Map<string, string>>(new Map());
+
+  // Revoga todos os Object URLs em cache quando o componente desmonta —
+  // evita vazar memória entre telas (as trocas de Produto/cadastro já
+  // revogam individualmente em `enviar`, abaixo).
   useEffect(() => {
+    const cache = objectUrlCacheRef.current;
     return () => {
-      if (fotoThumbUrl) {
-        URL.revokeObjectURL(fotoThumbUrl);
+      for (const url of cache.values()) {
+        URL.revokeObjectURL(url);
       }
     };
-  }, [fotoThumbUrl]);
+  }, []);
 
   const carregarListas = useCallback(async () => {
     try {
@@ -319,18 +367,19 @@ export function CadastroProdutoSection() {
       limparFormulario();
 
       // Bloco "Adicionar foto" (Story 3.5) passa a apontar para o Produto
-      // recém-criado — qualquer upload/miniatura de um cadastro anterior é
-      // descartado junto.
+      // recém-criado — qualquer upload/galeria de um cadastro anterior é
+      // descartado junto (Story 3.6: revoga todo o cache de Object URLs,
+      // não só o último).
       setProdutoCriado(body.produto);
       setArquivoFoto(null);
       setErroFoto(null);
       setFotoInputKey((k) => k + 1);
-      setFotoThumbUrl((anterior) => {
-        if (anterior) {
-          URL.revokeObjectURL(anterior);
-        }
-        return null;
-      });
+      setLightboxIndex(null);
+      for (const url of objectUrlCacheRef.current.values()) {
+        URL.revokeObjectURL(url);
+      }
+      objectUrlCacheRef.current.clear();
+      setFotos([]);
     } catch {
       setErro(MENSAGEM_ERRO_CADASTRO);
     } finally {
@@ -338,10 +387,51 @@ export function CadastroProdutoSection() {
     }
   }
 
+  // Rebusca GET /api/produtos/{id}/fotos (Story 3.6) e resolve o Object URL
+  // de cada foto ainda ausente do cache local (`objectUrlCacheRef`) — uma
+  // miniatura já resolvida NUNCA é rebuscada, mesmo entre uploads
+  // sucessivos. Atualiza `fotos` (a galeria completa) só se TODAS as buscas
+  // (listagem + cada foto ainda não cacheada) tiverem sucesso; devolve
+  // `false` sem alterar `fotos` caso qualquer uma falhe (rede/`!ok`) — o
+  // chamador decide o que fazer com o erro.
+  async function carregarFotos(produtoId: string): Promise<boolean> {
+    try {
+      const res = await fetch(`/api/produtos/${produtoId}/fotos`, { headers: authHeaders() });
+      if (!res.ok) {
+        return false;
+      }
+      const body = (await res.json()) as { fotos: { nome: string; url: string }[] };
+
+      const itens: FotoGaleria[] = [];
+      for (const foto of body.fotos) {
+        let objectUrl = objectUrlCacheRef.current.get(foto.nome);
+        if (!objectUrl) {
+          const resFoto = await fetch(foto.url, { headers: authHeaders() });
+          if (!resFoto.ok) {
+            return false;
+          }
+          const blob = await resFoto.blob();
+          objectUrl = URL.createObjectURL(blob);
+          objectUrlCacheRef.current.set(foto.nome, objectUrl);
+        }
+        itens.push({ nome: foto.nome, url: foto.url, objectUrl });
+      }
+
+      setFotos(itens);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   // Envia `arquivoFoto` para POST /api/produtos/{id}/fotos (Story 3.5).
-  // Sucesso: busca o arquivo salvo via GET (mesma sessão Bearer, `fetch` +
-  // `authHeaders()`) e monta um Object URL para a miniatura — nunca um
-  // `<img src="/api/...">` direto, que não carregaria o header `Authorization`.
+  // Sucesso (`201`): o arquivo JÁ está salvo no servidor a partir daqui —
+  // `toast.success` e reset do input confirmam isso incondicionalmente.
+  // Rebusca a galeria inteira via carregarFotos (Story 3.6) DEPOIS: se ela
+  // falhar (rede, listagem, ou uma busca de blob), isso é um problema
+  // separado — SÓ a galeria não atualizou, o upload não falhou — então usa
+  // MENSAGEM_ERRO_GALERIA (nunca MENSAGEM_ERRO_FOTO) para não sugerir um
+  // reenvio que duplicaria o arquivo no servidor.
   async function enviarFoto() {
     if (!produtoCriado || !arquivoFoto || enviandoFoto) {
       return;
@@ -361,24 +451,15 @@ export function CadastroProdutoSection() {
         setErroFoto(body.error?.message ?? MENSAGEM_ERRO_FOTO);
         return;
       }
-      const body = (await res.json()) as { foto: { nome: string; url: string } };
-
-      const resFoto = await fetch(body.foto.url, { headers: authHeaders() });
-      if (!resFoto.ok) {
-        setErroFoto(MENSAGEM_ERRO_FOTO);
-        return;
-      }
-      const blob = await resFoto.blob();
-      setFotoThumbUrl((anterior) => {
-        if (anterior) {
-          URL.revokeObjectURL(anterior);
-        }
-        return URL.createObjectURL(blob);
-      });
 
       toast.success('Foto enviada.');
       setArquivoFoto(null);
       setFotoInputKey((k) => k + 1);
+
+      const sucesso = await carregarFotos(produtoCriado.id);
+      if (!sucesso) {
+        setErroFoto(MENSAGEM_ERRO_GALERIA);
+      }
     } catch {
       setErroFoto(MENSAGEM_ERRO_FOTO);
     } finally {
@@ -568,15 +649,75 @@ export function CadastroProdutoSection() {
               {enviandoFoto ? 'Enviando...' : 'Enviar foto'}
             </Button>
 
-            {fotoThumbUrl && (
-              <img
-                src={fotoThumbUrl}
-                alt={`Foto de ${produtoCriado.nome}`}
-                className="h-24 w-24 rounded-md border border-border object-cover"
-              />
+            {fotos.length > 0 && (
+              <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+                {fotos.map((foto, index) => (
+                  <button
+                    key={foto.nome}
+                    type="button"
+                    onClick={() => setLightboxIndex(index)}
+                    aria-label={`Ampliar foto ${index + 1} de ${fotos.length}`}
+                    className="overflow-hidden rounded-md border border-border"
+                  >
+                    <img
+                      src={foto.objectUrl}
+                      alt=""
+                      className="h-24 w-24 object-cover"
+                    />
+                  </button>
+                ))}
+              </div>
             )}
           </div>
         )}
+
+        {/* Lightbox (Story 3.6): abre em tela cheia sobre a foto clicada na
+            galeria. Fechar (clique fora, Esc, ou o botão "Fechar" abaixo) só
+            muda `lightboxIndex` para `null` — nenhuma navegação, nenhum
+            reload, a página permanece exatamente onde estava.
+
+            `max-w-none` sozinho NÃO basta: o `DialogContent` padrão
+            (components/ui/dialog.tsx) traz `sm:max-w-lg`, que — por viver
+            dentro de uma media query — vence o `max-w-none` sem variante em
+            qualquer viewport >= 640px (empate de especificidade decidido
+            pela ordem de declaração no CSS gerado, não pela ordem das
+            classes aqui). `sm:!max-w-none` força esse call site a ganhar via
+            `!important`, sem tocar o padrão de `dialog.tsx` usado por outros
+            diálogos claros.
+
+            `showCloseButton={false}` desliga o botão "Fechar" padrão (cor
+            herdada de `text-foreground`, quase invisível sobre
+            `bg-black/95`) — o botão abaixo o substitui só aqui, com cor
+            clara explícita, sem alterar o padrão usado pelos diálogos claros
+            do resto do app. */}
+        <Dialog
+          open={lightboxIndex !== null}
+          onOpenChange={(open) => {
+            if (!open) {
+              setLightboxIndex(null);
+            }
+          }}
+        >
+          <DialogContent
+            showCloseButton={false}
+            className="flex w-screen h-screen max-w-none sm:!max-w-none translate-x-0 translate-y-0 top-0 left-0 items-center justify-center border-none bg-black/95 p-0"
+          >
+            <DialogTitle className="sr-only">
+              Foto ampliada de {produtoCriado?.nome}
+            </DialogTitle>
+            <DialogClose className="absolute top-4 right-4 rounded-xs text-white opacity-90 ring-offset-background transition-opacity hover:opacity-100 focus:opacity-100 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:outline-hidden">
+              <XIcon className="size-6" />
+              <span className="sr-only">Fechar</span>
+            </DialogClose>
+            {lightboxIndex !== null && fotos[lightboxIndex] && (
+              <img
+                src={fotos[lightboxIndex].objectUrl}
+                alt=""
+                className="max-h-full max-w-full object-contain"
+              />
+            )}
+          </DialogContent>
+        </Dialog>
       </CardContent>
     </Card>
   );

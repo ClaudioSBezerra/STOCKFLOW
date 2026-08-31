@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/lib/pq"
@@ -88,4 +89,46 @@ func SalvarFotoProduto(db *sql.DB, fotosDir string, produtoID string, jpegBytes 
 		"falha ao gerar nome de arquivo sem colisão para produto %s após %d tentativas",
 		produtoID, fotoMaxTentativasColisao,
 	)
+}
+
+// ListarFotosProduto lista todas as fotos de um Produto — Story 3.6
+// (spec-3-6). Reaproveita a MESMA checagem de existência de Produto de
+// SalvarFotoProduto (existência OU malformação de `produtoID` ->
+// ErrProdutoNaoEncontrado, ANTES de tocar o disco), depois resolve todos os
+// arquivos gravados por SalvarFotoProduto via `filepath.Glob` pelo prefixo
+// `<produtoID>-` (o único vínculo Produto↔foto, sem tabela nova).
+//
+// Devolve sempre uma slice não-nil, ordenada por `Nome` — como o timestamp
+// unix do nome do arquivo tem largura fixa (10 dígitos até o ano 2286) e o
+// prefixo `<produtoID>-` é constante por Produto, ordenar a STRING do nome é
+// equivalente a ordenar pelo timestamp numérico (== ordem de envio), sem
+// parse extra. Produto sem nenhuma foto -> slice vazia, nunca erro.
+func ListarFotosProduto(db *sql.DB, fotosDir string, produtoID string) ([]FotoProduto, error) {
+	var existe bool
+	err := db.QueryRow(`SELECT true FROM produtos WHERE id = $1`, produtoID).Scan(&existe)
+	if err != nil {
+		var pqErr *pq.Error
+		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
+			return nil, ErrProdutoNaoEncontrado
+		}
+		return nil, fmt.Errorf("falha ao verificar produto para listar fotos: %w", err)
+	}
+
+	padrao := filepath.Join(fotosDir, fmt.Sprintf("%s-*.jpg", produtoID))
+	caminhos, err := filepath.Glob(padrao)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao listar fotos do produto: %w", err)
+	}
+
+	fotos := make([]FotoProduto, 0, len(caminhos))
+	for _, caminho := range caminhos {
+		nome := filepath.Base(caminho)
+		fotos = append(fotos, FotoProduto{
+			Nome: nome,
+			URL:  fmt.Sprintf("/api/produtos/%s/fotos/%s", produtoID, nome),
+		})
+	}
+	sort.Slice(fotos, func(i, j int) bool { return fotos[i].Nome < fotos[j].Nome })
+
+	return fotos, nil
 }

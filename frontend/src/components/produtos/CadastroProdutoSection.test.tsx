@@ -11,10 +11,14 @@ vi.mock('@/lib/session', () => ({
 }));
 
 // jsdom não implementa URL.createObjectURL/revokeObjectURL (Story 3.5: a
-// miniatura da foto usa exatamente essa dupla) — stub simples, chamadas só
-// verificadas por identidade/contagem, nunca pelo conteúdo do blob.
+// miniatura da foto usa exatamente essa dupla). O stub devolve um valor
+// DISTINTO por chamada (contador crescente) — não uma constante fixa —
+// porque a galeria (Story 3.6) pode ter 2+ fotos ao mesmo tempo: um mock
+// constante deixaria passar despercebido um bug em que o lightbox sempre
+// mostra a primeira foto, não importa em qual miniatura o usuário clicou.
 beforeEach(() => {
-  URL.createObjectURL = vi.fn(() => 'blob:mock-thumb-url');
+  let proximoId = 0;
+  URL.createObjectURL = vi.fn(() => `blob:mock-url-${proximoId++}`);
   URL.revokeObjectURL = vi.fn();
 });
 
@@ -67,6 +71,12 @@ function stubListasPadrao(extra?: Partial<Record<string, unknown>>) {
     }
     if (/^\/api\/produtos\/[^/]+\/fotos$/.test(url) && init?.method === 'POST') {
       const handler = extra?.postFoto as FetchImpl | undefined;
+      if (handler) return handler(url, init);
+    }
+    // GET /api/produtos/{id}/fotos (Story 3.6, listagem) — sem `/{arquivo}`
+    // final, distinto do padrão abaixo que serve o arquivo em si.
+    if (/^\/api\/produtos\/[^/]+\/fotos$/.test(url) && (!init?.method || init.method === 'GET')) {
+      const handler = extra?.getFotos as FetchImpl | undefined;
       if (handler) return handler(url, init);
     }
     if (/^\/api\/produtos\/[^/]+\/fotos\/[^/]+$/.test(url) && (!init?.method || init.method === 'GET')) {
@@ -422,7 +432,7 @@ describe('CadastroProdutoSection — Adicionar foto', () => {
     expect(botaoFoto).toBeEnabled();
   });
 
-  it('upload de foto com sucesso: envia multipart autenticado, busca a foto salva e mostra a miniatura', async () => {
+  it('upload de foto com sucesso: envia multipart autenticado, rebusca a galeria e mostra a miniatura', async () => {
     const user = userEvent.setup();
     const fetchMock = await cadastrarComSucesso(user, {
       postFoto: () =>
@@ -431,6 +441,8 @@ describe('CadastroProdutoSection — Adicionar foto', () => {
           status: 201,
           json: async () => ({ foto: { nome: 'p-1-111.jpg', url: '/api/produtos/p-1/fotos/p-1-111.jpg' } }),
         }),
+      getFotos: () =>
+        jsonOk({ fotos: [{ nome: 'p-1-111.jpg', url: '/api/produtos/p-1/fotos/p-1-111.jpg' }] }),
       getFoto: () => fotoBlobOk(),
     });
 
@@ -442,8 +454,11 @@ describe('CadastroProdutoSection — Adicionar foto', () => {
 
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Foto enviada.'));
 
-    const miniatura = await screen.findByRole('img', { name: 'Foto de Tubo PVC 100mm' });
-    expect(miniatura).toHaveAttribute('src', 'blob:mock-thumb-url');
+    const miniatura = await screen.findByRole('button', { name: 'Ampliar foto 1 de 1' });
+    // A miniatura usa `alt=""` (decorativa — a acessibilidade já vem do
+    // `aria-label` do próprio botão), então o navegador expõe role
+    // "presentation", não "img" — consulta pelo elemento `<img>` diretamente.
+    expect(miniatura.querySelector('img')).toHaveAttribute('src', 'blob:mock-url-0');
 
     const chamadaPost = fetchMock.mock.calls.find(
       (args: unknown[]) => args[0] === '/api/produtos/p-1/fotos' && (args[1] as RequestInit)?.method === 'POST',
@@ -455,6 +470,18 @@ describe('CadastroProdutoSection — Adicionar foto', () => {
     expect(chamadaPost[1].body).toBeInstanceOf(FormData);
     expect((chamadaPost[1].body as FormData).get('foto')).toBeInstanceOf(File);
 
+    const chamadaListagem = fetchMock.mock.calls.find(
+      (args: unknown[]) =>
+        args[0] === '/api/produtos/p-1/fotos' &&
+        (!(args[1] as RequestInit)?.method || (args[1] as RequestInit)?.method === 'GET'),
+    ) as [string, RequestInit] | undefined;
+    if (!chamadaListagem) {
+      throw new Error('nenhuma chamada GET /api/produtos/p-1/fotos (listagem) encontrada');
+    }
+    expect((chamadaListagem[1]?.headers as Record<string, string> | undefined)?.Authorization).toBe(
+      'Bearer token-de-teste',
+    );
+
     const chamadaGet = fetchMock.mock.calls.find(
       (args: unknown[]) => args[0] === '/api/produtos/p-1/fotos/p-1-111.jpg',
     ) as [string, RequestInit] | undefined;
@@ -462,6 +489,168 @@ describe('CadastroProdutoSection — Adicionar foto', () => {
       throw new Error('nenhuma chamada GET da foto salva encontrada');
     }
     expect((chamadaGet[1].headers as Record<string, string>).Authorization).toBe('Bearer token-de-teste');
+  });
+
+  it('duas fotos enviadas: a galeria mostra as 2 miniaturas, ordem de envio preservada', async () => {
+    const user = userEvent.setup();
+    let fotosSalvas: { nome: string; url: string }[] = [];
+    await cadastrarComSucesso(user, {
+      postFoto: () => {
+        const nome = `p-1-${100 + fotosSalvas.length}.jpg`;
+        fotosSalvas = [...fotosSalvas, { nome, url: `/api/produtos/p-1/fotos/${nome}` }];
+        return Promise.resolve({ ok: true, status: 201, json: async () => ({}) });
+      },
+      getFotos: () => jsonOk({ fotos: fotosSalvas }),
+      getFoto: () => fotoBlobOk(),
+    });
+
+    await user.upload(
+      screen.getByLabelText('Foto do produto'),
+      new File(['conteudo-1'], 'foto1.jpg', { type: 'image/jpeg' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Enviar foto' }));
+    await screen.findByRole('button', { name: 'Ampliar foto 1 de 1' });
+
+    await user.upload(
+      screen.getByLabelText('Foto do produto'),
+      new File(['conteudo-2'], 'foto2.jpg', { type: 'image/jpeg' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Enviar foto' }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Ampliar foto 1 de 2' })).toBeInTheDocument(),
+    );
+    expect(screen.getByRole('button', { name: 'Ampliar foto 2 de 2' })).toBeInTheDocument();
+  });
+
+  it('clique numa miniatura da galeria abre o lightbox em tela cheia com a foto certa', async () => {
+    const user = userEvent.setup();
+    await cadastrarComSucesso(user, {
+      postFoto: () => Promise.resolve({ ok: true, status: 201, json: async () => ({}) }),
+      getFotos: () =>
+        jsonOk({ fotos: [{ nome: 'p-1-1.jpg', url: '/api/produtos/p-1/fotos/p-1-1.jpg' }] }),
+      getFoto: () => fotoBlobOk(),
+    });
+
+    await user.upload(
+      screen.getByLabelText('Foto do produto'),
+      new File(['conteudo'], 'foto.jpg', { type: 'image/jpeg' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Enviar foto' }));
+
+    const miniatura = await screen.findByRole('button', { name: 'Ampliar foto 1 de 1' });
+    // Antes do clique, nenhum lightbox está montado como aberto.
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    await user.click(miniatura);
+
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByText('Foto ampliada de Tubo PVC 100mm')).toBeInTheDocument();
+  });
+
+  it('lightbox mostra a foto correspondente à miniatura clicada, não sempre a primeira', async () => {
+    const user = userEvent.setup();
+    let fotosSalvas: { nome: string; url: string }[] = [];
+    await cadastrarComSucesso(user, {
+      postFoto: () => {
+        const nome = `p-1-${100 + fotosSalvas.length}.jpg`;
+        fotosSalvas = [...fotosSalvas, { nome, url: `/api/produtos/p-1/fotos/${nome}` }];
+        return Promise.resolve({ ok: true, status: 201, json: async () => ({}) });
+      },
+      getFotos: () => jsonOk({ fotos: fotosSalvas }),
+      getFoto: () => fotoBlobOk(),
+    });
+
+    await user.upload(
+      screen.getByLabelText('Foto do produto'),
+      new File(['conteudo-1'], 'foto1.jpg', { type: 'image/jpeg' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Enviar foto' }));
+    await screen.findByRole('button', { name: 'Ampliar foto 1 de 1' });
+
+    await user.upload(
+      screen.getByLabelText('Foto do produto'),
+      new File(['conteudo-2'], 'foto2.jpg', { type: 'image/jpeg' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Enviar foto' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Ampliar foto 2 de 2' })).toBeInTheDocument(),
+    );
+
+    // O mock de URL.createObjectURL devolve um valor DISTINTO por chamada —
+    // as duas miniaturas têm Object URLs diferentes, condição necessária
+    // para este teste provar algo (senão não haveria como distinguir "abriu
+    // a foto certa" de "sempre abre a primeira").
+    const miniatura1 = screen.getByRole('button', { name: 'Ampliar foto 1 de 2' });
+    const miniatura2 = screen.getByRole('button', { name: 'Ampliar foto 2 de 2' });
+    const srcMiniatura1 = miniatura1.querySelector('img')?.getAttribute('src');
+    const srcMiniatura2 = miniatura2.querySelector('img')?.getAttribute('src');
+    expect(srcMiniatura1).toBeTruthy();
+    expect(srcMiniatura2).toBeTruthy();
+    expect(srcMiniatura1).not.toBe(srcMiniatura2);
+
+    await user.click(miniatura2);
+
+    const dialog = await screen.findByRole('dialog');
+    const imagemAmpliada = dialog.querySelector('img');
+    expect(imagemAmpliada).toHaveAttribute('src', srcMiniatura2);
+    expect(imagemAmpliada?.getAttribute('src')).not.toBe(srcMiniatura1);
+  });
+
+  // Fecha o lightbox das 3 formas descritas na AC (clique fora, Esc, botão
+  // "Fechar") — nas 3, o `Dialog` some e a galeria por trás permanece
+  // exatamente como estava (nenhuma navegação, nenhum reload).
+  describe('fechar o lightbox', () => {
+    async function abrirLightbox(user: ReturnType<typeof userEvent.setup>) {
+      await cadastrarComSucesso(user, {
+        postFoto: () => Promise.resolve({ ok: true, status: 201, json: async () => ({}) }),
+        getFotos: () =>
+          jsonOk({ fotos: [{ nome: 'p-1-1.jpg', url: '/api/produtos/p-1/fotos/p-1-1.jpg' }] }),
+        getFoto: () => fotoBlobOk(),
+      });
+      await user.upload(
+        screen.getByLabelText('Foto do produto'),
+        new File(['conteudo'], 'foto.jpg', { type: 'image/jpeg' }),
+      );
+      await user.click(screen.getByRole('button', { name: 'Enviar foto' }));
+      const miniatura = await screen.findByRole('button', { name: 'Ampliar foto 1 de 1' });
+      await user.click(miniatura);
+      await screen.findByRole('dialog');
+    }
+
+    it('Esc fecha o lightbox sem alterar o restante da tela', async () => {
+      const user = userEvent.setup();
+      await abrirLightbox(user);
+
+      await user.keyboard('{Escape}');
+
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(screen.getByRole('button', { name: 'Ampliar foto 1 de 1' })).toBeInTheDocument();
+    });
+
+    it('clique no botão "Fechar" fecha o lightbox sem alterar o restante da tela', async () => {
+      const user = userEvent.setup();
+      await abrirLightbox(user);
+
+      await user.click(screen.getByRole('button', { name: 'Fechar' }));
+
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(screen.getByRole('button', { name: 'Ampliar foto 1 de 1' })).toBeInTheDocument();
+    });
+
+    it('clique fora (overlay) fecha o lightbox sem alterar o restante da tela', async () => {
+      const user = userEvent.setup();
+      await abrirLightbox(user);
+
+      const overlay = document.querySelector('[data-slot="dialog-overlay"]');
+      if (!overlay) {
+        throw new Error('overlay do dialog não encontrado');
+      }
+      await user.click(overlay as HTMLElement);
+
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(screen.getByRole('button', { name: 'Ampliar foto 1 de 1' })).toBeInTheDocument();
+    });
   });
 
   it('erro do servidor no upload de foto: mostra a mensagem em role="alert", sem toast', async () => {
@@ -487,7 +676,7 @@ describe('CadastroProdutoSection — Adicionar foto', () => {
       'arquivo excede o tamanho máximo permitido',
     );
     expect(toastSuccess).not.toHaveBeenCalledWith('Foto enviada.');
-    expect(screen.queryByRole('img')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Ampliar foto/ })).not.toBeInTheDocument();
   });
 
   it('erro genérico (rede) no upload de foto: role="alert" com mensagem padrão', async () => {
@@ -505,5 +694,92 @@ describe('CadastroProdutoSection — Adicionar foto', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Não foi possível enviar a foto agora. Tente novamente em instantes.',
     );
+  });
+
+  // O upload em si (`POST`) teve sucesso — só a rebusca da galeria
+  // (`GET /api/produtos/{id}/fotos`) falhou depois. O usuário NÃO pode
+  // receber a mesma mensagem de "não foi possível enviar a foto": o arquivo
+  // já está salvo no servidor, e sugerir reenvio duplicaria o arquivo (nunca
+  // sobrescrito, Story 3.5).
+  it('upload com sucesso mas rebusca da galeria falha: confirma o envio (toast) e avisa só sobre a galeria, nunca com a mensagem de erro de upload', async () => {
+    const user = userEvent.setup();
+    await cadastrarComSucesso(user, {
+      postFoto: () => Promise.resolve({ ok: true, status: 201, json: async () => ({}) }),
+      getFotos: () => Promise.resolve({ ok: false, status: 500, json: async () => ({}) }),
+    });
+
+    await user.upload(
+      screen.getByLabelText('Foto do produto'),
+      new File(['conteudo'], 'foto.jpg', { type: 'image/jpeg' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Enviar foto' }));
+
+    // O upload teve sucesso — o toast confirma isso incondicionalmente,
+    // mesmo com a rebusca da galeria falhando logo em seguida.
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Foto enviada.'));
+
+    const alerta = await screen.findByRole('alert');
+    expect(alerta).toHaveTextContent(
+      'Foto enviada, mas não foi possível atualizar a galeria agora. Recarregue a página para vê-la.',
+    );
+    expect(alerta).not.toHaveTextContent(
+      'Não foi possível enviar a foto agora. Tente novamente em instantes.',
+    );
+    // A galeria não atualizou (a rebusca falhou), mas isso não aparece como
+    // falha do upload.
+    expect(screen.queryByRole('button', { name: /Ampliar foto/ })).not.toBeInTheDocument();
+  });
+
+  // A listagem (`GET /api/produtos/{id}/fotos`) teve sucesso, mas a busca do
+  // BLOB de uma foto específica (`GET /api/produtos/{id}/fotos/{nome}`)
+  // falhou — mesmo tratamento do caso acima (a listagem em si falhando):
+  // `carregarFotos` só chama `setFotos` se TODAS as buscas tiverem sucesso,
+  // então a galeria não deve renderizar um subconjunto incompleto de
+  // miniaturas nem esconder o aviso.
+  it('upload com sucesso mas a busca do blob de uma foto da galeria falha: avisa só sobre a galeria, sem renderizar miniaturas parciais', async () => {
+    const user = userEvent.setup();
+    await cadastrarComSucesso(user, {
+      postFoto: () => Promise.resolve({ ok: true, status: 201, json: async () => ({}) }),
+      getFotos: () =>
+        jsonOk({
+          fotos: [
+            { nome: 'p-1-1.jpg', url: '/api/produtos/p-1/fotos/p-1-1.jpg' },
+            { nome: 'p-1-2.jpg', url: '/api/produtos/p-1/fotos/p-1-2.jpg' },
+          ],
+        }),
+      getFoto: (url: string) =>
+        url.endsWith('/p-1-2.jpg')
+          ? Promise.resolve({ ok: false, status: 500, json: async () => ({}) })
+          : fotoBlobOk(),
+    });
+
+    await user.upload(
+      screen.getByLabelText('Foto do produto'),
+      new File(['conteudo'], 'foto.jpg', { type: 'image/jpeg' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Enviar foto' }));
+
+    // O upload teve sucesso — o toast confirma isso incondicionalmente,
+    // mesmo com a busca de uma das fotos da galeria falhando logo em seguida.
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Foto enviada.'));
+
+    const alerta = await screen.findByRole('alert');
+    expect(alerta).toHaveTextContent(
+      'Foto enviada, mas não foi possível atualizar a galeria agora. Recarregue a página para vê-la.',
+    );
+    // Nenhuma miniatura é renderizada — nem a foto cuja busca teve sucesso —
+    // porque `carregarFotos` só publica a galeria quando TODAS as buscas
+    // (listagem + cada foto) tiverem sucesso; um subconjunto parcial seria
+    // pior que nenhum, pois esconderia a existência da 2ª foto sem avisar.
+    expect(screen.queryByRole('button', { name: /Ampliar foto/ })).not.toBeInTheDocument();
+  });
+
+  it('produto recém-cadastrado sem nenhuma foto: bloco "Adicionar foto" aparece sem miniatura, sem erro', async () => {
+    const user = userEvent.setup();
+    await cadastrarComSucesso(user);
+
+    expect(screen.getByText('Adicionar foto — Tubo PVC 100mm')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Ampliar foto/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });

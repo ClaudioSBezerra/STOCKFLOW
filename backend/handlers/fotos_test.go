@@ -101,6 +101,23 @@ func getFotoProduto(db *sql.DB, fotosDir, authHeader, produtoID, arquivo string)
 	return w
 }
 
+// listarFotosProduto despacha GET /api/produtos/{id}/fotos pela MESMA
+// composição de newMux (só RequireAuth, sem RequireRole — Story 3.6).
+func listarFotosProduto(db *sql.DB, fotosDir, authHeader, produtoID string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/produtos/{id}/fotos",
+		middleware.RequireAuth(db, testJWTSecret)(
+			ListarFotosProdutoHandler(db, fotosDir)))
+
+	r := httptest.NewRequest(http.MethodGet, "/api/produtos/"+produtoID+"/fotos", nil)
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
 // construirJPEG monta um JPEG real em memória, largura x altura, cor sólida —
 // usado para exercitar EnviarFotoProdutoHandler com um arquivo de verdade,
 // não um mock.
@@ -489,5 +506,114 @@ func TestServirFotoProdutoHandler_QualquerPapelAutenticado(t *testing.T) {
 	wGet := getFotoProduto(db, fotosDir, "Bearer "+tokenUsuario, produtoID, resp.Foto.Nome)
 	if wGet.Code != http.StatusOK {
 		t.Fatalf("GET status = %d, want 200 (body=%s) — visualização deveria ser liberada a qualquer papel", wGet.Code, wGet.Body.String())
+	}
+}
+
+// TestListarFotosProdutoHandler_SucessoComNFotos prova a AC1 (Story 3.6,
+// spec-3-6): 2 uploads bem-sucedidos para o mesmo Produto -> GET
+// /api/produtos/{id}/fotos devolve `200 {"fotos":[...]}` com as 2 entradas.
+func TestListarFotosProdutoHandler_SucessoComNFotos(t *testing.T) {
+	db := testDB(t)
+	limparProdutosFotos(t, db)
+	fotosDir := t.TempDir()
+	criarContaComPapel(t, db, "Almox Foto Galeria", "foto-almox-galeria@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "foto-almox-galeria@empresa.com", "senha-123456")
+	produtoID := criarProdutoParaFotoHandler(t, db, "Produto Foto Galeria")
+
+	w1 := postFotoProduto(db, fotosDir, "Bearer "+token, produtoID, construirJPEG(t, 100, 100), "foto1.jpg")
+	if w1.Code != http.StatusCreated {
+		t.Fatalf("primeiro upload: status = %d, want 201 (body=%s)", w1.Code, w1.Body.String())
+	}
+	w2 := postFotoProduto(db, fotosDir, "Bearer "+token, produtoID, construirJPEG(t, 100, 100), "foto2.jpg")
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("segundo upload: status = %d, want 201 (body=%s)", w2.Code, w2.Body.String())
+	}
+
+	w := listarFotosProduto(db, fotosDir, "Bearer "+token, produtoID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Fotos []struct {
+			Nome string `json:"nome"`
+			URL  string `json:"url"`
+		} `json:"fotos"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if len(resp.Fotos) != 2 {
+		t.Fatalf("len(fotos) = %d, want 2", len(resp.Fotos))
+	}
+}
+
+// TestListarFotosProdutoHandler_GaleriaVazia prova a AC4: Produto existente
+// sem nenhuma foto -> `200 {"fotos":[]}`, nunca erro.
+func TestListarFotosProdutoHandler_GaleriaVazia(t *testing.T) {
+	db := testDB(t)
+	limparProdutosFotos(t, db)
+	fotosDir := t.TempDir()
+	criarContaComPapel(t, db, "Almox Foto Vazia", "foto-almox-vazia@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "foto-almox-vazia@empresa.com", "senha-123456")
+	produtoID := criarProdutoParaFotoHandler(t, db, "Produto Foto Vazia")
+
+	w := listarFotosProduto(db, fotosDir, "Bearer "+token, produtoID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte(`"fotos":[]`)) {
+		t.Errorf("body = %s, want array vazio explícito em \"fotos\"", w.Body.String())
+	}
+}
+
+// TestListarFotosProdutoHandler_404ProdutoInexistenteOuMalformado prova que
+// `id` inexistente OU malformado -> 404 NOT_FOUND, mesmo tratamento das
+// demais rotas de Produto.
+func TestListarFotosProdutoHandler_404ProdutoInexistenteOuMalformado(t *testing.T) {
+	db := testDB(t)
+	limparProdutosFotos(t, db)
+	fotosDir := t.TempDir()
+	criarContaComPapel(t, db, "Almox Foto 404 Galeria", "foto-almox-404-galeria@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "foto-almox-404-galeria@empresa.com", "senha-123456")
+
+	casos := []struct {
+		nome      string
+		produtoID string
+	}{
+		{"UUID válido inexistente", "00000000-0000-0000-0000-000000000000"},
+		{"id malformado", "id-nao-e-uuid"},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			w := listarFotosProduto(db, fotosDir, "Bearer "+token, c.produtoID)
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404 (body=%s)", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+// TestListarFotosProdutoHandler_QualquerPapelAutenticado prova que a
+// listagem é liberada a QUALQUER papel autenticado (`usuario` incluso) —
+// sem RequireRole, mesmo padrão de ServirFotoProdutoHandler.
+func TestListarFotosProdutoHandler_QualquerPapelAutenticado(t *testing.T) {
+	db := testDB(t)
+	limparProdutosFotos(t, db)
+	fotosDir := t.TempDir()
+	criarContaComPapel(t, db, "Almox Foto Galeria View", "foto-almox-galeria-view@empresa.com", "senha-123456", "almoxarife")
+	tokenAlmox := tokenDeLogin(t, db, "foto-almox-galeria-view@empresa.com", "senha-123456")
+	produtoID := criarProdutoParaFotoHandler(t, db, "Produto Foto Galeria View")
+
+	w := postFotoProduto(db, fotosDir, "Bearer "+tokenAlmox, produtoID, construirJPEG(t, 100, 100), "foto.jpg")
+	if w.Code != http.StatusCreated {
+		t.Fatalf("upload: status = %d, want 201 (body=%s)", w.Code, w.Body.String())
+	}
+
+	criarContaComPapel(t, db, "Usuária Foto Galeria View", "foto-usuario-galeria-view@empresa.com", "senha-123456", "usuario")
+	tokenUsuario := tokenDeLogin(t, db, "foto-usuario-galeria-view@empresa.com", "senha-123456")
+
+	wLista := listarFotosProduto(db, fotosDir, "Bearer "+tokenUsuario, produtoID)
+	if wLista.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s) — listagem deveria ser liberada a qualquer papel", wLista.Code, wLista.Body.String())
 	}
 }

@@ -176,3 +176,93 @@ func TestSalvarFotoProduto_ColisaoDeNomeIncrementaTimestamp(t *testing.T) {
 		t.Errorf("arquivo pré-ocupado foi alterado: conteúdo = %q", conteudoOriginal)
 	}
 }
+
+// TestListarFotosProduto_ListaOrdenadaPorNome prova a AC1 (Story 3.6,
+// spec-3-6): 3 fotos salvas via SalvarFotoProduto (timestamps crescentes,
+// forçados via nomes pré-ocupados de segundos anteriores) -> ListarFotosProduto
+// devolve as 3 na mesma ordem de envio (== ordem de `Nome`, já que o
+// timestamp unix tem largura fixa).
+func TestListarFotosProduto_ListaOrdenadaPorNome(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	fotosDir := t.TempDir()
+
+	produto := criarProdutoParaFoto(t, db, "Produto Galeria")
+
+	// Grava 3 arquivos diretamente no formato esperado (<id>-<timestamp>.jpg)
+	// com timestamps crescentes explícitos — evita depender de granularidade
+	// de segundo civil real entre chamadas de SalvarFotoProduto no teste.
+	base := time.Now().Unix() - 100
+	var nomesEsperados []string
+	for i := 0; i < 3; i++ {
+		nome := produto.ID + "-" + strconv.FormatInt(base+int64(i), 10) + ".jpg"
+		if err := os.WriteFile(filepath.Join(fotosDir, nome), []byte("foto-"+strconv.Itoa(i)), 0o644); err != nil {
+			t.Fatalf("falha ao gravar fixture de foto %d: %v", i, err)
+		}
+		nomesEsperados = append(nomesEsperados, nome)
+	}
+
+	fotos, err := ListarFotosProduto(db, fotosDir, produto.ID)
+	if err != nil {
+		t.Fatalf("ListarFotosProduto erro inesperado: %v", err)
+	}
+	if len(fotos) != 3 {
+		t.Fatalf("len(fotos) = %d, want 3", len(fotos))
+	}
+	for i, nome := range nomesEsperados {
+		if fotos[i].Nome != nome {
+			t.Errorf("fotos[%d].Nome = %q, want %q (ordem de envio)", i, fotos[i].Nome, nome)
+		}
+		wantURL := "/api/produtos/" + produto.ID + "/fotos/" + nome
+		if fotos[i].URL != wantURL {
+			t.Errorf("fotos[%d].URL = %q, want %q", i, fotos[i].URL, wantURL)
+		}
+	}
+}
+
+// TestListarFotosProduto_ListaVaziaSemFoto prova a AC4: Produto existente sem
+// nenhuma foto -> slice vazia (nunca nil, nunca erro).
+func TestListarFotosProduto_ListaVaziaSemFoto(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	fotosDir := t.TempDir()
+
+	produto := criarProdutoParaFoto(t, db, "Produto Sem Foto")
+
+	fotos, err := ListarFotosProduto(db, fotosDir, produto.ID)
+	if err != nil {
+		t.Fatalf("ListarFotosProduto erro inesperado: %v", err)
+	}
+	if fotos == nil {
+		t.Fatal("fotos == nil, want slice vazia não-nil")
+	}
+	if len(fotos) != 0 {
+		t.Errorf("len(fotos) = %d, want 0", len(fotos))
+	}
+}
+
+// TestListarFotosProduto_ProdutoInexistenteOuMalformado prova que a mesma
+// checagem de existência de SalvarFotoProduto se aplica à listagem: UUID
+// válido sem linha correspondente OU `id` malformado -> ErrProdutoNaoEncontrado,
+// nenhuma leitura de disco.
+func TestListarFotosProduto_ProdutoInexistenteOuMalformado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	fotosDir := t.TempDir()
+
+	casos := []struct {
+		nome      string
+		produtoID string
+	}{
+		{"UUID válido inexistente", "00000000-0000-0000-0000-000000000000"},
+		{"id malformado", "id-nao-e-uuid"},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			_, err := ListarFotosProduto(db, fotosDir, c.produtoID)
+			if err != ErrProdutoNaoEncontrado {
+				t.Fatalf("err = %v, want ErrProdutoNaoEncontrado", err)
+			}
+		})
+	}
+}

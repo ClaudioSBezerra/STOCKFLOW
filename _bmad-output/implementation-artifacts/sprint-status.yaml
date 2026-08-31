@@ -62,7 +62,7 @@ development_status:
   3-3-importação-em-massa-via-planilha-padronizada: done
   3-4-importação-atualiza-por-código-não-só-cria: done
   3-5-upload-e-armazenamento-de-foto-do-produto: done
-  3-6-galeria-e-visualização-ampliada-de-fotos-lightbox: backlog
+  3-6-galeria-e-visualização-ampliada-de-fotos-lightbox: done
   3-7-migração-de-produtos-categorias-e-fotos-legadas: backlog
   epic-3-retrospective: optional
 

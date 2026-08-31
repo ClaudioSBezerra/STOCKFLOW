@@ -301,3 +301,43 @@ source_spec: `spec-3-2-nomenclatura-guiada-por-subtipo.md`
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260830-172544-5790; this entry preserves the lingering recommendation for a deliberate later review.
 status: open
+
+### DW-39: A ordenação de ListarFotosProduto por nome de arquivo depende de o retry anti-colisão de SalvarFotoProduto nunca produzir um timestamp menor que um upload anterior, sob concorrência real.
+origin: spec-deferred f56dfb167f43
+location: backend/services/fotos.go (ListarFotosProduto, SalvarFotoProduto)
+source_spec: `spec-3-6-galeria-e-visualizacao-ampliada-de-fotos-lightbox.md`
+severity: low
+reason: SalvarFotoProduto (Story 3.5) só avança o timestamp em colisões, então a ordem é preservada sob uploads sequenciais; sob uploads verdadeiramente concorrentes ao mesmo Produto essa garantia não tem teste cobrindo-a — característica pré-existente da Story 3.5, não introduzida por esta story.
+status: open
+
+### DW-40: ListarFotosProduto e ServirFotoProdutoHandler usam o id da URL sem canonicalizar case ao montar o glob/regex do nome de arquivo, embora a checagem no banco seja case-insensitive.
+origin: spec-deferred b12f8a8aa840
+location: backend/services/fotos.go:116 (ListarFotosProduto), backend/handlers/fotos.go (ServirFotoProdutoHandler)
+source_spec: `spec-3-6-galeria-e-visualizacao-ampliada-de-fotos-lightbox.md`
+severity: low
+reason: Um id com case diferente do usado no upload faria a listagem/GET não encontrar arquivos existentes mesmo com o Produto existindo; mesmo padrão já presente em ServirFotoProdutoHandler desde a Story 3.5 (regex via regexp.QuoteMeta) — risco prático desprezível, pois o id sempre vem do mesmo fluxo de resposta do servidor, nunca digitado.
+status: open
+
+### DW-41: GET /api/produtos/{id}/fotos pode listar, via filepath.Glob, um arquivo que SalvarFotoProduto ainda está escrevendo, servindo bytes truncados a um visualizador concorrente.
+origin: spec-deferred 0b74ba4bb09d
+location: backend/services/fotos.go (ListarFotosProduto vs SalvarFotoProduto)
+source_spec: `spec-3-6-galeria-e-visualizacao-ampliada-de-fotos-lightbox.md`
+severity: low
+reason: Janela de milissegundos (entre os.OpenFile e Close em SalvarFotoProduto), autolimitante — uma rebusca seguinte corrige, sem perda permanente de dado. Corrigir exigiria mudar a escrita de SalvarFotoProduto (Story 3.5), fora do escopo desta story pelo Never da própria spec.
+status: open
+
+### DW-42: GET /api/produtos/{id}/fotos pode devolver 200 com lista vazia para um Produto excluído entre a checagem de existência e o filepath.Glob, em vez de 404 NOT_FOUND.
+origin: spec-deferred 4e8a99c14089
+location: backend/services/fotos.go (ListarFotosProduto)
+source_spec: `spec-3-6-galeria-e-visualizacao-ampliada-de-fotos-lightbox.md`
+severity: low
+reason: ListarFotosProduto verifica a existência do Produto e só depois roda filepath.Glob, sem reverificar; numa janela de milissegundos entre as duas operações uma exclusão concorrente do Produto faria a resposta cair para "0 fotos" em vez de "produto não encontrado". Hoje não existe nenhum fluxo de exclusão de Produto no sistema, então é impraticável de disparar no estado atual do app.
+status: open
+
+### DW-43: Se a busca do blob de uma foto no MEIO de uma rebusca de galeria falhar, o Object URL já criado para uma foto anterior na mesma chamada fica órfão no cache local até o componente desmontar.
+origin: spec-deferred a614f1030394
+location: frontend/src/components/produtos/CadastroProdutoSection.tsx (carregarFotos)
+source_spec: `spec-3-6-galeria-e-visualizacao-ampliada-de-fotos-lightbox.md`
+severity: low
+reason: carregarFotos (CadastroProdutoSection.tsx) grava cada Object URL resolvido em objectUrlCacheRef.current dentro do for, mas só publica `fotos` (setFotos) depois do loop inteiro terminar com sucesso; se uma foto posterior falhar, a função retorna false antes do setFotos, e o Object URL da foto anterior nunca é exibido nem revogado até o componente desmontar (quando todo o cache é revogado em bloco) — vazamento pequeno e limitado a essa sessão de tela, sem impacto funcional visível.
+status: open

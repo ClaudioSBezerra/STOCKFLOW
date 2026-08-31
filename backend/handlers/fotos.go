@@ -22,18 +22,21 @@ import (
 	"stockflow/backend/services"
 )
 
-// Handlers de upload e armazenamento de foto do Produto — Story 3.5
-// (spec-3-5). Fronteira HTTP pura: decodifica o multipart, decide o formato
-// SÓ pelo conteúdo real do arquivo (nunca pela extensão do nome enviado ou
-// pelo `Content-Type` do multipart), redimensiona/recomprime e delega a
-// gravação em disco a services.SalvarFotoProduto — que também verifica a
-// existência do Produto.
+// Handlers de upload, armazenamento e listagem de foto do Produto — Story
+// 3.5 (spec-3-5) e Story 3.6 (spec-3-6, listagem). Fronteira HTTP pura:
+// decodifica o multipart, decide o formato SÓ pelo conteúdo real do arquivo
+// (nunca pela extensão do nome enviado ou pelo `Content-Type` do multipart),
+// redimensiona/recomprime e delega a gravação em disco a
+// services.SalvarFotoProduto — que também verifica a existência do Produto.
 //
 // Registro em newMux (main.go):
 //   - POST /api/produtos/{id}/fotos -> RequireAuth -> RequireRole(almoxarife);
 //     multipart, campo `foto`. Mesmo mínimo de papel de POST /api/produtos.
 //   - GET /api/produtos/{id}/fotos/{arquivo} -> RequireAuth apenas: qualquer
 //     conta autenticada visualiza — sem RequireRole.
+//   - GET /api/produtos/{id}/fotos -> RequireAuth apenas (Story 3.6): lista
+//     todas as fotos do Produto, mesmo padrão de visualização liberada a
+//     qualquer papel.
 
 // fotoRequestMaxBytes limita o corpo aceito por POST /api/produtos/{id}/fotos
 // — 15 MiB, decisão desta spec (nenhum documento de planejamento fixa um
@@ -399,6 +402,36 @@ func ServirFotoProdutoHandler(fotosDir string) http.HandlerFunc {
 		w.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(w, arquivo); err != nil {
 			slog.Error("falha ao servir foto de produto", "error", err)
+		}
+	}
+}
+
+// ListarFotosProdutoHandler expõe GET /api/produtos/{id}/fotos: só
+// RequireAuth (qualquer papel — mesmo padrão de ServirFotoProdutoHandler,
+// sem RequireRole), delega a services.ListarFotosProduto. `200
+// {"fotos":[{"nome","url"}, ...]}`, sempre um array (nunca `null`) — vazio
+// quando o Produto não tem foto. `id` inexistente ou malformado -> `404
+// NOT_FOUND` (services.ErrProdutoNaoEncontrado), verificado ANTES de
+// qualquer leitura de disco — Story 3.6 (spec-3-6).
+func ListarFotosProdutoHandler(db *sql.DB, fotosDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := middleware.UsuarioDaSessao(r.Context()); !ok {
+			slog.Error("ListarFotosProdutoHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+
+		produtoID := r.PathValue("id")
+
+		fotos, err := services.ListarFotosProduto(db, fotosDir, produtoID)
+		switch {
+		case err == nil:
+			escreverJSON(w, http.StatusOK, map[string]any{"fotos": fotos})
+		case errors.Is(err, services.ErrProdutoNaoEncontrado):
+			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "produto não encontrado")
+		default:
+			slog.Error("falha ao listar fotos de produto", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao listar fotos")
 		}
 	}
 }

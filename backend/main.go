@@ -49,8 +49,12 @@
 // maior lado — só reduz, nunca amplia — e recomprime em JPEG q=82,
 // gravado em `FOTOS_DIR` sem overwrite; GET
 // /api/produtos/{id}/fotos/{arquivo}, qualquer conta autenticada, serve o
-// arquivo salvo. `FOTOS_DIR` segue o mesmo fail-fast de DATABASE_URL/
-// JWT_SECRET: sem valor usa `./fotos`, e o diretório é criado no startup).
+// arquivo salvo) e a galeria/lightbox — Story 3.6 (GET
+// /api/produtos/{id}/fotos, qualquer conta autenticada, lista todas as fotos
+// do Produto ordenadas por ordem de envio, `{"fotos":[...]}` — vazio, nunca
+// erro, quando não há foto). `FOTOS_DIR` segue o mesmo fail-fast de
+// DATABASE_URL/JWT_SECRET: sem valor usa `./fotos`, e o diretório é criado
+// no startup).
 package main
 
 import (
@@ -362,19 +366,22 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.ContinuarImportacaoHandler(db))))
 
-	// Upload e armazenamento de foto do Produto — Story 3.5 (FR-27/FR-28).
+	// Upload, armazenamento, listagem e lightbox de foto do Produto —
+	// Story 3.5 (FR-27/FR-28) e Story 3.6 (FR-29, listagem/galeria).
 	// POST /api/produtos/{id}/fotos fica atrás de RequireRole(almoxarife),
 	// mesmo mínimo de papel do cadastro/importação: enviar foto é restrito a
-	// `almoxarife`+. GET /api/produtos/{id}/fotos/{arquivo} leva só
-	// RequireAuth — visualização de foto é liberada a qualquer conta
-	// autenticada, mesmo padrão de GET /api/categorias/GET /api/estoques.
-	// Nenhuma tabela nova: o nome do arquivo é o único vínculo com o Produto;
-	// listagem/galeria fica para a Story 3.6.
+	// `almoxarife`+. GET /api/produtos/{id}/fotos/{arquivo} e
+	// GET /api/produtos/{id}/fotos (listagem) levam só RequireAuth —
+	// visualização de foto é liberada a qualquer conta autenticada, mesmo
+	// padrão de GET /api/categorias/GET /api/estoques. Nenhuma tabela nova: o
+	// nome do arquivo é o único vínculo com o Produto.
 	mux.HandleFunc("POST /api/produtos/{id}/fotos", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.EnviarFotoProdutoHandler(db, fotosDir))))
 	mux.HandleFunc("GET /api/produtos/{id}/fotos/{arquivo}", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ServirFotoProdutoHandler(fotosDir)))
+	mux.HandleFunc("GET /api/produtos/{id}/fotos", middleware.RequireAuth(db, jwtSecret)(
+		handlers.ListarFotosProdutoHandler(db, fotosDir)))
 
 	// Login federado via Keycloak — SSO Ferreira Costa (Story 1.9, AD-7).
 	// /api/auth/sso/config e /api/auth/logout são SEMPRE registrados (o
