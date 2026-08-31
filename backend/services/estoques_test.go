@@ -15,10 +15,11 @@ import (
 // para `estoques`, então truncar só `estoques` falharia (0A000) sempre que
 // algum teste desta suíte tiver deixado uma linha de resíduo para trás (ex.
 // TestExcluirEstoque_ComResiduo, que prova exatamente que a linha NÃO é
-// removida).
+// removida). `importacao_linhas` entra pelo mesmo motivo (Story 3.3):
+// `importacao_linhas.produto_id` referencia `produtos(id)` sem CASCADE.
 func limparEstoques(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.Exec(`TRUNCATE TABLE produto_estoque, produtos, estoques`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, produto_estoque, produtos, estoques`); err != nil {
 		t.Fatalf("falha ao limpar estoques: %v", err)
 	}
 }

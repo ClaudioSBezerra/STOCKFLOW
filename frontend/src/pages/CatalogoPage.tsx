@@ -1,6 +1,8 @@
 import { useAuth } from '@/lib/auth';
 import { rankPapel } from '@/components/shell/nav-items';
 import { CadastroProdutoSection } from '@/components/produtos/CadastroProdutoSection';
+import { ImportacaoProdutosSection } from '@/components/produtos/ImportacaoProdutosSection';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 /**
  * Página "Catálogo" (`/`, item de nav "Catálogo", Story 3.1, spec-3-1) —
@@ -8,16 +10,16 @@ import { CadastroProdutoSection } from '@/components/produtos/CadastroProdutoSec
  * `AppShell`/`RotaProtegida`.
  *
  * Sempre mostra um aviso de "busca em breve" (Epic 4), para qualquer papel.
- * Quando `rankPapel(papel) >= rankPapel('almoxarife')`, empilha também a
- * seção de cadastro (`CadastroProdutoSection`) abaixo do aviso — mesma
- * simplificação deliberada de `ConfiguracoesPage`/`EstoquesPage`: sem abas
- * horizontais do `AppShell` ainda, mesmo a IA de EXPERIENCE.md descrevendo
- * Cadastro/Importação como abas do módulo Catálogo.
+ * Quando `rankPapel(papel) >= rankPapel('almoxarife')`, mostra também
+ * `Tabs` ("Cadastro"/"Importação", Story 3.3, spec-3-3) envolvendo
+ * `CadastroProdutoSection`/`ImportacaoProdutosSection` — resolve o que antes
+ * era uma simplificação deliberada (empilhamento simples, sem abas), agora
+ * que a Story 3.3 entrega o segundo fluxo que faz as abas valerem a pena.
  *
  * Gate de papel espelhado do `nav-items.ts`/`EstoquesPage`: o servidor
- * continua sendo a autoridade real — `POST /api/produtos` responde 403 para
- * papéis abaixo de `almoxarife` mesmo em chamada direta à API; este espelho é
- * só de experiência.
+ * continua sendo a autoridade real — `POST /api/produtos`/`POST
+ * /api/importacoes` respondem 403 para papéis abaixo de `almoxarife` mesmo em
+ * chamada direta à API; este espelho é só de experiência.
  */
 export function CatalogoPage() {
   const { usuario } = useAuth();
@@ -28,7 +30,20 @@ export function CatalogoPage() {
       <p className="text-body text-muted-foreground">
         Busca e visualização do catálogo chegam em breve.
       </p>
-      {podeCadastrar && <CadastroProdutoSection />}
+      {podeCadastrar && (
+        <Tabs defaultValue="cadastro">
+          <TabsList>
+            <TabsTrigger value="cadastro">Cadastro</TabsTrigger>
+            <TabsTrigger value="importacao">Importação</TabsTrigger>
+          </TabsList>
+          <TabsContent value="cadastro">
+            <CadastroProdutoSection />
+          </TabsContent>
+          <TabsContent value="importacao">
+            <ImportacaoProdutosSection />
+          </TabsContent>
+        </Tabs>
+      )}
     </div>
   );
 }

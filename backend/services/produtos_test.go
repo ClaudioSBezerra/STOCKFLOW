@@ -11,9 +11,15 @@ import (
 // suíte, numa única TRUNCATE (Postgres resolve as FKs entre as três porque
 // todas estão na mesma instrução). `categorias` NUNCA é truncada aqui — é
 // seed fixo da migração 000010, compartilhado por toda a suíte.
+//
+// `importacao_linhas` entra na mesma TRUNCATE (Story 3.3):
+// `importacao_linhas.produto_id` referencia `produtos(id)` SEM `ON DELETE
+// CASCADE` — truncar só produtos/estoques falharia (0A000, "cannot truncate
+// a table referenced in a foreign key constraint") assim que a suíte de
+// importações tiver gravado alguma linha.
 func limparProdutos(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.Exec(`TRUNCATE TABLE produto_estoque, produtos, estoques`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, produto_estoque, produtos, estoques`); err != nil {
 		t.Fatalf("falha ao limpar produtos/produto_estoque/estoques: %v", err)
 	}
 }

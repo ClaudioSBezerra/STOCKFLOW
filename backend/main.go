@@ -36,7 +36,14 @@
 // validando `nome` contra o formato do template quando informado; POST
 // /api/produtos/{id}/renomear, mínimo `almoxarife`, é o único endpoint de
 // edição de Produto — escopo restrito a `nome`, revalidado contra o template
-// aplicado quando existir).
+// aplicado quando existir) e a importação em massa via planilha padronizada —
+// Story 3.3 (POST /api/importacoes, mínimo `almoxarife`: recebe um `.xlsx`
+// multipart no campo `planilha`, valida o cabeçalho fixo de 16 colunas e
+// processa cada linha sequencialmente, criando Produtos e Estoques ausentes
+// automaticamente; GET /api/importacoes/ultima, mínimo `almoxarife`, indica
+// até onde uma importação interrompida chegou; POST
+// /api/importacoes/{id}/continuar, mínimo `almoxarife`, retoma só as linhas
+// ainda pendentes).
 package main
 
 import (
@@ -315,6 +322,24 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	mux.HandleFunc("POST /api/produtos/{id}/renomear", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.AtualizarNomeProdutoHandler(db))))
+
+	// Importação em massa via planilha padronizada — Story 3.3 (FR-10). Os 3
+	// endpoints ficam atrás de RequireRole(almoxarife), mesmo mínimo de papel
+	// do cadastro manual (Story 3.1) — importar em massa é tão restrito quanto
+	// cadastrar item a item. POST /api/importacoes recebe o `.xlsx` multipart,
+	// valida o cabeçalho fixo e processa tudo sequencialmente na própria
+	// requisição (sem SSE, sem worker dedicado). GET /api/importacoes/ultima e
+	// POST /api/importacoes/{id}/continuar sustentam a retomada após uma
+	// interrupção (rede, navegador fechado, processo derrubado).
+	mux.HandleFunc("POST /api/importacoes", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAlmoxarife)(
+			handlers.CriarImportacaoHandler(db))))
+	mux.HandleFunc("GET /api/importacoes/ultima", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAlmoxarife)(
+			handlers.UltimaImportacaoHandler(db))))
+	mux.HandleFunc("POST /api/importacoes/{id}/continuar", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAlmoxarife)(
+			handlers.ContinuarImportacaoHandler(db))))
 
 	// Login federado via Keycloak — SSO Ferreira Costa (Story 1.9, AD-7).
 	// /api/auth/sso/config e /api/auth/logout são SEMPRE registrados (o

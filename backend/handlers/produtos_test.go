@@ -21,8 +21,10 @@ func limparProdutosHandler(t *testing.T, db *sql.DB) {
 	t.Helper()
 	// `produto_estoque` e `produtos` entram na mesma TRUNCATE que `estoques`
 	// por causa da FK de produto_estoque.estoque_id -> estoques(id).
+	// `importacao_linhas` entra pelo mesmo motivo (Story 3.3):
+	// importacao_linhas.produto_id -> produtos(id), sem CASCADE.
 	// `categorias` NUNCA é truncada aqui — seed fixo da migração 000010.
-	if _, err := db.Exec(`TRUNCATE TABLE produto_estoque, produtos, estoques`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, produto_estoque, produtos, estoques`); err != nil {
 		t.Fatalf("falha ao limpar produtos/produto_estoque/estoques: %v", err)
 	}
 }

@@ -59,7 +59,7 @@ development_status:
   epic-3: backlog
   3-1-cadastro-manual-de-produto-com-dimensões-estruturadas: done
   3-2-nomenclatura-guiada-por-subtipo: done
-  3-3-importação-em-massa-via-planilha-padronizada: backlog
+  3-3-importação-em-massa-via-planilha-padronizada: done
   3-4-importação-atualiza-por-código-não-só-cria: backlog
   3-5-upload-e-armazenamento-de-foto-do-produto: backlog
   3-6-galeria-e-visualização-ampliada-de-fotos-lightbox: backlog

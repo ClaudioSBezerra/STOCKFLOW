@@ -17,13 +17,14 @@ import (
 // POST /api/estoques -> RequireAuth -> RequireRole(almoxarife) -> handler.
 // GET /api/estoques -> RequireAuth -> handler (SEM RequireRole).
 
-// limparEstoquesHandler trunca `produto_estoque`/`produtos`/`estoques` juntos
-// (mesma FK de produto_estoque.estoque_id -> estoques(id) que exige truncar
-// as três na mesma instrução — Story 3.1). `categorias` nunca é truncada:
-// seed fixo da migração 000010.
+// limparEstoquesHandler trunca `importacao_linhas`/`produto_estoque`/
+// `produtos`/`estoques` juntos (FK de produto_estoque.estoque_id ->
+// estoques(id), Story 3.1, e de importacao_linhas.produto_id -> produtos(id),
+// Story 3.3, exigem truncar as quatro na mesma instrução). `categorias` nunca
+// é truncada: seed fixo da migração 000010.
 func limparEstoquesHandler(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.Exec(`TRUNCATE TABLE produto_estoque, produtos, estoques`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, produto_estoque, produtos, estoques`); err != nil {
 		t.Fatalf("falha ao limpar estoques: %v", err)
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha1" //nolint:gosec // HMAC-SHA1 é o algoritmo do TOTP (RFC 6238/4226), não hashing de segredo.
 	"database/sql"
@@ -8,6 +9,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +17,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/xuri/excelize/v2"
 
 	_ "github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
@@ -622,7 +626,7 @@ func TestNewMux_EstoquesRotaCarregaRequireRole(t *testing.T) {
 	// `produto_estoque`/`produtos` entram na mesma TRUNCATE que `estoques`:
 	// Postgres recusa truncar uma tabela referenciada por FK de outra (mesmo
 	// vazia) a menos que todas entrem na mesma instrução (Story 3.1).
-	if _, err := db.Exec(`TRUNCATE TABLE produto_estoque, produtos, estoques`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, produto_estoque, produtos, estoques`); err != nil {
 		t.Fatalf("truncate estoques: %v", err)
 	}
 
@@ -761,7 +765,7 @@ func TestNewMux_ProdutosRotaCarregaRequireRole(t *testing.T) {
 	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 		t.Fatalf("truncate usuarios: %v", err)
 	}
-	if _, err := db.Exec(`TRUNCATE TABLE produto_estoque, produtos, estoques`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, produto_estoque, produtos, estoques`); err != nil {
 		t.Fatalf("truncate produtos: %v", err)
 	}
 
@@ -865,7 +869,7 @@ func TestNewMux_ProdutosRenomearRotaCarregaRequireRole(t *testing.T) {
 	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 		t.Fatalf("truncate usuarios: %v", err)
 	}
-	if _, err := db.Exec(`TRUNCATE TABLE produto_estoque, produtos, estoques`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, produto_estoque, produtos, estoques`); err != nil {
 		t.Fatalf("truncate produtos: %v", err)
 	}
 
@@ -938,6 +942,151 @@ func TestNewMux_ProdutosRenomearRotaCarregaRequireRole(t *testing.T) {
 		}
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+		}
+	})
+}
+
+// construirXLSXMux monta um `.xlsx` real em memória (via excelize) a partir
+// de uma matriz de células — mesmo helper de handlers/importacoes_test.go,
+// reimplementado aqui porque package main não importa o pacote de testes de
+// handlers.
+func construirXLSXMux(t *testing.T, linhas [][]string) []byte {
+	t.Helper()
+	f := excelize.NewFile()
+	defer f.Close()
+	planilha := f.GetSheetList()[0]
+	for i, linha := range linhas {
+		for j, valor := range linha {
+			célula, err := excelize.CoordinatesToCellName(j+1, i+1)
+			if err != nil {
+				t.Fatalf("CoordinatesToCellName(%d,%d): %v", j+1, i+1, err)
+			}
+			if err := f.SetCellStr(planilha, célula, valor); err != nil {
+				t.Fatalf("SetCellStr(%s): %v", célula, err)
+			}
+		}
+	}
+	buf, err := f.WriteToBuffer()
+	if err != nil {
+		t.Fatalf("WriteToBuffer: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// TestNewMux_ImportacoesRotaCarregaRequireRole prova, despachando pela mesma
+// instância de newMux usada por main() (Story 3.3), que os 3 endpoints de
+// importação estão atrás de RequireRole(almoxarife):
+//   - POST /api/importacoes: token `usuario` -> 403 FORBIDDEN; token
+//     `almoxarife` passa do gate (201 de verdade, nunca 403).
+//   - GET /api/importacoes/ultima: token `usuario` -> 403 FORBIDDEN; token
+//     `almoxarife` passa do gate (200, nunca 403).
+//   - POST /api/importacoes/{id}/continuar: token `usuario` -> 403 FORBIDDEN;
+//     token `almoxarife` passa do gate (404 para id inexistente é um motivo
+//     de negócio válido, mas nunca 403).
+//
+// Sem estes casos, remover `middleware.RequireRole(services.PapelAlmoxarife)`
+// de qualquer um dos 3 — ou registrá-los sem RequireAuth — deixaria a suíte
+// verde (o único caso pré-existente em main_test.go, sem token -> 401, é
+// produzido só por RequireAuth).
+func TestNewMux_ImportacoesRotaCarregaRequireRole(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate usuarios: %v", err)
+	}
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, produto_estoque, produtos, estoques`); err != nil {
+		t.Fatalf("truncate produtos: %v", err)
+	}
+
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{})
+
+	const senha = "senha-123456"
+	segredos := map[string]string{}
+	seedContaMux(t, db, "importacao-mux-usuario@empresa.com", "usuario", senha, segredos)
+	seedContaMux(t, db, "importacao-mux-almox@empresa.com", "almoxarife", senha, segredos)
+
+	// A coluna "Categoria" da planilha casa por NOME, não por código
+	// (services.CriarImportacao, Design Notes da spec-3-3).
+	var categoria string
+	if err := db.QueryRow(`SELECT nome FROM categorias WHERE codigo = '04.001'`).Scan(&categoria); err != nil {
+		t.Fatalf("buscar categoria de seed: %v", err)
+	}
+
+	despacharMultipart := func(token string, arquivo []byte) *httptest.ResponseRecorder {
+		corpo := &bytes.Buffer{}
+		writer := multipart.NewWriter(corpo)
+		part, _ := writer.CreateFormFile("planilha", "planilha.xlsx")
+		_, _ = part.Write(arquivo)
+		_ = writer.Close()
+		req := httptest.NewRequest(http.MethodPost, "/api/importacoes", corpo)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+	despachar := func(metodo, caminho, token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(metodo, caminho, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	xlsx := construirXLSXMux(t, [][]string{
+		services.CabecalhoEsperado,
+		{"Produto Mux Importação", "SKU-MUX-IMP", categoria, "", "", "", "", "", "", "", "", "", "", "1", "Canteiro Mux Importação", ""},
+	})
+
+	t.Run("POST importacoes: papel usuario -> 403 FORBIDDEN", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "importacao-mux-usuario@empresa.com", senha, segredos)
+		w := despacharMultipart(token, xlsx)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusForbidden, w.Body.String())
+		}
+	})
+
+	t.Run("POST importacoes: almoxarife passa do gate (201 de verdade, nunca 403)", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "importacao-mux-almox@empresa.com", senha, segredos)
+		w := despacharMultipart(token, xlsx)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
+		}
+	})
+
+	t.Run("GET importacoes/ultima: papel usuario -> 403 FORBIDDEN", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "importacao-mux-usuario@empresa.com", senha, segredos)
+		w := despachar(http.MethodGet, "/api/importacoes/ultima", token)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusForbidden, w.Body.String())
+		}
+	})
+
+	t.Run("GET importacoes/ultima: almoxarife passa do gate (200, nunca 403)", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "importacao-mux-almox@empresa.com", senha, segredos)
+		w := despachar(http.MethodGet, "/api/importacoes/ultima", token)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+		}
+	})
+
+	t.Run("POST importacoes/{id}/continuar: papel usuario -> 403 FORBIDDEN", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "importacao-mux-usuario@empresa.com", senha, segredos)
+		w := despachar(http.MethodPost, "/api/importacoes/00000000-0000-0000-0000-000000000000/continuar", token)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusForbidden, w.Body.String())
+		}
+	})
+
+	t.Run("POST importacoes/{id}/continuar: almoxarife passa do gate (nunca 403)", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "importacao-mux-almox@empresa.com", senha, segredos)
+		w := despachar(http.MethodPost, "/api/importacoes/00000000-0000-0000-0000-000000000000/continuar", token)
+		if w.Code == http.StatusForbidden {
+			t.Fatalf("status = %d, want != 403 (body=%s)", w.Code, w.Body.String())
+		}
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d (id inexistente, body=%s)", w.Code, http.StatusNotFound, w.Body.String())
 		}
 	})
 }
