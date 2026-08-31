@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
+import { Link } from 'react-router-dom';
 import { Search } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { getAccessToken } from '@/lib/session';
@@ -23,8 +24,9 @@ import { getAccessToken } from '@/lib/session';
  *
  * Sucesso com 1+ Produtos: lista simples abaixo do campo (nome, código em
  * `JetBrains Mono` quando presente, nome da categoria) — sem badge de
- * disponibilidade (Story 4.3/4.4) e sem link/clique (o detalhe do Produto é
- * a Story 4.4, ainda não existe — Design Notes da spec).
+ * disponibilidade (Story 4.3/4.4). Cada resultado (Story 4.4, spec-4-4)
+ * envolve seu conteúdo num `<Link to={`/produtos/${id}`}>`, navegando para
+ * o detalhe do Produto clicado.
  *
  * Sucesso sem nenhum Produto (debounce já resolvido): mensagem exata
  * "Nenhum produto encontrado para '{busca}'." com o termo efetivamente
@@ -205,16 +207,18 @@ export function BuscaCatalogo() {
       {comResultados && (
         <ul className="flex flex-col gap-2">
           {resultados?.map((produto) => (
-            <li
-              key={produto.id}
-              className="min-h-touch-target-min flex flex-col justify-center gap-1 rounded-md border border-border p-3"
-            >
-              <span className="text-body">{produto.nome}</span>
-              <span className="text-label text-muted-foreground">
-                {produto.codigo && <span className="font-mono">{produto.codigo}</span>}
-                {produto.codigo && ' — '}
-                {produto.categoria.nome}
-              </span>
+            <li key={produto.id}>
+              <Link
+                to={`/produtos/${produto.id}`}
+                className="min-h-touch-target-min flex flex-col justify-center gap-1 rounded-md border border-border p-3"
+              >
+                <span className="text-body">{produto.nome}</span>
+                <span className="text-label text-muted-foreground">
+                  {produto.codigo && <span className="font-mono">{produto.codigo}</span>}
+                  {produto.codigo && ' — '}
+                  {produto.categoria.nome}
+                </span>
+              </Link>
             </li>
           ))}
         </ul>

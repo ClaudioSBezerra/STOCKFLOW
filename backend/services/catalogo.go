@@ -2,6 +2,7 @@ package services
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -408,4 +409,120 @@ func preencherPorEstoque(db *sql.DB, grupos []CatalogoGrupo, produtoParaGrupo ma
 		grupos[idx].PorEstoque = lista
 	}
 	return nil
+}
+
+// ProdutoDetalhe é a projeção de GET /api/produtos/{id} (Story 4.4,
+// spec-4-4): os mesmos campos/tipos de CatalogoItem (Story 4.3) mais
+// `PorEstoque` — a quantidade discriminada por Estoque, mesma projeção de
+// CatalogoGrupo.PorEstoque. `PorEstoque` é sempre não-nil (pode ser `[]`),
+// ordenado `estoqueNome ASC, estoqueId ASC` (mesmo critério de
+// preencherPorEstoque).
+type ProdutoDetalhe struct {
+	ID              string              `json:"id"`
+	Nome            string              `json:"nome"`
+	Codigo          *string             `json:"codigo"`
+	Categoria       Categoria           `json:"categoria"`
+	Dimensoes       DimensoesProduto    `json:"dimensoes"`
+	QuantidadeTotal float64             `json:"quantidadeTotal"`
+	Disponivel      bool                `json:"disponivel"`
+	PorEstoque      []EstoqueQuantidade `json:"porEstoque"`
+}
+
+// produtoDetalheQuery devolve um único Produto por `id` — mesmas colunas de
+// catalogoGradeQuery, trocando LIMIT/OFFSET por WHERE p.id = $1 (sem
+// paginação: só 1 linha, no máximo).
+const produtoDetalheQuery = `
+	SELECT
+		p.id, p.nome, p.codigo,
+		c.id, c.codigo, c.nome,
+		p.comprimento_valor, p.comprimento_unidade,
+		p.largura_valor, p.largura_unidade,
+		p.diametro_valor, p.diametro_unidade,
+		p.altura_valor, p.altura_unidade,
+		p.espessura_valor, p.espessura_unidade,
+		COALESCE(pe.total, 0) AS quantidade_total
+	FROM produtos p
+	JOIN categorias c ON c.id = p.categoria_id
+	LEFT JOIN (
+		SELECT produto_id, SUM(quantidade) AS total
+		FROM produto_estoque
+		GROUP BY produto_id
+	) pe ON pe.produto_id = p.id
+	WHERE p.id = $1`
+
+// ObterProdutoDetalhe devolve o detalhe de um único Produto por `id`
+// (Story 4.4, spec-4-4): a mesma quantidade total/disponibilidade da grade
+// (Story 4.3, ListarCatalogoGrade), mais a discriminação por Estoque via
+// catalogoPorEstoqueQuery — agregação em Go trivial (só 1 Produto, nunca
+// precisa do mapa multi-grupo de preencherPorEstoque, já que cada linha
+// `produto_estoque` de um único Produto é, por definição, um Estoque
+// distinto — a PK composta (produto_id, estoque_id) garante isso).
+//
+// `id` inexistente OU malformado (não-UUID, `pq` SQLSTATE 22P02) ->
+// ErrProdutoNaoEncontrado — mesmo colapso de AtualizarNomeProduto.
+func ObterProdutoDetalhe(db *sql.DB, id string) (ProdutoDetalhe, error) {
+	var (
+		det                        ProdutoDetalhe
+		codigo                     sql.NullString
+		comp, larg, diam, alt, esp parDimensao
+		quantidade                 float64
+	)
+	err := db.QueryRow(produtoDetalheQuery, id).Scan(
+		&det.ID, &det.Nome, &codigo,
+		&det.Categoria.ID, &det.Categoria.Codigo, &det.Categoria.Nome,
+		&comp.valor, &comp.unidade,
+		&larg.valor, &larg.unidade,
+		&diam.valor, &diam.unidade,
+		&alt.valor, &alt.unidade,
+		&esp.valor, &esp.unidade,
+		&quantidade,
+	)
+	if err != nil {
+		var pqErr *pq.Error
+		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
+			return ProdutoDetalhe{}, ErrProdutoNaoEncontrado
+		}
+		return ProdutoDetalhe{}, fmt.Errorf("falha ao buscar detalhe do produto: %w", err)
+	}
+	if codigo.Valid {
+		c := codigo.String
+		det.Codigo = &c
+	}
+	det.Dimensoes = DimensoesProduto{
+		Comprimento: comp.paraDimensao(),
+		Largura:     larg.paraDimensao(),
+		Diametro:    diam.paraDimensao(),
+		Altura:      alt.paraDimensao(),
+		Espessura:   esp.paraDimensao(),
+	}
+	det.QuantidadeTotal = quantidade
+	det.Disponivel = quantidade > 0
+
+	rows, err := db.Query(catalogoPorEstoqueQuery, pq.Array([]string{id}))
+	if err != nil {
+		return ProdutoDetalhe{}, fmt.Errorf("falha ao listar quantidade por estoque do produto: %w", err)
+	}
+	defer rows.Close()
+
+	lista := make([]EstoqueQuantidade, 0)
+	for rows.Next() {
+		var eq EstoqueQuantidade
+		var produtoID string
+		if err := rows.Scan(&produtoID, &eq.EstoqueID, &eq.EstoqueNome, &eq.Quantidade); err != nil {
+			return ProdutoDetalhe{}, fmt.Errorf("falha ao ler quantidade por estoque do produto: %w", err)
+		}
+		lista = append(lista, eq)
+	}
+	if err := rows.Err(); err != nil {
+		return ProdutoDetalhe{}, fmt.Errorf("falha ao iterar quantidade por estoque do produto: %w", err)
+	}
+	sort.Slice(lista, func(i, j int) bool {
+		if lista[i].EstoqueNome != lista[j].EstoqueNome {
+			return lista[i].EstoqueNome < lista[j].EstoqueNome
+		}
+		return lista[i].EstoqueID < lista[j].EstoqueID
+	})
+	det.PorEstoque = lista
+
+	return det, nil
 }

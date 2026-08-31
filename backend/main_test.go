@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha1" //nolint:gosec // HMAC-SHA1 é o algoritmo do TOTP (RFC 6238/4226), não hashing de segredo.
 	"database/sql"
@@ -1714,4 +1716,254 @@ func TestNewMux_ProdutosCatalogoRotaSoRequireAuth(t *testing.T) {
 			t.Fatalf("status = %d, want %d (body=%s) — rota não deveria exigir RequireRole", w.Code, http.StatusOK, w.Body.String())
 		}
 	})
+}
+
+// TestNewMux_ProdutosDetalheRotaSoRequireAuth prova, despachando pela mesma
+// instância de newMux usada por main() (Story 4.4, spec-4-4), que GET
+// /api/produtos/{id} NÃO leva RequireRole: sem token -> 401 (RequireAuth);
+// token `usuario` -> 200, NUNCA 403 — mesmo molde de
+// TestNewMux_ProdutosCatalogoRotaSoRequireAuth.
+func TestNewMux_ProdutosDetalheRotaSoRequireAuth(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate usuarios: %v", err)
+	}
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, produto_estoque, produtos, estoques`); err != nil {
+		t.Fatalf("truncate produtos: %v", err)
+	}
+
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	fotosDir := t.TempDir()
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, fotosDir)
+
+	const senha = "senha-123456"
+	segredos := map[string]string{}
+
+	despachar := func(metodo, caminho, token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(metodo, caminho, nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	seedContaMux(t, db, "detalhe-mux-usuario@empresa.com", "usuario", senha, segredos)
+
+	var categoriaID string
+	if err := db.QueryRow(`SELECT id FROM categorias LIMIT 1`).Scan(&categoriaID); err != nil {
+		t.Fatalf("seed categoria: %v", err)
+	}
+	estoque, err := services.CriarEstoque(db, "Canteiro Detalhe Mux")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	produto, err := services.CriarProduto(db, services.CriarProdutoInput{
+		Nome: "Produto Detalhe Mux", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+	})
+	if err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+
+	t.Run("sem token -> 401", func(t *testing.T) {
+		w := despachar(http.MethodGet, "/api/produtos/"+produto.ID, "")
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+		}
+	})
+
+	t.Run("token usuario -> 200 (rota sem RequireRole)", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "detalhe-mux-usuario@empresa.com", senha, segredos)
+		w := despachar(http.MethodGet, "/api/produtos/"+produto.ID, token)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d (body=%s) — rota não deveria exigir RequireRole", w.Code, http.StatusOK, w.Body.String())
+		}
+	})
+}
+
+// TestNewMux_RealtimeTicketRotaSoRequireAuth prova, despachando pela mesma
+// instância de newMux usada por main() (Story 4.4, spec-4-4), que POST
+// /api/realtime/ticket NÃO leva RequireRole: sem token -> 401
+// (RequireAuth); token `usuario` -> 201, NUNCA 403.
+func TestNewMux_RealtimeTicketRotaSoRequireAuth(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate usuarios: %v", err)
+	}
+
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	fotosDir := t.TempDir()
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, fotosDir)
+
+	const senha = "senha-123456"
+	segredos := map[string]string{}
+
+	despachar := func(metodo, caminho, token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(metodo, caminho, nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	seedContaMux(t, db, "realtime-ticket-mux-usuario@empresa.com", "usuario", senha, segredos)
+
+	t.Run("sem token -> 401", func(t *testing.T) {
+		w := despachar(http.MethodPost, "/api/realtime/ticket", "")
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+		}
+	})
+
+	t.Run("token usuario -> 201 (rota sem RequireRole)", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "realtime-ticket-mux-usuario@empresa.com", senha, segredos)
+		w := despachar(http.MethodPost, "/api/realtime/ticket", token)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want %d (body=%s) — rota não deveria exigir RequireRole", w.Code, http.StatusCreated, w.Body.String())
+		}
+	})
+}
+
+// TestRealtimeStream_FluxoCompletoTicketStreamEvento prova o fluxo inteiro
+// da AD-3 (Story 4.4, spec-4-4) numa conexão HTTP de verdade — não só
+// ResponseRecorder — para exercitar a promoção real a `text/event-stream`
+// numa conexão de longa duração: emite um ticket (POST
+// /api/realtime/ticket), abre o stream (GET /api/realtime/stream?ticket=),
+// confirma que a conexão fica pendurada com os headers corretos, dispara
+// POST /api/produtos (que publica no canal `produtos` via o MESMO
+// `*realtime.Registry` da instância de `mux` usada por `httptest.NewServer`)
+// e lê o evento correspondente do corpo da resposta antes de fechá-la.
+func TestRealtimeStream_FluxoCompletoTicketStreamEvento(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate usuarios: %v", err)
+	}
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, produto_estoque, produtos, estoques`); err != nil {
+		t.Fatalf("truncate produtos: %v", err)
+	}
+
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	fotosDir := t.TempDir()
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, fotosDir)
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	const senha = "senha-123456"
+	segredos := map[string]string{}
+	seedContaMux(t, db, "sse-fluxo-usuario@empresa.com", "usuario", senha, segredos)
+	seedContaMux(t, db, "sse-fluxo-almoxarife@empresa.com", "almoxarife", senha, segredos)
+
+	tokenUsuario := tokenDeMux(t, mux, "sse-fluxo-usuario@empresa.com", senha, segredos)
+
+	// POST /api/realtime/ticket — via mux diretamente (mesma instância que o
+	// servidor real serve; despachar por ResponseRecorder aqui é só
+	// conveniência, o ticket em si é um dado do banco, não da conexão).
+	reqTicket := httptest.NewRequest(http.MethodPost, "/api/realtime/ticket", nil)
+	reqTicket.Header.Set("Authorization", "Bearer "+tokenUsuario)
+	wTicket := httptest.NewRecorder()
+	mux.ServeHTTP(wTicket, reqTicket)
+	if wTicket.Code != http.StatusCreated {
+		t.Fatalf("POST /api/realtime/ticket: status = %d, want %d (body=%s)", wTicket.Code, http.StatusCreated, wTicket.Body.String())
+	}
+	var ticketResp struct {
+		Ticket string `json:"ticket"`
+	}
+	if err := json.Unmarshal(wTicket.Body.Bytes(), &ticketResp); err != nil {
+		t.Fatalf("decode ticket: %v", err)
+	}
+
+	// GET /api/realtime/stream?ticket=... — conexão HTTP real, cancelável via
+	// context (fecha explicitamente após ler o 1º evento, mais um teto de
+	// segurança de 10s para não pendurar a suíte se algo falhar).
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	reqStream, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		server.URL+"/api/realtime/stream?ticket="+ticketResp.Ticket, nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(reqStream)
+	if err != nil {
+		t.Fatalf("GET /api/realtime/stream: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
+	}
+
+	// Neste ponto o servidor já executou registro.Subscribe() (acontece ANTES
+	// de w.WriteHeader/Flush no handler — StreamRealtimeHandler, Story 4.4) —
+	// o cliente só recebeu os headers depois desse flush, então a assinatura
+	// já está registrada no *realtime.Registry compartilhado.
+
+	var categoriaID string
+	if err := db.QueryRow(`SELECT id FROM categorias LIMIT 1`).Scan(&categoriaID); err != nil {
+		t.Fatalf("seed categoria: %v", err)
+	}
+	estoque, err := services.CriarEstoque(db, "Canteiro SSE Fluxo")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+
+	tokenAlmoxarife := tokenDeMux(t, mux, "sse-fluxo-almoxarife@empresa.com", senha, segredos)
+	corpoProduto := fmt.Sprintf(
+		`{"nome":"Produto SSE Fluxo","categoria_id":%q,"estoque_id":%q,"quantidade_inicial":1}`,
+		categoriaID, estoque.ID,
+	)
+	reqCriar := httptest.NewRequest(http.MethodPost, "/api/produtos", strings.NewReader(corpoProduto))
+	reqCriar.Header.Set("Content-Type", "application/json")
+	reqCriar.Header.Set("Authorization", "Bearer "+tokenAlmoxarife)
+	wCriar := httptest.NewRecorder()
+	mux.ServeHTTP(wCriar, reqCriar)
+	if wCriar.Code != http.StatusCreated {
+		t.Fatalf("POST /api/produtos: status = %d, want %d (body=%s)", wCriar.Code, http.StatusCreated, wCriar.Body.String())
+	}
+	var produtoResp struct {
+		Produto struct {
+			ID string `json:"id"`
+		} `json:"produto"`
+	}
+	if err := json.Unmarshal(wCriar.Body.Bytes(), &produtoResp); err != nil {
+		t.Fatalf("decode produto criado: %v", err)
+	}
+
+	// Lê linhas do corpo até encontrar o evento SSE (`data: <json>`) — pula
+	// eventuais linhas de `: keep-alive` que cheguem antes (improvável na
+	// janela deste teste, mas inofensivo caso ocorra).
+	leitor := bufio.NewReader(resp.Body)
+	var evento struct {
+		Resource string `json:"resource"`
+		ID       string `json:"id"`
+		Change   string `json:"change"`
+	}
+	encontrado := false
+	for !encontrado {
+		linha, err := leitor.ReadString('\n')
+		if err != nil {
+			t.Fatalf("falha ao ler evento SSE do corpo da resposta: %v", err)
+		}
+		linha = strings.TrimRight(linha, "\r\n")
+		if !strings.HasPrefix(linha, "data: ") {
+			continue
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(linha, "data: ")), &evento); err != nil {
+			t.Fatalf("decode evento SSE (%q): %v", linha, err)
+		}
+		encontrado = true
+	}
+
+	if evento.Resource != "produtos" || evento.ID != produtoResp.Produto.ID || evento.Change != "created" {
+		t.Fatalf("evento = %+v, want {produtos %s created}", evento, produtoResp.Produto.ID)
+	}
 }

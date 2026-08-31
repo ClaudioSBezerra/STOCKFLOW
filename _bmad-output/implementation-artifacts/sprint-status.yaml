@@ -70,7 +70,7 @@ development_status:
   4-1-busca-por-nome-código-categoria-com-sugestões: done
   4-2-filtros-por-categoria-estoque-e-disponibilidade: backlog
   4-3-visualização-em-grade-e-tabela-agrupada: done
-  4-4-detalhe-do-produto-por-estoque-com-atualização-em-tempo-real: backlog
+  4-4-detalhe-do-produto-por-estoque-com-atualização-em-tempo-real: done
   4-5-identificação-de-produto-via-qr-code-código-de-barras: backlog
   4-6-exportação-da-tabela-do-catálogo-para-excel: backlog
   epic-4-retrospective: optional

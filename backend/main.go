@@ -61,7 +61,16 @@
 // conta autenticada: listagem paginada em dois modos — `agrupar=false` grade,
 // um Produto por linha; `agrupar=true` tabela com Produtos de mesmo nome +
 // dimensões colapsados e quantidade discriminada por Estoque —, sem índice
-// novo).
+// novo) e o detalhe do Produto por Estoque com atualização em tempo real —
+// Story 4.4 (GET /api/produtos/{id}, qualquer conta autenticada: detalhe com
+// quantidade discriminada por Estoque; POST /api/realtime/ticket, qualquer
+// conta autenticada, emite um ticket de conexão de uso único/30s; GET
+// /api/realtime/stream, SEM RequireAuth — autentica pelo próprio ticket na
+// query string, já que `EventSource` não envia `Authorization` —, promove a
+// conexão a SSE assinando o `*realtime.Registry` do processo, único fan-out
+// in-process compartilhado com POST /api/produtos e POST
+// /api/produtos/{id}/renomear, que passam a publicar no canal `produtos` a
+// cada escrita bem-sucedida).
 package main
 
 import (
@@ -86,6 +95,7 @@ import (
 	"stockflow/backend/handlers"
 	"stockflow/backend/iam"
 	"stockflow/backend/middleware"
+	"stockflow/backend/realtime"
 	"stockflow/backend/services"
 )
 
@@ -261,6 +271,16 @@ func runMigrations(db *sql.DB) error {
 // diretamente e nunca exercitar o registro em si.
 func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg iam.Config, fotosDir string) *http.ServeMux {
 	mux := http.NewServeMux()
+
+	// registro (Story 4.4, spec-4-4, AD-3): única instância de
+	// *realtime.Registry do processo — criada localmente aqui, NUNCA um
+	// parâmetro novo de newMux (evitaria reescrever todas as chamadas de
+	// teste existentes que já montam newMux com 5 argumentos). Compartilhada
+	// entre os handlers que publicam (CriarProdutoHandler/
+	// AtualizarNomeProdutoHandler, abaixo) e o que assina
+	// (StreamRealtimeHandler, registrado mais adiante).
+	registro := realtime.NewRegistry()
+
 	mux.HandleFunc("GET /api/health", healthHandler(db))
 	mux.HandleFunc("POST /api/auth/cadastro", handlers.CadastroHandler(db, emailCfg))
 	mux.HandleFunc("GET /api/auth/verificar-email", handlers.VerificarEmailHandler(db))
@@ -338,7 +358,7 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// e as telas de catálogo do Epic 4 precisam dela).
 	mux.HandleFunc("POST /api/produtos", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
-			handlers.CriarProdutoHandler(db))))
+			handlers.CriarProdutoHandler(db, registro))))
 	mux.HandleFunc("GET /api/categorias", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarCategoriasHandler(db)))
 
@@ -353,7 +373,7 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 		handlers.ListarNomenclaturaTemplatesHandler(db)))
 	mux.HandleFunc("POST /api/produtos/{id}/renomear", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
-			handlers.AtualizarNomeProdutoHandler(db))))
+			handlers.AtualizarNomeProdutoHandler(db, registro))))
 
 	// Importação em massa via planilha padronizada — Story 3.3 (FR-10). Os 3
 	// endpoints ficam atrás de RequireRole(almoxarife), mesmo mínimo de papel
@@ -408,6 +428,27 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// inválida / `agrupar` inválido -> 400 VALIDATION_ERROR.
 	mux.HandleFunc("GET /api/produtos/catalogo", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarCatalogoHandler(db)))
+
+	// Detalhe do Produto por Estoque com atualização em tempo real —
+	// Story 4.4 (FR-7). GET /api/produtos/{id} leva só RequireAuth, mesmo
+	// padrão de GET /api/produtos/catalogo: qualquer conta autenticada
+	// (`usuario`+), sem RequireRole. `id` inexistente/malformado ->
+	// 404 NOT_FOUND.
+	mux.HandleFunc("GET /api/produtos/{id}", middleware.RequireAuth(db, jwtSecret)(
+		handlers.ObterProdutoHandler(db)))
+
+	// Infraestrutura de tempo real (AD-2/AD-3) — Story 4.4. POST
+	// /api/realtime/ticket leva só RequireAuth: qualquer conta autenticada
+	// pode abrir sua própria conexão SSE. GET /api/realtime/stream é o único
+	// endpoint autenticado do produto que NÃO leva RequireAuth — um
+	// `EventSource` do navegador nunca envia o header `Authorization`, então
+	// a autenticação acontece pelo próprio ticket (uso único, TTL 30s) na
+	// query string; StreamRealtimeHandler revalida o usuário por trás do
+	// ticket (services.BuscarUsuarioSessao) antes de promover a resposta a
+	// `text/event-stream` — mesma defesa em profundidade de RequireAuth.
+	mux.HandleFunc("POST /api/realtime/ticket", middleware.RequireAuth(db, jwtSecret)(
+		handlers.EmitirTicketRealtimeHandler(db)))
+	mux.HandleFunc("GET /api/realtime/stream", handlers.StreamRealtimeHandler(db, registro))
 
 	// Login federado via Keycloak — SSO Ferreira Costa (Story 1.9, AD-7).
 	// /api/auth/sso/config e /api/auth/logout são SEMPRE registrados (o

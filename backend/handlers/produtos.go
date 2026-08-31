@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"stockflow/backend/middleware"
+	"stockflow/backend/realtime"
 	"stockflow/backend/services"
 )
 
@@ -36,6 +37,12 @@ import (
 //   - GET /api/produtos/busca -> RequireAuth apenas: qualquer conta
 //     autenticada busca até 7 Produtos ranqueados por relevância em
 //     nome/código/categoria (Story 4.1, spec-4-1).
+//   - GET /api/produtos/{id} -> RequireAuth apenas: qualquer conta
+//     autenticada abre o detalhe de um Produto com a quantidade
+//     discriminada por Estoque (Story 4.4, spec-4-4). CriarProdutoHandler/
+//     AtualizarNomeProdutoHandler ganham um `*realtime.Registry` e publicam
+//     no canal `produtos` a cada escrita bem-sucedida — o consumidor deste
+//     canal é a tela de detalhe, via SSE (handlers/realtime.go).
 
 // dimensaoRequest é o par valor+unidade de uma dimensão no corpo de
 // POST /api/produtos. Os dois ponteiros ausentes (`null`/chave omitida) ->
@@ -77,7 +84,13 @@ type criarProdutoRequest struct {
 // sucesso; `400 VALIDATION_ERROR` com a mensagem específica de campo devolvida
 // por services.ErroProdutoValidacao (nome ausente, dimensão incompleta,
 // quantidade negativa, categoria/estoque inexistente).
-func CriarProdutoHandler(db *sql.DB) http.HandlerFunc {
+//
+// `registro` (Story 4.4, spec-4-4): no sucesso, publica
+// `{"resource":"produtos","id":<novo>,"change":"created"}` no canal
+// `produtos` — services.CriarProduto NÃO ganha esse parâmetro (ver Design
+// Notes da spec: só este handler, o único chamador em produção, muda de
+// assinatura).
+func CriarProdutoHandler(db *sql.DB, registro *realtime.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := middleware.UsuarioDaSessao(r.Context()); !ok {
 			slog.Error("CriarProdutoHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
@@ -111,6 +124,7 @@ func CriarProdutoHandler(db *sql.DB) http.HandlerFunc {
 		var erroValidacao *services.ErroProdutoValidacao
 		switch {
 		case err == nil:
+			registro.Publish("produtos", realtime.Evento{ID: produto.ID, Change: "created"})
 			escreverJSON(w, http.StatusCreated, map[string]any{"produto": produto})
 		case errors.As(err, &erroValidacao):
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
@@ -156,7 +170,12 @@ type renomearProdutoRequest struct {
 // nome falha a validação básica ou não corresponde ao template aplicado ao
 // Produto (revalidação da Story 3.2 — não dá para burlar a regra editando
 // depois do cadastro); `404 NOT_FOUND` para `id` inexistente ou malformado.
-func AtualizarNomeProdutoHandler(db *sql.DB) http.HandlerFunc {
+//
+// `registro` (Story 4.4, spec-4-4): no sucesso, publica
+// `{"resource":"produtos","id":<id>,"change":"updated"}` no canal
+// `produtos` — services.AtualizarNomeProduto NÃO ganha esse parâmetro (mesma
+// razão de CriarProdutoHandler acima).
+func AtualizarNomeProdutoHandler(db *sql.DB, registro *realtime.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := middleware.UsuarioDaSessao(r.Context()); !ok {
 			slog.Error("AtualizarNomeProdutoHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
@@ -175,6 +194,7 @@ func AtualizarNomeProdutoHandler(db *sql.DB) http.HandlerFunc {
 		var erroValidacao *services.ErroProdutoValidacao
 		switch {
 		case err == nil:
+			registro.Publish("produtos", realtime.Evento{ID: produto.ID, Change: "updated"})
 			escreverJSON(w, http.StatusOK, map[string]any{"produto": produto})
 		case errors.As(err, &erroValidacao):
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
@@ -290,6 +310,35 @@ func ListarCatalogoHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		escreverJSON(w, http.StatusOK, map[string]any{"produtos": produtos, "paginacao": paginacao})
+	}
+}
+
+// ObterProdutoHandler expõe GET /api/produtos/{id} (Story 4.4, spec-4-4):
+// só RequireAuth, qualquer papel (`usuario`+) — sem RequireRole, mesmo
+// padrão de GET /api/produtos/catalogo. `200 {"produto":<ProdutoDetalhe>}`
+// no sucesso — mesmos tipos/formatação de CatalogoItem/EstoqueQuantidade
+// (Story 4.3), mais `porEstoque` discriminado. `id` inexistente OU
+// malformado (não-UUID) -> `404 NOT_FOUND` "produto não encontrado" (mesmo
+// colapso de AtualizarNomeProdutoHandler). Erro de banco -> 500
+// INTERNAL_ERROR + slog.
+func ObterProdutoHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := middleware.UsuarioDaSessao(r.Context()); !ok {
+			slog.Error("ObterProdutoHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+
+		produto, err := services.ObterProdutoDetalhe(db, r.PathValue("id"))
+		switch {
+		case err == nil:
+			escreverJSON(w, http.StatusOK, map[string]any{"produto": produto})
+		case errors.Is(err, services.ErrProdutoNaoEncontrado):
+			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "produto não encontrado")
+		default:
+			slog.Error("falha ao obter detalhe do produto", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao obter produto")
+		}
 	}
 }
 

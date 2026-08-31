@@ -2,6 +2,7 @@ package services
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"testing"
 )
@@ -526,5 +527,125 @@ func TestListarCatalogoAgrupado_NomeIgualDimensaoParcialSepara(t *testing.T) {
 	}
 	if pag.Total != 2 || len(grupos) != 2 {
 		t.Fatalf("total = %d, len(grupos) = %d, want 2/2", pag.Total, len(grupos))
+	}
+}
+
+// --- Story 4.4: Detalhe do produto por Estoque com atualização em tempo
+// real -----------------------------------------------------------------
+
+// TestObterProdutoDetalhe_ComEstoqueDiscriminado prova a linha "Detalhe de
+// Produto existente" da matriz: `porEstoque` discrimina a quantidade por
+// Estoque, ordenado por `estoqueNome ASC, estoqueId ASC`.
+func TestObterProdutoDetalhe_ComEstoqueDiscriminado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoqueA, err := CriarEstoque(db, "Zebra Detalhe")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque A: %v", err)
+	}
+	estoqueB, err := CriarEstoque(db, "Alfa Detalhe")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque B: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+
+	produtoID := criarProdutoCat(t, db, CriarProdutoInput{
+		Nome:              "Produto Detalhe",
+		Codigo:            "COD-DETALHE-1",
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoqueA.ID,
+		QuantidadeInicial: 5,
+		Comprimento:       &DimensaoInput{Valor: ptrFloat(6), Unidade: ptrStr("m")},
+	})
+	setQuantidade(t, db, produtoID, estoqueB.ID, 3)
+
+	det, err := ObterProdutoDetalhe(db, produtoID)
+	if err != nil {
+		t.Fatalf("ObterProdutoDetalhe: %v", err)
+	}
+	if det.ID != produtoID || det.Nome != "Produto Detalhe" {
+		t.Fatalf("produto = %+v", det)
+	}
+	if det.Codigo == nil || *det.Codigo != "COD-DETALHE-1" {
+		t.Errorf("codigo = %v, want COD-DETALHE-1", det.Codigo)
+	}
+	if det.Dimensoes.Comprimento == nil || det.Dimensoes.Comprimento.Valor != 6 {
+		t.Errorf("dimensoes.comprimento = %+v", det.Dimensoes.Comprimento)
+	}
+	if det.QuantidadeTotal != 8 || !det.Disponivel {
+		t.Errorf("quantidadeTotal = %v, disponivel = %v, want 8/true", det.QuantidadeTotal, det.Disponivel)
+	}
+	if len(det.PorEstoque) != 2 {
+		t.Fatalf("len(porEstoque) = %d, want 2", len(det.PorEstoque))
+	}
+	// "Alfa Detalhe" < "Zebra Detalhe" — ordem alfabética por estoqueNome,
+	// mesmo critério de preencherPorEstoque.
+	if det.PorEstoque[0].EstoqueNome != "Alfa Detalhe" || det.PorEstoque[0].Quantidade != 3 {
+		t.Errorf("porEstoque[0] = %+v, want Alfa Detalhe/3", det.PorEstoque[0])
+	}
+	if det.PorEstoque[1].EstoqueNome != "Zebra Detalhe" || det.PorEstoque[1].Quantidade != 5 {
+		t.Errorf("porEstoque[1] = %+v, want Zebra Detalhe/5", det.PorEstoque[1])
+	}
+}
+
+// TestObterProdutoDetalhe_SemEstoque prova a linha "Produto sem nenhum
+// produto_estoque" da matriz: `quantidadeTotal:0`, `disponivel:false`,
+// `porEstoque:[]` (nunca nil).
+func TestObterProdutoDetalhe_SemEstoque(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Detalhe Sem Estoque")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+
+	produtoID := criarProdutoCat(t, db, CriarProdutoInput{
+		Nome:              "Produto Sem Estoque",
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		QuantidadeInicial: 1,
+	})
+	limparEstoqueDe(t, db, produtoID)
+
+	det, err := ObterProdutoDetalhe(db, produtoID)
+	if err != nil {
+		t.Fatalf("ObterProdutoDetalhe: %v", err)
+	}
+	if det.QuantidadeTotal != 0 || det.Disponivel {
+		t.Errorf("quantidadeTotal = %v, disponivel = %v, want 0/false", det.QuantidadeTotal, det.Disponivel)
+	}
+	if det.PorEstoque == nil {
+		t.Error("porEstoque = nil, want slice vazio não-nil")
+	}
+	if len(det.PorEstoque) != 0 {
+		t.Errorf("len(porEstoque) = %d, want 0", len(det.PorEstoque))
+	}
+	if det.Codigo != nil {
+		t.Errorf("codigo = %v, want nil (produto sem código)", det.Codigo)
+	}
+}
+
+// TestObterProdutoDetalhe_IDInexistente prova a linha "id inexistente" da
+// matriz: um UUID sintaticamente válido mas sem linha correspondente ->
+// ErrProdutoNaoEncontrado.
+func TestObterProdutoDetalhe_IDInexistente(t *testing.T) {
+	db := testDB(t)
+	_, err := ObterProdutoDetalhe(db, "00000000-0000-0000-0000-000000000000")
+	if !errors.Is(err, ErrProdutoNaoEncontrado) {
+		t.Fatalf("erro = %v, want ErrProdutoNaoEncontrado", err)
+	}
+}
+
+// TestObterProdutoDetalhe_IDMalformado prova a linha "id malformado" da
+// matriz: uma string que não é UUID (SQLSTATE 22P02) colapsa no MESMO
+// ErrProdutoNaoEncontrado do id inexistente.
+func TestObterProdutoDetalhe_IDMalformado(t *testing.T) {
+	db := testDB(t)
+	_, err := ObterProdutoDetalhe(db, "isto-nao-e-um-uuid")
+	if !errors.Is(err, ErrProdutoNaoEncontrado) {
+		t.Fatalf("erro = %v, want ErrProdutoNaoEncontrado", err)
 	}
 }

@@ -9,8 +9,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"stockflow/backend/middleware"
+	"stockflow/backend/realtime"
 	"stockflow/backend/services"
 )
 
@@ -45,7 +47,7 @@ func postProdutos(db *sql.DB, authHeader, body string) *httptest.ResponseRecorde
 	mux.HandleFunc("POST /api/produtos",
 		middleware.RequireAuth(db, testJWTSecret)(
 			middleware.RequireRole(services.PapelAlmoxarife)(
-				CriarProdutoHandler(db))))
+				CriarProdutoHandler(db, realtime.NewRegistry()))))
 	var r *http.Request
 	if body != "" {
 		r = httptest.NewRequest(http.MethodPost, "/api/produtos", strings.NewReader(body))
@@ -99,7 +101,7 @@ func postRenomear(db *sql.DB, authHeader, id, body string) *httptest.ResponseRec
 	mux.HandleFunc("POST /api/produtos/{id}/renomear",
 		middleware.RequireAuth(db, testJWTSecret)(
 			middleware.RequireRole(services.PapelAlmoxarife)(
-				AtualizarNomeProdutoHandler(db))))
+				AtualizarNomeProdutoHandler(db, realtime.NewRegistry()))))
 	var r *http.Request
 	if body != "" {
 		r = httptest.NewRequest(http.MethodPost, "/api/produtos/"+id+"/renomear", strings.NewReader(body))
@@ -1141,5 +1143,227 @@ func TestListarCatalogoHandler_200ParaUsuario(t *testing.T) {
 	w := getProdutosCatalogo(db, "Bearer "+token, "agrupar=false&pagina=1")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d (body=%s) — rota não deveria exigir RequireRole", w.Code, http.StatusOK, w.Body.String())
+	}
+}
+
+// --- Story 4.4: Detalhe do produto por Estoque com atualização em tempo
+// real -----------------------------------------------------------------
+
+// getProdutoDetalhe despacha GET /api/produtos/{id} pela MESMA composição de
+// newMux (RequireAuth apenas, SEM RequireRole — Story 4.4).
+func getProdutoDetalhe(db *sql.DB, authHeader, id string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/produtos/{id}",
+		middleware.RequireAuth(db, testJWTSecret)(
+			ObterProdutoHandler(db)))
+	r := httptest.NewRequest(http.MethodGet, "/api/produtos/"+id, nil)
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+// TestObterProdutoHandler_200ComPorEstoque prova a linha "Detalhe de Produto
+// existente": 200 com `porEstoque` discriminado, mesmos tipos/formatação de
+// ListarCatalogoHandler.
+func TestObterProdutoHandler_200ComPorEstoque(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	criarContaComPapel(t, db, "Detalhe Handler", "detalhe-handler@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "detalhe-handler@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Canteiro Detalhe Handler")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	produtoID := seedProdutoCatalogoHandler(t, db, estoque.ID, "Produto Detalhe Handler", categoriaID, 7)
+
+	w := getProdutoDetalhe(db, "Bearer "+token, produtoID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+	var resp struct {
+		Produto struct {
+			ID              string  `json:"id"`
+			Nome            string  `json:"nome"`
+			QuantidadeTotal float64 `json:"quantidadeTotal"`
+			Disponivel      bool    `json:"disponivel"`
+			PorEstoque      []struct {
+				EstoqueID   string  `json:"estoqueId"`
+				EstoqueNome string  `json:"estoqueNome"`
+				Quantidade  float64 `json:"quantidade"`
+			} `json:"porEstoque"`
+		} `json:"produto"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if resp.Produto.ID != produtoID || resp.Produto.Nome != "Produto Detalhe Handler" {
+		t.Fatalf("produto = %+v", resp.Produto)
+	}
+	if resp.Produto.QuantidadeTotal != 7 || !resp.Produto.Disponivel {
+		t.Errorf("quantidadeTotal = %v, disponivel = %v, want 7/true", resp.Produto.QuantidadeTotal, resp.Produto.Disponivel)
+	}
+	if len(resp.Produto.PorEstoque) != 1 || resp.Produto.PorEstoque[0].EstoqueNome != "Canteiro Detalhe Handler" {
+		t.Fatalf("porEstoque = %+v", resp.Produto.PorEstoque)
+	}
+}
+
+// TestObterProdutoHandler_404IDInexistenteOuMalformado prova a linha "id
+// inexistente/malformado" da matriz: 404 NOT_FOUND "produto não encontrado"
+// nos dois casos.
+func TestObterProdutoHandler_404IDInexistenteOuMalformado(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Detalhe 404", "detalhe-404@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "detalhe-404@empresa.com", "senha-123456")
+
+	for _, id := range []string{"00000000-0000-0000-0000-000000000000", "nao-e-um-uuid"} {
+		w := getProdutoDetalhe(db, "Bearer "+token, id)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("id=%q: status = %d, want %d (body=%s)", id, w.Code, http.StatusNotFound, w.Body.String())
+		}
+		env := decodeErro(t, w.Body.Bytes())
+		if env.Error.Code != "NOT_FOUND" || env.Error.Message != "produto não encontrado" {
+			t.Errorf("id=%q: erro = %+v, want NOT_FOUND / 'produto não encontrado'", id, env.Error)
+		}
+	}
+}
+
+// TestObterProdutoHandler_401SemToken prova que sem Authorization -> 401
+// (RequireAuth).
+func TestObterProdutoHandler_401SemToken(t *testing.T) {
+	db := testDB(t)
+	w := getProdutoDetalhe(db, "", "00000000-0000-0000-0000-000000000000")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+}
+
+// TestObterProdutoHandler_200ParaUsuario prova a linha "Papel `usuario` chama
+// direto": token `usuario` -> 200, NUNCA 403 — a rota não leva RequireRole.
+func TestObterProdutoHandler_200ParaUsuario(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	criarContaComPapel(t, db, "Detalhe Papel Usuario", "detalhe-papel-usuario@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "detalhe-papel-usuario@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Canteiro Detalhe Papel Usuario")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	produtoID := seedProdutoCatalogoHandler(t, db, estoque.ID, "Produto Detalhe Papel Usuario", categoriaID, 1)
+
+	w := getProdutoDetalhe(db, "Bearer "+token, produtoID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s) — rota não deveria exigir RequireRole", w.Code, http.StatusOK, w.Body.String())
+	}
+}
+
+// TestCriarProdutoHandler_PublicaEventoNoSucesso prova a linha "CriarProduto
+// bem-sucedido" da matriz de spec-4-4: um Produto criado com sucesso publica
+// `{"resource":"produtos","id":<novo>,"change":"created"}` no canal
+// `produtos` do `*realtime.Registry` injetado no handler.
+func TestCriarProdutoHandler_PublicaEventoNoSucesso(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	estoque, err := services.CriarEstoque(db, "Canteiro Evento Criar")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	criarContaComPapel(t, db, "Evento Criar", "evento-criar@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "evento-criar@empresa.com", "senha-123456")
+
+	registro := realtime.NewRegistry()
+	eventos, cancelar := registro.Subscribe()
+	defer cancelar()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/produtos",
+		middleware.RequireAuth(db, testJWTSecret)(
+			middleware.RequireRole(services.PapelAlmoxarife)(
+				CriarProdutoHandler(db, registro))))
+
+	body := `{"nome":"Produto Evento","categoria_id":"` + categoriaID + `","estoque_id":"` + estoque.ID + `","quantidade_inicial":1}`
+	r := httptest.NewRequest(http.MethodPost, "/api/produtos", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
+	}
+	var resp struct {
+		Produto struct {
+			ID string `json:"id"`
+		} `json:"produto"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	select {
+	case ev := <-eventos:
+		if ev.Resource != "produtos" || ev.ID != resp.Produto.ID || ev.Change != "created" {
+			t.Fatalf("evento = %+v, want {produtos %s created}", ev, resp.Produto.ID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("nenhum evento publicado em 1s após CriarProdutoHandler bem-sucedido")
+	}
+}
+
+// TestAtualizarNomeProdutoHandler_PublicaEventoNoSucesso prova a linha
+// "AtualizarNomeProduto bem-sucedido" da matriz de spec-4-4: um Produto
+// renomeado com sucesso publica
+// `{"resource":"produtos","id":<id>,"change":"updated"}`.
+func TestAtualizarNomeProdutoHandler_PublicaEventoNoSucesso(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	estoque, err := services.CriarEstoque(db, "Canteiro Evento Renomear")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	produto, err := services.CriarProduto(db, services.CriarProdutoInput{
+		Nome: "Nome Original Evento", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+	})
+	if err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+	criarContaComPapel(t, db, "Evento Renomear", "evento-renomear@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "evento-renomear@empresa.com", "senha-123456")
+
+	registro := realtime.NewRegistry()
+	eventos, cancelar := registro.Subscribe()
+	defer cancelar()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/produtos/{id}/renomear",
+		middleware.RequireAuth(db, testJWTSecret)(
+			middleware.RequireRole(services.PapelAlmoxarife)(
+				AtualizarNomeProdutoHandler(db, registro))))
+
+	body := `{"nome":"Nome Novo Evento"}`
+	r := httptest.NewRequest(http.MethodPost, "/api/produtos/"+produto.ID+"/renomear", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	select {
+	case ev := <-eventos:
+		if ev.Resource != "produtos" || ev.ID != produto.ID || ev.Change != "updated" {
+			t.Fatalf("evento = %+v, want {produtos %s updated}", ev, produto.ID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("nenhum evento publicado em 1s após AtualizarNomeProdutoHandler bem-sucedido")
 	}
 }

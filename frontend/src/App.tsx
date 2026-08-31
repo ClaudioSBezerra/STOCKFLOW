@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from '@/lib/auth';
 import { rankPapel } from '@/components/shell/nav-items';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
 import { CatalogoPage } from '@/pages/CatalogoPage';
+import { ProdutoDetalhePage } from '@/pages/ProdutoDetalhePage';
 import { CadastroPage } from '@/pages/CadastroPage';
 import { VerificarEmailPage } from '@/pages/VerificarEmailPage';
 import { LoginPage } from '@/pages/LoginPage';
@@ -27,9 +28,11 @@ import { AuthCallbackPage } from '@/pages/AuthCallbackPage';
  * (Story 1.9, retorno do login federado via Keycloak) são rotas públicas
  * irmãs da raiz, fora do `AppShell` e fora do
  * `RotaProtegida`. `/configuracoes` (Story 1.7, "Meu Perfil" + solicitação de
- * promoção de papel) e `/estoques` (Story 2.1, tela "Locais": cadastro + lista
- * de locais de estoque, com gate de papel `almoxarife`+ na própria página) são
- * rotas-filhas da raiz, dentro do `AppShell`/`RotaProtegida`.
+ * promoção de papel), `/estoques` (Story 2.1, tela "Locais": cadastro + lista
+ * de locais de estoque, com gate de papel `almoxarife`+ na própria página) e
+ * `/produtos/:id` (Story 4.4, detalhe do Produto por Estoque com atualização
+ * em tempo real, sem gate de papel próprio — `usuario`+) são rotas-filhas da
+ * raiz, dentro do `AppShell`/`RotaProtegida`.
  * A árvore do `AppShell` fica atrás do `RotaProtegida`
  * (Story 1.5): o `AuthProvider` faz o bootstrap silencioso da sessão ao
  * montar o app (silent refresh via cookie), e enquanto isso não resolve a
@@ -92,6 +95,7 @@ export const router = createBrowserRouter([
     element: <RotaProtegida />,
     children: [
       { index: true, element: <CatalogoPage /> },
+      { path: 'produtos/:id', element: <ProdutoDetalhePage /> },
       { path: 'configuracoes', element: <ConfiguracoesPage /> },
       { path: 'estoques', element: <EstoquesPage /> },
       { path: '*', element: <PlaceholderPage /> },

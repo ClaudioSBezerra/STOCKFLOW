@@ -1,11 +1,22 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { BuscaCatalogo } from './BuscaCatalogo';
 
 vi.mock('@/lib/session', () => ({
   getAccessToken: () => 'token-de-teste',
 }));
+
+// renderBusca envolve o componente num MemoryRouter — os resultados (Story
+// 4.4, spec-4-4) agora são `<Link>`, que exige um contexto de rota.
+function renderBusca() {
+  return render(
+    <MemoryRouter>
+      <BuscaCatalogo />
+    </MemoryRouter>,
+  );
+}
 
 function queryDaUrl(url: string): string | null {
   return new URL(url, 'http://localhost').searchParams.get('q');
@@ -32,7 +43,7 @@ describe('BuscaCatalogo — termo vazio', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
 
-    render(<BuscaCatalogo />);
+    renderBusca();
 
     expect(fetch).not.toHaveBeenCalled();
     expect(screen.queryByText(/Nenhum produto encontrado/)).not.toBeInTheDocument();
@@ -43,7 +54,7 @@ describe('BuscaCatalogo — termo vazio', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const user = userEvent.setup();
-    render(<BuscaCatalogo />);
+    renderBusca();
 
     await user.type(screen.getByLabelText('Buscar produtos'), '   ');
 
@@ -55,7 +66,7 @@ describe('BuscaCatalogo — termo vazio', () => {
   });
 
   it('campo de busca usa type="search" (botão nativo de limpar, teclado/IME mobile apropriado)', () => {
-    render(<BuscaCatalogo />);
+    renderBusca();
 
     expect(screen.getByLabelText('Buscar produtos')).toHaveAttribute('type', 'search');
   });
@@ -65,7 +76,7 @@ describe('BuscaCatalogo — termo vazio', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const user = userEvent.setup();
-    const { unmount } = render(<BuscaCatalogo />);
+    const { unmount } = renderBusca();
 
     await user.type(screen.getByLabelText('Buscar produtos'), 'parafuso');
     unmount();
@@ -92,7 +103,7 @@ describe('BuscaCatalogo — debounce e resultados', () => {
 
   it('só busca depois do debounce (300ms), não a cada tecla', async () => {
     const user = userEvent.setup();
-    render(<BuscaCatalogo />);
+    renderBusca();
 
     await user.type(screen.getByLabelText('Buscar produtos'), 'parafuso');
 
@@ -109,7 +120,7 @@ describe('BuscaCatalogo — debounce e resultados', () => {
 
   it('mostra nome, código (JetBrains Mono) e categoria de cada resultado', async () => {
     const user = userEvent.setup();
-    render(<BuscaCatalogo />);
+    renderBusca();
 
     await user.type(screen.getByLabelText('Buscar produtos'), 'parafuso');
 
@@ -121,11 +132,18 @@ describe('BuscaCatalogo — debounce e resultados', () => {
     // Alvo de toque mínimo 48px (NFR de usabilidade em campo) no campo de
     // busca — classe utilitária `min-h-touch-target-min`.
     expect(screen.getByLabelText('Buscar produtos')).toHaveClass('min-h-touch-target-min');
+
+    // Resultado (Story 4.4, spec-4-4) navega para o detalhe do Produto
+    // clicado — asserção direta do destino, não só que ALGUM link existe.
+    expect(screen.getByRole('link', { name: /Parafuso Sextavado M8/ })).toHaveAttribute(
+      'href',
+      '/produtos/p1',
+    );
   });
 
   it('mensagem exata de "nenhum produto encontrado" com o termo buscado, após o debounce resolver', async () => {
     const user = userEvent.setup();
-    render(<BuscaCatalogo />);
+    renderBusca();
 
     await user.type(screen.getByLabelText('Buscar produtos'), 'xyzxyz-inexistente');
 
@@ -151,7 +169,7 @@ describe('BuscaCatalogo — descarte de resposta obsoleta', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const user = userEvent.setup();
-    render(<BuscaCatalogo />);
+    renderBusca();
     const input = screen.getByLabelText('Buscar produtos');
 
     // "a" dispara e fica pendurada (resolverA ainda não foi chamado).
@@ -192,7 +210,7 @@ describe('BuscaCatalogo — desmontagem com fetch pendente', () => {
     const jsonSpy = vi.fn(async () => ({ produtos: [produtoParafuso] }));
 
     const user = userEvent.setup();
-    const { unmount } = render(<BuscaCatalogo />);
+    const { unmount } = renderBusca();
     const input = screen.getByLabelText('Buscar produtos');
 
     await user.type(input, 'parafuso');
@@ -221,7 +239,7 @@ describe('BuscaCatalogo — erro na busca', () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: false, json: async () => ({}) })));
 
     const user = userEvent.setup();
-    render(<BuscaCatalogo />);
+    renderBusca();
 
     await user.type(screen.getByLabelText('Buscar produtos'), 'parafuso');
 
@@ -239,7 +257,7 @@ describe('BuscaCatalogo — erro na busca', () => {
     );
 
     const user = userEvent.setup();
-    render(<BuscaCatalogo />);
+    renderBusca();
 
     await user.type(screen.getByLabelText('Buscar produtos'), 'parafuso');
 
@@ -256,7 +274,7 @@ describe('BuscaCatalogo — erro na busca', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const user = userEvent.setup();
-    render(<BuscaCatalogo />);
+    renderBusca();
     const input = screen.getByLabelText('Buscar produtos');
 
     await user.type(input, 'a');

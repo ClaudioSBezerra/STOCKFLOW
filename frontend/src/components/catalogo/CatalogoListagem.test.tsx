@@ -1,11 +1,22 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { CatalogoListagem } from './CatalogoListagem';
 
 vi.mock('@/lib/session', () => ({
   getAccessToken: () => 'token-de-teste',
 }));
+
+// renderCatalogo envolve o componente num MemoryRouter — os cards da grade
+// (Story 4.4, spec-4-4) agora são `<Link>`, que exige um contexto de rota.
+function renderCatalogo() {
+  return render(
+    <MemoryRouter>
+      <CatalogoListagem />
+    </MemoryRouter>,
+  );
+}
 
 const DIMENSOES_NULAS = {
   comprimento: null,
@@ -78,7 +89,7 @@ describe('CatalogoListagem — grade (padrão)', () => {
       ),
     );
 
-    render(<CatalogoListagem />);
+    renderCatalogo();
 
     expect(await screen.findByText('Parafuso Sextavado')).toBeInTheDocument();
     const codigo = screen.getByText('PAR-001');
@@ -89,6 +100,13 @@ describe('CatalogoListagem — grade (padrão)', () => {
     const badge = screen.getByText('Disponível');
     expect(badge).toBeInTheDocument();
     expect(badge.querySelector('svg')).not.toBeNull();
+
+    // Card da grade (Story 4.4, spec-4-4) navega para o detalhe do Produto
+    // clicado — asserção direta do destino, não só que ALGUM link existe.
+    expect(screen.getByRole('link', { name: /Parafuso Sextavado/ })).toHaveAttribute(
+      'href',
+      '/produtos/p1',
+    );
 
     // Alternador ausente abaixo de 768px.
     expect(screen.queryByRole('button', { name: 'Tabela' })).not.toBeInTheDocument();
@@ -129,7 +147,7 @@ describe('CatalogoListagem — grade (padrão)', () => {
       ),
     );
 
-    render(<CatalogoListagem />);
+    renderCatalogo();
 
     const badge = await screen.findByText('Sem estoque');
     expect(badge.querySelector('svg')).not.toBeNull();
@@ -149,7 +167,7 @@ describe('CatalogoListagem — grade (padrão)', () => {
       ),
     );
 
-    render(<CatalogoListagem />);
+    renderCatalogo();
 
     expect(await screen.findByText('Nenhum produto no catálogo.')).toBeInTheDocument();
     expect(screen.queryByRole('navigation', { name: 'Paginação do catálogo' })).not.toBeInTheDocument();
@@ -161,7 +179,7 @@ describe('CatalogoListagem — grade (padrão)', () => {
       vi.fn(() => Promise.resolve({ ok: false, status: 500, json: async () => ({}) })),
     );
 
-    render(<CatalogoListagem />);
+    renderCatalogo();
 
     const alerta = await screen.findByRole('alert');
     expect(alerta).toHaveTextContent(
@@ -175,7 +193,7 @@ describe('CatalogoListagem — grade (padrão)', () => {
       vi.fn(() => Promise.reject(new Error('rede'))),
     );
 
-    render(<CatalogoListagem />);
+    renderCatalogo();
 
     const alerta = await screen.findByRole('alert');
     expect(alerta).toHaveTextContent(
@@ -189,7 +207,7 @@ describe('CatalogoListagem — grade (padrão)', () => {
     // `carregando`.
     vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
 
-    render(<CatalogoListagem />);
+    renderCatalogo();
 
     const status = screen.getByRole('status');
     expect(status).toHaveTextContent('Carregando catálogo...');
@@ -220,7 +238,7 @@ describe('CatalogoListagem — grade (padrão)', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const user = userEvent.setup();
-    render(<CatalogoListagem />);
+    renderCatalogo();
 
     expect(await screen.findByText('Produto Página 1')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Anterior' })).toBeDisabled();
@@ -288,7 +306,7 @@ describe('CatalogoListagem — tabela agrupada (viewport ≥ 768px)', () => {
     ]);
 
     const user = userEvent.setup();
-    render(<CatalogoListagem />);
+    renderCatalogo();
 
     await screen.findByText('Parafuso');
     await user.click(screen.getByRole('button', { name: 'Tabela' }));
@@ -309,7 +327,7 @@ describe('CatalogoListagem — tabela agrupada (viewport ≥ 768px)', () => {
     ]);
 
     const user = userEvent.setup();
-    render(<CatalogoListagem />);
+    renderCatalogo();
 
     await screen.findByText('Parafuso');
     await user.click(screen.getByRole('button', { name: 'Tabela' }));
@@ -369,7 +387,7 @@ describe('CatalogoListagem — tabela agrupada (viewport ≥ 768px)', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const user = userEvent.setup();
-    render(<CatalogoListagem />);
+    renderCatalogo();
 
     await screen.findByText('Parafuso');
     await user.click(screen.getByRole('button', { name: 'Tabela' }));
@@ -391,7 +409,7 @@ describe('CatalogoListagem — tabela agrupada (viewport ≥ 768px)', () => {
     ]);
 
     const user = userEvent.setup();
-    render(<CatalogoListagem />);
+    renderCatalogo();
 
     await screen.findByText('Parafuso');
     await user.click(screen.getByRole('button', { name: 'Tabela' }));
@@ -409,7 +427,7 @@ describe('CatalogoListagem — tabela agrupada (viewport ≥ 768px)', () => {
     stubFetchGradeETabela([]);
 
     const user = userEvent.setup();
-    render(<CatalogoListagem />);
+    renderCatalogo();
 
     await screen.findByText('Parafuso');
     await user.click(screen.getByRole('button', { name: 'Tabela' }));
@@ -474,7 +492,7 @@ describe('CatalogoListagem — tabela agrupada (viewport ≥ 768px)', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const user = userEvent.setup();
-    render(<CatalogoListagem />);
+    renderCatalogo();
 
     await screen.findByText('Parafuso');
     await user.click(screen.getByRole('button', { name: 'Tabela' }));
@@ -490,7 +508,7 @@ describe('CatalogoListagem — tabela agrupada (viewport ≥ 768px)', () => {
     stubFetchGradeETabela([{ estoqueId: 'e1', estoqueNome: 'Almox', quantidade: 3 }]);
 
     const user = userEvent.setup();
-    render(<CatalogoListagem />);
+    renderCatalogo();
 
     await screen.findByText('Parafuso');
     await user.click(screen.getByRole('button', { name: 'Tabela' }));

@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  ChevronDown,
-  ChevronRight,
-  LayoutGrid,
-  PackageCheck,
-  PackageX,
-  Table2,
-} from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { ChevronDown, ChevronRight, LayoutGrid, Table2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { getAccessToken } from '@/lib/session';
+import {
+  formatarQuantidade,
+  IndicadorDisponibilidade,
+  resumirDimensoes,
+  type Dimensoes,
+} from './formatacao';
 
 /**
  * Listagem do Catálogo (Story 4.3, spec-4-3, FR-6) — renderizada em
@@ -32,20 +32,14 @@ import { getAccessToken } from '@/lib/session';
  *
  * Paginação sempre numérica, nunca scroll infinito. Estados: carregando,
  * erro (`role="alert"`) e vazio (`total === 0`).
+ *
+ * Cada card da grade (Story 4.4, spec-4-4) envolve seu conteúdo num
+ * `<Link to={`/produtos/${id}`}>`, navegando para o detalhe do Produto. A
+ * tabela agrupada NÃO ganha navegação: um grupo pode conter vários Produtos
+ * distintos (mesmo nome+dimensões, categorias diferentes), sem um único `id`
+ * de destino — a discriminação por Estoque ao expandir já cobre essa
+ * necessidade sem depender do detalhe.
  */
-
-interface DimensaoValor {
-  valor: number;
-  unidade: string;
-}
-
-interface Dimensoes {
-  comprimento: DimensaoValor | null;
-  largura: DimensaoValor | null;
-  diametro: DimensaoValor | null;
-  altura: DimensaoValor | null;
-  espessura: DimensaoValor | null;
-}
 
 interface CategoriaCatalogo {
   id: string;
@@ -96,50 +90,6 @@ const MENSAGEM_SEM_ESTOQUE_REGISTRADO = 'Sem quantidade registrada por estoque.'
 function authHeaders(): Record<string, string> {
   const token = getAccessToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
-const ROTULO_DIMENSAO: Record<keyof Dimensoes, string> = {
-  comprimento: 'C',
-  largura: 'L',
-  diametro: '⌀',
-  altura: 'A',
-  espessura: 'E',
-};
-
-// resumirDimensoes monta o texto curto das dimensões preenchidas ("C 6m · ⌀
-// 10cm"); todas nulas -> "—". O valor usa a mesma formatação pt-BR de
-// formatarQuantidade (decimal com vírgula), para não misturar "6,5" e "6.5m"
-// na mesma tela.
-function resumirDimensoes(dimensoes: Dimensoes): string {
-  const partes = (Object.keys(ROTULO_DIMENSAO) as (keyof Dimensoes)[])
-    .map((chave) => {
-      const dim = dimensoes[chave];
-      return dim ? `${ROTULO_DIMENSAO[chave]} ${formatarQuantidade(dim.valor)}${dim.unidade}` : null;
-    })
-    .filter((parte): parte is string => parte !== null);
-  return partes.length > 0 ? partes.join(' · ') : '—';
-}
-
-// formatarQuantidade serializa a quantidade para exibição. O backend manda um
-// NUMERIC(10,3) já decodificado como number pelo JSON.parse, então `15.000`
-// chega como `15`; `toLocaleString('pt-BR')` só agrupa milhar quando houver.
-function formatarQuantidade(valor: number): string {
-  return valor.toLocaleString('pt-BR');
-}
-
-function IndicadorDisponibilidade({ disponivel }: { disponivel: boolean }) {
-  const Icone = disponivel ? PackageCheck : PackageX;
-  return (
-    <span
-      data-status={disponivel ? 'disponivel' : 'sem-estoque'}
-      className={`inline-flex items-center gap-1 text-label ${
-        disponivel ? 'text-success' : 'text-muted-foreground'
-      }`}
-    >
-      <Icone aria-hidden="true" className="h-4 w-4" />
-      {disponivel ? 'Disponível' : 'Sem estoque'}
-    </span>
-  );
 }
 
 export function CatalogoListagem() {
@@ -304,17 +254,19 @@ export function CatalogoListagem() {
       {!carregando && !erro && !vazio && modo === 'grade' && (
         <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {itens.map((item) => (
-            <li
-              key={item.id}
-              className="min-h-touch-target-min flex flex-col gap-2 rounded-md border border-border p-3"
-            >
-              <span className="text-body font-medium">{item.nome}</span>
-              <span className="text-label text-muted-foreground">
-                {item.codigo && <span className="font-mono">{item.codigo}</span>}
-                {item.codigo && ' — '}
-                {item.categoria.nome}
-              </span>
-              <IndicadorDisponibilidade disponivel={item.disponivel} />
+            <li key={item.id}>
+              <Link
+                to={`/produtos/${item.id}`}
+                className="min-h-touch-target-min flex flex-col gap-2 rounded-md border border-border p-3"
+              >
+                <span className="text-body font-medium">{item.nome}</span>
+                <span className="text-label text-muted-foreground">
+                  {item.codigo && <span className="font-mono">{item.codigo}</span>}
+                  {item.codigo && ' — '}
+                  {item.categoria.nome}
+                </span>
+                <IndicadorDisponibilidade disponivel={item.disponivel} />
+              </Link>
             </li>
           ))}
         </ul>
