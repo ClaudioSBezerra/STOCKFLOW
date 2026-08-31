@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -900,6 +901,244 @@ func TestBuscarProdutosHandler_200ParaUsuario(t *testing.T) {
 	token := tokenDeLogin(t, db, "busca-papel-usuario@empresa.com", "senha-123456")
 
 	w := getProdutosBusca(db, "Bearer "+token, "qualquer-termo")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s) — rota não deveria exigir RequireRole", w.Code, http.StatusOK, w.Body.String())
+	}
+}
+
+// --- Story 4.3: Visualização em grade e tabela agrupada -------------------
+
+// getProdutosCatalogo despacha GET /api/produtos/catalogo pela MESMA
+// composição de newMux (RequireAuth apenas, SEM RequireRole — Story 4.3).
+// `query` é a query string já montada (sem o `?`), ex. "agrupar=true&pagina=2".
+func getProdutosCatalogo(db *sql.DB, authHeader, query string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/produtos/catalogo",
+		middleware.RequireAuth(db, testJWTSecret)(
+			ListarCatalogoHandler(db)))
+	alvo := "/api/produtos/catalogo"
+	if query != "" {
+		alvo += "?" + query
+	}
+	r := httptest.NewRequest(http.MethodGet, alvo, nil)
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+// seedProdutoCatalogoHandler cadastra um Produto mínimo para os testes de
+// ListarCatalogoHandler.
+func seedProdutoCatalogoHandler(t *testing.T, db *sql.DB, estoqueID, nome, categoriaID string, qtd float64) string {
+	t.Helper()
+	p, err := services.CriarProduto(db, services.CriarProdutoInput{
+		Nome:              nome,
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoqueID,
+		QuantidadeInicial: qtd,
+	})
+	if err != nil {
+		t.Fatalf("seed CriarProduto(%q): %v", nome, err)
+	}
+	return p.ID
+}
+
+// TestListarCatalogoHandler_200Grade prova a linha "Grade, página 1": sem
+// `agrupar` -> 200 com o envelope `{"produtos":[...],"paginacao":{...}}`.
+func TestListarCatalogoHandler_200Grade(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	criarContaComPapel(t, db, "Catalogo Grade", "catalogo-grade@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "catalogo-grade@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Canteiro Catalogo Handler Grade")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	seedProdutoCatalogoHandler(t, db, estoque.ID, "Alfa", categoriaID, 5)
+	seedProdutoCatalogoHandler(t, db, estoque.ID, "Beta", categoriaID, 0)
+
+	w := getProdutosCatalogo(db, "Bearer "+token, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+	var resp struct {
+		Produtos []struct {
+			Nome            string  `json:"nome"`
+			QuantidadeTotal float64 `json:"quantidadeTotal"`
+			Disponivel      bool    `json:"disponivel"`
+			Categoria       struct {
+				Nome string `json:"nome"`
+			} `json:"categoria"`
+		} `json:"produtos"`
+		Paginacao struct {
+			Pagina       int `json:"pagina"`
+			Tamanho      int `json:"tamanho"`
+			Total        int `json:"total"`
+			TotalPaginas int `json:"totalPaginas"`
+		} `json:"paginacao"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if len(resp.Produtos) != 2 {
+		t.Fatalf("len(produtos) = %d, want 2", len(resp.Produtos))
+	}
+	if resp.Produtos[0].Nome != "Alfa" || resp.Produtos[0].QuantidadeTotal != 5 || !resp.Produtos[0].Disponivel {
+		t.Errorf("produtos[0] = %+v, want Alfa/5/true", resp.Produtos[0])
+	}
+	if resp.Produtos[1].Nome != "Beta" || resp.Produtos[1].Disponivel {
+		t.Errorf("produtos[1] = %+v, want Beta/disponivel false", resp.Produtos[1])
+	}
+	if resp.Paginacao != (struct {
+		Pagina       int `json:"pagina"`
+		Tamanho      int `json:"tamanho"`
+		Total        int `json:"total"`
+		TotalPaginas int `json:"totalPaginas"`
+	}{Pagina: 1, Tamanho: 24, Total: 2, TotalPaginas: 1}) {
+		t.Errorf("paginacao = %+v, want {1 24 2 1}", resp.Paginacao)
+	}
+}
+
+// TestListarCatalogoHandler_200AgrupadoComPorEstoque prova a linha "Tabela
+// agrupa por nome+dimensões" pelo handler: `agrupar=true` -> 200 com
+// `{"grupos":[...],"paginacao":{...}}`, cada grupo com `porEstoque`.
+func TestListarCatalogoHandler_200AgrupadoComPorEstoque(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	criarContaComPapel(t, db, "Catalogo Tabela", "catalogo-tabela@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "catalogo-tabela@empresa.com", "senha-123456")
+
+	estA, err := services.CriarEstoque(db, "Estoque Handler A")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	estB, err := services.CriarEstoque(db, "Estoque Handler B")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	seedProdutoCatalogoHandler(t, db, estA.ID, "Bucha", categoriaID, 10)
+	p2 := seedProdutoCatalogoHandler(t, db, estA.ID, "Bucha", categoriaID, 5)
+	if _, err := db.Exec(
+		`INSERT INTO produto_estoque (produto_id, estoque_id, quantidade) VALUES ($1,$2,$3)`,
+		p2, estB.ID, 2,
+	); err != nil {
+		t.Fatalf("insert produto_estoque: %v", err)
+	}
+
+	w := getProdutosCatalogo(db, "Bearer "+token, "agrupar=true")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+	var resp struct {
+		Grupos []struct {
+			Chave           string  `json:"chave"`
+			Nome            string  `json:"nome"`
+			QuantidadeTotal float64 `json:"quantidadeTotal"`
+			PorEstoque      []struct {
+				EstoqueNome string  `json:"estoqueNome"`
+				Quantidade  float64 `json:"quantidade"`
+			} `json:"porEstoque"`
+		} `json:"grupos"`
+		Paginacao struct {
+			Total int `json:"total"`
+		} `json:"paginacao"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if len(resp.Grupos) != 1 || resp.Paginacao.Total != 1 {
+		t.Fatalf("grupos = %d, total = %d, want 1/1 (body=%s)", len(resp.Grupos), resp.Paginacao.Total, w.Body.String())
+	}
+	g := resp.Grupos[0]
+	if g.Nome != "Bucha" || g.Chave == "" || g.QuantidadeTotal != 17 {
+		t.Errorf("grupo = %+v, want Bucha / chave != '' / qtd 17", g)
+	}
+	if len(g.PorEstoque) != 2 {
+		t.Fatalf("porEstoque len = %d, want 2 (%+v)", len(g.PorEstoque), g.PorEstoque)
+	}
+	if g.PorEstoque[0].EstoqueNome != "Estoque Handler A" || g.PorEstoque[0].Quantidade != 15 {
+		t.Errorf("porEstoque[0] = %+v, want {Estoque Handler A 15}", g.PorEstoque[0])
+	}
+	if g.PorEstoque[1].EstoqueNome != "Estoque Handler B" || g.PorEstoque[1].Quantidade != 2 {
+		t.Errorf("porEstoque[1] = %+v, want {Estoque Handler B 2}", g.PorEstoque[1])
+	}
+}
+
+// TestListarCatalogoHandler_400PaginaInvalida prova a linha "`pagina`
+// inválida": `pagina=0` / `pagina=abc` -> 400 VALIDATION_ERROR "página
+// inválida".
+func TestListarCatalogoHandler_400PaginaInvalida(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Catalogo Pag", "catalogo-pag@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "catalogo-pag@empresa.com", "senha-123456")
+
+	casos := []string{
+		"0", "-1", "abc", "1.5",
+		// Acima do teto: sem o guard, "9999999999999999" passa por Atoi e
+		// estoura `(pagina-1)*TamanhoPaginaCatalogo` -> OFFSET negativo -> 500.
+		"9999999999999999",
+		strconv.Itoa(services.MaxPaginaCatalogo + 1),
+	}
+	for _, pagina := range casos {
+		w := getProdutosCatalogo(db, "Bearer "+token, "pagina="+pagina)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("pagina=%q: status = %d, want %d (body=%s)", pagina, w.Code, http.StatusBadRequest, w.Body.String())
+		}
+		env := decodeErro(t, w.Body.Bytes())
+		if env.Error.Code != "VALIDATION_ERROR" || env.Error.Message != "página inválida" {
+			t.Errorf("pagina=%q: erro = %+v, want VALIDATION_ERROR / 'página inválida'", pagina, env.Error)
+		}
+	}
+}
+
+// TestListarCatalogoHandler_400AgruparInvalido prova a linha "`agrupar`
+// inválido": qualquer valor fora de {true,false,ausente} -> 400
+// VALIDATION_ERROR "parâmetro agrupar inválido".
+func TestListarCatalogoHandler_400AgruparInvalido(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Catalogo Agr", "catalogo-agr@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "catalogo-agr@empresa.com", "senha-123456")
+
+	for _, agrupar := range []string{"talvez", "1", "TRUE", "yes"} {
+		w := getProdutosCatalogo(db, "Bearer "+token, "agrupar="+agrupar)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("agrupar=%q: status = %d, want %d (body=%s)", agrupar, w.Code, http.StatusBadRequest, w.Body.String())
+		}
+		env := decodeErro(t, w.Body.Bytes())
+		if env.Error.Code != "VALIDATION_ERROR" || env.Error.Message != "parâmetro agrupar inválido" {
+			t.Errorf("agrupar=%q: erro = %+v, want VALIDATION_ERROR / 'parâmetro agrupar inválido'", agrupar, env.Error)
+		}
+	}
+}
+
+// TestListarCatalogoHandler_401SemToken prova que sem Authorization -> 401
+// (RequireAuth), embora a rota não leve RequireRole.
+func TestListarCatalogoHandler_401SemToken(t *testing.T) {
+	db := testDB(t)
+
+	w := getProdutosCatalogo(db, "", "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+}
+
+// TestListarCatalogoHandler_200ParaUsuario prova a linha "Papel `usuario`
+// chama direto": token `usuario` -> 200, NUNCA 403 — a rota não leva
+// RequireRole (mesmo padrão de GET /api/produtos/busca).
+func TestListarCatalogoHandler_200ParaUsuario(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Catalogo Usuario", "catalogo-usuario@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "catalogo-usuario@empresa.com", "senha-123456")
+
+	w := getProdutosCatalogo(db, "Bearer "+token, "agrupar=false&pagina=1")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d (body=%s) — rota não deveria exigir RequireRole", w.Code, http.StatusOK, w.Body.String())
 	}

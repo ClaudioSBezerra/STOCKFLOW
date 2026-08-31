@@ -56,7 +56,12 @@
 // DATABASE_URL/JWT_SECRET: sem valor usa `./fotos`, e o diretório é criado
 // no startup) e a busca por nome/código/categoria com sugestões — Story 4.1
 // (GET /api/produtos/busca?q=<termo>, qualquer conta autenticada: até 7
-// Produtos ranqueados por relevância, sem índice novo).
+// Produtos ranqueados por relevância, sem índice novo) e a visualização em
+// grade e tabela agrupada — Story 4.3 (GET /api/produtos/catalogo, qualquer
+// conta autenticada: listagem paginada em dois modos — `agrupar=false` grade,
+// um Produto por linha; `agrupar=true` tabela com Produtos de mesmo nome +
+// dimensões colapsados e quantidade discriminada por Estoque —, sem índice
+// novo).
 package main
 
 import (
@@ -392,6 +397,17 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// relevância; `q` vazio/só espaços -> 400 VALIDATION_ERROR.
 	mux.HandleFunc("GET /api/produtos/busca", middleware.RequireAuth(db, jwtSecret)(
 		handlers.BuscarProdutosHandler(db)))
+
+	// Visualização em grade e tabela agrupada do Catálogo — Story 4.3
+	// (FR-6). GET /api/produtos/catalogo leva só RequireAuth, mesmo padrão
+	// de GET /api/produtos/busca: qualquer conta autenticada (`usuario`+),
+	// sem RequireRole. Listagem paginada (`TamanhoPaginaCatalogo` fixo) em
+	// dois modos: `agrupar=false` (grade, um Produto por linha) e
+	// `agrupar=true` (tabela, Produtos de mesmo nome + dimensões colapsados,
+	// com a quantidade discriminada por Estoque para a expansão). `pagina`
+	// inválida / `agrupar` inválido -> 400 VALIDATION_ERROR.
+	mux.HandleFunc("GET /api/produtos/catalogo", middleware.RequireAuth(db, jwtSecret)(
+		handlers.ListarCatalogoHandler(db)))
 
 	// Login federado via Keycloak — SSO Ferreira Costa (Story 1.9, AD-7).
 	// /api/auth/sso/config e /api/auth/logout são SEMPRE registrados (o

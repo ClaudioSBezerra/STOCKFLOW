@@ -1,6 +1,7 @@
 import { useAuth } from '@/lib/auth';
 import { rankPapel } from '@/components/shell/nav-items';
 import { BuscaCatalogo } from '@/components/catalogo/BuscaCatalogo';
+import { CatalogoListagem } from '@/components/catalogo/CatalogoListagem';
 import { CadastroProdutoSection } from '@/components/produtos/CadastroProdutoSection';
 import { ImportacaoProdutosSection } from '@/components/produtos/ImportacaoProdutosSection';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -11,9 +12,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
  * `AppShell`/`RotaProtegida`.
  *
  * `BuscaCatalogo` (Story 4.1, spec-4-1) fica sempre no topo, para qualquer
- * papel — não depende do gate `podeCadastrar` abaixo. Visualização em
- * grade/tabela (Story 4.3) ainda não existe: o texto residual abaixo da
- * busca cita só o que falta.
+ * papel — não depende do gate `podeCadastrar` abaixo. Logo abaixo,
+ * `CatalogoListagem` (Story 4.3, spec-4-3) mostra o catálogo paginado em
+ * grade (cards) ou tabela agrupada (alternador em viewport ≥768px), também
+ * para qualquer papel.
  *
  * Quando `rankPapel(papel) >= rankPapel('almoxarife')`, mostra também
  * `Tabs` ("Cadastro"/"Importação", Story 3.3, spec-3-3) envolvendo
@@ -33,9 +35,7 @@ export function CatalogoPage() {
   return (
     <div className="flex flex-col gap-6 p-6">
       <BuscaCatalogo />
-      <p className="text-body text-muted-foreground">
-        Visualização em grade e tabela chega em breve.
-      </p>
+      <CatalogoListagem />
       {podeCadastrar && (
         <Tabs defaultValue="cadastro">
           <TabsList>

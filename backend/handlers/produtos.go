@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -222,6 +223,73 @@ func BuscarProdutosHandler(db *sql.DB) http.HandlerFunc {
 		}
 
 		escreverJSON(w, http.StatusOK, map[string]any{"produtos": produtos})
+	}
+}
+
+// ListarCatalogoHandler expõe GET /api/produtos/catalogo?agrupar=<>&pagina=<>
+// (Story 4.3, spec-4-3, FR-6): só RequireAuth, qualquer papel (`usuario`+) —
+// sem RequireRole, mesmo padrão de GET /api/produtos/busca / GET
+// /api/categorias.
+//
+// `pagina`: inteiro >=1; ausente/vazio -> `1`; `0`, negativo ou não-numérico
+// -> `400 VALIDATION_ERROR` "página inválida", NENHUMA consulta ao banco.
+// Página além da última -> `200` com lista vazia (a paginação ainda reporta
+// `total`/`totalPaginas`).
+//
+// `agrupar`: só `true`, `false` ou ausente (-> `false`); qualquer outro
+// valor -> `400 VALIDATION_ERROR` "parâmetro agrupar inválido", sem consulta.
+//
+// Sucesso `agrupar=false`: `200 {"produtos":[...],"paginacao":{...}}` (grade,
+// um Produto por linha). Sucesso `agrupar=true`: `200
+// {"grupos":[...],"paginacao":{...}}` (Produtos com mesmo nome + dimensões
+// colapsados). Erro de banco -> `500 INTERNAL_ERROR` + slog.
+func ListarCatalogoHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := middleware.UsuarioDaSessao(r.Context()); !ok {
+			slog.Error("ListarCatalogoHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+
+		pagina := 1
+		if bruto := r.URL.Query().Get("pagina"); bruto != "" {
+			n, err := strconv.Atoi(bruto)
+			if err != nil || n < 1 || n > services.MaxPaginaCatalogo {
+				escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "página inválida")
+				return
+			}
+			pagina = n
+		}
+
+		var agrupar bool
+		switch r.URL.Query().Get("agrupar") {
+		case "", "false":
+			agrupar = false
+		case "true":
+			agrupar = true
+		default:
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "parâmetro agrupar inválido")
+			return
+		}
+
+		if agrupar {
+			grupos, paginacao, err := services.ListarCatalogoAgrupado(db, pagina)
+			if err != nil {
+				slog.Error("falha ao listar catálogo agrupado", "error", err)
+				escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao listar catálogo")
+				return
+			}
+			escreverJSON(w, http.StatusOK, map[string]any{"grupos": grupos, "paginacao": paginacao})
+			return
+		}
+
+		produtos, paginacao, err := services.ListarCatalogoGrade(db, pagina)
+		if err != nil {
+			slog.Error("falha ao listar catálogo", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao listar catálogo")
+			return
+		}
+		escreverJSON(w, http.StatusOK, map[string]any{"produtos": produtos, "paginacao": paginacao})
 	}
 }
 

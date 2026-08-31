@@ -36,6 +36,14 @@ beforeEach(() => {
         return Promise.resolve({ ok: true, json: async () => ({ importacao: null }) });
       if (typeof url === 'string' && url.startsWith('/api/produtos/busca'))
         return Promise.resolve({ ok: true, json: async () => ({ produtos: [] }) });
+      if (typeof url === 'string' && url.startsWith('/api/produtos/catalogo'))
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            produtos: [],
+            paginacao: { pagina: 1, tamanho: 24, total: 0, totalPaginas: 0 },
+          }),
+        });
       throw new Error(`URL inesperada: ${url}`);
     }),
   );
@@ -47,26 +55,29 @@ afterEach(() => {
 });
 
 describe('CatalogoPage — gate de papel', () => {
-  it('papel usuario vê só o aviso de "visualização em breve", sem o formulário de cadastro', () => {
+  it('papel usuario vê a listagem do catálogo, sem o formulário de cadastro', async () => {
     authState.papel = 'usuario';
     render(<CatalogoPage />);
 
-    expect(
-      screen.getByText('Visualização em grade e tabela chega em breve.'),
-    ).toBeInTheDocument();
+    // CatalogoListagem busca o catálogo no mount, mesmo para `usuario`.
+    await screen.findByText('Nenhum produto no catálogo.');
+    expect(screen.getByLabelText('Catálogo de produtos')).toBeInTheDocument();
     expect(screen.queryByText('Cadastrar Produto')).not.toBeInTheDocument();
-    expect(fetch).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/produtos/catalogo'),
+      expect.anything(),
+    );
+    // O gate `podeCadastrar` continua fechado: nada de categorias/estoques.
+    expect(fetch).not.toHaveBeenCalledWith('/api/categorias', expect.anything());
   });
 
   it.each(['almoxarife', 'gestor', 'adm'])(
-    'papel %s vê o aviso E a seção de cadastro',
+    'papel %s vê a listagem E a seção de cadastro',
     async (papel) => {
       authState.papel = papel;
       render(<CatalogoPage />);
 
-      expect(
-        screen.getByText('Visualização em grade e tabela chega em breve.'),
-      ).toBeInTheDocument();
+      expect(screen.getByLabelText('Catálogo de produtos')).toBeInTheDocument();
       expect(await screen.findByText('Cadastrar Produto')).toBeInTheDocument();
     },
   );

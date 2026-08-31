@@ -274,14 +274,22 @@ describe('<App /> — wiring real de AuthProvider + RotaProtegida', () => {
           json: async () => ({ id: '1', nome: 'Fulano', email: 'f@empresa.com', papel: 'usuario' }),
         });
       }
+      if (typeof url === 'string' && url.startsWith('/api/produtos/catalogo')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            produtos: [],
+            paginacao: { pagina: 1, tamanho: 24, total: 0, totalPaginas: 0 },
+          }),
+        });
+      }
       throw new Error(`URL inesperada: ${url}`);
     });
 
     render(<App />);
 
-    expect(
-      await screen.findByText('Visualização em grade e tabela chega em breve.'),
-    ).toBeInTheDocument();
+    expect(await screen.findByText('Nenhum produto no catálogo.')).toBeInTheDocument();
+    expect(screen.getByLabelText('Catálogo de produtos')).toBeInTheDocument();
     expect(window.location.pathname).toBe('/');
     expect(screen.queryByText('Em construção')).not.toBeInTheDocument();
     expect(screen.queryByText('Cadastrar Produto')).not.toBeInTheDocument();
@@ -304,15 +312,22 @@ describe('<App /> — wiring real de AuthProvider + RotaProtegida', () => {
       if (url === '/api/estoques') {
         return Promise.resolve({ ok: true, json: async () => ({ estoques: [] }) });
       }
+      if (typeof url === 'string' && url.startsWith('/api/produtos/catalogo')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            produtos: [],
+            paginacao: { pagina: 1, tamanho: 24, total: 0, totalPaginas: 0 },
+          }),
+        });
+      }
       throw new Error(`URL inesperada: ${url}`);
     });
 
     render(<App />);
 
-    expect(
-      await screen.findByText('Visualização em grade e tabela chega em breve.'),
-    ).toBeInTheDocument();
-    expect(screen.getByText('Cadastrar Produto')).toBeInTheDocument();
+    expect(await screen.findByText('Cadastrar Produto')).toBeInTheDocument();
+    expect(screen.getByLabelText('Catálogo de produtos')).toBeInTheDocument();
     expect(window.location.pathname).toBe('/');
   });
 
