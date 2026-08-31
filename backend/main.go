@@ -54,7 +54,9 @@
 // do Produto ordenadas por ordem de envio, `{"fotos":[...]}` — vazio, nunca
 // erro, quando não há foto). `FOTOS_DIR` segue o mesmo fail-fast de
 // DATABASE_URL/JWT_SECRET: sem valor usa `./fotos`, e o diretório é criado
-// no startup).
+// no startup) e a busca por nome/código/categoria com sugestões — Story 4.1
+// (GET /api/produtos/busca?q=<termo>, qualquer conta autenticada: até 7
+// Produtos ranqueados por relevância, sem índice novo).
 package main
 
 import (
@@ -382,6 +384,14 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 		handlers.ServirFotoProdutoHandler(fotosDir)))
 	mux.HandleFunc("GET /api/produtos/{id}/fotos", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarFotosProdutoHandler(db, fotosDir)))
+
+	// Busca por nome/código/categoria com sugestões — Story 4.1 (FR-4). GET
+	// /api/produtos/busca leva só RequireAuth, mesmo padrão de GET
+	// /api/categorias/GET /api/estoques: qualquer conta autenticada
+	// (`usuario`+) busca, sem RequireRole. Até 7 Produtos ranqueados por
+	// relevância; `q` vazio/só espaços -> 400 VALIDATION_ERROR.
+	mux.HandleFunc("GET /api/produtos/busca", middleware.RequireAuth(db, jwtSecret)(
+		handlers.BuscarProdutosHandler(db)))
 
 	// Login federado via Keycloak — SSO Ferreira Costa (Story 1.9, AD-7).
 	// /api/auth/sso/config e /api/auth/logout são SEMPRE registrados (o

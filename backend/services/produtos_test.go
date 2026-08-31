@@ -3,6 +3,7 @@ package services
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -883,5 +884,254 @@ func TestAtualizarNomeProduto_NomeInvalido(t *testing.T) {
 	var erroValidacao *ErroProdutoValidacao
 	if !errors.As(err, &erroValidacao) {
 		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
+	}
+}
+
+// --- Story 4.1: Busca por nome/código/categoria com sugestões --------------
+
+// criarProdutoBusca cadastra um Produto mínimo (nome/código/categoria) para
+// os testes de BuscarProdutos, reaproveitando um único Estoque para toda a
+// suíte (a busca não depende de Estoque/quantidade).
+func criarProdutoBusca(t *testing.T, db *sql.DB, estoqueID, nome, codigo, categoriaID string) ProdutoBusca {
+	t.Helper()
+	p, err := CriarProduto(db, CriarProdutoInput{
+		Nome:              nome,
+		Codigo:            codigo,
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoqueID,
+		QuantidadeInicial: 1,
+	})
+	if err != nil {
+		t.Fatalf("seed CriarProduto(%q): %v", nome, err)
+	}
+	var codigoPtr *string
+	if codigo != "" {
+		c := codigo
+		codigoPtr = &c
+	}
+	return ProdutoBusca{ID: p.ID, Nome: p.Nome, Codigo: codigoPtr}
+}
+
+// TestBuscarProdutos_MatchExatoVemPrimeiro prova a linha "Match exato de
+// nome ou código" da matriz de I/O: um Produto cujo `codigo` é IGUAL
+// (case-insensitive) ao termo buscado aparece em 1º lugar, à frente de um
+// Produto que só bate por prefixo.
+func TestBuscarProdutos_MatchExatoVemPrimeiro(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Busca 1")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+
+	criarProdutoBusca(t, db, estoque.ID, "Parafuso Sextavado M8", "PAR-0010", categoriaID)
+	exato := criarProdutoBusca(t, db, estoque.ID, "Outro Nome Qualquer", "par-001", categoriaID)
+
+	resultado, err := BuscarProdutos(db, "PAR-001")
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if len(resultado) != 2 {
+		t.Fatalf("len(resultado) = %d, want 2", len(resultado))
+	}
+	if resultado[0].ID != exato.ID {
+		t.Errorf("resultado[0].ID = %q, want %q (match exato de código primeiro)", resultado[0].ID, exato.ID)
+	}
+}
+
+// TestBuscarProdutos_MatchPorPrefixo prova a linha "Match por prefixo" da
+// matriz: dois Produtos cujo nome começa com o termo aparecem, ordenados
+// por nome (rank igual, ORDER BY nome ASC).
+func TestBuscarProdutos_MatchPorPrefixo(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Busca 2")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+
+	criarProdutoBusca(t, db, estoque.ID, "Parafuso Sextavado", "", categoriaID)
+	criarProdutoBusca(t, db, estoque.ID, "Parafina", "", categoriaID)
+	criarProdutoBusca(t, db, estoque.ID, "Sem Relação Nenhuma", "", categoriaID)
+
+	resultado, err := BuscarProdutos(db, "paraf")
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if len(resultado) != 2 {
+		t.Fatalf("len(resultado) = %d, want 2", len(resultado))
+	}
+	if resultado[0].Nome != "Parafina" || resultado[1].Nome != "Parafuso Sextavado" {
+		t.Errorf("ordem = [%q, %q], want [Parafina, Parafuso Sextavado] (rank 1, ORDER BY nome)",
+			resultado[0].Nome, resultado[1].Nome)
+	}
+}
+
+// TestBuscarProdutos_MatchSoPorCategoria prova a linha "Match só por
+// categoria" da matriz: um Produto sem nenhum match em nome/código, mas
+// pertencente a uma categoria cujo nome bate o termo, ainda aparece
+// (rank 2).
+func TestBuscarProdutos_MatchSoPorCategoria(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Busca 3")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaEletrica := categoriaIDPorCodigo(t, db, "04.002") // "Materiais Elétricos"
+	categoriaCivil := categoriaIDPorCodigo(t, db, "04.001")
+
+	semRelacao := criarProdutoBusca(t, db, estoque.ID, "Disjuntor Bipolar", "DISJ-1", categoriaEletrica)
+	criarProdutoBusca(t, db, estoque.ID, "Tubo PVC", "TUBO-1", categoriaCivil)
+
+	resultado, err := BuscarProdutos(db, "elétric")
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if len(resultado) != 1 {
+		t.Fatalf("len(resultado) = %d, want 1", len(resultado))
+	}
+	if resultado[0].ID != semRelacao.ID {
+		t.Errorf("resultado[0].ID = %q, want %q", resultado[0].ID, semRelacao.ID)
+	}
+	if resultado[0].Categoria.Nome != "Materiais Elétricos" {
+		t.Errorf("Categoria.Nome = %q, want %q", resultado[0].Categoria.Nome, "Materiais Elétricos")
+	}
+}
+
+// TestBuscarProdutos_MaisDe7MatchesLimitaA7 prova a linha "Mais de 7
+// matches" da matriz: 10 Produtos batendo o termo -> só 7 voltam.
+func TestBuscarProdutos_MaisDe7MatchesLimitaA7(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Busca 4")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+
+	for i := 0; i < 10; i++ {
+		criarProdutoBusca(t, db, estoque.ID, fmt.Sprintf("Parafuso Tipo %02d", i), "", categoriaID)
+	}
+
+	resultado, err := BuscarProdutos(db, "parafuso")
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if len(resultado) != 7 {
+		t.Fatalf("len(resultado) = %d, want 7 (LIMIT 7)", len(resultado))
+	}
+}
+
+// TestBuscarProdutos_NenhumMatchDevolveSliceVazio prova a linha "Nenhum
+// match" da matriz: termo sem nenhuma correspondência -> slice vazio, nunca
+// nil (mesmo padrão de ListarCategorias) — importante porque o handler
+// serializa isso como `[]`, nunca `null`.
+func TestBuscarProdutos_NenhumMatchDevolveSliceVazio(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	resultado, err := BuscarProdutos(db, "xyzxyz-inexistente")
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if resultado == nil {
+		t.Fatal("resultado = nil, want slice vazio não-nil")
+	}
+	if len(resultado) != 0 {
+		t.Fatalf("len(resultado) = %d, want 0", len(resultado))
+	}
+}
+
+// TestBuscarProdutos_CoringasLiteraisNaoViramWildcard prova a linha "Termo
+// com %/_ literais" da matriz: um código de Produto contendo `%`/`_`
+// literalmente só casa quando o termo buscado contém o mesmo caractere
+// literal — sem o escaping (ESCAPE '\”), `_` casaria qualquer caractere e
+// `%` casaria qualquer sequência, trazendo falsos positivos.
+func TestBuscarProdutos_CoringasLiteraisNaoViramWildcard(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Busca 5")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+
+	comPorcentagem := criarProdutoBusca(t, db, estoque.ID, "Desconto Especial", "50%OFF", categoriaID)
+	criarProdutoBusca(t, db, estoque.ID, "Outro Produto Qualquer", "5XOFF", categoriaID)
+
+	resultado, err := BuscarProdutos(db, "50%")
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if len(resultado) != 1 {
+		t.Fatalf("len(resultado) = %d, want 1 (só o código com '%%' literal)", len(resultado))
+	}
+	if resultado[0].ID != comPorcentagem.ID {
+		t.Errorf("resultado[0].ID = %q, want %q", resultado[0].ID, comPorcentagem.ID)
+	}
+
+	// `_` literal no termo não deveria casar "5XOFF" (onde `_` viraria
+	// wildcard de 1 caractere sem escaping) — usa um código próprio com `_`
+	// literal para provar o mesmo ponto do lado do `_`.
+	comUnderscore := criarProdutoBusca(t, db, estoque.ID, "Produto Com Underscore", "SKU_123", categoriaID)
+	resultadoUnderscore, err := BuscarProdutos(db, "SKU_1")
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	achou := false
+	for _, r := range resultadoUnderscore {
+		if r.ID == comUnderscore.ID {
+			achou = true
+		}
+	}
+	if !achou {
+		t.Fatalf("SKU_123 não encontrado buscando 'SKU_1'")
+	}
+	// "SKUX123" (sem underscore, com X no lugar) NÃO deveria casar "SKU_1" se
+	// o `_` estivesse sendo tratado como caractere literal e não wildcard.
+	semUnderscore := criarProdutoBusca(t, db, estoque.ID, "Produto Sem Underscore", "SKUX123", categoriaID)
+	resultadoUnderscore2, err := BuscarProdutos(db, "SKU_1")
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	for _, r := range resultadoUnderscore2 {
+		if r.ID == semUnderscore.ID {
+			t.Errorf("SKUX123 casou 'SKU_1' — '_' não foi tratado como caractere literal")
+		}
+	}
+}
+
+// TestBuscarProdutos_CodigoAusenteDevolveNilNoPonteiro prova que um Produto
+// sem código cadastrado (coluna opcional) devolve `Codigo == nil` — o
+// handler serializa isso como `"codigo": null` no envelope de resposta.
+func TestBuscarProdutos_CodigoAusenteDevolveNilNoPonteiro(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Busca 6")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+
+	criarProdutoBusca(t, db, estoque.ID, "Produto Sem Codigo Nenhum", "", categoriaID)
+
+	resultado, err := BuscarProdutos(db, "Produto Sem Codigo")
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if len(resultado) != 1 {
+		t.Fatalf("len(resultado) = %d, want 1", len(resultado))
+	}
+	if resultado[0].Codigo != nil {
+		t.Errorf("Codigo = %v, want nil", *resultado[0].Codigo)
 	}
 }

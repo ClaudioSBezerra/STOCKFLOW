@@ -6,6 +6,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
+	"unicode/utf8"
 
 	"stockflow/backend/middleware"
 	"stockflow/backend/services"
@@ -30,6 +32,9 @@ import (
 //   - POST /api/produtos/{id}/renomear -> RequireAuth -> RequireRole
 //     (almoxarife); corpo `{"nome": string}` — único endpoint de edição de
 //     Produto que existe hoje, escopo restrito a `nome` (Story 3.2, AC3).
+//   - GET /api/produtos/busca -> RequireAuth apenas: qualquer conta
+//     autenticada busca até 7 Produtos ranqueados por relevância em
+//     nome/código/categoria (Story 4.1, spec-4-1).
 
 // dimensaoRequest é o par valor+unidade de uma dimensão no corpo de
 // POST /api/produtos. Os dois ponteiros ausentes (`null`/chave omitida) ->
@@ -178,6 +183,45 @@ func AtualizarNomeProdutoHandler(db *sql.DB) http.HandlerFunc {
 			slog.Error("falha ao renomear produto", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao renomear produto")
 		}
+	}
+}
+
+// BuscarProdutosHandler expõe GET /api/produtos/busca?q=<termo> (Story 4.1,
+// spec-4-1, FR-4): só RequireAuth, qualquer papel (`usuario`+) — sem
+// RequireRole, mesmo padrão de GET /api/categorias/GET /api/estoques. `q`
+// é lido com `strings.TrimSpace`; vazio (ausente ou só espaços) -> `400
+// VALIDATION_ERROR` "termo de busca obrigatório", nenhuma consulta ao banco
+// acontece. `q` (trimado) com mais de 255 runes (mesmo teto aplicado a
+// `nome`/`codigo` por services.CriarProduto) -> `400 VALIDATION_ERROR`
+// "termo de busca muito longo", também sem consulta ao banco. Sucesso: `200
+// {"produtos":[...]}`, até 7 itens, `[]` (nunca `null`) quando nenhum
+// Produto casa o termo. Erro de banco -> 500 INTERNAL_ERROR + slog.
+func BuscarProdutosHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := middleware.UsuarioDaSessao(r.Context()); !ok {
+			slog.Error("BuscarProdutosHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+
+		termo := strings.TrimSpace(r.URL.Query().Get("q"))
+		if termo == "" {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "termo de busca obrigatório")
+			return
+		}
+		if utf8.RuneCountInString(termo) > 255 {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "termo de busca muito longo")
+			return
+		}
+
+		produtos, err := services.BuscarProdutos(db, termo)
+		if err != nil {
+			slog.Error("falha ao buscar produtos", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao buscar produtos")
+			return
+		}
+
+		escreverJSON(w, http.StatusOK, map[string]any{"produtos": produtos})
 	}
 }
 

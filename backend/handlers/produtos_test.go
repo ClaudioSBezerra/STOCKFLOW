@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -737,5 +738,169 @@ func TestAtualizarNomeProdutoHandler_403ParaUsuario(t *testing.T) {
 	}
 	if nomeGravado != "Nome Original" {
 		t.Errorf("nome gravado = %q, want %q (nada deveria ter sido alterado)", nomeGravado, "Nome Original")
+	}
+}
+
+// --- Story 4.1: Busca por nome/código/categoria com sugestões --------------
+
+// getProdutosBusca despacha GET /api/produtos/busca?q=<termo> pela MESMA
+// composição de newMux (RequireAuth apenas, SEM RequireRole — Story 4.1).
+func getProdutosBusca(db *sql.DB, authHeader, termo string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/produtos/busca",
+		middleware.RequireAuth(db, testJWTSecret)(
+			BuscarProdutosHandler(db)))
+	r := httptest.NewRequest(http.MethodGet, "/api/produtos/busca?q="+url.QueryEscape(termo), nil)
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+// TestBuscarProdutosHandler_200ComResultados prova que um termo com match ->
+// 200 e o envelope `{"produtos":[...]}` traz o Produto esperado, incluindo a
+// Categoria completa.
+func TestBuscarProdutosHandler_200ComResultados(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	criarContaComPapel(t, db, "Buscadora", "busca-200@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "busca-200@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Canteiro Busca Handler")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	produto, err := services.CriarProduto(db, services.CriarProdutoInput{
+		Nome:              "Parafuso Sextavado M8",
+		Codigo:            "PAR-BUSCA-1",
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		QuantidadeInicial: 1,
+	})
+	if err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+
+	w := getProdutosBusca(db, "Bearer "+token, "parafuso")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+	var resp struct {
+		Produtos []struct {
+			ID        string  `json:"id"`
+			Nome      string  `json:"nome"`
+			Codigo    *string `json:"codigo"`
+			Categoria struct {
+				ID     string `json:"id"`
+				Codigo string `json:"codigo"`
+				Nome   string `json:"nome"`
+			} `json:"categoria"`
+		} `json:"produtos"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if len(resp.Produtos) != 1 {
+		t.Fatalf("len(produtos) = %d, want 1", len(resp.Produtos))
+	}
+	if resp.Produtos[0].ID != produto.ID {
+		t.Errorf("ID = %q, want %q", resp.Produtos[0].ID, produto.ID)
+	}
+	if resp.Produtos[0].Codigo == nil || *resp.Produtos[0].Codigo != "PAR-BUSCA-1" {
+		t.Errorf("Codigo = %v, want PAR-BUSCA-1", resp.Produtos[0].Codigo)
+	}
+	if resp.Produtos[0].Categoria.ID != categoriaID {
+		t.Errorf("Categoria.ID = %q, want %q", resp.Produtos[0].Categoria.ID, categoriaID)
+	}
+}
+
+// TestBuscarProdutosHandler_200SemResultados prova que um termo sem nenhum
+// match -> 200 com `{"produtos":[]}` (nunca `null`).
+func TestBuscarProdutosHandler_200SemResultados(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Buscadora Vazio", "busca-vazio@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "busca-vazio@empresa.com", "senha-123456")
+
+	w := getProdutosBusca(db, "Bearer "+token, "xyzxyz-inexistente")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"produtos":[]`) {
+		t.Errorf("body = %s, want produtos:[] (slice vazio, nunca null)", w.Body.String())
+	}
+}
+
+// TestBuscarProdutosHandler_400TermoVazio prova a linha "Termo vazio/só
+// espaços" da matriz: `q` ausente ou só espaços -> 400 VALIDATION_ERROR,
+// nenhuma consulta ao banco.
+func TestBuscarProdutosHandler_400TermoVazio(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Buscadora Termo Vazio", "busca-termo-vazio@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "busca-termo-vazio@empresa.com", "senha-123456")
+
+	for _, termo := range []string{"", "   "} {
+		w := getProdutosBusca(db, "Bearer "+token, termo)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("termo=%q: status = %d, want %d (body=%s)", termo, w.Code, http.StatusBadRequest, w.Body.String())
+		}
+		env := decodeErro(t, w.Body.Bytes())
+		if env.Error.Code != "VALIDATION_ERROR" {
+			t.Errorf("termo=%q: code = %q, want VALIDATION_ERROR", termo, env.Error.Code)
+		}
+	}
+}
+
+// TestBuscarProdutosHandler_400TermoMuitoLongo prova que `q` (trimado) com
+// mais de 255 runes -> 400 VALIDATION_ERROR "termo de busca muito longo",
+// mesmo teto aplicado a `nome`/`codigo` por services.CriarProduto — nenhuma
+// consulta ao banco acontece.
+func TestBuscarProdutosHandler_400TermoMuitoLongo(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Buscadora Termo Longo", "busca-termo-longo@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "busca-termo-longo@empresa.com", "senha-123456")
+
+	termoMuitoLongo := strings.Repeat("a", 256)
+	w := getProdutosBusca(db, "Bearer "+token, termoMuitoLongo)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "VALIDATION_ERROR" {
+		t.Errorf("code = %q, want VALIDATION_ERROR", env.Error.Code)
+	}
+	if env.Error.Message != "termo de busca muito longo" {
+		t.Errorf("message = %q, want %q", env.Error.Message, "termo de busca muito longo")
+	}
+}
+
+// TestBuscarProdutosHandler_401SemToken prova que sem Authorization -> 401
+// (RequireAuth), embora a rota não leve RequireRole.
+func TestBuscarProdutosHandler_401SemToken(t *testing.T) {
+	db := testDB(t)
+
+	w := getProdutosBusca(db, "", "qualquer")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+}
+
+// TestBuscarProdutosHandler_200ParaUsuario prova a linha "Papel usuario
+// chama a rota direto pela API" da matriz: token `usuario` -> 200, NUNCA
+// 403 — a rota não leva RequireRole (mesmo padrão de GET /api/categorias).
+func TestBuscarProdutosHandler_200ParaUsuario(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Papel Usuario", "busca-papel-usuario@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "busca-papel-usuario@empresa.com", "senha-123456")
+
+	w := getProdutosBusca(db, "Bearer "+token, "qualquer-termo")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s) — rota não deveria exigir RequireRole", w.Code, http.StatusOK, w.Body.String())
 	}
 }

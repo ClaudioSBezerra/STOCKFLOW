@@ -1,5 +1,6 @@
 import { useAuth } from '@/lib/auth';
 import { rankPapel } from '@/components/shell/nav-items';
+import { BuscaCatalogo } from '@/components/catalogo/BuscaCatalogo';
 import { CadastroProdutoSection } from '@/components/produtos/CadastroProdutoSection';
 import { ImportacaoProdutosSection } from '@/components/produtos/ImportacaoProdutosSection';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -9,7 +10,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
  * substitui a `PlaceholderPage` da rota índice. Renderizada dentro do
  * `AppShell`/`RotaProtegida`.
  *
- * Sempre mostra um aviso de "busca em breve" (Epic 4), para qualquer papel.
+ * `BuscaCatalogo` (Story 4.1, spec-4-1) fica sempre no topo, para qualquer
+ * papel — não depende do gate `podeCadastrar` abaixo. Visualização em
+ * grade/tabela (Story 4.3) ainda não existe: o texto residual abaixo da
+ * busca cita só o que falta.
+ *
  * Quando `rankPapel(papel) >= rankPapel('almoxarife')`, mostra também
  * `Tabs` ("Cadastro"/"Importação", Story 3.3, spec-3-3) envolvendo
  * `CadastroProdutoSection`/`ImportacaoProdutosSection` — resolve o que antes
@@ -27,8 +32,9 @@ export function CatalogoPage() {
 
   return (
     <div className="flex flex-col gap-6 p-6">
+      <BuscaCatalogo />
       <p className="text-body text-muted-foreground">
-        Busca e visualização do catálogo chegam em breve.
+        Visualização em grade e tabela chega em breve.
       </p>
       {podeCadastrar && (
         <Tabs defaultValue="cadastro">

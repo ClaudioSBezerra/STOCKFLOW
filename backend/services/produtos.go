@@ -389,6 +389,100 @@ func AtualizarNomeProduto(db *sql.DB, id string, novoNome string) (Produto, erro
 	return p, nil
 }
 
+// ProdutoBusca é a projeção devolvida por BuscarProdutos (Story 4.1,
+// spec-4-1) para GET /api/produtos/busca: `id`/`nome` do Produto, `codigo`
+// (ponteiro — `nil`/`null` quando o Produto não tem código cadastrado,
+// coluna opcional) e a Categoria completa (mesma projeção de
+// ListarCategorias), usada pela UI para mostrar nome da categoria ao lado do
+// resultado.
+type ProdutoBusca struct {
+	ID        string    `json:"id"`
+	Nome      string    `json:"nome"`
+	Codigo    *string   `json:"codigo"`
+	Categoria Categoria `json:"categoria"`
+}
+
+// escaparCoringasLike escapa os 3 caracteres com significado especial em um
+// padrão `LIKE`/`ILIKE` do Postgres (`\`, `%`, `_`) — nessa ordem: `\`
+// primeiro, para não escapar duas vezes as barras inseridas pelos dois
+// replace seguintes. Usado por BuscarProdutos ao montar os padrões de prefixo
+// e substring a partir do termo digitado pelo usuário, para que um `%`/`_`
+// literal no termo (ex. um código de Produto contendo `_`, comum em SKUs, ou
+// um desconto "50%") não vire wildcard não intencional — a query sempre casa
+// esses padrões com `ESCAPE '\'`.
+func escaparCoringasLike(s string) string {
+	substituidor := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return substituidor.Replace(s)
+}
+
+// buscarProdutosQuery ranqueia Produtos por relevância contra `termo`
+// (Story 4.1, spec-4-1): rank 0 = `nome`/`codigo` == termo, case-insensitive
+// (comparação direta com `lower()`, não `ILIKE` — termo aqui NUNCA é tratado
+// como padrão, então não precisa de escaping); rank 1 = `nome`/`codigo`
+// começa com o termo; rank 2 = `categorias.nome` == ou começa com o termo;
+// rank 3 = qualquer outro match por substring em `nome`/`codigo`/
+// `categorias.nome`. O `WHERE` usa só o padrão de substring (`%termo%`) —
+// ele já é um superconjunto dos padrões de prefixo/igualdade usados no
+// `CASE`, então uma linha que cai em qualquer rank sempre passa pelo `WHERE`.
+// Sem `pg_trgm`/índice novo (Design Notes da spec): volume de ~8.000 linhas
+// é trivial para um `ILIKE` sequencial com `JOIN` em `categorias` (25
+// linhas).
+const buscarProdutosQuery = `
+	SELECT p.id, p.nome, p.codigo, c.id, c.codigo, c.nome,
+		CASE
+			WHEN lower(p.nome) = lower($1) OR lower(p.codigo) = lower($1) THEN 0
+			WHEN p.nome ILIKE $2 ESCAPE '\' OR p.codigo ILIKE $2 ESCAPE '\' THEN 1
+			WHEN lower(c.nome) = lower($1) OR c.nome ILIKE $2 ESCAPE '\' THEN 2
+			ELSE 3
+		END AS rank
+	FROM produtos p
+	JOIN categorias c ON c.id = p.categoria_id
+	WHERE p.nome ILIKE $3 ESCAPE '\' OR p.codigo ILIKE $3 ESCAPE '\' OR c.nome ILIKE $3 ESCAPE '\'
+	ORDER BY rank ASC, p.nome ASC, p.id ASC
+	LIMIT 7`
+
+// BuscarProdutos devolve até 7 Produtos ranqueados por relevância contra
+// `termo` (Story 4.1, spec-4-1, FR-4) — ver buscarProdutosQuery para o
+// critério de ranking exato. `termo` é assumido não-vazio e já trimado: essa
+// validação é responsabilidade do chamador (BuscarProdutosHandler); esta
+// função nunca devolve erro de validação, só erro de banco. Nenhum match em
+// nenhum dos três campos -> slice vazio (nunca `nil`), mesmo padrão de
+// ListarCategorias.
+func BuscarProdutos(db *sql.DB, termo string) ([]ProdutoBusca, error) {
+	termoEscapado := escaparCoringasLike(termo)
+	padraoPrefixo := termoEscapado + "%"
+	padraoSubstring := "%" + termoEscapado + "%"
+
+	rows, err := db.Query(buscarProdutosQuery, termo, padraoPrefixo, padraoSubstring)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao buscar produtos: %w", err)
+	}
+	defer rows.Close()
+
+	resultado := make([]ProdutoBusca, 0)
+	for rows.Next() {
+		var pb ProdutoBusca
+		var codigo sql.NullString
+		var rank int
+		if err := rows.Scan(
+			&pb.ID, &pb.Nome, &codigo,
+			&pb.Categoria.ID, &pb.Categoria.Codigo, &pb.Categoria.Nome,
+			&rank,
+		); err != nil {
+			return nil, fmt.Errorf("falha ao ler linha de busca de produtos: %w", err)
+		}
+		if codigo.Valid {
+			c := codigo.String
+			pb.Codigo = &c
+		}
+		resultado = append(resultado, pb)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("falha ao iterar busca de produtos: %w", err)
+	}
+	return resultado, nil
+}
+
 // ListarCategorias devolve as categorias fixas ordenadas por `codigo`
 // ascendente (Story 3.1, AC4) — a lista da qual o formulário de cadastro
 // seleciona, nunca digitável livremente. Lista vazia não é erro (embora não

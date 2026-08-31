@@ -1608,3 +1608,57 @@ func TestHealthHandler_Unhealthy(t *testing.T) {
 		t.Errorf("status body = %q, want %q", resp.Status, "unhealthy")
 	}
 }
+
+// TestNewMux_ProdutosBuscaRotaSoRequireAuth prova, despachando pela mesma
+// instância de newMux usada por main() (Story 4.1, spec-4-1), que GET
+// /api/produtos/busca NÃO leva RequireRole: sem token -> 401 (RequireAuth);
+// token `usuario` -> 200, NUNCA 403 — mesmo molde de
+// TestNewMux_EstoquesRotaCarregaRequireRole para o caso "rota sem
+// RequireRole". Sem este caso, adicionar indevidamente
+// `middleware.RequireRole(...)` a esta rota deixaria a suíte verde (os
+// testes de handlers/produtos_test.go montam seu próprio mux local e nunca
+// despacham pela composição real de main.go).
+func TestNewMux_ProdutosBuscaRotaSoRequireAuth(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate usuarios: %v", err)
+	}
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, produto_estoque, produtos, estoques`); err != nil {
+		t.Fatalf("truncate produtos: %v", err)
+	}
+
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	fotosDir := t.TempDir()
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, fotosDir)
+
+	const senha = "senha-123456"
+	segredos := map[string]string{}
+
+	despachar := func(metodo, caminho, token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(metodo, caminho, nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	seedContaMux(t, db, "busca-mux-usuario@empresa.com", "usuario", senha, segredos)
+
+	t.Run("sem token -> 401", func(t *testing.T) {
+		w := despachar(http.MethodGet, "/api/produtos/busca?q=parafuso", "")
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+		}
+	})
+
+	t.Run("token usuario -> 200 (rota sem RequireRole)", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "busca-mux-usuario@empresa.com", senha, segredos)
+		w := despachar(http.MethodGet, "/api/produtos/busca?q=parafuso", token)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d (body=%s) — rota não deveria exigir RequireRole", w.Code, http.StatusOK, w.Body.String())
+		}
+	})
+}

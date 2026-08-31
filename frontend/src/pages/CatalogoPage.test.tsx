@@ -34,6 +34,8 @@ beforeEach(() => {
       if (url === '/api/estoques') return Promise.resolve({ ok: true, json: async () => ({ estoques: [] }) });
       if (url === '/api/importacoes/ultima')
         return Promise.resolve({ ok: true, json: async () => ({ importacao: null }) });
+      if (typeof url === 'string' && url.startsWith('/api/produtos/busca'))
+        return Promise.resolve({ ok: true, json: async () => ({ produtos: [] }) });
       throw new Error(`URL inesperada: ${url}`);
     }),
   );
@@ -45,12 +47,12 @@ afterEach(() => {
 });
 
 describe('CatalogoPage — gate de papel', () => {
-  it('papel usuario vê só o aviso de "busca em breve", sem o formulário de cadastro', () => {
+  it('papel usuario vê só o aviso de "visualização em breve", sem o formulário de cadastro', () => {
     authState.papel = 'usuario';
     render(<CatalogoPage />);
 
     expect(
-      screen.getByText('Busca e visualização do catálogo chegam em breve.'),
+      screen.getByText('Visualização em grade e tabela chega em breve.'),
     ).toBeInTheDocument();
     expect(screen.queryByText('Cadastrar Produto')).not.toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalled();
@@ -63,7 +65,7 @@ describe('CatalogoPage — gate de papel', () => {
       render(<CatalogoPage />);
 
       expect(
-        screen.getByText('Busca e visualização do catálogo chegam em breve.'),
+        screen.getByText('Visualização em grade e tabela chega em breve.'),
       ).toBeInTheDocument();
       expect(await screen.findByText('Cadastrar Produto')).toBeInTheDocument();
     },

@@ -280,7 +280,7 @@ describe('<App /> — wiring real de AuthProvider + RotaProtegida', () => {
     render(<App />);
 
     expect(
-      await screen.findByText('Busca e visualização do catálogo chegam em breve.'),
+      await screen.findByText('Visualização em grade e tabela chega em breve.'),
     ).toBeInTheDocument();
     expect(window.location.pathname).toBe('/');
     expect(screen.queryByText('Em construção')).not.toBeInTheDocument();
@@ -310,7 +310,7 @@ describe('<App /> — wiring real de AuthProvider + RotaProtegida', () => {
     render(<App />);
 
     expect(
-      await screen.findByText('Busca e visualização do catálogo chegam em breve.'),
+      await screen.findByText('Visualização em grade e tabela chega em breve.'),
     ).toBeInTheDocument();
     expect(screen.getByText('Cadastrar Produto')).toBeInTheDocument();
     expect(window.location.pathname).toBe('/');
