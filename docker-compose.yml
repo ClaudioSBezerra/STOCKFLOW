@@ -5,8 +5,10 @@ services:
       POSTGRES_USER: stockflow
       POSTGRES_PASSWORD: stockflow
       POSTGRES_DB: stockflow
-    ports:
-      - '5432:5432'
+    # Sem publicação de porta no host: só `api`/`migrate-legado` falam com
+    # `db` pela rede interna do Docker (`db:5432`). Publicar 5432 no host é
+    # desnecessário em qualquer ambiente e, em produção (Coolify), colide com
+    # outras portas já ocupadas na máquina.
     volumes:
       - stockflow-db-data:/var/lib/postgresql/data
     healthcheck:
@@ -19,23 +21,50 @@ services:
     build:
       context: ./backend
     environment:
-      DATABASE_URL: postgres://stockflow:stockflow@db:5432/stockflow?sslmode=disable
-      PORT: '8080'
-      # Valor de desenvolvimento explícito (Story 1.4, AD-6) — nunca usado em
-      # produção; cada ambiente real deve definir o próprio segredo.
-      JWT_SECRET: dev-jwt-secret-nao-usar-em-producao
+      # `${VAR:-default}` — os defaults abaixo reproduzem o comportamento
+      # anterior (hardcoded) para quem roda `docker compose up` localmente
+      # sem um `.env` próprio; um ambiente real (Coolify ou qualquer outro)
+      # sobrescreve via suas próprias Environment Variables, que o Coolify
+      # já grava num `.env` passado a `docker compose --env-file` (confirmado
+      # no log de deploy). Sem isso, valores definidos na UI do Coolify nunca
+      # chegavam ao container — o bug que motivou esta mudança.
+      DATABASE_URL: ${DATABASE_URL:-postgres://stockflow:stockflow@db:5432/stockflow?sslmode=disable}
+      PORT: ${PORT:-8080}
+      # Valor de desenvolvimento como default explícito (Story 1.4, AD-6) —
+      # nunca usar esse default em produção; cada ambiente real DEVE definir
+      # JWT_SECRET nas suas próprias Environment Variables.
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-nao-usar-em-producao}
       # Diretório onde as fotos de Produto são gravadas em disco — nunca
       # base64 no banco (Story 3.5, AD-11/AD-13). Monta em cima do volume
       # nomeado `stockflow-fotos-data` abaixo, persistente entre `up`/`down`.
-      FOTOS_DIR: /data/fotos
+      FOTOS_DIR: ${FOTOS_DIR:-/data/fotos}
+      # Base para o link de verificação de e-mail (Story 1.3). Default local
+      # aponta para a porta do `web` neste compose; um ambiente real define o
+      # domínio público (ex.: https://stockflow.fbtechia.com).
+      APP_URL: ${APP_URL:-http://localhost:8081}
+      # SMTP — vazio por padrão (Story 1.3: falha determinística e imediata
+      # no envio, sem tentar rede; nenhum teste depende de credencial real).
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-stockflow <noreply@stockflow.local>}
       # Login federado via Keycloak — SSO Ferreira Costa (Story 1.9, AD-7).
-      # NÃO definido aqui de propósito: sem IAM_BASE_URL o SSO fica desligado e
-      # este compose sobe idêntico ao comportamento atual. No ambiente de deploy
-      # dedicado à Ferreira Costa, o operador define IAM_BASE_URL,
-      # IAM_CLIENT_ID, IAM_REDIRECT_URI, IAM_ALLOWED_CLIENT_IDS (e, opcional,
-      # IAM_SCOPES) — ver .env.example e spec-1-9 "operator_actions".
-    ports:
-      - '8080:8080'
+      # Vazias por padrão: sem IAM_BASE_URL o SSO fica desligado e o servidor
+      # sobe idêntico ao comportamento atual. O ambiente de deploy dedicado à
+      # Ferreira Costa define estas nas suas próprias Environment Variables
+      # (ver .env.example e spec-1-9 "operator_actions").
+      IAM_BASE_URL: ${IAM_BASE_URL:-}
+      IAM_CLIENT_ID: ${IAM_CLIENT_ID:-}
+      IAM_REDIRECT_URI: ${IAM_REDIRECT_URI:-}
+      IAM_ALLOWED_CLIENT_IDS: ${IAM_ALLOWED_CLIENT_IDS:-}
+      IAM_SCOPES: ${IAM_SCOPES:-}
+    # Sem publicação de porta no host: `web` fala com `api` pela rede interna
+    # do Docker (`api:8080`, ver frontend/nginx.conf). Em produção (Coolify),
+    # publicar 8080 no host colide com outros apps do mesmo servidor — foi
+    # exatamente essa colisão que quebrou o primeiro deploy.
+    expose:
+      - '8080'
     volumes:
       - stockflow-fotos-data:/data/fotos
     depends_on:
@@ -51,8 +80,13 @@ services:
   web:
     build:
       context: ./frontend
-    ports:
-      - '8081:80'
+    # Sem publicação fixa de porta no host, mesma razão de `api`/`db` acima —
+    # o Coolify (ou qualquer proxy reverso do ambiente real) roteia o domínio
+    # público até aqui pela rede do Docker, não por uma porta de host fixa.
+    # `docker-compose.override.yml` (gitignored, ver seu .example) restaura os
+    # mapeamentos de porta para quem roda localmente sem Coolify.
+    expose:
+      - '80'
     depends_on:
       api:
         condition: service_healthy

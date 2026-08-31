@@ -1,0 +1,16 @@
+# Copie para docker-compose.override.yml (gitignored) para rodar localmente
+# sem Coolify — `docker compose up --build` mescla automaticamente esse
+# arquivo se ele existir, restaurando os mesmos mapeamentos de porta de host
+# que o compose base tinha antes (Story 3.5→deploy: publicar porta fixa no
+# host quebra em produção com vários apps no mesmo servidor, então saiu do
+# arquivo base — ver docker-compose.yml).
+services:
+  db:
+    ports:
+      - '5432:5432'
+  api:
+    ports:
+      - '8080:8080'
+  web:
+    ports:
+      - '8081:80'

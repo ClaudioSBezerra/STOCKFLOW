@@ -6,6 +6,7 @@ _bmad/render/
 _bmad-output/implementation-artifacts/.kanban-sync-state.json
 _bmad-output/implementation-artifacts/.telegram-notify-state.txt
 .env.telegram
+docker-compose.override.yml
 
 # Backend (Go)
 .env
