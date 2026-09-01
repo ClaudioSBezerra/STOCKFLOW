@@ -2,7 +2,7 @@
 title: 'Story 4.6 — Exportação da tabela do catálogo para Excel'
 type: 'feature'
 created: '2026-09-01'
-status: 'in-progress'
+status: 'done'
 review_loop_iteration: 0
 followup_review_recommended: false
 baseline_revision: '96a1bb73403eba518e52fbab3f52744c6e50a951'

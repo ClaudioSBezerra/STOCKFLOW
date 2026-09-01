@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronDown, ChevronRight, LayoutGrid, Table2 } from 'lucide-react';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
@@ -53,7 +54,21 @@ import {
  * `estoqueId`, `comEstoque`) combinam sempre por E lógico na query string.
  * Qualquer mudança de filtro OU do `termo` (prop) volta `pagina` para 1 e
  * redispara o `fetch` (mesmo padrão de `alternarModo`).
+ *
+ * Exportação para Excel (Story 4.6, spec-4-6, FR-30): prop opcional
+ * `podeExportar` (default `false`, calculada por `CatalogoPage` a partir do
+ * papel do usuário). Botão "Exportar" ao lado do alternador grade/tabela,
+ * visível só quando `podeExportar && modo === 'tabela'` — a exportação é
+ * sempre da tabela agrupada com os filtros ativos, nunca da grade. Reusa a
+ * mesma serialização de filtros de `carregar` (helper `queryFiltros`, sem
+ * `agrupar`/`pagina` — a exportação sempre traz o conjunto filtrado
+ * completo) contra `GET /api/produtos/catalogo/exportar`; sucesso baixa
+ * `catalogo.xlsx` via `Blob`/`URL.createObjectURL`; falha (rede ou resposta
+ * não-OK) mostra `toast.error` (mesmo padrão de `ScannerProdutoFab`). O botão
+ * fica desabilitado ("Exportando...") enquanto a requisição está em voo.
  */
+
+const MENSAGEM_ERRO_EXPORTACAO = 'Não foi possível exportar o catálogo. Tente novamente em instantes.';
 
 interface CategoriaCatalogo {
   id: string;
@@ -125,11 +140,37 @@ interface FiltrosAtivos {
   termo: string;
 }
 
-interface CatalogoListagemProps {
-  termo?: string;
+// queryFiltros monta a fatia comum de query string dos 4 filtros
+// combináveis (`q`/`categoriaId`/`estoqueId`/`comEstoque`), SEM
+// `agrupar`/`pagina` — reusada por `carregar` (que prefixa `agrupar=&
+// pagina=`) e por `aoExportar` (que não tem nenhum dos dois, Story 4.6,
+// spec-4-6: a exportação nunca é de uma página, sempre o filtro completo).
+// Devolve os pares já unidos por `&`, sem `&`/`?` líder — cabe ao chamador
+// prefixar o que precisar.
+function queryFiltros(filtros: FiltrosAtivos): string {
+  const partes: string[] = [];
+  const termoTrimado = filtros.termo.trim();
+  if (termoTrimado !== '') {
+    partes.push(`q=${encodeURIComponent(termoTrimado)}`);
+  }
+  if (filtros.categoriaId !== '') {
+    partes.push(`categoriaId=${encodeURIComponent(filtros.categoriaId)}`);
+  }
+  if (filtros.estoqueId !== '') {
+    partes.push(`estoqueId=${encodeURIComponent(filtros.estoqueId)}`);
+  }
+  if (filtros.comEstoque) {
+    partes.push('comEstoque=true');
+  }
+  return partes.join('&');
 }
 
-export function CatalogoListagem({ termo = '' }: CatalogoListagemProps = {}) {
+interface CatalogoListagemProps {
+  termo?: string;
+  podeExportar?: boolean;
+}
+
+export function CatalogoListagem({ termo = '', podeExportar = false }: CatalogoListagemProps = {}) {
   const [modo, setModo] = useState<Modo>('grade');
   // Estado inicial derivado direto do matchMedia (não de um setState no
   // efeito): o alternador só existe em >=768px. O efeito abaixo só mantém
@@ -156,6 +197,11 @@ export function CatalogoListagem({ termo = '' }: CatalogoListagemProps = {}) {
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState(false);
   const [expandidos, setExpandidos] = useState<Set<string>>(() => new Set());
+
+  // exportando (Story 4.6, spec-4-6): true enquanto a requisição de
+  // exportação está em voo — desabilita o botão "Exportar" e troca seu
+  // rótulo para "Exportando...".
+  const [exportando, setExportando] = useState(false);
 
   // Contador de sequência: respostas de uma busca antiga que chegam depois de
   // uma nova são descartadas (mesma guarda de LogAcessoSection/BuscaCatalogo).
@@ -191,18 +237,9 @@ export function CatalogoListagem({ termo = '' }: CatalogoListagemProps = {}) {
     try {
       const agrupar = modoAtual === 'tabela';
       let query = `agrupar=${agrupar}&pagina=${paginaAtual}`;
-      const termoTrimado = filtrosAtuais.termo.trim();
-      if (termoTrimado !== '') {
-        query += `&q=${encodeURIComponent(termoTrimado)}`;
-      }
-      if (filtrosAtuais.categoriaId !== '') {
-        query += `&categoriaId=${encodeURIComponent(filtrosAtuais.categoriaId)}`;
-      }
-      if (filtrosAtuais.estoqueId !== '') {
-        query += `&estoqueId=${encodeURIComponent(filtrosAtuais.estoqueId)}`;
-      }
-      if (filtrosAtuais.comEstoque) {
-        query += `&comEstoque=true`;
+      const extras = queryFiltros(filtrosAtuais);
+      if (extras !== '') {
+        query += `&${extras}`;
       }
       const res = await fetch(`/api/produtos/catalogo?${query}`, { headers: authHeaders() });
       if (seq !== seqRef.current) {
@@ -312,6 +349,39 @@ export function CatalogoListagem({ termo = '' }: CatalogoListagemProps = {}) {
     setPagina(1);
   }
 
+  // aoExportar (Story 4.6, spec-4-6, FR-30): baixa `catalogo.xlsx` com os
+  // MESMOS filtros ativos da tabela — reusa `queryFiltros`, sem
+  // `agrupar`/`pagina` (a exportação sempre traz o filtro completo, nunca
+  // uma página). Sucesso: `Blob` da resposta -> `URL.createObjectURL` -> um
+  // `<a download>` criado, clicado e removido -> `URL.revokeObjectURL`.
+  // Falha (resposta não-OK ou exceção de rede) -> `toast.error`, mesmo
+  // padrão de `ScannerProdutoFab`.
+  async function aoExportar() {
+    setExportando(true);
+    try {
+      const extras = queryFiltros({ categoriaId, estoqueId, comEstoque, termo });
+      const url = `/api/produtos/catalogo/exportar${extras !== '' ? `?${extras}` : ''}`;
+      const res = await fetch(url, { headers: authHeaders() });
+      if (!res.ok) {
+        toast.error(MENSAGEM_ERRO_EXPORTACAO);
+        return;
+      }
+      const blob = await res.blob();
+      const href = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = href;
+      link.download = 'catalogo.xlsx';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(href);
+    } catch {
+      toast.error(MENSAGEM_ERRO_EXPORTACAO);
+    } finally {
+      setExportando(false);
+    }
+  }
+
   function aoMudarCategoria(valor: string) {
     setCategoriaId(valor === SEM_CATEGORIA ? '' : valor);
     setPagina(1);
@@ -368,6 +438,17 @@ export function CatalogoListagem({ termo = '' }: CatalogoListagemProps = {}) {
             <Table2 aria-hidden="true" className="h-4 w-4" />
             Tabela
           </Button>
+          {podeExportar && modo === 'tabela' && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={exportando}
+              onClick={() => void aoExportar()}
+              className="min-h-touch-target-min"
+            >
+              {exportando ? 'Exportando...' : 'Exportar'}
+            </Button>
+          )}
         </div>
       )}
 

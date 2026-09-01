@@ -55,6 +55,12 @@ const DEBOUNCE_MS_TERMO_FILTRO = 300;
 export function CatalogoPage() {
   const { usuario } = useAuth();
   const podeCadastrar = rankPapel(usuario?.papel ?? '') >= rankPapel('almoxarife');
+  // podeExportar (Story 4.6, spec-4-6, FR-30): mesmo rank mínimo de
+  // `podeCadastrar` (`almoxarife`+) — a exportação do Catálogo para Excel é
+  // restrita ao mesmo papel; o servidor continua sendo a autoridade real
+  // (`GET /api/produtos/catalogo/exportar` responde 403 para papéis abaixo
+  // mesmo em chamada direta à API), este espelho é só de experiência.
+  const podeExportar = rankPapel(usuario?.papel ?? '') >= rankPapel('almoxarife');
 
   const [termoFiltro, setTermoFiltro] = useState('');
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -82,7 +88,7 @@ export function CatalogoPage() {
   return (
     <div className="flex flex-col gap-6 p-6">
       <BuscaCatalogo onTermoChange={aoTermoDigitado} inputRef={buscaInputRef} />
-      <CatalogoListagem termo={termoFiltro} />
+      <CatalogoListagem termo={termoFiltro} podeExportar={podeExportar} />
       {podeCadastrar && (
         <Tabs defaultValue="cadastro">
           <TabsList>

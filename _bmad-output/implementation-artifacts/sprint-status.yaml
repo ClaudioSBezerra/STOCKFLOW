@@ -72,7 +72,7 @@ development_status:
   4-3-visualização-em-grade-e-tabela-agrupada: done
   4-4-detalhe-do-produto-por-estoque-com-atualização-em-tempo-real: done
   4-5-identificação-de-produto-via-qr-code-código-de-barras: done
-  4-6-exportação-da-tabela-do-catálogo-para-excel: backlog
+  4-6-exportação-da-tabela-do-catálogo-para-excel: done
   epic-4-retrospective: optional
 
   epic-5: backlog

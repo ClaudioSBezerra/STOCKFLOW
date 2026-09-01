@@ -8,14 +8,19 @@ vi.mock('@/lib/session', () => ({
   getAccessToken: () => 'token-de-teste',
 }));
 
+// sonner (Story 4.6, spec-4-6): mesmo padrão de mock de ScannerProdutoFab.test.tsx.
+const toastErrorMock = vi.hoisted(() => vi.fn());
+vi.mock('sonner', () => ({ toast: { error: toastErrorMock } }));
+
 // renderCatalogo envolve o componente num MemoryRouter — os cards da grade
 // (Story 4.4, spec-4-4) agora são `<Link>`, que exige um contexto de rota.
 // `termo` (Story 4.2, spec-4-2) é opcional, default '' (nenhum filtro de
-// texto).
-function renderCatalogo(termo?: string) {
+// texto). `podeExportar` (Story 4.6, spec-4-6) é opcional, default `false`
+// (mesmo default do componente).
+function renderCatalogo(termo?: string, podeExportar?: boolean) {
   return render(
     <MemoryRouter>
-      <CatalogoListagem termo={termo} />
+      <CatalogoListagem termo={termo} podeExportar={podeExportar} />
     </MemoryRouter>,
   );
 }
@@ -838,6 +843,234 @@ describe('CatalogoListagem — filtros (Story 4.2)', () => {
     expect(fetchMock).not.toHaveBeenCalledWith(
       expect.stringContaining('pagina=2&q=parafuso'),
       expect.anything(),
+    );
+  });
+});
+
+describe('CatalogoListagem — exportação (Story 4.6)', () => {
+  // jsdom não implementa URL.createObjectURL/revokeObjectURL (mesmo padrão
+  // de CadastroProdutoSection.test.tsx/ProdutoDetalhePage.test.tsx).
+  beforeEach(() => {
+    URL.createObjectURL = vi.fn(() => 'blob:catalogo-teste');
+    URL.revokeObjectURL = vi.fn();
+  });
+
+  function stubFetchTabelaEExportar(opts?: { exportarOk?: boolean; exportarRejeita?: boolean }) {
+    const blob = new Blob(['conteudo-xlsx'], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+    const fetchMock = vi.fn((url: string) => {
+      const u = String(url);
+      if (u.startsWith('/api/produtos/catalogo/exportar')) {
+        if (opts?.exportarRejeita) {
+          return Promise.reject(new Error('rede'));
+        }
+        return Promise.resolve({ ok: opts?.exportarOk ?? true, blob: async () => blob });
+      }
+      if (u.includes('agrupar=true')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            grupos: [
+              {
+                chave: 'g1',
+                nome: 'Parafuso',
+                dimensoes: DIMENSOES_NULAS,
+                quantidadeTotal: 5,
+                disponivel: true,
+                porEstoque: [],
+              },
+            ],
+            paginacao: { pagina: 1, tamanho: 24, total: 1, totalPaginas: 1 },
+          }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          produtos: [
+            {
+              id: 'p1',
+              nome: 'Parafuso',
+              codigo: null,
+              categoria: { id: 'c1', codigo: '04.001', nome: 'Construção Civil' },
+              dimensoes: DIMENSOES_NULAS,
+              quantidadeTotal: 5,
+              disponivel: true,
+            },
+          ],
+          paginacao: { pagina: 1, tamanho: 24, total: 1, totalPaginas: 1 },
+        }),
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  it('botão "Exportar" não aparece no modo grade, mesmo com podeExportar=true', async () => {
+    stubMatchMedia(true);
+    stubFetchTabelaEExportar();
+
+    renderCatalogo(undefined, true);
+
+    await screen.findByText('Parafuso');
+    expect(screen.queryByRole('button', { name: 'Exportar' })).not.toBeInTheDocument();
+  });
+
+  it('botão "Exportar" não aparece no modo tabela quando podeExportar=false', async () => {
+    stubMatchMedia(true);
+    stubFetchTabelaEExportar();
+    const user = userEvent.setup();
+
+    renderCatalogo(undefined, false);
+
+    await screen.findByText('Parafuso');
+    await user.click(screen.getByRole('button', { name: 'Tabela' }));
+    await screen.findByRole('columnheader', { name: 'Produto' });
+
+    expect(screen.queryByRole('button', { name: 'Exportar' })).not.toBeInTheDocument();
+  });
+
+  it('botão "Exportar" aparece no modo tabela quando podeExportar=true e o clique baixa o arquivo com os filtros ativos', async () => {
+    stubMatchMedia(true);
+    const fetchMock = stubFetchTabelaEExportar();
+    const cliqueSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const user = userEvent.setup();
+
+    renderCatalogo('parafuso', true);
+
+    await screen.findByText('Parafuso');
+    await user.click(screen.getByRole('button', { name: 'Tabela' }));
+    await screen.findByRole('columnheader', { name: 'Produto' });
+
+    const botaoExportar = screen.getByRole('button', { name: 'Exportar' });
+    expect(botaoExportar).toHaveClass('min-h-touch-target-min');
+
+    await user.click(botaoExportar);
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/produtos/catalogo/exportar?q=parafuso',
+        expect.anything(),
+      ),
+    );
+    await waitFor(() => expect(cliqueSpy).toHaveBeenCalled());
+    expect(URL.createObjectURL).toHaveBeenCalled();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:catalogo-teste');
+    // Sem pagina/agrupar na query de exportação (Never, spec-4-6) — só os
+    // filtros ativos (aqui, `q=parafuso`, já coberto pela asserção acima).
+    expect(botaoExportar).not.toHaveTextContent('Exportando...');
+
+    cliqueSpy.mockRestore();
+  });
+
+  it('estado "Exportando..." desabilita o botão enquanto a requisição está em voo', async () => {
+    stubMatchMedia(true);
+    let resolverExportacao: (() => void) | undefined;
+    const fetchMock = vi.fn((url: string) => {
+      const u = String(url);
+      if (u.startsWith('/api/produtos/catalogo/exportar')) {
+        return new Promise((resolve) => {
+          resolverExportacao = () =>
+            resolve({
+              ok: true,
+              blob: async () => new Blob(['x'], { type: 'application/octet-stream' }),
+            });
+        });
+      }
+      if (u.includes('agrupar=true')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            grupos: [
+              {
+                chave: 'g1',
+                nome: 'Parafuso',
+                dimensoes: DIMENSOES_NULAS,
+                quantidadeTotal: 5,
+                disponivel: true,
+                porEstoque: [],
+              },
+            ],
+            paginacao: { pagina: 1, tamanho: 24, total: 1, totalPaginas: 1 },
+          }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          produtos: [
+            {
+              id: 'p1',
+              nome: 'Parafuso',
+              codigo: null,
+              categoria: { id: 'c1', codigo: '04.001', nome: 'Construção Civil' },
+              dimensoes: DIMENSOES_NULAS,
+              quantidadeTotal: 5,
+              disponivel: true,
+            },
+          ],
+          paginacao: { pagina: 1, tamanho: 24, total: 1, totalPaginas: 1 },
+        }),
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const user = userEvent.setup();
+
+    renderCatalogo(undefined, true);
+
+    await screen.findByText('Parafuso');
+    await user.click(screen.getByRole('button', { name: 'Tabela' }));
+    await screen.findByRole('columnheader', { name: 'Produto' });
+
+    const botaoExportar = screen.getByRole('button', { name: 'Exportar' });
+    await user.click(botaoExportar);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Exportando...' })).toBeDisabled());
+
+    resolverExportacao?.();
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Exportar' })).not.toBeDisabled());
+  });
+
+  it('falha na exportação (resposta não-OK) mostra toast.error', async () => {
+    stubMatchMedia(true);
+    stubFetchTabelaEExportar({ exportarOk: false });
+    const user = userEvent.setup();
+
+    renderCatalogo(undefined, true);
+
+    await screen.findByText('Parafuso');
+    await user.click(screen.getByRole('button', { name: 'Tabela' }));
+    await screen.findByRole('columnheader', { name: 'Produto' });
+
+    await user.click(screen.getByRole('button', { name: 'Exportar' }));
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        'Não foi possível exportar o catálogo. Tente novamente em instantes.',
+      ),
+    );
+  });
+
+  it('falha de rede na exportação também mostra toast.error', async () => {
+    stubMatchMedia(true);
+    stubFetchTabelaEExportar({ exportarRejeita: true });
+    const user = userEvent.setup();
+
+    renderCatalogo(undefined, true);
+
+    await screen.findByText('Parafuso');
+    await user.click(screen.getByRole('button', { name: 'Tabela' }));
+    await screen.findByRole('columnheader', { name: 'Produto' });
+
+    await user.click(screen.getByRole('button', { name: 'Exportar' }));
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        'Não foi possível exportar o catálogo. Tente novamente em instantes.',
+      ),
     );
   });
 });
