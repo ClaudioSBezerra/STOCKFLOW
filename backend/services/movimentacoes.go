@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -132,6 +133,152 @@ func RegistrarBaixa(db *sql.DB, produtoID, estoqueID, usuarioID string, quantida
 
 	if err := tx.Commit(); err != nil {
 		return Movimentacao{}, fmt.Errorf("falha ao commitar baixa: %w", err)
+	}
+	return mov, nil
+}
+
+// travarLinhaProdutoEstoque adquire o lock de escrita da linha
+// (produtoID, estoqueID) em produto_estoque para uso dentro de uma
+// transação de Transferência (Story 5.2, spec-5-2) — NUNCA
+// `SELECT ... FOR UPDATE` puro (ver Design Notes de spec-5-2): a linha do
+// Estoque DESTINO de uma Transferência pode nunca ter existido (o Produto
+// nunca esteve lá), e `FOR UPDATE` não trava nada quando não há linha
+// nenhuma para travar.
+//
+// `INSERT ... ON CONFLICT (produto_id, estoque_id) DO UPDATE` resolve isso
+// numa única instrução atômica: cria a linha ausente com `quantidade=0`
+// (mantida sob o lock implícito da própria criação) OU adquire, via a
+// cláusula `DO UPDATE` (um no-op lógico), o MESMO lock de escrita que
+// `FOR UPDATE` adquiriria se a linha já existisse. Devolve o saldo travado.
+//
+// Erro SQLSTATE 22P02 (produtoID/estoqueID malformado) ou 23503 (violação
+// de chave estrangeira — estoqueID referenciando um Estoque inexistente,
+// ou produtoID um Produto inexistente) é devolvido tal qual para o
+// chamador traduzir em &ErroQuantidadeIndisponivel{Disponivel: 0} — mesmo
+// colapso "malformado/inexistente -> 0 disponível" da Story 5.1.
+func travarLinhaProdutoEstoque(tx *sql.Tx, produtoID, estoqueID string) (float64, error) {
+	var quantidade float64
+	const upsertLock = `
+		INSERT INTO produto_estoque (produto_id, estoque_id, quantidade)
+		VALUES ($1, $2, 0)
+		ON CONFLICT (produto_id, estoque_id) DO UPDATE SET quantidade = produto_estoque.quantidade
+		RETURNING quantidade`
+	if err := tx.QueryRow(upsertLock, produtoID, estoqueID).Scan(&quantidade); err != nil {
+		return 0, err
+	}
+	return quantidade, nil
+}
+
+// erroTravarProdutoEstoque traduz o erro de travarLinhaProdutoEstoque:
+// 22P02/23503 colapsam em &ErroQuantidadeIndisponivel{Disponivel: 0}
+// (mesmo colapso da Story 5.1, agora também para o lado destino — nenhuma
+// AC desta story pede um código de erro dedicado para Estoque destino
+// inválido). Qualquer outro erro é devolvido envolto, sem colapsar.
+func erroTravarProdutoEstoque(err error) error {
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) && (pqErr.Code == pqInvalidTextRepresentation || pqErr.Code == pqForeignKeyViolation) {
+		return &ErroQuantidadeIndisponivel{Disponivel: 0}
+	}
+	return fmt.Errorf("falha ao travar linha de produto_estoque: %w", err)
+}
+
+// RegistrarTransferencia move `quantidade` unidades do Produto `produtoID`
+// do Estoque `estoqueOrigemID` para o Estoque `estoqueDestinoID`, debitando
+// a origem, creditando o destino e inserindo a Movimentação
+// `tipo='transferencia'` correspondente (com os dois lados preenchidos)
+// numa ÚNICA transação (Story 5.2, spec-5-2) — mesmo molde transacional de
+// RegistrarBaixa (Story 5.1).
+//
+// Validação de `quantidade` (zero/negativa ou acima de limiteNumeric103,
+// mesmo texto de RegistrarBaixa) e de `estoqueOrigemID`/`estoqueDestinoID`
+// iguais (comparação case-insensitive via strings.EqualFold — dois UUIDs
+// idênticos com capitalização diferente não devem escapar do guard) acontece
+// ANTES de `tx.Begin()`: nenhuma escrita, nenhum lock adquirido para um
+// pedido já inválido.
+//
+// AD-10 (epic-5-context.md): as duas linhas de produto_estoque tocadas
+// (origem e destino) são travadas via travarLinhaProdutoEstoque na ORDEM
+// CANÔNICA ascendente de estoque_id — nunca na ordem origem-depois-destino
+// declarada pelo chamador. Como o par (produto_id, X) compartilha o mesmo
+// produto_id nos dois lados, ordenar os pares reduz a ordenar por
+// estoque_id (comparação de string simples). Isso garante que duas
+// Transferências concorrentes entre os MESMOS dois Estoques, em direções
+// opostas, travem sempre na mesma ordem física — uma espera a outra,
+// nenhum deadlock do Postgres.
+//
+// Depois de travar as duas linhas: `quantidade` maior que o saldo da
+// ORIGEM -> &ErroQuantidadeIndisponivel{Disponivel: disponivelOrigem}, sem
+// debitar nem creditar nada (o `defer tx.Rollback()` desfaz qualquer linha
+// de destino criada pelo upsert-lock). Senão, debita a origem, credita o
+// destino e insere a Movimentação na mesma transação, commit único.
+func RegistrarTransferencia(db *sql.DB, produtoID, estoqueOrigemID, estoqueDestinoID, usuarioID string, quantidade float64) (Movimentacao, error) {
+	if quantidade <= 0 {
+		return Movimentacao{}, &ErroMovimentacaoValidacao{Mensagem: "quantidade deve ser maior que zero"}
+	}
+	if quantidade > limiteNumeric103 {
+		return Movimentacao{}, &ErroMovimentacaoValidacao{
+			Mensagem: fmt.Sprintf("quantidade deve ser no máximo %s", limiteNumeric103Texto),
+		}
+	}
+	if strings.EqualFold(estoqueOrigemID, estoqueDestinoID) {
+		return Movimentacao{}, &ErroMovimentacaoValidacao{Mensagem: "estoque de origem e destino devem ser diferentes"}
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return Movimentacao{}, fmt.Errorf("falha ao iniciar transação: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
+
+	primeiro, segundo := estoqueOrigemID, estoqueDestinoID
+	if segundo < primeiro {
+		primeiro, segundo = segundo, primeiro
+	}
+	saldoPrimeiro, err := travarLinhaProdutoEstoque(tx, produtoID, primeiro)
+	if err != nil {
+		return Movimentacao{}, erroTravarProdutoEstoque(err)
+	}
+	saldoSegundo, err := travarLinhaProdutoEstoque(tx, produtoID, segundo)
+	if err != nil {
+		return Movimentacao{}, erroTravarProdutoEstoque(err)
+	}
+
+	disponivelOrigem := saldoSegundo
+	if estoqueOrigemID == primeiro {
+		disponivelOrigem = saldoPrimeiro
+	}
+
+	if quantidade > disponivelOrigem {
+		return Movimentacao{}, &ErroQuantidadeIndisponivel{Disponivel: disponivelOrigem}
+	}
+
+	const updateOrigem = `
+		UPDATE produto_estoque SET quantidade = quantidade - $1
+		WHERE produto_id = $2 AND estoque_id = $3`
+	if _, err := tx.Exec(updateOrigem, quantidade, produtoID, estoqueOrigemID); err != nil {
+		return Movimentacao{}, fmt.Errorf("falha ao debitar produto_estoque (origem): %w", err)
+	}
+
+	const updateDestino = `
+		UPDATE produto_estoque SET quantidade = quantidade + $1
+		WHERE produto_id = $2 AND estoque_id = $3`
+	if _, err := tx.Exec(updateDestino, quantidade, produtoID, estoqueDestinoID); err != nil {
+		return Movimentacao{}, fmt.Errorf("falha ao creditar produto_estoque (destino): %w", err)
+	}
+
+	var mov Movimentacao
+	const insert = `
+		INSERT INTO movimentacoes (produto_id, tipo, estoque_origem_id, estoque_destino_id, quantidade, usuario_id)
+		VALUES ($1, 'transferencia', $2, $3, $4, $5)
+		RETURNING id, produto_id, tipo, estoque_origem_id, estoque_destino_id, quantidade, usuario_id, criado_em`
+	if err := tx.QueryRow(insert, produtoID, estoqueOrigemID, estoqueDestinoID, quantidade, usuarioID).Scan(
+		&mov.ID, &mov.ProdutoID, &mov.Tipo, &mov.EstoqueOrigemID, &mov.EstoqueDestinoID, &mov.Quantidade, &mov.UsuarioID, &mov.CriadoEm,
+	); err != nil {
+		return Movimentacao{}, fmt.Errorf("falha ao inserir movimentação de transferência: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Movimentacao{}, fmt.Errorf("falha ao commitar transferência: %w", err)
 	}
 	return mov, nil
 }

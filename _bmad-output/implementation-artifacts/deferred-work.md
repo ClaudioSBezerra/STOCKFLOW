@@ -357,3 +357,67 @@ source_spec: `spec-4-1-busca-por-nome-codigo-categoria-com-sugestoes.md`
 severity: low
 reason: Confirmado lendo docker-compose.yml: linhas 32/40 definem `${PORT:-8080}`/`${FOTOS_DIR:-/data/fotos}`, mas a linha 78 (healthcheck do `api`) usa `http://127.0.0.1:8080/...` literal e a linha 69 (volume) usa `/data/fotos` literal. Se um operador sobrescrever PORT ou FOTOS_DIR, o healthcheck passa a testar a porta errada (api nunca fica "healthy") e/ou fotos gravadas fora do volume persistente `stockflow-fotos-data` (perdidas num restart). Achado pelo Edge Case Hunter na revisão de follow-up da Story 4.1; não é causado por esta story.
 status: open
+
+### DW-46: RegistrarTransferencia/RegistrarBaixa não propagam context.Context para a transação; uma desconexão do cliente no meio deixa a transação rodando segurando os locks de linha de produto_estoque.
+origin: spec-deferred 3e3e221835f7
+location: backend/services/movimentacoes.go
+source_spec: `spec-5-2-registrar-transferencia-entre-estoques.md`
+severity: low
+reason: backend/services/movimentacoes.go usa db.Begin() + tx.QueryRow/tx.Exec sem variante *Context. Padrão pré-existente de toda a camada de serviço (Story 5.1 inclusive) — não introduzido por esta story; corrigir exige mudar a convenção de assinatura em várias funções.
+status: open
+
+### DW-47: A lista de Estoques destino do diálogo Transferir é buscada uma vez por instância do componente e nunca recarregada (nem ao reabrir o diálogo, nem em reconexão SSE) — um Estoque criado/renomeado noutr
+origin: spec-deferred 345fc6dafd2c
+location: frontend/src/pages/ProdutoDetalhePage.tsx
+source_spec: `spec-5-2-registrar-transferencia-entre-estoques.md`
+severity: low
+reason: frontend/src/pages/ProdutoDetalhePage.tsx: carregarEstoquesDestino só roda quando estoquesDestino === null. Janela de defasagem pequena e o servidor continua a autoridade (rejeita origem==destino / destino inválido).
+status: open
+
+### DW-48: travarLinhaProdutoEstoque emite um UPDATE no-op (ON CONFLICT DO UPDATE SET quantidade = produto_estoque.quantidade) mesmo quando a linha já existe, gerando uma tupla morta por trava.
+origin: spec-deferred 22d02513b147
+location: backend/services/movimentacoes.go
+source_spec: `spec-5-2-registrar-transferencia-entre-estoques.md`
+severity: low
+reason: Custo de MVCC menor numa tabela de baixo volume (uma linha por par produto/estoque) e sem triggers em produto_estoque. Um fast-path SELECT ... FOR UPDATE com fallback para o upsert evitaria a escrita mantendo a garantia de "linha de destino pode não existir".
+status: open
+
+### DW-49: quantidade NaN/±Inf passa pelas guardas <=0 e >limiteNumeric103 em RegistrarTransferencia/RegistrarBaixa.
+origin: spec-deferred 0a6b44264ae4
+location: backend/services/movimentacoes.go
+source_spec: `spec-5-2-registrar-transferencia-entre-estoques.md`
+severity: low
+reason: Inalcançável pelo único chamador real (o handler HTTP): encoding/json rejeita literais NaN/Inf com erro de decode -> 400. Só afeta chamadas diretas ao serviço; seria um ajuste de consistência nas duas funções.
+status: open
+
+### DW-50: Se carregarDetalhe() falhar logo após uma transferência/baixa bem-sucedida, o catch chama setErro* num diálogo já fechado enquanto o toast de sucesso já apareceu — o usuário vê sucesso e números defas
+origin: spec-deferred 49e73aa0fe3e
+location: frontend/src/pages/ProdutoDetalhePage.tsx
+source_spec: `spec-5-2-registrar-transferencia-entre-estoques.md`
+severity: low
+reason: Padrão herdado verbatim de confirmarBaixa (Story 5.1): toast.success -> setXEstoque(null) -> await carregarDetalhe() -> catch setErroX(...). Deveria ser corrigido nos dois fluxos de forma consistente.
+status: open
+
+### DW-51: Os inputs de quantidade dos diálogos de Baixa e Transferir (type="number") não têm min/step, permitindo digitar/rolar valores zero ou negativos antes de qualquer round-trip ao servidor.
+origin: spec-deferred e1f476d4edfc
+location: frontend/src/pages/ProdutoDetalhePage.tsx
+source_spec: `spec-5-2-registrar-transferencia-entre-estoques.md`
+severity: low
+reason: frontend/src/pages/ProdutoDetalhePage.tsx: <Input type="number" inputMode="decimal"> em ambos os diálogos, sem atributo min. Padrão herdado verbatim de confirmarBaixa (Story 5.1) e replicado em confirmarTransferencia (Story 5.2); o servidor já rejeita com 400, mas o feedback só chega depois do POST.
+status: open
+
+### DW-52: GET /api/estoques devolve a lista completa sem filtro nem paginação, tanto no Select de Estoque destino do diálogo Transferir quanto no cadastro de Produto — não escala bem para um catálogo de Estoque
+origin: spec-deferred 0865194f7b12
+location: frontend/src/pages/ProdutoDetalhePage.tsx
+source_spec: `spec-5-2-registrar-transferencia-entre-estoques.md`
+severity: low
+reason: frontend/src/pages/ProdutoDetalhePage.tsx (carregarEstoquesDestino) e CadastroProdutoSection.tsx:269 usam o mesmo GET /api/estoques sem paginação. Padrão pré-existente reaproveitado tal qual por esta story, não introduzido por ela.
+status: open
+
+### DW-53: A guarda anti-duplo-submit (enviandoBaixa/enviandoTransferencia) é lida e setada dentro da própria função assíncrona, não sincronamente no disparo — dois gatilhos quase simultâneos (Enter + clique) po
+origin: spec-deferred 5d56b6722f5e
+location: frontend/src/pages/ProdutoDetalhePage.tsx
+source_spec: `spec-5-2-registrar-transferencia-entre-estoques.md`
+severity: low
+reason: frontend/src/pages/ProdutoDetalhePage.tsx: confirmarBaixa (Story 5.1) e confirmarTransferencia (Story 5.2) checam `enviando... ` como primeira linha da função async, mas só chamam `setEnviando...(true)` depois — mesma janela de corrida nos dois fluxos. Padrão herdado verbatim de Story 5.1, não introduzido por esta story.
+status: open

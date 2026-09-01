@@ -1,5 +1,6 @@
 // Package handlers, arquivo movimentacoes.go: fronteira HTTP de Registrar
-// Baixa (consumo) — Story 5.1, spec-5-1. Molde exato de handlers/produtos.go
+// Baixa (consumo) — Story 5.1, spec-5-1 — e de Registrar Transferência entre
+// Estoques — Story 5.2, spec-5-2. Molde exato de handlers/produtos.go
 // (CriarProdutoHandler): decodifica/serializa JSON, traduz os erros de
 // services/movimentacoes.go para o envelope de erro fixo (AD-14) e nunca
 // contém regra de negócio própria.
@@ -9,6 +10,10 @@
 //     RequireRole(almoxarife); corpo `{"quantidade": number}`. O 403 para
 //     papel abaixo de `almoxarife` é decidido inteiramente por RequireRole
 //     — este handler só executa quando o papel já passou nesse gate.
+//   - POST /api/produtos/{id}/estoques/{estoqueId}/transferencia ->
+//     RequireAuth -> RequireRole(almoxarife); corpo
+//     `{"estoqueDestinoId": string, "quantidade": number}`. Mesmo gate de
+//     papel da Baixa.
 package handlers
 
 import (
@@ -71,6 +76,62 @@ func RegistrarBaixaHandler(db *sql.DB, registro *realtime.Registry) http.Handler
 		default:
 			slog.Error("falha ao registrar baixa", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao registrar baixa")
+		}
+	}
+}
+
+// registrarTransferenciaRequest é o corpo aceito por
+// POST /api/produtos/{id}/estoques/{estoqueId}/transferencia.
+type registrarTransferenciaRequest struct {
+	EstoqueDestinoID string  `json:"estoqueDestinoId"`
+	Quantidade       float64 `json:"quantidade"`
+}
+
+// RegistrarTransferenciaHandler expõe
+// POST /api/produtos/{id}/estoques/{estoqueId}/transferencia: move
+// `quantidade` unidades do Produto `{id}` do Estoque `{estoqueId}` (origem)
+// para `estoqueDestinoId` (destino). `201 {"movimentacao": {...}}` no
+// sucesso, publicando
+// `{"resource":"movimentacoes","id":<nova>,"change":"created"}` no canal
+// `movimentacoes` (AD-3 do epic-5-context.md, mesmo padrão de
+// RegistrarBaixaHandler). `400 VALIDATION_ERROR` para quantidade inválida
+// ou origem==destino; `409 CONFLICT` para quantidade indisponível na
+// origem (incluindo Estoque destino sem linha, inexistente, ou id
+// malformado, ver Design Notes de spec-5-2). Molde exato de
+// RegistrarBaixaHandler.
+func RegistrarTransferenciaHandler(db *sql.DB, registro *realtime.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		usuario, ok := middleware.UsuarioDaSessao(r.Context())
+		if !ok {
+			slog.Error("RegistrarTransferenciaHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+
+		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
+		var req registrarTransferenciaRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "payload inválido")
+			return
+		}
+
+		produtoID := r.PathValue("id")
+		estoqueOrigemID := r.PathValue("estoqueId")
+
+		mov, err := services.RegistrarTransferencia(db, produtoID, estoqueOrigemID, req.EstoqueDestinoID, usuario.ID, req.Quantidade)
+		var erroValidacao *services.ErroMovimentacaoValidacao
+		var erroIndisponivel *services.ErroQuantidadeIndisponivel
+		switch {
+		case err == nil:
+			registro.Publish("movimentacoes", realtime.Evento{ID: mov.ID, Change: "created"})
+			escreverJSON(w, http.StatusCreated, map[string]any{"movimentacao": mov})
+		case errors.As(err, &erroValidacao):
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
+		case errors.As(err, &erroIndisponivel):
+			escreverErro(w, http.StatusConflict, "CONFLICT", erroIndisponivel.Error())
+		default:
+			slog.Error("falha ao registrar transferência", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao registrar transferência")
 		}
 	}
 }

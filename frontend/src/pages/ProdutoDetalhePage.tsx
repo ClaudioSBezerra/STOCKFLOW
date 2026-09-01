@@ -14,6 +14,13 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { getAccessToken } from '@/lib/session';
 import { useAuth } from '@/lib/auth';
 import { rankPapel } from '@/components/shell/nav-items';
@@ -74,19 +81,27 @@ import {
  * `Dialog` é fechado — `open` é derivado de `fotos[lightboxIndex]` existir,
  * nunca guardado como um booleano solto que poderia dessincronizar.
  *
- * Registrar Baixa (Story 5.1, spec-5-1): cada linha de "Quantidade por
- * Estoque" ganha um botão "Registrar Baixa" (`variant="outline"`,
- * `size="sm"`), visível só quando `rankPapel(usuario?.papel ?? '') >=
- * rankPapel('almoxarife')` (molde de `podeCadastrar`/`podeExportar`,
+ * Registrar Baixa (Story 5.1, spec-5-1) e Transferir (Story 5.2, spec-5-2):
+ * cada linha de "Quantidade por Estoque" ganha os botões "Registrar Baixa" e
+ * "Transferir" (`variant="outline"`, `size="sm"`), visíveis só quando
+ * `podeRegistrarMovimentacao` (`rankPapel(usuario?.papel ?? '') >=
+ * rankPapel('almoxarife')`, molde de `podeCadastrar`/`podeExportar`,
  * `CatalogoPage.tsx`) — o servidor continua a autoridade real (403 para
- * `usuario` mesmo que o botão nunca apareça, `RequireRole` decide). Clique
- * abre um `Dialog` (estado `baixaEstoque`, distinto do lightbox de fotos)
- * com um `Input type="number"` para a quantidade. Confirmar dispara
- * `POST /api/produtos/{id}/estoques/{estoqueId}/baixa`; sucesso ->
- * `toast.success`, fecha o diálogo e refaz `carregarDetalhe()` (mesma busca
- * usada no mount/reconexão/refetch por SSE — nenhum caminho de atualização
- * de estado paralelo); falha mostra a mensagem do servidor (que já cita a
- * quantidade disponível no 409) DENTRO do diálogo, sem fechar.
+ * `usuario` mesmo que o botão nunca apareça, `RequireRole` decide). "Registrar
+ * Baixa" abre um `Dialog` (estado `baixaEstoque`) com um `Input type="number"`;
+ * confirmar dispara `POST /api/produtos/{id}/estoques/{estoqueId}/baixa`.
+ * "Transferir" abre um `Dialog` (estado `transferenciaEstoque`) com um
+ * `Select` de Estoque destino — a lista vem de `GET /api/estoques` buscada
+ * LAZY quando o diálogo abre (só `almoxarife`+ vê o botão, e nem todo
+ * `almoxarife`+ abre o diálogo), com a própria linha de origem excluída das
+ * opções (UX; o servidor ainda rejeita origem==destino com 400) — mais um
+ * `Input type="number"` para a quantidade; confirmar dispara
+ * `POST /api/produtos/{id}/estoques/{estoqueId}/transferencia` com
+ * `{estoqueDestinoId, quantidade}`. Nos dois casos: sucesso -> `toast.success`,
+ * fecha o diálogo e refaz `carregarDetalhe()` (mesma busca usada no
+ * mount/reconexão/refetch por SSE — nenhum caminho de atualização de estado
+ * paralelo); falha mostra a mensagem do servidor (que já cita a quantidade
+ * disponível no 409) DENTRO do diálogo, sem fechar.
  */
 
 interface CategoriaDetalhe {
@@ -129,6 +144,15 @@ const MENSAGEM_ERRO = 'Não foi possível carregar o produto agora. Tente novame
 const MENSAGEM_NAO_ENCONTRADO = 'Produto não encontrado.';
 const MENSAGEM_SEM_ESTOQUE_REGISTRADO = 'Sem quantidade registrada por estoque.';
 const MENSAGEM_ERRO_BAIXA = 'Não foi possível registrar a baixa agora. Tente novamente em instantes.';
+const MENSAGEM_ERRO_TRANSFERENCIA =
+  'Não foi possível registrar a transferência agora. Tente novamente em instantes.';
+const MENSAGEM_ERRO_LISTAR_ESTOQUES =
+  'Não foi possível carregar a lista de estoques. Feche e tente novamente.';
+
+interface EstoqueOpcao {
+  id: string;
+  nome: string;
+}
 
 // ProdutoDetalhePage: wrapper fino de roteamento — ver doc acima sobre por
 // que `key={id}` é essencial aqui (força remontagem completa a cada troca
@@ -146,7 +170,7 @@ export function ProdutoDetalhePage() {
 
 function ProdutoDetalheConteudo({ id }: { id: string }) {
   const { usuario } = useAuth();
-  const podeRegistrarBaixa = rankPapel(usuario?.papel ?? '') >= rankPapel('almoxarife');
+  const podeRegistrarMovimentacao = rankPapel(usuario?.papel ?? '') >= rankPapel('almoxarife');
 
   const [produto, setProduto] = useState<ProdutoDetalhe | null>(null);
   const [carregando, setCarregando] = useState(true);
@@ -164,6 +188,19 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
   const [quantidadeBaixa, setQuantidadeBaixa] = useState('');
   const [enviandoBaixa, setEnviandoBaixa] = useState(false);
   const [erroBaixa, setErroBaixa] = useState<string | null>(null);
+
+  // Diálogo de Transferir (Story 5.2): `transferenciaEstoque` guarda a linha
+  // de ORIGEM alvo — `null` fecha o diálogo. A lista de Estoques destino
+  // (`estoquesDestino`) é buscada LAZY quando o diálogo abre (ver
+  // abrirTransferencia/carregarEstoquesDestino abaixo — clique, não efeito);
+  // `estoqueDestinoId` é a opção escolhida no `Select`.
+  const [transferenciaEstoque, setTransferenciaEstoque] = useState<EstoqueQuantidade | null>(null);
+  const [estoquesDestino, setEstoquesDestino] = useState<EstoqueOpcao[] | null>(null);
+  const [carregandoEstoques, setCarregandoEstoques] = useState(false);
+  const [estoqueDestinoId, setEstoqueDestinoId] = useState('');
+  const [quantidadeTransferencia, setQuantidadeTransferencia] = useState('');
+  const [enviandoTransferencia, setEnviandoTransferencia] = useState(false);
+  const [erroTransferencia, setErroTransferencia] = useState<string | null>(null);
 
   // seqRef descarta qualquer resposta em voo que não corresponda mais à
   // chamada mais recente (mesma guarda de CatalogoListagem/BuscaCatalogo)
@@ -299,6 +336,87 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
     }
   }
 
+  // carregarEstoquesDestino busca a lista de Estoques UMA vez por instância,
+  // disparada pelo clique em "Transferir" (evento, não efeito). `usuario`
+  // nunca chega aqui (não vê o botão) e um `almoxarife`+ que nunca abre o
+  // diálogo também não paga a requisição. Falha -> `erroTransferencia` no
+  // diálogo; `Select`/Confirmar ficam desabilitados enquanto
+  // `estoquesDestino === null`.
+  const carregarEstoquesDestino = useCallback(async () => {
+    setCarregandoEstoques(true);
+    try {
+      const res = await fetch('/api/estoques', { headers: authHeaders() });
+      if (!res.ok) {
+        setErroTransferencia(MENSAGEM_ERRO_LISTAR_ESTOQUES);
+        return;
+      }
+      const body = (await res.json()) as { estoques: EstoqueOpcao[] };
+      setEstoquesDestino(body.estoques);
+    } catch {
+      setErroTransferencia(MENSAGEM_ERRO_LISTAR_ESTOQUES);
+    } finally {
+      setCarregandoEstoques(false);
+    }
+  }, []);
+
+  function abrirTransferencia(linha: EstoqueQuantidade) {
+    setTransferenciaEstoque(linha);
+    setEstoqueDestinoId('');
+    setQuantidadeTransferencia('');
+    setErroTransferencia(null);
+    if (estoquesDestino === null && !carregandoEstoques) {
+      void carregarEstoquesDestino();
+    }
+  }
+
+  // confirmarTransferencia envia
+  // POST /api/produtos/{id}/estoques/{estoqueOrigemId}/transferencia com
+  // `{estoqueDestinoId, quantidade}` (molde de `confirmarBaixa`). Sucesso ->
+  // toast + fecha o diálogo + refetch via `carregarDetalhe` (MESMA função do
+  // mount/reconexão/SSE); falha mantém o diálogo aberto e mostra a mensagem
+  // do servidor (envelope AD-14, já cita a quantidade disponível no 409).
+  async function confirmarTransferencia() {
+    if (
+      !transferenciaEstoque ||
+      enviandoTransferencia ||
+      estoqueDestinoId === '' ||
+      quantidadeTransferencia.trim() === ''
+    ) {
+      return;
+    }
+    const quantidade = Number(quantidadeTransferencia);
+    if (!Number.isFinite(quantidade)) {
+      setErroTransferencia('Quantidade inválida.');
+      return;
+    }
+    setEnviandoTransferencia(true);
+    setErroTransferencia(null);
+    try {
+      const res = await fetch(
+        `/api/produtos/${id}/estoques/${transferenciaEstoque.estoqueId}/transferencia`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ estoqueDestinoId: estoqueDestinoId, quantidade }),
+        },
+      );
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+        setErroTransferencia(body.error?.message ?? MENSAGEM_ERRO_TRANSFERENCIA);
+        return;
+      }
+      toast.success('Transferência registrada.');
+      setTransferenciaEstoque(null);
+      setEstoqueDestinoId('');
+      setQuantidadeTransferencia('');
+      await carregarDetalhe();
+    } catch {
+      setErroTransferencia(MENSAGEM_ERRO_TRANSFERENCIA);
+    } finally {
+      setEnviandoTransferencia(false);
+    }
+  }
+
   useEffect(() => {
     const desconectar = conectarRealtime(
       (evento) => {
@@ -325,6 +443,14 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
   // `null` no mesmo render e o `Dialog` fecha, sem precisar de um efeito
   // extra para sincronizar os dois.
   const fotoLightbox = lightboxIndex !== null ? (fotos[lightboxIndex] ?? null) : null;
+
+  // opcoesDestino é derivada: a lista de Estoques carregada menos a linha de
+  // origem do diálogo aberto (origem == destino é rejeitado pelo servidor;
+  // aqui só se evita oferecer a opção inválida). Vazia + lista já carregada
+  // => aviso "Nenhum outro estoque disponível" no diálogo.
+  const opcoesDestino = (estoquesDestino ?? []).filter(
+    (estoque) => estoque.id !== transferenciaEstoque?.estoqueId,
+  );
 
   return (
     <div className="flex flex-col gap-4 p-6">
@@ -378,20 +504,31 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
                       <span>{linha.estoqueNome}</span>
                       <span className="flex items-center gap-3">
                         <span className="tabular-nums">{formatarQuantidade(linha.quantidade)}</span>
-                        {podeRegistrarBaixa && (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            aria-label={`Registrar Baixa em ${linha.estoqueNome}`}
-                            onClick={() => {
-                              setBaixaEstoque(linha);
-                              setQuantidadeBaixa('');
-                              setErroBaixa(null);
-                            }}
-                          >
-                            Registrar Baixa
-                          </Button>
+                        {podeRegistrarMovimentacao && (
+                          <>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              aria-label={`Registrar Baixa em ${linha.estoqueNome}`}
+                              onClick={() => {
+                                setBaixaEstoque(linha);
+                                setQuantidadeBaixa('');
+                                setErroBaixa(null);
+                              }}
+                            >
+                              Registrar Baixa
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              aria-label={`Transferir de ${linha.estoqueNome}`}
+                              onClick={() => abrirTransferencia(linha)}
+                            >
+                              Transferir
+                            </Button>
+                          </>
                         )}
                       </span>
                     </li>
@@ -497,6 +634,90 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
               <Button
                 type="submit"
                 disabled={enviandoBaixa || quantidadeBaixa.trim() === ''}
+              >
+                Confirmar
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Transferir (Story 5.2): controlado por `transferenciaEstoque` —
+          `null` fecha o diálogo. A lista de Estoques destino é buscada LAZY
+          (clique em "Transferir", não efeito — ver abrirTransferencia acima)
+          na abertura; a própria linha de origem é excluída das opções (o
+          servidor ainda rejeita origem==destino). Fechar enquanto o envio
+          está em voo é ignorado. */}
+      <Dialog
+        open={transferenciaEstoque !== null}
+        onOpenChange={(open) => {
+          if (!open && !enviandoTransferencia) {
+            setTransferenciaEstoque(null);
+            setErroTransferencia(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Transferir — {transferenciaEstoque?.estoqueNome}</DialogTitle>
+          </DialogHeader>
+          <form
+            className="flex flex-col gap-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void confirmarTransferencia();
+            }}
+          >
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="transferencia-destino">Estoque destino</Label>
+              <Select
+                value={estoqueDestinoId}
+                onValueChange={setEstoqueDestinoId}
+                disabled={carregandoEstoques || estoquesDestino === null}
+              >
+                <SelectTrigger id="transferencia-destino" aria-label="Estoque destino">
+                  <SelectValue
+                    placeholder={carregandoEstoques ? 'Carregando estoques...' : 'Selecione o destino'}
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {opcoesDestino.map((estoque) => (
+                    <SelectItem key={estoque.id} value={estoque.id}>
+                      {estoque.nome}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {estoquesDestino !== null && opcoesDestino.length === 0 && (
+                <p className="text-body text-muted-foreground">
+                  Nenhum outro estoque disponível para transferência.
+                </p>
+              )}
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="transferencia-quantidade">Quantidade</Label>
+              <Input
+                id="transferencia-quantidade"
+                type="number"
+                inputMode="decimal"
+                value={quantidadeTransferencia}
+                onChange={(event) => setQuantidadeTransferencia(event.target.value)}
+              />
+            </div>
+            {erroTransferencia && (
+              <p role="alert" className="text-body text-destructive">
+                {erroTransferencia}
+              </p>
+            )}
+            <DialogFooter>
+              <Button
+                type="submit"
+                disabled={
+                  enviandoTransferencia ||
+                  estoquesDestino === null ||
+                  estoqueDestinoId === '' ||
+                  quantidadeTransferencia.trim() === ''
+                }
               >
                 Confirmar
               </Button>

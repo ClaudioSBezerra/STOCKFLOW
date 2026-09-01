@@ -555,4 +555,213 @@ describe('ProdutoDetalhePage', () => {
       expect(toastSuccess).not.toHaveBeenCalled();
     });
   });
+
+  describe('Transferir (Story 5.2)', () => {
+    const ESTOQUES = [
+      { id: 'e1', nome: 'Almoxarifado Central' },
+      { id: 'e2', nome: 'Obra Norte' },
+      { id: 'e9', nome: 'Depósito Leste' },
+    ];
+
+    // stubTransferencia: GET detalhe/fotos + GET /api/estoques + POST
+    // .../transferencia (resultados configuráveis). `capturado` recebe o
+    // corpo JSON enviado no POST.
+    function stubTransferencia(opts: {
+      ok: boolean;
+      status: number;
+      json: () => Promise<unknown>;
+      onCall?: (corpo: unknown) => void;
+      estoquesOk?: boolean;
+      estoques?: { id: string; nome: string }[];
+    }) {
+      return stubFetch((url, init) => {
+        if (url === '/api/produtos/p1' && (!init?.method || init.method === 'GET')) {
+          return jsonOk({ produto: PRODUTO_DETALHE });
+        }
+        if (url === '/api/produtos/p1/fotos') return jsonOk({ fotos: [] });
+        if (url === '/api/estoques') {
+          if (opts.estoquesOk === false) {
+            return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
+          }
+          return jsonOk({ estoques: opts.estoques ?? ESTOQUES });
+        }
+        if (url === '/api/produtos/p1/estoques/e1/transferencia' && init?.method === 'POST') {
+          opts.onCall?.(init?.body ? JSON.parse(init.body as string) : undefined);
+          return Promise.resolve({
+            ok: opts.ok,
+            status: opts.status,
+            json: opts.json,
+          });
+        }
+        throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
+      });
+    }
+
+    it.each(['almoxarife', 'gestor', 'adm'])(
+      'papel %s vê o botão "Transferir" em cada linha de Estoque',
+      async (papel) => {
+        authState.papel = papel;
+        stubPadrao();
+        renderPagina();
+
+        act(() => {
+          aoMudarStatus('conectado');
+        });
+
+        await screen.findByText('Cabo Flexível 4mm');
+        expect(screen.getAllByRole('button', { name: /^Transferir de / })).toHaveLength(2);
+      },
+    );
+
+    it('papel usuario NÃO vê o botão "Transferir"', async () => {
+      authState.papel = 'usuario';
+      stubPadrao();
+      renderPagina();
+
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+
+      await screen.findByText('Cabo Flexível 4mm');
+      expect(screen.queryByRole('button', { name: /^Transferir de / })).not.toBeInTheDocument();
+    });
+
+    it('abrir o diálogo busca a lista de Estoques e exclui a linha de origem das opções', async () => {
+      stubTransferencia({ ok: true, status: 201, json: async () => ({ movimentacao: { id: 'm1' } }) });
+
+      const user = userEvent.setup();
+      renderPagina();
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+      await screen.findByText('Cabo Flexível 4mm');
+
+      await user.click(screen.getByRole('button', { name: 'Transferir de Almoxarifado Central' }));
+
+      const combo = await screen.findByRole('combobox', { name: 'Estoque destino' });
+      await user.click(combo);
+
+      expect(await screen.findByRole('option', { name: 'Obra Norte' })).toBeInTheDocument();
+      expect(screen.getByRole('option', { name: 'Depósito Leste' })).toBeInTheDocument();
+      // a própria origem (Almoxarifado Central) NÃO aparece como opção.
+      expect(screen.queryByRole('option', { name: 'Almoxarifado Central' })).not.toBeInTheDocument();
+    });
+
+    it('submissão bem-sucedida: envia {estoqueDestinoId, quantidade}, fecha o diálogo, mostra toast.success e refaz o refetch', async () => {
+      let corpoEnviado: unknown;
+      const fetchMock = stubTransferencia({
+        ok: true,
+        status: 201,
+        json: async () => ({ movimentacao: { id: 'm1', tipo: 'transferencia' } }),
+        onCall: (corpo) => {
+          corpoEnviado = corpo;
+        },
+      });
+
+      const user = userEvent.setup();
+      renderPagina();
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+      await screen.findByText('Cabo Flexível 4mm');
+
+      await user.click(screen.getByRole('button', { name: 'Transferir de Almoxarifado Central' }));
+      const dialogo = await screen.findByRole('dialog');
+
+      await user.click(within(dialogo).getByRole('combobox', { name: 'Estoque destino' }));
+      await user.click(await screen.findByRole('option', { name: 'Obra Norte' }));
+      await user.type(within(dialogo).getByLabelText('Quantidade'), '2');
+      await user.click(within(dialogo).getByRole('button', { name: 'Confirmar' }));
+
+      await waitFor(() => expect(corpoEnviado).toEqual({ estoqueDestinoId: 'e2', quantidade: 2 }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(toastSuccess).toHaveBeenCalledWith('Transferência registrada.');
+      const chamadasDetalhe = fetchMock.mock.calls.filter(([u]) => u === '/api/produtos/p1');
+      expect(chamadasDetalhe.length).toBeGreaterThan(1);
+    });
+
+    it('falha ao carregar a lista de Estoques: mostra a mensagem e mantém Confirmar desabilitado', async () => {
+      stubTransferencia({
+        ok: true,
+        status: 201,
+        json: async () => ({}),
+        estoquesOk: false,
+      });
+
+      const user = userEvent.setup();
+      renderPagina();
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+      await screen.findByText('Cabo Flexível 4mm');
+
+      await user.click(screen.getByRole('button', { name: 'Transferir de Almoxarifado Central' }));
+      const dialogo = await screen.findByRole('dialog');
+
+      expect(
+        await within(dialogo).findByText(
+          'Não foi possível carregar a lista de estoques. Feche e tente novamente.',
+        ),
+      ).toBeInTheDocument();
+      expect(within(dialogo).getByRole('button', { name: 'Confirmar' })).toBeDisabled();
+    });
+
+    it('lista só com a própria origem: mostra "Nenhum outro estoque disponível" e Confirmar desabilitado', async () => {
+      stubTransferencia({
+        ok: true,
+        status: 201,
+        json: async () => ({}),
+        estoques: [{ id: 'e1', nome: 'Almoxarifado Central' }],
+      });
+
+      const user = userEvent.setup();
+      renderPagina();
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+      await screen.findByText('Cabo Flexível 4mm');
+
+      await user.click(screen.getByRole('button', { name: 'Transferir de Almoxarifado Central' }));
+      const dialogo = await screen.findByRole('dialog');
+
+      expect(
+        await within(dialogo).findByText('Nenhum outro estoque disponível para transferência.'),
+      ).toBeInTheDocument();
+      expect(within(dialogo).getByRole('button', { name: 'Confirmar' })).toBeDisabled();
+    });
+
+    it('erro do servidor (409) aparece no diálogo, sem fechar', async () => {
+      stubTransferencia({
+        ok: false,
+        status: 409,
+        json: async () => ({
+          error: {
+            code: 'CONFLICT',
+            message: 'quantidade indisponível: apenas 3 unidade(s) disponível(is)',
+          },
+        }),
+      });
+
+      const user = userEvent.setup();
+      renderPagina();
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+      await screen.findByText('Cabo Flexível 4mm');
+
+      await user.click(screen.getByRole('button', { name: 'Transferir de Almoxarifado Central' }));
+      const dialogo = await screen.findByRole('dialog');
+
+      await user.click(within(dialogo).getByRole('combobox', { name: 'Estoque destino' }));
+      await user.click(await screen.findByRole('option', { name: 'Obra Norte' }));
+      await user.type(within(dialogo).getByLabelText('Quantidade'), '999');
+      await user.click(within(dialogo).getByRole('button', { name: 'Confirmar' }));
+
+      expect(
+        await within(dialogo).findByText('quantidade indisponível: apenas 3 unidade(s) disponível(is)'),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+      expect(toastSuccess).not.toHaveBeenCalled();
+    });
+  });
 });

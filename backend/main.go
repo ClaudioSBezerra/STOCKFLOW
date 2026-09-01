@@ -85,7 +85,14 @@
 // (POST /api/produtos/{id}/estoques/{estoqueId}/baixa, mínimo `almoxarife`:
 // debita `produto_estoque.quantidade` e insere a Movimentação `tipo='baixa'`
 // correspondente numa única transação, com `SELECT ... FOR UPDATE` travando
-// a linha alvo; publica no canal SSE `movimentacoes` a cada sucesso).
+// a linha alvo; publica no canal SSE `movimentacoes` a cada sucesso) e
+// Registrar Transferência entre Estoques — Story 5.2
+// (POST /api/produtos/{id}/estoques/{estoqueId}/transferencia, mínimo
+// `almoxarife`: debita a origem, credita o destino e insere a Movimentação
+// `tipo='transferencia'` correspondente numa única transação, travando as
+// duas linhas de `produto_estoque` — origem e destino — na ordem canônica
+// ascendente de `estoque_id` via `INSERT ... ON CONFLICT DO UPDATE` (AD-10);
+// publica no canal SSE `movimentacoes` a cada sucesso).
 package main
 
 import (
@@ -503,6 +510,20 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	mux.HandleFunc("POST /api/produtos/{id}/estoques/{estoqueId}/baixa", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.RegistrarBaixaHandler(db, registro))))
+
+	// Registrar Transferência entre Estoques — Story 5.2 (Epic 5,
+	// Movimentação de Estoque). POST
+	// /api/produtos/{id}/estoques/{estoqueId}/transferencia fica atrás do
+	// MESMO gate de papel de Baixa, RequireRole(almoxarife). Debita a linha
+	// de origem, credita a de destino e insere a Movimentação
+	// `tipo='transferencia'` correspondente numa única transação
+	// (services.RegistrarTransferencia), travando as duas linhas de
+	// produto_estoque na ordem canônica ascendente de estoque_id (AD-10) —
+	// nunca na ordem origem/destino declarada pelo chamador; publicando no
+	// canal `movimentacoes` (AD-3 do epic-5-context.md) a cada sucesso.
+	mux.HandleFunc("POST /api/produtos/{id}/estoques/{estoqueId}/transferencia", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAlmoxarife)(
+			handlers.RegistrarTransferenciaHandler(db, registro))))
 
 	// Infraestrutura de tempo real (AD-2/AD-3) — Story 4.4. POST
 	// /api/realtime/ticket leva só RequireAuth: qualquer conta autenticada
