@@ -1,6 +1,8 @@
 // Command migrate-legado executa o corte "big-bang" único que traz os Estoques
 // do sistema legado (protótipo Firestore, hoje espelhado num PostgreSQL local
-// mantido pela empresa — addendum §F) para o schema novo do stockflow.
+// mantido pela empresa — addendum §F) para o schema novo do stockflow. Na
+// mesma execução migra também, nessa ordem, os Produtos/Categorias/fotos
+// (Story 3.7) e o Histórico de Movimentações legado (Story 5.4).
 //
 // Isto é deliberadamente um binário standalone one-off — nunca uma rota HTTP,
 // nunca um handler registrado no servidor da API, nunca um cron nem uma chamada
@@ -131,6 +133,24 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Pré-condição de seed do corte de Movimentações (Story 5.4), checada
+	// AGORA — antes de migrarEstoques/migrarProdutos, que escrevem e
+	// commitam (produtos commita por linha). A checagem definitiva vive
+	// dentro de migrarMovimentacoes (ponto testável), mas falhar só lá
+	// deixaria o alvo meio-migrado e a mensagem "nada foi escrito" seria
+	// mentira. Aqui, nada foi escrito de fato.
+	var seedMigracaoOK int
+	switch err := alvo.QueryRow(
+		`SELECT 1 FROM usuarios WHERE lower(email) = lower($1)`, emailUsuarioMigracaoLegado,
+	).Scan(&seedMigracaoOK); {
+	case errors.Is(err, sql.ErrNoRows):
+		fmt.Fprintln(os.Stderr, "erro: o seed da migration 000022 (usuário \"Migração do sistema legado\") está ausente no banco alvo — aplique todas as migrations antes do corte. Nada foi escrito.")
+		os.Exit(1)
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "erro: falha ao verificar o seed do usuário de migração: %v\n", err)
+		os.Exit(1)
+	}
+
 	// FOTOS_DIR (Story 3.5/3.7): mesmo diretório lido pelo processo `api`
 	// (backend/main.go) para gravar fotos de Produto — nunca base64 no
 	// banco. Sem valor, mesmo default `./fotos` (dev local) usado pelo `api`.
@@ -249,6 +269,39 @@ func main() {
 	} else {
 		fmt.Fprintf(os.Stdout, "dry-run (nada escrito, produtos): migraria %d, já migrados %d\n",
 			resProdutos.Migrados, resProdutos.JaMigrados)
+	}
+
+	// migrarMovimentacoes roda SEMPRE depois de migrarProdutos na mesma
+	// execução (Story 5.4, spec-5-4): um erro anterior já saiu com
+	// os.Exit(1) antes de chegar aqui. O historico legado referencia
+	// Produtos pelo nome desnormalizado e Estoques pelo nome — migrarEstoques
+	// e migrarProdutos precisam ter rodado para que a resolução por
+	// migracao_id_map / estoques.nome_normalizado tenha o que casar.
+	resMov, err := migrarMovimentacoes(alvo, legado, *executar)
+	if err != nil {
+		if errors.Is(err, errSeedUsuarioMigracaoAusente) {
+			fmt.Fprintln(os.Stderr, "erro: seed do usuário de migração ausente — a migration 000022 (usuário \"Migração do sistema legado\") não foi aplicada no banco alvo. Aplique todas as migrations antes do corte. Nada foi escrito.")
+		} else {
+			fmt.Fprintf(os.Stderr, "erro: %v (transação de Movimentações revertida, nada foi escrito)\n", err)
+		}
+		os.Exit(1)
+	}
+
+	if *executar {
+		fmt.Fprintf(os.Stdout, "corte aplicado (movimentações): Migrados=%d, JaMigrados=%d\n", resMov.Migrados, resMov.JaMigrados)
+	} else {
+		fmt.Fprintf(os.Stdout, "dry-run (nada escrito, movimentações): migraria %d, já migrados %d, pendências %d\n",
+			resMov.Migrados, resMov.JaMigrados, len(resMov.PendentesRevisao))
+	}
+	for _, aviso := range resMov.AvisosData {
+		fmt.Fprintf(os.Stdout, "aviso (movimentações): %s\n", aviso)
+	}
+	if len(resMov.PendentesRevisao) > 0 {
+		fmt.Fprintf(os.Stderr, "atenção: %d registro(s) de historico legado não migrado(s) — revisão manual necessária (lista recomputada a cada execução):\n", len(resMov.PendentesRevisao))
+		for _, p := range resMov.PendentesRevisao {
+			fmt.Fprintf(os.Stderr, "    id_legado=%s  produto=%q  tipo=%q  origem=%q  destino=%q  qtd=%q  timestamp=%q  motivo: %s\n",
+				p.IDLegado, p.Produto, p.Tipo, p.Origem, p.Destino, p.Qtd, p.Timestamp, p.Motivo)
+		}
 	}
 }
 

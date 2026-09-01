@@ -114,6 +114,41 @@ func testDB(t *testing.T) (alvo, legado *sql.DB) {
 		t.Fatalf("falha ao criar legado.produtos: %v", err)
 	}
 
+	// legado.historico — Story 5.4 (spec-5-4). Fixture com as colunas
+	// documentadas no addendum §F, coleção `historico`: `id` textual (doc id
+	// do Firestore), `produto` (nome desnormalizado), `tipo` (baixa|
+	// transferencia), `origem`/`destino` (string; `destino:'—'` para baixa),
+	// `qtd` como TEXTO (validado com ParseFloat, molde de migrarProdutos),
+	// `unidade`/`obs` (não migram) e `timestamp` (palavra reservada — precisa
+	// de aspas, igual a `"lateral"` em legado.produtos).
+	if _, err := alvo.Exec(`CREATE TABLE IF NOT EXISTS legado.historico (
+		id text primary key,
+		produto text,
+		tipo text,
+		origem text,
+		destino text,
+		qtd text,
+		unidade text,
+		obs text,
+		"timestamp" timestamptz
+	)`); err != nil {
+		t.Fatalf("falha ao criar legado.historico: %v", err)
+	}
+
+	// Garante o usuário sintético "Migração do sistema legado" (seed da
+	// migration 000022) — autor NOT NULL de toda Movimentação migrada. Outras
+	// suítes (services/handlers/middleware) fazem `TRUNCATE usuarios CASCADE`,
+	// então a linha semeada por m.Up() pode não sobreviver entre invocações
+	// separadas de `go test`. Este INSERT é idempotente (ON CONFLICT DO
+	// NOTHING) e NUNCA apaga nada — `usuarios` continua sem `DELETE`/`TRUNCATE`
+	// nesta suíte.
+	if _, err := alvo.Exec(`
+		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
+		VALUES ('Migração do sistema legado', $1, NULL, 'almoxarife', false, false)
+		ON CONFLICT (lower(email)) DO NOTHING`, emailUsuarioMigracaoLegado); err != nil {
+		t.Fatalf("falha ao garantir o usuário sintético de migração: %v", err)
+	}
+
 	legado, err = sql.Open("postgres", comSearchPath(dsn, "legado"))
 	if err != nil {
 		t.Fatalf("falha ao abrir conexão legado: %v", err)
@@ -135,10 +170,18 @@ func limparTabelas(t *testing.T, alvo *sql.DB) {
 		// legado.estoques/migracao_id_map/estoques: produto_estoque.produto_id
 		// referencia produtos(id) SEM CASCADE (migration 000012) — precisa ser
 		// esvaziada antes de um DELETE FROM produtos não esbarrar na FK.
-		// categorias/nomenclatura_templates NUNCA são limpas aqui — seed
-		// compartilhado com outras suítes (spec-3-7, Boundaries).
+		// categorias/nomenclatura_templates/usuarios NUNCA são limpas aqui —
+		// seed compartilhado com outras suítes (spec-3-7 / spec-5-4,
+		// Boundaries). O usuário sintético "Migração do sistema legado" é seed
+		// da migration 000022.
+		//
+		// movimentacoes ANTES de produtos/estoques: FK sem ON DELETE CASCADE
+		// (migration 000021). legado.historico junto das demais tabelas
+		// legadas.
 		`DELETE FROM legado.produtos`,
 		`DELETE FROM legado.estoques`,
+		`DELETE FROM legado.historico`,
+		`DELETE FROM movimentacoes`,
 		`DELETE FROM produto_estoque`,
 		`DELETE FROM migracao_id_map`,
 		`DELETE FROM produtos`,
@@ -647,6 +690,76 @@ func TestMain_Processo(t *testing.T) {
 		}
 		if n := contar(t, alvo, `SELECT count(*) FROM estoques`); n != 0 {
 			t.Errorf("count(estoques) = %d, want 0 — dry-run não escreve", n)
+		}
+	})
+
+	// Story 5.4: main() chama migrarMovimentacoes após migrarProdutos. Uma
+	// linha de historico irresolúvel vira pendência no stderr e NÃO aborta o
+	// corte (exit 0).
+	t.Run("movimentações: pendência no stderr sem abortar", func(t *testing.T) {
+		alvo, _ := testDB(t)
+		dsn := os.Getenv("DATABASE_URL")
+		inserirLegado(t, alvo, "e1", "Almox Central")
+		// historico referencia um produto que não existe em legado.produtos.
+		if _, err := alvo.Exec(`INSERT INTO legado.historico (id, produto, tipo, origem, destino, qtd)
+			VALUES ('h1', 'Produto Fantasma', 'baixa', 'Almox Central', '—', '3')`); err != nil {
+			t.Fatalf("falha ao inserir historico: %v", err)
+		}
+
+		out, code := runChild(t, map[string]string{
+			"DATABASE_URL":        dsn,
+			"LEGADO_DATABASE_URL": comSearchPath(dsn, "legado"),
+			"SUBPROC_ARGS":        "--executar",
+		})
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0; saída=%s", code, out)
+		}
+		if !strings.Contains(out, "corte aplicado (movimentações): Migrados=0") {
+			t.Errorf("saída sem a linha de sucesso de movimentações: %q", out)
+		}
+		if !strings.Contains(out, "produto não encontrado no legado") || !strings.Contains(out, "h1") {
+			t.Errorf("saída não lista a pendência de movimentação: %q", out)
+		}
+		if n := contar(t, alvo, `SELECT count(*) FROM movimentacoes`); n != 0 {
+			t.Errorf("count(movimentacoes) = %d, want 0", n)
+		}
+	})
+
+	// Story 5.4: seed da migration 000022 ausente => main() aborta ANTES de
+	// migrarEstoques/migrarProdutos (que commitam), com mensagem acurada e
+	// nada escrito.
+	t.Run("seed 000022 ausente aborta antes de qualquer escrita", func(t *testing.T) {
+		alvo, _ := testDB(t)
+		dsn := os.Getenv("DATABASE_URL")
+
+		if _, err := alvo.Exec(`DELETE FROM usuarios WHERE lower(email) = lower($1)`, emailUsuarioMigracaoLegado); err != nil {
+			t.Fatalf("falha ao remover o usuário sintético: %v", err)
+		}
+		t.Cleanup(func() {
+			alvo.Exec(`
+				INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
+				VALUES ('Migração do sistema legado', $1, NULL, 'almoxarife', false, false)
+				ON CONFLICT (lower(email)) DO NOTHING`, emailUsuarioMigracaoLegado)
+		})
+
+		inserirLegado(t, alvo, "e1", "Almox Central")
+
+		out, code := runChild(t, map[string]string{
+			"DATABASE_URL":        dsn,
+			"LEGADO_DATABASE_URL": comSearchPath(dsn, "legado"),
+			"SUBPROC_ARGS":        "--executar",
+		})
+		if code == 0 {
+			t.Fatalf("exit code = 0, want != 0; saída=%s", out)
+		}
+		if !strings.Contains(out, "migration 000022") {
+			t.Errorf("saída não cita a migration 000022: %q", out)
+		}
+		if n := contar(t, alvo, `SELECT count(*) FROM estoques`); n != 0 {
+			t.Errorf("count(estoques) = %d, want 0 — abortou antes de migrarEstoques", n)
+		}
+		if n := contar(t, alvo, `SELECT count(*) FROM movimentacoes`); n != 0 {
+			t.Errorf("count(movimentacoes) = %d, want 0", n)
 		}
 	})
 }

@@ -445,3 +445,11 @@ source_spec: `spec-5-3-historico-de-movimentacoes-consultavel.md`
 severity: low
 reason: LEFT JOIN estoques devolve nome NULL; o frontend faz `mov.estoqueOrigemNome ?? '—'`. COALESCE para "(estoque removido)" quando o id existe mas o nome é nulo distinguiria os dois casos.
 status: open
+
+### DW-57: O usuário sintético "Migração do sistema legado" (semeado pela migration 000022, `papel='almoxarife'`, `ativo=false`) pode aparecer em superfícies de gestão de usuários — a listagem da Story 1.8, algu
+origin: spec-deferred 58b0df4030fb
+location: backend/migrations/000022_seed_usuario_migracao_legado.up.sql
+source_spec: `spec-5-4-migracao-do-historico-de-movimentacoes-legado.md`
+severity: low
+reason: A migration cria a linha em `usuarios`; a mitigação atual é `ativo=false` + `senha_hash=NULL` (não loga). Nenhum reviewer demonstrou uma superfície concretamente quebrada, e o `JOIN usuarios` interno de `services.ListarMovimentacoes` (Story 5.3) precisa da linha para os registros migrados aparecerem no Histórico. Confirmar se as telas de gestão de usuários filtram `ativo=false` (ou se a presença é aceitável) e tratar na Story 8.x quando a exportação/anonimização LGPD existir.
+status: open
