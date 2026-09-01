@@ -1173,3 +1173,90 @@ func TestBuscarProdutos_EmpateDeRankENomeDesempataPorID(t *testing.T) {
 			resultado[0].ID, resultado[1].ID, idsEsperados[0], idsEsperados[1])
 	}
 }
+
+// --- Story 4.5: Identificação de Produto via QR Code / código de barras ----
+
+// TestBuscarProdutoPorCodigo_MatchExatoEncontrado prova a linha "Código
+// existente resolvido" da matriz de spec-4-5: um Produto cujo `codigo` é
+// EXATAMENTE igual ao valor lido é devolvido com a projeção ProdutoBusca
+// completa (id/nome/codigo/categoria).
+func TestBuscarProdutoPorCodigo_MatchExatoEncontrado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro PorCodigo 1")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+
+	criarProdutoBusca(t, db, estoque.ID, "Outro Produto Qualquer", "CAB-999", categoriaID)
+	alvo := criarProdutoBusca(t, db, estoque.ID, "Cabo Flexível 4mm", "CAB-004", categoriaID)
+
+	resultado, err := BuscarProdutoPorCodigo(db, "CAB-004")
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if resultado.ID != alvo.ID {
+		t.Errorf("ID = %q, want %q", resultado.ID, alvo.ID)
+	}
+	if resultado.Nome != "Cabo Flexível 4mm" {
+		t.Errorf("Nome = %q, want %q", resultado.Nome, "Cabo Flexível 4mm")
+	}
+	if resultado.Codigo == nil || *resultado.Codigo != "CAB-004" {
+		t.Errorf("Codigo = %v, want CAB-004", resultado.Codigo)
+	}
+	if resultado.Categoria.ID != categoriaID || resultado.Categoria.Codigo != "04.001" {
+		t.Errorf("Categoria = %+v, want id=%q codigo=04.001", resultado.Categoria, categoriaID)
+	}
+}
+
+// TestBuscarProdutoPorCodigo_CodigoInexistente prova a linha "Código não
+// cadastrado" da matriz: nenhum Produto com aquele `codigo` exato ->
+// ErrProdutoNaoEncontrado (sql.ErrNoRows colapsado, mesmo padrão de
+// ObterProdutoDetalhe).
+func TestBuscarProdutoPorCodigo_CodigoInexistente(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro PorCodigo 2")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+	criarProdutoBusca(t, db, estoque.ID, "Produto Com Outro Codigo", "XYZ-001", categoriaID)
+
+	_, err = BuscarProdutoPorCodigo(db, "NAO-EXISTE-999")
+	if !errors.Is(err, ErrProdutoNaoEncontrado) {
+		t.Fatalf("erro = %v, want ErrProdutoNaoEncontrado", err)
+	}
+}
+
+// TestBuscarProdutoPorCodigo_CaseSensitive prova que o match é
+// case-sensitive (`WHERE p.codigo = $1`, coerente com o índice único parcial
+// `idx_produtos_codigo`): `cab-004` NÃO resolve um Produto cadastrado como
+// `CAB-004`.
+func TestBuscarProdutoPorCodigo_CaseSensitive(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro PorCodigo 3")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+	alvo := criarProdutoBusca(t, db, estoque.ID, "Cabo Flexível 4mm", "CAB-004", categoriaID)
+
+	resultado, err := BuscarProdutoPorCodigo(db, "CAB-004")
+	if err != nil {
+		t.Fatalf("match exato deveria funcionar: %v", err)
+	}
+	if resultado.ID != alvo.ID {
+		t.Fatalf("ID = %q, want %q", resultado.ID, alvo.ID)
+	}
+
+	_, err = BuscarProdutoPorCodigo(db, "cab-004")
+	if !errors.Is(err, ErrProdutoNaoEncontrado) {
+		t.Errorf("erro = %v, want ErrProdutoNaoEncontrado ('cab-004' != 'CAB-004', case-sensitive)", err)
+	}
+}

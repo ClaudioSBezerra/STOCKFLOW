@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/lib/auth';
 import { rankPapel } from '@/components/shell/nav-items';
 import { BuscaCatalogo } from '@/components/catalogo/BuscaCatalogo';
 import { CatalogoListagem } from '@/components/catalogo/CatalogoListagem';
+import { ScannerProdutoFab } from '@/components/catalogo/ScannerProdutoFab';
 import { CadastroProdutoSection } from '@/components/produtos/CadastroProdutoSection';
 import { ImportacaoProdutosSection } from '@/components/produtos/ImportacaoProdutosSection';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -38,6 +39,14 @@ const DEBOUNCE_MS_TERMO_FILTRO = 300;
  * era uma simplificação deliberada (empilhamento simples, sem abas), agora
  * que a Story 3.3 entrega o segundo fluxo que faz as abas valerem a pena.
  *
+ * `ScannerProdutoFab` (Story 4.5, spec-4-5, FR-35) é montado ao final do
+ * container: o `fab-scanner` (botão flutuante) só existe onde este
+ * componente é montado — hoje, só o Catálogo — satisfazendo "nunca em telas
+ * administrativas" sem lógica de rota. `aoFalharLeitura` devolve o foco ao
+ * campo de `BuscaCatalogo` (via `buscaInputRef`) sempre que a leitura de QR
+ * Code / código de barras falha (HTTPS ausente, permissão, hardware, código
+ * não reconhecido) — o scanner nunca é a única forma de achar um Produto.
+ *
  * Gate de papel espelhado do `nav-items.ts`/`EstoquesPage`: o servidor
  * continua sendo a autoridade real — `POST /api/produtos`/`POST
  * /api/importacoes` respondem 403 para papéis abaixo de `almoxarife` mesmo em
@@ -49,6 +58,11 @@ export function CatalogoPage() {
 
   const [termoFiltro, setTermoFiltro] = useState('');
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const buscaInputRef = useRef<HTMLInputElement>(null);
+
+  const devolverFocoABusca = useCallback(() => {
+    buscaInputRef.current?.focus();
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -67,7 +81,7 @@ export function CatalogoPage() {
 
   return (
     <div className="flex flex-col gap-6 p-6">
-      <BuscaCatalogo onTermoChange={aoTermoDigitado} />
+      <BuscaCatalogo onTermoChange={aoTermoDigitado} inputRef={buscaInputRef} />
       <CatalogoListagem termo={termoFiltro} />
       {podeCadastrar && (
         <Tabs defaultValue="cadastro">
@@ -83,6 +97,7 @@ export function CatalogoPage() {
           </TabsContent>
         </Tabs>
       )}
+      <ScannerProdutoFab aoFalharLeitura={devolverFocoABusca} />
     </div>
   );
 }

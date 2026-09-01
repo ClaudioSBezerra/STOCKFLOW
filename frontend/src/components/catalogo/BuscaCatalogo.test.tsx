@@ -395,3 +395,30 @@ describe('BuscaCatalogo — onTermoChange (Story 4.2)', () => {
     expect(screen.getByLabelText('Buscar produtos')).toHaveValue('x');
   });
 });
+
+describe('BuscaCatalogo — inputRef externo (Story 4.5)', () => {
+  it('encaminha o nó do <input> para um inputRef externo (usado por ScannerProdutoFab.aoFalharLeitura)', () => {
+    const refExterno = { current: null as HTMLInputElement | null };
+    render(
+      <MemoryRouter>
+        <BuscaCatalogo inputRef={refExterno} />
+      </MemoryRouter>,
+    );
+
+    expect(refExterno.current).toBe(screen.getByLabelText('Buscar produtos'));
+  });
+
+  it('o atalho `/` continua focando o campo mesmo com um inputRef externo passado', async () => {
+    const refExterno = { current: null as HTMLInputElement | null };
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <BuscaCatalogo inputRef={refExterno} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByLabelText('Buscar produtos')).not.toHaveFocus();
+    await user.keyboard('/');
+    expect(screen.getByLabelText('Buscar produtos')).toHaveFocus();
+  });
+});

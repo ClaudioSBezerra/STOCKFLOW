@@ -37,6 +37,11 @@ import (
 //   - GET /api/produtos/busca -> RequireAuth apenas: qualquer conta
 //     autenticada busca até 7 Produtos ranqueados por relevância em
 //     nome/código/categoria (Story 4.1, spec-4-1).
+//   - GET /api/produtos/por-codigo?codigo=<valor> -> RequireAuth apenas:
+//     qualquer conta autenticada resolve o Código de Identificação EXATO
+//     lido de um QR Code / código de barras físico para o Produto
+//     correspondente (Story 4.5, spec-4-5). Segmento literal — registrado
+//     ANTES de GET /api/produtos/{id} em newMux.
 //   - GET /api/produtos/{id} -> RequireAuth apenas: qualquer conta
 //     autenticada abre o detalhe de um Produto com a quantidade
 //     discriminada por Estoque (Story 4.4, spec-4-4). CriarProdutoHandler/
@@ -243,6 +248,49 @@ func BuscarProdutosHandler(db *sql.DB) http.HandlerFunc {
 		}
 
 		escreverJSON(w, http.StatusOK, map[string]any{"produtos": produtos})
+	}
+}
+
+// BuscarProdutoPorCodigoHandler expõe GET
+// /api/produtos/por-codigo?codigo=<valor> (Story 4.5, spec-4-5, FR-35): só
+// RequireAuth, qualquer papel (`usuario`+) — sem RequireRole, mesmo padrão de
+// GET /api/produtos/busca. `codigo` é lido com `strings.TrimSpace`; vazio
+// (ausente ou só espaços) -> `400 VALIDATION_ERROR` "código obrigatório",
+// NENHUMA consulta ao banco. `codigo` (trimado) com mais de 255 runes (mesmo
+// teto aplicado a `nome`/`codigo` por services.CriarProduto) -> `400
+// VALIDATION_ERROR` "código muito longo", também sem consulta ao banco.
+// Sucesso: `200 {"produto":<ProdutoBusca>}` — mesma projeção `id`/`nome`/
+// `codigo`/`categoria` de GET /api/produtos/busca. Nenhum Produto com aquele
+// `codigo` exato -> `404 NOT_FOUND` "produto não encontrado" (mesmo colapso
+// de ObterProdutoHandler). Erro de banco -> 500 INTERNAL_ERROR + slog.
+func BuscarProdutoPorCodigoHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := middleware.UsuarioDaSessao(r.Context()); !ok {
+			slog.Error("BuscarProdutoPorCodigoHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+
+		codigo := strings.TrimSpace(r.URL.Query().Get("codigo"))
+		if codigo == "" {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "código obrigatório")
+			return
+		}
+		if utf8.RuneCountInString(codigo) > 255 {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "código muito longo")
+			return
+		}
+
+		produto, err := services.BuscarProdutoPorCodigo(db, codigo)
+		switch {
+		case err == nil:
+			escreverJSON(w, http.StatusOK, map[string]any{"produto": produto})
+		case errors.Is(err, services.ErrProdutoNaoEncontrado):
+			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "produto não encontrado")
+		default:
+			slog.Error("falha ao buscar produto por código", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao buscar produto")
+		}
 	}
 }
 

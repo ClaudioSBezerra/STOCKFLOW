@@ -483,6 +483,47 @@ func BuscarProdutos(db *sql.DB, termo string) ([]ProdutoBusca, error) {
 	return resultado, nil
 }
 
+// buscarProdutoPorCodigoQuery resolve um Produto pelo Código de Identificação
+// EXATO (Story 4.5, spec-4-5, FR-35): `WHERE p.codigo = $1` — igualdade
+// case-sensitive, coerente com o índice único parcial `idx_produtos_codigo`,
+// NUNCA `LIKE`/`ILIKE` nem `escaparCoringasLike` (o valor é uma chave lida de
+// um QR Code / código de barras físico, não um padrão de busca ranqueada).
+// Mesma projeção e `JOIN categorias` de buscarProdutosQuery.
+const buscarProdutoPorCodigoQuery = `
+	SELECT p.id, p.nome, p.codigo, c.id, c.codigo, c.nome
+	FROM produtos p
+	JOIN categorias c ON c.id = p.categoria_id
+	WHERE p.codigo = $1`
+
+// BuscarProdutoPorCodigo devolve o Produto cujo `codigo` é EXATAMENTE igual a
+// `codigo` (Story 4.5, spec-4-5, FR-35) — a resolução do valor lido de um
+// QR Code / código de barras físico para o detalhe do Produto (Story 4.4).
+// `codigo` é assumido não-vazio e já trimado: essa validação é
+// responsabilidade do chamador (BuscarProdutoPorCodigoHandler); esta função
+// nunca devolve erro de validação. `sql.ErrNoRows` (nenhum Produto com aquele
+// código exato) -> ErrProdutoNaoEncontrado, mesmo colapso de
+// ObterProdutoHandler; qualquer outro erro -> erro de banco cru para o 500
+// genérico do handler.
+func BuscarProdutoPorCodigo(db *sql.DB, codigo string) (ProdutoBusca, error) {
+	var pb ProdutoBusca
+	var codigoLido sql.NullString
+	err := db.QueryRow(buscarProdutoPorCodigoQuery, codigo).Scan(
+		&pb.ID, &pb.Nome, &codigoLido,
+		&pb.Categoria.ID, &pb.Categoria.Codigo, &pb.Categoria.Nome,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ProdutoBusca{}, ErrProdutoNaoEncontrado
+		}
+		return ProdutoBusca{}, fmt.Errorf("falha ao buscar produto por código: %w", err)
+	}
+	if codigoLido.Valid {
+		c := codigoLido.String
+		pb.Codigo = &c
+	}
+	return pb, nil
+}
+
 // ListarCategorias devolve as categorias fixas ordenadas por `codigo`
 // ascendente (Story 3.1, AC4) — a lista da qual o formulário de cadastro
 // seleciona, nunca digitável livremente. Lista vazia não é erro (embora não

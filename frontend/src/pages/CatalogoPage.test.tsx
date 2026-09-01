@@ -1,10 +1,22 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { CatalogoPage } from './CatalogoPage';
 
 // useAuth() fornece o papel — configurável por teste.
 const authState = vi.hoisted(() => ({ papel: 'usuario' as string }));
+
+// ScannerProdutoFab (Story 4.5) é montado por CatalogoPage — mock do wrapper
+// de câmera para os testes desta página não tocarem em `@zxing/browser`.
+const iniciarScannerMock = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/scanner/leitor', () => ({
+  criarLeitorCodigo: () => ({ iniciar: iniciarScannerMock }),
+}));
+
+vi.mock('sonner', () => ({
+  toast: { error: vi.fn(), success: vi.fn(), info: vi.fn() },
+}));
 
 vi.mock('@/lib/auth', () => ({
   useAuth: () => ({
@@ -22,6 +34,13 @@ vi.mock('@/lib/session', () => ({
 
 beforeEach(() => {
   authState.papel = 'usuario';
+  Object.defineProperty(window, 'isSecureContext', { configurable: true, value: true });
+  iniciarScannerMock.mockReset();
+  // Por padrão, abrir a câmera falha por falta de hardware — o cenário que
+  // exercita `aoFalharLeitura` (foco de volta na busca).
+  iniciarScannerMock.mockRejectedValue(
+    Object.assign(new Error('no device'), { name: 'NotFoundError' }),
+  );
   // CadastroProdutoSection busca categorias/estoques no mount (quando
   // montada) — resposta vazia basta para os testes desta página.
   // ImportacaoProdutosSection só monta quando a aba "Importação" é
@@ -57,7 +76,7 @@ afterEach(() => {
 describe('CatalogoPage — gate de papel', () => {
   it('papel usuario vê a listagem do catálogo, sem o formulário de cadastro', async () => {
     authState.papel = 'usuario';
-    render(<CatalogoPage />);
+    render(<CatalogoPage />, { wrapper: MemoryRouter });
 
     // CatalogoListagem busca o catálogo no mount, mesmo para `usuario`.
     await screen.findByText('Nenhum produto no catálogo.');
@@ -80,7 +99,7 @@ describe('CatalogoPage — gate de papel', () => {
     'papel %s vê a listagem E a seção de cadastro',
     async (papel) => {
       authState.papel = papel;
-      render(<CatalogoPage />);
+      render(<CatalogoPage />, { wrapper: MemoryRouter });
 
       expect(screen.getByLabelText('Catálogo de produtos')).toBeInTheDocument();
       expect(await screen.findByText('Cadastrar Produto')).toBeInTheDocument();
@@ -91,7 +110,7 @@ describe('CatalogoPage — gate de papel', () => {
 describe('CatalogoPage — abas Cadastro/Importação (Story 3.3)', () => {
   it('almoxarife+ vê as abas "Cadastro"/"Importação", com Cadastro ativa por padrão', async () => {
     authState.papel = 'almoxarife';
-    render(<CatalogoPage />);
+    render(<CatalogoPage />, { wrapper: MemoryRouter });
 
     expect(await screen.findByText('Cadastrar Produto')).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Cadastro' })).toHaveAttribute('aria-selected', 'true');
@@ -104,7 +123,7 @@ describe('CatalogoPage — abas Cadastro/Importação (Story 3.3)', () => {
   it('selecionar a aba "Importação" monta ImportacaoProdutosSection', async () => {
     authState.papel = 'almoxarife';
     const user = userEvent.setup();
-    render(<CatalogoPage />);
+    render(<CatalogoPage />, { wrapper: MemoryRouter });
 
     await screen.findByText('Cadastrar Produto');
     await user.click(screen.getByRole('tab', { name: 'Importação' }));
@@ -117,7 +136,7 @@ describe('CatalogoPage — ponte busca->filtro (Story 4.2)', () => {
   it('termo digitado em BuscaCatalogo reflete em ?q= na chamada de /api/produtos/catalogo após o debounce', async () => {
     authState.papel = 'usuario';
     const user = userEvent.setup();
-    render(<CatalogoPage />);
+    render(<CatalogoPage />, { wrapper: MemoryRouter });
 
     await screen.findByText('Nenhum produto no catálogo.');
     (fetch as ReturnType<typeof vi.fn>).mockClear();
@@ -146,5 +165,27 @@ describe('CatalogoPage — ponte busca->filtro (Story 4.2)', () => {
       expect.stringContaining('/api/produtos/busca?q=parafuso'),
       expect.anything(),
     );
+  });
+});
+
+describe('CatalogoPage — scanner de código (Story 4.5)', () => {
+  it('monta o FAB do scanner no Catálogo', async () => {
+    render(<CatalogoPage />, { wrapper: MemoryRouter });
+
+    await screen.findByText('Nenhum produto no catálogo.');
+    expect(screen.getByRole('button', { name: 'Escanear código do produto' })).toBeInTheDocument();
+  });
+
+  it('falha de leitura devolve o foco ao campo de busca por texto (aoFalharLeitura)', async () => {
+    const user = userEvent.setup();
+    render(<CatalogoPage />, { wrapper: MemoryRouter });
+
+    await screen.findByText('Nenhum produto no catálogo.');
+    const campoBusca = screen.getByLabelText('Buscar produtos');
+    expect(campoBusca).not.toHaveFocus();
+
+    await user.click(screen.getByRole('button', { name: 'Escanear código do produto' }));
+
+    await waitFor(() => expect(campoBusca).toHaveFocus());
   });
 });

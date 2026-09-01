@@ -1783,6 +1783,85 @@ func TestNewMux_ProdutosDetalheRotaSoRequireAuth(t *testing.T) {
 	})
 }
 
+// TestNewMux_ProdutosPorCodigoRotaSoRequireAuth prova, despachando pela mesma
+// instância de newMux usada por main() (Story 4.5, spec-4-5), que GET
+// /api/produtos/por-codigo NÃO leva RequireRole: sem token -> 401
+// (RequireAuth); token `usuario` -> 200, NUNCA 403 — mesmo molde de
+// TestNewMux_ProdutosDetalheRotaSoRequireAuth. Inclui também a asserção de
+// PRECEDÊNCIA sobre o wildcard `{id}`: `GET /api/produtos/por-codigo?codigo=`
+// responde `400 VALIDATION_ERROR` "código obrigatório" (do handler literal),
+// nunca `404` de ObterProdutoHandler — no mux do Go 1.22 o segmento literal
+// vence o wildcard na mesma posição.
+func TestNewMux_ProdutosPorCodigoRotaSoRequireAuth(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate usuarios: %v", err)
+	}
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, produto_estoque, produtos, estoques`); err != nil {
+		t.Fatalf("truncate produtos: %v", err)
+	}
+
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	fotosDir := t.TempDir()
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, fotosDir)
+
+	const senha = "senha-123456"
+	segredos := map[string]string{}
+
+	despachar := func(metodo, caminho, token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(metodo, caminho, nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	seedContaMux(t, db, "porcodigo-mux-usuario@empresa.com", "usuario", senha, segredos)
+
+	var categoriaID string
+	if err := db.QueryRow(`SELECT id FROM categorias LIMIT 1`).Scan(&categoriaID); err != nil {
+		t.Fatalf("seed categoria: %v", err)
+	}
+	estoque, err := services.CriarEstoque(db, "Canteiro PorCodigo Mux")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	if _, err := services.CriarProduto(db, services.CriarProdutoInput{
+		Nome: "Produto PorCodigo Mux", Codigo: "PCM-001", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+	}); err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+
+	t.Run("sem token -> 401", func(t *testing.T) {
+		w := despachar(http.MethodGet, "/api/produtos/por-codigo?codigo=PCM-001", "")
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+		}
+	})
+
+	t.Run("token usuario -> 200 (rota sem RequireRole)", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "porcodigo-mux-usuario@empresa.com", senha, segredos)
+		w := despachar(http.MethodGet, "/api/produtos/por-codigo?codigo=PCM-001", token)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d (body=%s) — rota não deveria exigir RequireRole", w.Code, http.StatusOK, w.Body.String())
+		}
+	})
+
+	t.Run("codigo vazio -> 400 do handler literal, nunca 404 do wildcard {id}", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "porcodigo-mux-usuario@empresa.com", senha, segredos)
+		w := despachar(http.MethodGet, "/api/produtos/por-codigo?codigo=", token)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d (body=%s) — rota literal deveria vencer o wildcard {id}", w.Code, http.StatusBadRequest, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "código obrigatório") {
+			t.Errorf("body = %s, want mensagem 'código obrigatório' (handler por-codigo, não ObterProdutoHandler)", w.Body.String())
+		}
+	})
+}
+
 // TestNewMux_RealtimeTicketRotaSoRequireAuth prova, despachando pela mesma
 // instância de newMux usada por main() (Story 4.4, spec-4-4), que POST
 // /api/realtime/ticket NÃO leva RequireRole: sem token -> 401

@@ -70,7 +70,12 @@
 // conexão a SSE assinando o `*realtime.Registry` do processo, único fan-out
 // in-process compartilhado com POST /api/produtos e POST
 // /api/produtos/{id}/renomear, que passam a publicar no canal `produtos` a
-// cada escrita bem-sucedida).
+// cada escrita bem-sucedida) e a identificação de Produto via QR Code /
+// código de barras — Story 4.5 (GET /api/produtos/por-codigo?codigo=<valor>,
+// qualquer conta autenticada: resolve o Código de Identificação EXATO lido de
+// um QR Code / código de barras físico para o Produto correspondente —
+// segmento literal registrado antes de GET /api/produtos/{id}; `codigo`
+// vazio -> 400, `codigo` sem Produto -> 404).
 package main
 
 import (
@@ -436,6 +441,19 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// VALIDATION_ERROR.
 	mux.HandleFunc("GET /api/produtos/catalogo", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarCatalogoHandler(db)))
+
+	// Identificação de Produto via QR Code / código de barras — Story 4.5
+	// (FR-35). GET /api/produtos/por-codigo?codigo=<valor> leva só
+	// RequireAuth, mesmo padrão de GET /api/produtos/busca: qualquer conta
+	// autenticada (`usuario`+), sem RequireRole. Resolve o Código de
+	// Identificação EXATO lido de um QR Code / código de barras físico para o
+	// Produto correspondente. Segmento literal — registrado ANTES de
+	// `GET /api/produtos/{id}` abaixo: no mux do Go 1.22 o literal vence o
+	// wildcard `{id}` na mesma posição, sem panic de conflito (mesmo caso já
+	// provado por `busca`/`catalogo`). `codigo` vazio -> 400 VALIDATION_ERROR;
+	// `codigo` sem Produto correspondente -> 404 NOT_FOUND.
+	mux.HandleFunc("GET /api/produtos/por-codigo", middleware.RequireAuth(db, jwtSecret)(
+		handlers.BuscarProdutoPorCodigoHandler(db)))
 
 	// Detalhe do Produto por Estoque com atualização em tempo real —
 	// Story 4.4 (FR-7). GET /api/produtos/{id} leva só RequireAuth, mesmo

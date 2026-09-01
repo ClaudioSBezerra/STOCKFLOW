@@ -1618,3 +1618,173 @@ func TestAtualizarNomeProdutoHandler_PublicaEventoNoSucesso(t *testing.T) {
 		t.Fatal("nenhum evento publicado em 1s após AtualizarNomeProdutoHandler bem-sucedido")
 	}
 }
+
+// --- Story 4.5: Identificação de Produto via QR Code / código de barras ----
+
+// getProdutoPorCodigo despacha GET /api/produtos/por-codigo?codigo=<valor>
+// pela MESMA composição de newMux (RequireAuth apenas, SEM RequireRole —
+// Story 4.5).
+func getProdutoPorCodigo(db *sql.DB, authHeader, codigo string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/produtos/por-codigo",
+		middleware.RequireAuth(db, testJWTSecret)(
+			BuscarProdutoPorCodigoHandler(db)))
+	r := httptest.NewRequest(http.MethodGet, "/api/produtos/por-codigo?codigo="+url.QueryEscape(codigo), nil)
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+// TestBuscarProdutoPorCodigoHandler_200ComProduto prova a linha "Código
+// existente resolvido" da matriz de spec-4-5: `codigo` exato de um Produto
+// -> 200 com o envelope `{"produto":{id,nome,codigo,categoria}}` (mesma
+// projeção de GET /api/produtos/busca).
+func TestBuscarProdutoPorCodigoHandler_200ComProduto(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	criarContaComPapel(t, db, "PorCodigo 200", "porcodigo-200@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "porcodigo-200@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Canteiro PorCodigo Handler")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	produto, err := services.CriarProduto(db, services.CriarProdutoInput{
+		Nome:              "Cabo Flexível 4mm",
+		Codigo:            "CAB-004",
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		QuantidadeInicial: 1,
+	})
+	if err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+
+	w := getProdutoPorCodigo(db, "Bearer "+token, "CAB-004")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+	var resp struct {
+		Produto struct {
+			ID        string  `json:"id"`
+			Nome      string  `json:"nome"`
+			Codigo    *string `json:"codigo"`
+			Categoria struct {
+				ID     string `json:"id"`
+				Codigo string `json:"codigo"`
+				Nome   string `json:"nome"`
+			} `json:"categoria"`
+		} `json:"produto"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if resp.Produto.ID != produto.ID || resp.Produto.Nome != "Cabo Flexível 4mm" {
+		t.Fatalf("produto = %+v", resp.Produto)
+	}
+	if resp.Produto.Codigo == nil || *resp.Produto.Codigo != "CAB-004" {
+		t.Errorf("Codigo = %v, want CAB-004", resp.Produto.Codigo)
+	}
+	if resp.Produto.Categoria.ID != categoriaID {
+		t.Errorf("Categoria.ID = %q, want %q", resp.Produto.Categoria.ID, categoriaID)
+	}
+}
+
+// TestBuscarProdutoPorCodigoHandler_400CodigoVazio prova a linha "`codigo`
+// vazio / só espaços / ausente" da matriz: 400 VALIDATION_ERROR "código
+// obrigatório", nenhuma consulta ao banco.
+func TestBuscarProdutoPorCodigoHandler_400CodigoVazio(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "PorCodigo Vazio", "porcodigo-vazio@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "porcodigo-vazio@empresa.com", "senha-123456")
+
+	for _, codigo := range []string{"", "   "} {
+		w := getProdutoPorCodigo(db, "Bearer "+token, codigo)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("codigo=%q: status = %d, want %d (body=%s)", codigo, w.Code, http.StatusBadRequest, w.Body.String())
+		}
+		env := decodeErro(t, w.Body.Bytes())
+		if env.Error.Code != "VALIDATION_ERROR" || env.Error.Message != "código obrigatório" {
+			t.Errorf("codigo=%q: erro = %+v, want VALIDATION_ERROR / 'código obrigatório'", codigo, env.Error)
+		}
+	}
+}
+
+// TestBuscarProdutoPorCodigoHandler_400CodigoMuitoLongo prova a linha
+// "`codigo` > 255 runes" da matriz: 400 VALIDATION_ERROR "código muito
+// longo", sem consulta ao banco.
+func TestBuscarProdutoPorCodigoHandler_400CodigoMuitoLongo(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "PorCodigo Longo", "porcodigo-longo@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "porcodigo-longo@empresa.com", "senha-123456")
+
+	w := getProdutoPorCodigo(db, "Bearer "+token, strings.Repeat("a", 256))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "VALIDATION_ERROR" || env.Error.Message != "código muito longo" {
+		t.Errorf("erro = %+v, want VALIDATION_ERROR / 'código muito longo'", env.Error)
+	}
+}
+
+// TestBuscarProdutoPorCodigoHandler_404CodigoNaoReconhecido prova a linha
+// "Código não cadastrado" da matriz: leitura resolvida mas sem Produto ->
+// 404 NOT_FOUND "produto não encontrado".
+func TestBuscarProdutoPorCodigoHandler_404CodigoNaoReconhecido(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "PorCodigo 404", "porcodigo-404@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "porcodigo-404@empresa.com", "senha-123456")
+
+	w := getProdutoPorCodigo(db, "Bearer "+token, "NAO-EXISTE-999")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusNotFound, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "NOT_FOUND" || env.Error.Message != "produto não encontrado" {
+		t.Errorf("erro = %+v, want NOT_FOUND / 'produto não encontrado'", env.Error)
+	}
+}
+
+// TestBuscarProdutoPorCodigoHandler_401SemToken prova que sem Authorization
+// -> 401 (RequireAuth), embora a rota não leve RequireRole.
+func TestBuscarProdutoPorCodigoHandler_401SemToken(t *testing.T) {
+	db := testDB(t)
+	w := getProdutoPorCodigo(db, "", "CAB-004")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+}
+
+// TestBuscarProdutoPorCodigoHandler_200ParaUsuario prova a linha "Papel
+// `usuario` chama direto" da matriz: token `usuario` -> 200, NUNCA 403 — a
+// rota não leva RequireRole (mesmo padrão de GET /api/produtos/busca).
+func TestBuscarProdutoPorCodigoHandler_200ParaUsuario(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	criarContaComPapel(t, db, "PorCodigo Papel Usuario", "porcodigo-papel-usuario@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "porcodigo-papel-usuario@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Canteiro PorCodigo Papel Usuario")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	if _, err := services.CriarProduto(db, services.CriarProdutoInput{
+		Nome: "Produto Papel Usuario", Codigo: "PU-001", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+	}); err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+
+	w := getProdutoPorCodigo(db, "Bearer "+token, "PU-001")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s) — rota não deveria exigir RequireRole", w.Code, http.StatusOK, w.Body.String())
+	}
+}

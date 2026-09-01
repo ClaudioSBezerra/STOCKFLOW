@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ChangeEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type RefObject } from 'react';
 import { Link } from 'react-router-dom';
 import { Search } from 'lucide-react';
 import { Input } from '@/components/ui/input';
@@ -43,6 +43,12 @@ import { getAccessToken } from '@/lib/session';
  * SUAS PRÓPRIAS sugestões) muda — as duas requisições (sugestão aqui,
  * listagem filtrada em `CatalogoListagem`) coexistem, cada uma no seu
  * próprio debounce independente.
+ *
+ * `inputRef` (Story 4.5, spec-4-5, opcional) é um ref EXTERNO que
+ * `CatalogoPage` usa para devolver o foco a este campo quando a leitura de
+ * QR Code / código de barras falha (`ScannerProdutoFab.aoFalharLeitura`). É
+ * mesclado ao `inputRef` interno (usado pelo atalho `/`) via callback `ref`
+ * no `<Input>` — nenhum outro comportamento deste componente muda.
  */
 
 interface CategoriaBusca {
@@ -67,6 +73,20 @@ const DEBOUNCE_MS = 300;
 
 const MENSAGEM_ERRO_BUSCA = 'Não foi possível buscar agora. Tente novamente em instantes.';
 
+// aplicarInputRef distribui o nó do `<input>` para os refs dados (o interno,
+// usado pelo atalho `/`, e o EXTERNO opcional da Story 4.5). Função de módulo
+// — a escrita em `.current` acontece sobre um parâmetro, o padrão idiomático
+// de "merge de refs" que um callback `ref` inline não expressa sem mutar uma
+// prop durante o render.
+function aplicarInputRef(
+  node: HTMLInputElement | null,
+  ...refs: (RefObject<HTMLInputElement | null> | undefined)[]
+): void {
+  for (const ref of refs) {
+    if (ref) ref.current = node;
+  }
+}
+
 function elementoEhEditavel(elemento: Element | null): boolean {
   if (!elemento) return false;
   const tag = elemento.tagName;
@@ -76,9 +96,10 @@ function elementoEhEditavel(elemento: Element | null): boolean {
 
 interface BuscaCatalogoProps {
   onTermoChange?: (valor: string) => void;
+  inputRef?: RefObject<HTMLInputElement | null>;
 }
 
-export function BuscaCatalogo({ onTermoChange }: BuscaCatalogoProps = {}) {
+export function BuscaCatalogo({ onTermoChange, inputRef: inputRefExterno }: BuscaCatalogoProps = {}) {
   const [termo, setTermo] = useState('');
   const [resultados, setResultados] = useState<ProdutoBusca[] | null>(null);
   const [termoBuscado, setTermoBuscado] = useState<string | null>(null);
@@ -95,6 +116,13 @@ export function BuscaCatalogo({ onTermoChange }: BuscaCatalogoProps = {}) {
   // árvore (ex. troca de rota), passaria pelo check de termoAtualRef e
   // chamaria setState num componente desmontado sem esta guarda extra.
   const montadoRef = useRef(true);
+
+  // Callback `ref` do `<Input>`: mescla o `inputRef` interno (atalho `/`) ao
+  // `inputRef` EXTERNO opcional (Story 4.5).
+  const aplicarRefDoInput = useCallback(
+    (node: HTMLInputElement | null) => aplicarInputRef(node, inputRef, inputRefExterno),
+    [inputRefExterno],
+  );
 
   // Atalho `/`: foca o campo de busca (desktop). Nunca ativo dentro de outro
   // campo editável nem com modificador pressionado.
@@ -195,7 +223,7 @@ export function BuscaCatalogo({ onTermoChange }: BuscaCatalogoProps = {}) {
           className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-muted-foreground"
         />
         <Input
-          ref={inputRef}
+          ref={aplicarRefDoInput}
           type="search"
           value={termo}
           onChange={aoDigitar}
