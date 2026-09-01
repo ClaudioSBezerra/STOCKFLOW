@@ -92,7 +92,11 @@
 // `tipo='transferencia'` correspondente numa única transação, travando as
 // duas linhas de `produto_estoque` — origem e destino — na ordem canônica
 // ascendente de `estoque_id` via `INSERT ... ON CONFLICT DO UPDATE` (AD-10);
-// publica no canal SSE `movimentacoes` a cada sucesso).
+// publica no canal SSE `movimentacoes` a cada sucesso) e o Histórico de
+// Movimentações consultável — Story 5.3 (GET /api/movimentacoes, mínimo
+// `almoxarife`: lista só-leitura das Movimentações com nome de Produto,
+// Estoques e autor resolvidos por JOIN, mais recente primeiro, teto de 500 —
+// sem rota de escrita, a trilha é append-only).
 package main
 
 import (
@@ -524,6 +528,19 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	mux.HandleFunc("POST /api/produtos/{id}/estoques/{estoqueId}/transferencia", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.RegistrarTransferenciaHandler(db, registro))))
+
+	// Histórico de Movimentações consultável — Story 5.3 (Epic 5,
+	// Movimentação de Estoque). GET /api/movimentacoes fica atrás do MESMO
+	// gate de papel de Baixa/Transferência, RequireRole(almoxarife):
+	// consultar a trilha é restrito a `almoxarife`+ (403 para `usuario`,
+	// mesmo em chamada direta à API), decisão do middleware. Rota só-leitura,
+	// sem query params — a regra de consulta (JOIN de Produto/Estoques/autor,
+	// ordenação mais-recente-primeiro, teto de 500) vive em
+	// services.ListarMovimentacoes. Não há rota de escrita: a trilha é
+	// append-only (as Movimentações nascem só de Baixa/Transferência).
+	mux.HandleFunc("GET /api/movimentacoes", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAlmoxarife)(
+			handlers.ListarMovimentacoesHandler(db))))
 
 	// Infraestrutura de tempo real (AD-2/AD-3) — Story 4.4. POST
 	// /api/realtime/ticket leva só RequireAuth: qualquer conta autenticada

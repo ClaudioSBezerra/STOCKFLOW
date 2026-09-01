@@ -610,3 +610,191 @@ func TestRegistrarTransferenciaHandler_401SemToken(t *testing.T) {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
 	}
 }
+
+// --- ListarMovimentacoesHandler (Story 5.3, spec-5-3) --------------------
+//
+// GET /api/movimentacoes -> RequireAuth -> RequireRole(almoxarife) ->
+// handler. Mesmo molde de despacho de getLogsAcesso / postBaixa.
+
+func getMovimentacoes(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/movimentacoes",
+		middleware.RequireAuth(db, testJWTSecret)(
+			middleware.RequireRole(services.PapelAlmoxarife)(
+				ListarMovimentacoesHandler(db))))
+	r := httptest.NewRequest(http.MethodGet, "/api/movimentacoes", nil)
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+// TestListarMovimentacoesHandler_200ComCampos prova a linha "Lista com
+// Movimentações" da I/O Matrix na fronteira HTTP: um `almoxarife` recebe
+// 200 {"movimentacoes":[...]} mais recente primeiro, com o conjunto EXATO
+// de chaves por linha que o frontend (MovimentacoesSection) consome, e a
+// Baixa com estoqueDestinoId/Nome == null.
+func TestListarMovimentacoesHandler_200ComCampos(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	usuarioID := criarContaComPapel(t, db, "Almox Hist 200", "hist-200-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "hist-200-almox@empresa.com", "senha-123456")
+
+	produtoID, estoqueOrigemID := seedProdutoComSaldoHandler(t, db, "Canteiro Hist 200 Origem", 20)
+	estoqueDestino, err := services.CriarEstoque(db, "Canteiro Hist 200 Destino")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque destino: %v", err)
+	}
+
+	if _, err := services.RegistrarBaixa(db, produtoID, estoqueOrigemID, usuarioID, 3); err != nil {
+		t.Fatalf("RegistrarBaixa: %v", err)
+	}
+	if _, err := services.RegistrarTransferencia(db, produtoID, estoqueOrigemID, estoqueDestino.ID, usuarioID, 4); err != nil {
+		t.Fatalf("RegistrarTransferencia: %v", err)
+	}
+
+	w := getMovimentacoes(db, "Bearer "+token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Movimentacoes []services.MovimentacaoHistorico `json:"movimentacoes"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if len(resp.Movimentacoes) != 2 {
+		t.Fatalf("len(movimentacoes) = %d, want 2", len(resp.Movimentacoes))
+	}
+	if resp.Movimentacoes[0].Tipo != "transferencia" || resp.Movimentacoes[1].Tipo != "baixa" {
+		t.Fatalf("ordem = [%q,%q], want [transferencia,baixa] (mais recente primeiro)",
+			resp.Movimentacoes[0].Tipo, resp.Movimentacoes[1].Tipo)
+	}
+	baixa := resp.Movimentacoes[1]
+	if baixa.EstoqueDestinoID != nil || baixa.EstoqueDestinoNome != nil {
+		t.Errorf("baixa destino = (%v,%v), want (nil,nil)", baixa.EstoqueDestinoID, baixa.EstoqueDestinoNome)
+	}
+	if baixa.ProdutoNome != "Produto Canteiro Hist 200 Origem" {
+		t.Errorf("baixa.ProdutoNome = %q", baixa.ProdutoNome)
+	}
+	if baixa.UsuarioNome != "Almox Hist 200" {
+		t.Errorf("baixa.UsuarioNome = %q, want %q", baixa.UsuarioNome, "Almox Hist 200")
+	}
+
+	// Contrato de formato de fio: decodifica cru e trava o conjunto EXATO de
+	// chaves de uma linha — MovimentacoesSection depende delas.
+	var cru struct {
+		Movimentacoes []map[string]any `json:"movimentacoes"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &cru); err != nil {
+		t.Fatalf("decode cru: %v", err)
+	}
+	querChaves := map[string]bool{
+		"id": true, "produtoId": true, "produtoNome": true, "tipo": true,
+		"estoqueOrigemId": true, "estoqueOrigemNome": true,
+		"estoqueDestinoId": true, "estoqueDestinoNome": true,
+		"quantidade": true, "usuarioId": true, "usuarioNome": true, "criadoEm": true,
+	}
+	for k := range cru.Movimentacoes[0] {
+		if !querChaves[k] {
+			t.Errorf("chave inesperada no JSON de movimentação: %q", k)
+		}
+	}
+	for k := range querChaves {
+		if _, ok := cru.Movimentacoes[0][k]; !ok {
+			t.Errorf("chave ausente no JSON de movimentação: %q", k)
+		}
+	}
+	// A Baixa serializa estoqueDestinoId/Nome como JSON null (chave presente).
+	cruBaixa := cru.Movimentacoes[1]
+	if v, ok := cruBaixa["estoqueDestinoId"]; !ok || v != nil {
+		t.Errorf("baixa estoqueDestinoId cru = %v (ok=%v), want null", v, ok)
+	}
+}
+
+// TestListarMovimentacoesHandler_ListaVazia prova a linha "Nenhuma
+// Movimentação" da I/O Matrix: 200 {"movimentacoes":[]} (array, nunca null).
+func TestListarMovimentacoesHandler_ListaVazia(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Almox Hist Vazia", "hist-vazia-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "hist-vazia-almox@empresa.com", "senha-123456")
+
+	w := getMovimentacoes(db, "Bearer "+token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	if body := strings.TrimSpace(w.Body.String()); body != `{"movimentacoes":[]}` {
+		t.Errorf("body = %s, want {\"movimentacoes\":[]}", body)
+	}
+}
+
+// TestListarMovimentacoesHandler_403PapelUsuario prova a linha "Papel
+// insuficiente" da I/O Matrix: sessão `usuario` -> 403 FORBIDDEN, decidido
+// por RequireRole; o corpo nunca contém "movimentacoes".
+func TestListarMovimentacoesHandler_403PapelUsuario(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Usuario Hist 403", "hist-403-usuario@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "hist-403-usuario@empresa.com", "senha-123456")
+
+	w := getMovimentacoes(db, "Bearer "+token)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "FORBIDDEN" {
+		t.Errorf("code = %q, want FORBIDDEN", env.Error.Code)
+	}
+	var comLista map[string]json.RawMessage
+	_ = json.Unmarshal(w.Body.Bytes(), &comLista)
+	if _, tem := comLista["movimentacoes"]; tem {
+		t.Errorf("corpo do 403 contém \"movimentacoes\" — o handler nunca deveria ter executado")
+	}
+}
+
+// TestListarMovimentacoesHandler_401SemToken prova a linha "Sem token" da
+// I/O Matrix: requisição sem Authorization -> 401, produzido só por
+// RequireAuth.
+func TestListarMovimentacoesHandler_401SemToken(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+
+	w := getMovimentacoes(db, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+}
+
+// TestListarMovimentacoesHandler_500FalhaDeBanco prova a linha "Falha de
+// banco" da I/O Matrix: com a tabela `movimentacoes` indisponível, um
+// `almoxarife` autenticado recebe 500 INTERNAL_ERROR no envelope AD-14 (a
+// autenticação usa `usuarios`, que continua de pé). A tabela é renomeada
+// para fora e restaurada por t.Cleanup — mesmo molde de
+// TestLoginHandler_FalhaDoInsertDeLogNaoQuebraLogin (execução serial, sem
+// t.Parallel).
+func TestListarMovimentacoesHandler_500FalhaDeBanco(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Almox Hist 500", "hist-500-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "hist-500-almox@empresa.com", "senha-123456")
+
+	if _, err := db.Exec(`ALTER TABLE movimentacoes RENAME TO movimentacoes_indisponivel`); err != nil {
+		t.Fatalf("renomear movimentacoes: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := db.Exec(`ALTER TABLE movimentacoes_indisponivel RENAME TO movimentacoes`); err != nil {
+			t.Fatalf("restaurar movimentacoes: %v", err)
+		}
+	})
+
+	w := getMovimentacoes(db, "Bearer "+token)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "INTERNAL_ERROR" {
+		t.Errorf("code = %q, want INTERNAL_ERROR", env.Error.Code)
+	}
+}

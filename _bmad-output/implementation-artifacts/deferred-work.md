@@ -421,3 +421,27 @@ source_spec: `spec-5-2-registrar-transferencia-entre-estoques.md`
 severity: low
 reason: frontend/src/pages/ProdutoDetalhePage.tsx: confirmarBaixa (Story 5.1) e confirmarTransferencia (Story 5.2) checam `enviando... ` como primeira linha da função async, mas só chamam `setEnviando...(true)` depois — mesma janela de corrida nos dois fluxos. Padrão herdado verbatim de Story 5.1, não introduzido por esta story.
 status: open
+
+### DW-54: ListarMovimentacoes usa JOIN interno em produtos e usuarios — se um Produto ou Usuario for algum dia removido em hard-delete (ex. exclusão LGPD do Epic 8), a Movimentação correspondente some de uma tr
+origin: spec-deferred 3ca0b9e0ff77
+location: backend/services/movimentacoes.go:438
+source_spec: `spec-5-3-historico-de-movimentacoes-consultavel.md`
+severity: low
+reason: backend/services/movimentacoes.go: `JOIN produtos p` / `JOIN usuarios u`. Seguro hoje — a migration 000021 documenta que produtos/estoques/usuarios nunca são excluídos, e a anonimização LGPD preserva a linha. Vira risco só quando o Epic 8 introduzir exclusão real. LEFT JOIN + COALESCE para um rótulo placeholder resolveria.
+status: open
+
+### DW-55: GET /api/movimentacoes não tem paginação nem filtro (produto, tipo, autor, período) e o teto é 500 — depois que a Story 5.4 importar o histórico legado em massa, a maior parte da trilha ficará inacess
+origin: spec-deferred fc7d3dca1d1c
+location: backend/services/movimentacoes.go:437 / backend/handlers/movimentacoes.go:30
+source_spec: `spec-5-3-historico-de-movimentacoes-consultavel.md`
+severity: medium
+reason: backend/services/movimentacoes.go: `LIMIT 500`, sem OFFSET nem WHERE; handler sem query params por decisão da spec. Espelha o teto de logs_acesso (que shipou assim), mas logs_acesso tem filtro de período e Movimentações não.
+status: open
+
+### DW-56: Um Estoque excluído (Story 2.2 permite excluir Estoque sem quantidade residual) que aparece como origem/destino de uma Movimentação antiga é renderizado como "—" no Histórico, indistinguível de um lad
+origin: spec-deferred a4bc271208e0
+location: frontend/src/components/estoques/MovimentacoesSection.tsx:983
+source_spec: `spec-5-3-historico-de-movimentacoes-consultavel.md`
+severity: low
+reason: LEFT JOIN estoques devolve nome NULL; o frontend faz `mov.estoqueOrigemNome ?? '—'`. COALESCE para "(estoque removido)" quando o id existe mas o nome é nulo distinguiria os dois casos.
+status: open

@@ -27,6 +27,98 @@ type Movimentacao struct {
 	CriadoEm         time.Time `json:"criadoEm"`
 }
 
+// maxMovimentacoesPorConsulta limita quantas linhas GET /api/movimentacoes
+// devolve numa consulta — a rota é só-leitura e só-`almoxarife`+, mas o
+// resultado não pode crescer sem teto conforme a trilha de Movimentações
+// acumula. 500 é decisão desta story (spec-5-3), espelhando
+// maxLogsAcessoPorConsulta; não há configuração runtime.
+const maxMovimentacoesPorConsulta = 500
+
+// MovimentacaoHistorico é a projeção de uma linha de `movimentacoes`
+// devolvida por GET /api/movimentacoes (Story 5.3, spec-5-3) — a trilha de
+// auditoria consultável, com os nomes de Produto, Estoques (origem/destino)
+// e autor já resolvidos por JOIN (o Almoxarife lê a linha inteira sem outra
+// chamada). Molde de LogAcesso (logs_acesso.go).
+//
+// `EstoqueOrigemID`/`EstoqueOrigemNome` são anuláveis pelo schema (a coluna
+// é NULLABLE), embora hoje sempre preenchidos. `EstoqueDestinoID`/
+// `EstoqueDestinoNome` são `nil` para `tipo="baixa"` (a Baixa não tem
+// destino) e preenchidos para `tipo="transferencia"`.
+type MovimentacaoHistorico struct {
+	ID                 string    `json:"id"`
+	ProdutoID          string    `json:"produtoId"`
+	ProdutoNome        string    `json:"produtoNome"`
+	Tipo               string    `json:"tipo"`
+	EstoqueOrigemID    *string   `json:"estoqueOrigemId"`
+	EstoqueOrigemNome  *string   `json:"estoqueOrigemNome"`
+	EstoqueDestinoID   *string   `json:"estoqueDestinoId"`
+	EstoqueDestinoNome *string   `json:"estoqueDestinoNome"`
+	Quantidade         float64   `json:"quantidade"`
+	UsuarioID          string    `json:"usuarioId"`
+	UsuarioNome        string    `json:"usuarioNome"`
+	CriadoEm           time.Time `json:"criadoEm"`
+}
+
+// ListarMovimentacoes devolve a trilha de Movimentações (Baixas da Story
+// 5.1, Transferências da Story 5.2) do mais recente ao mais antigo,
+// limitada a maxMovimentacoesPorConsulta. Lista vazia não é erro. Molde de
+// ListarLogsAcesso (logs_acesso.go): `JOIN` simples para as colunas NOT
+// NULL (`produto_id`, `usuario_id`), `LEFT JOIN` + `sql.NullString` para as
+// anuláveis (`estoque_origem_id`, `estoque_destino_id`),
+// `ORDER BY criado_em DESC, id DESC` (mesmo desempate determinístico —
+// duas Movimentações no mesmo instante compartilham `criado_em` e sem o
+// `id` a fronteira do LIMIT ordenaria de forma não-determinística), sem
+// parâmetro runtime nem filtro. SQL explícito, sem ORM.
+func ListarMovimentacoes(db *sql.DB) ([]MovimentacaoHistorico, error) {
+	q := fmt.Sprintf(`
+		SELECT m.id, m.produto_id, p.nome, m.tipo,
+		       m.estoque_origem_id, eo.nome, m.estoque_destino_id, ed.nome,
+		       m.quantidade, m.usuario_id, u.nome, m.criado_em
+		FROM movimentacoes m
+		JOIN produtos p ON p.id = m.produto_id
+		JOIN usuarios u ON u.id = m.usuario_id
+		LEFT JOIN estoques eo ON eo.id = m.estoque_origem_id
+		LEFT JOIN estoques ed ON ed.id = m.estoque_destino_id
+		ORDER BY m.criado_em DESC, m.id DESC
+		LIMIT %d`, maxMovimentacoesPorConsulta)
+
+	rows, err := db.Query(q)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao listar movimentações: %w", err)
+	}
+	defer rows.Close()
+
+	movimentacoes := make([]MovimentacaoHistorico, 0)
+	for rows.Next() {
+		var m MovimentacaoHistorico
+		var origemID, origemNome, destinoID, destinoNome sql.NullString
+		if err := rows.Scan(
+			&m.ID, &m.ProdutoID, &m.ProdutoNome, &m.Tipo,
+			&origemID, &origemNome, &destinoID, &destinoNome,
+			&m.Quantidade, &m.UsuarioID, &m.UsuarioNome, &m.CriadoEm,
+		); err != nil {
+			return nil, fmt.Errorf("falha ao ler linha de movimentação: %w", err)
+		}
+		if origemID.Valid {
+			m.EstoqueOrigemID = &origemID.String
+		}
+		if origemNome.Valid {
+			m.EstoqueOrigemNome = &origemNome.String
+		}
+		if destinoID.Valid {
+			m.EstoqueDestinoID = &destinoID.String
+		}
+		if destinoNome.Valid {
+			m.EstoqueDestinoNome = &destinoNome.String
+		}
+		movimentacoes = append(movimentacoes, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("falha ao iterar movimentações: %w", err)
+	}
+	return movimentacoes, nil
+}
+
 // ErroMovimentacaoValidacao é o erro de validação devolvido por
 // RegistrarBaixa quando `quantidade` é zero, negativa, ou maior que
 // limiteNumeric103 — sempre verificado ANTES de abrir a transação, nenhuma

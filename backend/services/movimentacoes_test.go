@@ -283,6 +283,200 @@ func TestRegistrarBaixa_ConcorrenciaDuasBaixasMesmaLinha(t *testing.T) {
 	}
 }
 
+// --- ListarMovimentacoes (Story 5.3, spec-5-3) ---------------------------
+
+// TestListarMovimentacoes_MaisRecentePrimeiroComNomesResolvidos prova a linha
+// "Lista com Movimentações" da I/O Matrix: uma Baixa e uma Transferência
+// registradas voltam mais recente primeiro, com produtoNome/usuarioNome e os
+// nomes de Estoque resolvidos por JOIN; a Baixa tem estoqueDestinoId/Nome
+// nil, a Transferência tem os dois lados preenchidos.
+func TestListarMovimentacoes_MaisRecentePrimeiroComNomesResolvidos(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	produtoID, estoqueOrigemID, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Hist Origem", 20)
+	estoqueDestino, err := CriarEstoque(db, "Canteiro Hist Destino")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque destino: %v", err)
+	}
+
+	// Ordem de criação: Baixa primeiro, Transferência depois — a lista deve
+	// vir na ordem inversa (mais recente primeiro).
+	if _, err := RegistrarBaixa(db, produtoID, estoqueOrigemID, usuarioID, 3); err != nil {
+		t.Fatalf("RegistrarBaixa: %v", err)
+	}
+	if _, err := RegistrarTransferencia(db, produtoID, estoqueOrigemID, estoqueDestino.ID, usuarioID, 4); err != nil {
+		t.Fatalf("RegistrarTransferencia: %v", err)
+	}
+
+	lista, err := ListarMovimentacoes(db)
+	if err != nil {
+		t.Fatalf("ListarMovimentacoes erro inesperado: %v", err)
+	}
+	if len(lista) != 2 {
+		t.Fatalf("len(lista) = %d, want 2", len(lista))
+	}
+
+	// mais recente primeiro
+	if lista[0].Tipo != "transferencia" {
+		t.Errorf("lista[0].Tipo = %q, want transferencia (mais recente primeiro)", lista[0].Tipo)
+	}
+	if lista[1].Tipo != "baixa" {
+		t.Errorf("lista[1].Tipo = %q, want baixa", lista[1].Tipo)
+	}
+	if lista[0].CriadoEm.Before(lista[1].CriadoEm) {
+		t.Errorf("lista fora de ordem criado_em DESC: [0]=%v [1]=%v", lista[0].CriadoEm, lista[1].CriadoEm)
+	}
+
+	transf, baixa := lista[0], lista[1]
+
+	// nomes resolvidos por JOIN
+	if transf.ProdutoNome != "Produto Canteiro Hist Origem" {
+		t.Errorf("transf.ProdutoNome = %q, want %q", transf.ProdutoNome, "Produto Canteiro Hist Origem")
+	}
+	if transf.UsuarioNome != "Almox Canteiro Hist Origem" {
+		t.Errorf("transf.UsuarioNome = %q, want %q", transf.UsuarioNome, "Almox Canteiro Hist Origem")
+	}
+	if transf.ProdutoID != produtoID || transf.UsuarioID != usuarioID {
+		t.Errorf("transf ids = (%q,%q), want (%q,%q)", transf.ProdutoID, transf.UsuarioID, produtoID, usuarioID)
+	}
+
+	// Transferência: os dois lados preenchidos com id + nome
+	if transf.EstoqueOrigemID == nil || *transf.EstoqueOrigemID != estoqueOrigemID {
+		t.Errorf("transf.EstoqueOrigemID = %v, want %q", transf.EstoqueOrigemID, estoqueOrigemID)
+	}
+	if transf.EstoqueOrigemNome == nil || *transf.EstoqueOrigemNome != "Canteiro Hist Origem" {
+		t.Errorf("transf.EstoqueOrigemNome = %v, want %q", transf.EstoqueOrigemNome, "Canteiro Hist Origem")
+	}
+	if transf.EstoqueDestinoID == nil || *transf.EstoqueDestinoID != estoqueDestino.ID {
+		t.Errorf("transf.EstoqueDestinoID = %v, want %q", transf.EstoqueDestinoID, estoqueDestino.ID)
+	}
+	if transf.EstoqueDestinoNome == nil || *transf.EstoqueDestinoNome != "Canteiro Hist Destino" {
+		t.Errorf("transf.EstoqueDestinoNome = %v, want %q", transf.EstoqueDestinoNome, "Canteiro Hist Destino")
+	}
+	if transf.Quantidade != 4 {
+		t.Errorf("transf.Quantidade = %v, want 4", transf.Quantidade)
+	}
+
+	// Baixa: destino nil, origem preenchida
+	if baixa.EstoqueDestinoID != nil {
+		t.Errorf("baixa.EstoqueDestinoID = %v, want nil", *baixa.EstoqueDestinoID)
+	}
+	if baixa.EstoqueDestinoNome != nil {
+		t.Errorf("baixa.EstoqueDestinoNome = %v, want nil", *baixa.EstoqueDestinoNome)
+	}
+	if baixa.EstoqueOrigemID == nil || *baixa.EstoqueOrigemID != estoqueOrigemID {
+		t.Errorf("baixa.EstoqueOrigemID = %v, want %q", baixa.EstoqueOrigemID, estoqueOrigemID)
+	}
+	if baixa.EstoqueOrigemNome == nil || *baixa.EstoqueOrigemNome != "Canteiro Hist Origem" {
+		t.Errorf("baixa.EstoqueOrigemNome = %v, want %q", baixa.EstoqueOrigemNome, "Canteiro Hist Origem")
+	}
+	if baixa.Quantidade != 3 {
+		t.Errorf("baixa.Quantidade = %v, want 3", baixa.Quantidade)
+	}
+	if baixa.ID == "" {
+		t.Error("baixa.ID vazio")
+	}
+}
+
+// TestListarMovimentacoes_ListaVaziaNaoEErro prova a linha "Nenhuma
+// Movimentação" da I/O Matrix: tabela vazia -> slice vazio (não-nil), sem
+// erro.
+func TestListarMovimentacoes_ListaVaziaNaoEErro(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	lista, err := ListarMovimentacoes(db)
+	if err != nil {
+		t.Fatalf("ListarMovimentacoes erro inesperado: %v", err)
+	}
+	if lista == nil {
+		t.Fatal("lista = nil, want slice vazio não-nil")
+	}
+	if len(lista) != 0 {
+		t.Fatalf("len(lista) = %d, want 0", len(lista))
+	}
+}
+
+// TestListarMovimentacoes_TetoDe500 prova a linha "Acima do teto" da I/O
+// Matrix: com mais de maxMovimentacoesPorConsulta Movimentações, a consulta
+// devolve exatamente as 500 mais recentes.
+func TestListarMovimentacoes_TetoDe500(t *testing.T) {
+	if testing.Short() {
+		t.Skip("cria 505 Movimentações — pesado para -short")
+	}
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	produtoID, estoqueID, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Hist Teto", 1000)
+
+	const total = maxMovimentacoesPorConsulta + 5
+	for i := 0; i < total; i++ {
+		if _, err := RegistrarBaixa(db, produtoID, estoqueID, usuarioID, 1); err != nil {
+			t.Fatalf("RegistrarBaixa #%d: %v", i, err)
+		}
+	}
+
+	lista, err := ListarMovimentacoes(db)
+	if err != nil {
+		t.Fatalf("ListarMovimentacoes erro inesperado: %v", err)
+	}
+	if len(lista) != maxMovimentacoesPorConsulta {
+		t.Fatalf("len(lista) = %d, want %d", len(lista), maxMovimentacoesPorConsulta)
+	}
+	for i := 1; i < len(lista); i++ {
+		if lista[i-1].CriadoEm.Before(lista[i].CriadoEm) {
+			t.Fatalf("lista fora de ordem criado_em DESC no índice %d", i)
+		}
+	}
+}
+
+// TestListarMovimentacoes_DesempatePorIDQuandoCriadoEmIgual prova o segundo
+// termo do ORDER BY (`, m.id DESC`): duas Movimentações com o MESMO
+// `criado_em` (plausível sob inserções em lote) devem sair em ordem
+// determinística — `id` descendente. Sem o desempate a fronteira do LIMIT
+// ordenaria de forma não-determinística entre consultas. Insere as duas
+// linhas por SQL direto com um `criado_em` fixo idêntico (RegistrarBaixa
+// carimba `now()`, que difere entre chamadas).
+func TestListarMovimentacoes_DesempatePorIDQuandoCriadoEmIgual(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	produtoID, estoqueID, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Hist Desempate", 100)
+
+	const instante = "2026-08-15T12:00:00Z"
+	const insert = `
+		INSERT INTO movimentacoes (produto_id, tipo, estoque_origem_id, quantidade, usuario_id, criado_em)
+		VALUES ($1, 'baixa', $2, 1, $3, $4)
+		RETURNING id`
+	var id1, id2 string
+	if err := db.QueryRow(insert, produtoID, estoqueID, usuarioID, instante).Scan(&id1); err != nil {
+		t.Fatalf("insert movimentação 1: %v", err)
+	}
+	if err := db.QueryRow(insert, produtoID, estoqueID, usuarioID, instante).Scan(&id2); err != nil {
+		t.Fatalf("insert movimentação 2: %v", err)
+	}
+
+	lista, err := ListarMovimentacoes(db)
+	if err != nil {
+		t.Fatalf("ListarMovimentacoes erro inesperado: %v", err)
+	}
+	if len(lista) != 2 {
+		t.Fatalf("len(lista) = %d, want 2", len(lista))
+	}
+	if !lista[0].CriadoEm.Equal(lista[1].CriadoEm) {
+		t.Fatalf("pré-condição: criado_em deveria ser idêntico, got %v e %v", lista[0].CriadoEm, lista[1].CriadoEm)
+	}
+
+	maiorID, menorID := id1, id2
+	if id2 > id1 {
+		maiorID, menorID = id2, id1
+	}
+	if lista[0].ID != maiorID || lista[1].ID != menorID {
+		t.Errorf("ordem por id = [%q, %q], want [%q, %q] (id DESC)", lista[0].ID, lista[1].ID, maiorID, menorID)
+	}
+}
+
 // --- RegistrarTransferencia (Story 5.2, spec-5-2) --------------------------
 
 // TestRegistrarTransferencia_Sucesso prova a AC1: transferência válida entre

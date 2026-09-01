@@ -14,6 +14,10 @@
 //     RequireAuth -> RequireRole(almoxarife); corpo
 //     `{"estoqueDestinoId": string, "quantidade": number}`. Mesmo gate de
 //     papel da Baixa.
+//   - GET /api/movimentacoes -> RequireAuth -> RequireRole(almoxarife)
+//     (Story 5.3, spec-5-3): trilha de Movimentações consultável, só-leitura,
+//     sem query params. O 401/403 é decidido pelos middlewares; o handler só
+//     serializa services.ListarMovimentacoes.
 package handlers
 
 import (
@@ -77,6 +81,35 @@ func RegistrarBaixaHandler(db *sql.DB, registro *realtime.Registry) http.Handler
 			slog.Error("falha ao registrar baixa", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao registrar baixa")
 		}
+	}
+}
+
+// ListarMovimentacoesHandler expõe GET /api/movimentacoes (Story 5.3,
+// spec-5-3), SEMPRE registrado em newMux atrás de
+// RequireAuth -> RequireRole(services.PapelAlmoxarife) — mesmo gate de papel
+// de Registrar Baixa/Transferência. O 401 (sem token) e o 403 (papel abaixo
+// de `almoxarife`) são decididos inteiramente pelos middlewares; este
+// handler só executa depois de os dois passarem. Guard de contexto ausente
+// -> 500, igual a ListarLogsAcessoHandler. Sem query params: a regra de
+// consulta (JOINs, ordenação, teto de 500) vive em
+// services.ListarMovimentacoes. Resposta: 200 {"movimentacoes":[...]}
+// ordenada por criado_em DESC.
+func ListarMovimentacoesHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := middleware.UsuarioDaSessao(r.Context()); !ok {
+			slog.Error("ListarMovimentacoesHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+
+		movimentacoes, err := services.ListarMovimentacoes(db)
+		if err != nil {
+			slog.Error("falha ao listar movimentações", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao listar movimentações")
+			return
+		}
+
+		escreverJSON(w, http.StatusOK, map[string]any{"movimentacoes": movimentacoes})
 	}
 }
 

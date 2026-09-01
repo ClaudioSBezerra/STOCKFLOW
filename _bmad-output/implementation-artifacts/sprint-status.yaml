@@ -78,7 +78,7 @@ development_status:
   epic-5: backlog
   5-1-registrar-baixa-consumo: done
   5-2-registrar-transferência-entre-estoques: done
-  5-3-histórico-de-movimentações-consultável: backlog
+  5-3-histórico-de-movimentações-consultável: done
   5-4-migração-do-histórico-de-movimentações-legado: backlog
   epic-5-retrospective: optional
 
