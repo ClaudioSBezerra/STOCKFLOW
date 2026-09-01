@@ -7,6 +7,17 @@
 # Sem Redis (AD-2/AD-3 evitam broker/cache externo de propósito -- broadcaster
 # SSE in-process). Nomes de container distintos de fb_apu02/fb_apu04, que já
 # rodam no mesmo host.
+#
+# `name:` explícito É OBRIGATÓRIO aqui: sem ele, o Docker Compose deriva o
+# nome do projeto do basename do diretório de trabalho -- e tanto este
+# deploy (/opt/apps/stockflow/cliente-aws) quanto o do FB_APU02
+# (/opt/apps/fbtax/cliente-aws) têm o MESMO basename "cliente-aws". Incidente
+# real (2026-09-01): o primeiro `docker compose up` do stockflow nesse
+# servidor compartilhado caiu no namespace de projeto "cliente-aws" já usado
+# pelo FB_APU02 e removeu os containers cliente-api/cliente-web/cliente-db
+# dele (fctax.fcxlabs.com ficou fora do ar). `name: stockflow` fixa um
+# namespace de projeto próprio, nunca dependente do path onde o compose roda.
+name: stockflow
 services:
   api:
     image: ghcr.io/claudiosbezerra/stockflow-api:latest
