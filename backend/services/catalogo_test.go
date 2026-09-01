@@ -1102,3 +1102,106 @@ func TestListarCatalogoAgrupado_CategoriaEstoqueMalformadosColapsamEmZero(t *tes
 		t.Errorf("estoqueId malformado: grupos = %v, total = %d, want [] / 0", grupos2, pag2.Total)
 	}
 }
+
+// --- Story 4.6: Exportação da tabela do catálogo para Excel ---------------
+
+// TestListarTodosGruposCatalogo_SemPaginacao prova a linha "sem paginação" da
+// spec-4-6: mais grupos que TamanhoPaginaCatalogo (24) -> TODOS voltam numa
+// única chamada, na mesma ordem (`nome ASC`) de ListarCatalogoAgrupado.
+func TestListarTodosGruposCatalogo_SemPaginacao(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Exportar Sem Paginacao")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+
+	const totalGrupos = TamanhoPaginaCatalogo + 5
+	for i := totalGrupos - 1; i >= 0; i-- {
+		criarProdutoCat(t, db, CriarProdutoInput{
+			Nome:              fmt.Sprintf("Exportar %02d", i),
+			CategoriaID:       categoriaID,
+			EstoqueID:         estoque.ID,
+			QuantidadeInicial: 1,
+		})
+	}
+
+	grupos, err := ListarTodosGruposCatalogo(db, FiltrosCatalogo{})
+	if err != nil {
+		t.Fatalf("ListarTodosGruposCatalogo: %v", err)
+	}
+	if len(grupos) != totalGrupos {
+		t.Fatalf("len(grupos) = %d, want %d (nunca paginado)", len(grupos), totalGrupos)
+	}
+	if grupos[0].Nome != "Exportar 00" || grupos[totalGrupos-1].Nome != fmt.Sprintf("Exportar %02d", totalGrupos-1) {
+		t.Errorf("ordem = [%q .. %q], want ordenado por nome ASC", grupos[0].Nome, grupos[totalGrupos-1].Nome)
+	}
+}
+
+// TestListarTodosGruposCatalogo_FiltrosAplicados prova que os 4 filtros da
+// Story 4.2 combinam por E lógico também nesta função — mesmo comportamento
+// de ListarCatalogoAgrupado, sem a paginação.
+func TestListarTodosGruposCatalogo_FiltrosAplicados(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoqueA, err := CriarEstoque(db, "Canteiro Exportar Filtro A")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque A: %v", err)
+	}
+	estoqueB, err := CriarEstoque(db, "Canteiro Exportar Filtro B")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque B: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+
+	criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Casa Filtro", CategoriaID: categoriaID, EstoqueID: estoqueA.ID, QuantidadeInicial: 3,
+	})
+	criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Fora Filtro", CategoriaID: categoriaID, EstoqueID: estoqueB.ID, QuantidadeInicial: 3,
+	})
+
+	grupos, err := ListarTodosGruposCatalogo(db, FiltrosCatalogo{Q: "Casa", EstoqueID: estoqueA.ID})
+	if err != nil {
+		t.Fatalf("ListarTodosGruposCatalogo com filtros: %v", err)
+	}
+	if len(grupos) != 1 || grupos[0].Nome != "Casa Filtro" {
+		t.Fatalf("grupos = %+v, want só [Casa Filtro]", grupos)
+	}
+}
+
+// TestListarTodosGruposCatalogo_IDMalformadoColapsaEmVazio prova o mesmo
+// colapso `filtroUUIDInvalido` de ListarCatalogoAgrupado: `categoriaId`/
+// `estoqueId` não-UUID -> slice vazio, nunca erro.
+func TestListarTodosGruposCatalogo_IDMalformadoColapsaEmVazio(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Canteiro Exportar Malformado")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+	criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Qualquer", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+	})
+
+	grupos, err := ListarTodosGruposCatalogo(db, FiltrosCatalogo{CategoriaID: "abc"})
+	if err != nil {
+		t.Fatalf("categoriaId malformado: err = %v, want nil", err)
+	}
+	if grupos == nil || len(grupos) != 0 {
+		t.Errorf("categoriaId malformado: grupos = %v, want [] não-nil", grupos)
+	}
+
+	grupos2, err := ListarTodosGruposCatalogo(db, FiltrosCatalogo{EstoqueID: "xyz"})
+	if err != nil {
+		t.Fatalf("estoqueId malformado: err = %v, want nil", err)
+	}
+	if grupos2 == nil || len(grupos2) != 0 {
+		t.Errorf("estoqueId malformado: grupos = %v, want [] não-nil", grupos2)
+	}
+}

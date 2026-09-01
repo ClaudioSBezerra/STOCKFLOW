@@ -75,7 +75,12 @@
 // qualquer conta autenticada: resolve o Código de Identificação EXATO lido de
 // um QR Code / código de barras físico para o Produto correspondente —
 // segmento literal registrado antes de GET /api/produtos/{id}; `codigo`
-// vazio -> 400, `codigo` sem Produto -> 404).
+// vazio -> 400, `codigo` sem Produto -> 404) e a exportação da tabela do
+// Catálogo para Excel — Story 4.6 (GET /api/produtos/catalogo/exportar,
+// mínimo `almoxarife`: gera um `.xlsx` real com os mesmos filtros de GET
+// /api/produtos/catalogo aplicados à tabela agrupada COMPLETA, sem
+// `pagina`/`agrupar` — subtotal por grupo e total geral via fórmula
+// `SUBTOTAL`, nunca soma estática).
 package main
 
 import (
@@ -441,6 +446,24 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// VALIDATION_ERROR.
 	mux.HandleFunc("GET /api/produtos/catalogo", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarCatalogoHandler(db)))
+
+	// Exportação da tabela do Catálogo para Excel — Story 4.6 (FR-30).
+	// GET /api/produtos/catalogo/exportar fica atrás de
+	// RequireRole(almoxarife), mesmo mínimo de papel do cadastro/importação:
+	// exportar é restrito a `almoxarife`+, decisão do middleware (403 para
+	// `usuario`, mesmo em chamada direta à API). Segmento de 2 níveis
+	// (`catalogo/exportar`) — não colide com `GET /api/produtos/{id}`
+	// abaixo independente de ordem de registro (mesmo caso já provado por
+	// `busca`/`catalogo`/`por-codigo`). Mesmos 4 filtros de
+	// GET /api/produtos/catalogo (Story 4.2), SEM `pagina`/`agrupar`: sempre
+	// exporta a tabela agrupada COMPLETA que casa o filtro, nunca uma
+	// página — o `.xlsx` gerado (services.GerarCatalogoXLSX) tem subtotal
+	// por grupo e total geral via fórmula `SUBTOTAL`, nunca soma estática,
+	// para permanecer correto quando o próprio arquivo já exportado é
+	// filtrado no Excel.
+	mux.HandleFunc("GET /api/produtos/catalogo/exportar", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAlmoxarife)(
+			handlers.ExportarCatalogoHandler(db))))
 
 	// Identificação de Produto via QR Code / código de barras — Story 4.5
 	// (FR-35). GET /api/produtos/por-codigo?codigo=<valor> leva só

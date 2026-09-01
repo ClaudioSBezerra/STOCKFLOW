@@ -48,6 +48,11 @@ import (
 //     AtualizarNomeProdutoHandler ganham um `*realtime.Registry` e publicam
 //     no canal `produtos` a cada escrita bem-sucedida — o consumidor deste
 //     canal é a tela de detalhe, via SSE (handlers/realtime.go).
+//   - GET /api/produtos/catalogo/exportar -> RequireAuth -> RequireRole
+//     (almoxarife): exporta a tabela agrupada COMPLETA do Catálogo (mesmos
+//     filtros de GET /api/produtos/catalogo, sem `pagina`/`agrupar`) para um
+//     `.xlsx` real, com subtotal por grupo e total geral via fórmula
+//     `SUBTOTAL` (Story 4.6, spec-4-6, FR-30).
 
 // dimensaoRequest é o par valor+unidade de uma dimensão no corpo de
 // POST /api/produtos. Os dois ponteiros ausentes (`null`/chave omitida) ->
@@ -395,6 +400,70 @@ func ListarCatalogoHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		escreverJSON(w, http.StatusOK, map[string]any{"produtos": produtos, "paginacao": paginacao})
+	}
+}
+
+// ExportarCatalogoHandler expõe GET
+// /api/produtos/catalogo/exportar?q=<>&categoriaId=<>&estoqueId=<>&comEstoque=<>
+// (Story 4.6, spec-4-6, FR-30): RequireAuth + RequireRole(almoxarife) —
+// exportação restrita a `almoxarife`+, decisão do middleware (403 para papel
+// abaixo, mesmo em chamada direta à API; o handler nunca roda para
+// `usuario`). Mesma validação de `q`/`comEstoque` de ListarCatalogoHandler
+// (`q` trimado, teto 255 runes; `comEstoque` só `true`/`false`/ausente);
+// `categoriaId`/`estoqueId` repassados sem validação de formato — malformado
+// colapsa em `.xlsx` só com cabeçalho (services.ListarTodosGruposCatalogo),
+// nunca erro aqui. SEM `pagina`/`agrupar`: sempre exporta a tabela agrupada
+// COMPLETA que casa o filtro, nunca uma página.
+//
+// Sucesso: `200`, `Content-Type:
+// application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`,
+// `Content-Disposition: attachment; filename="catalogo.xlsx"`, corpo = bytes
+// do `.xlsx` gerado por services.GerarCatalogoXLSX. Erro de banco -> `500
+// INTERNAL_ERROR` + slog.
+func ExportarCatalogoHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := middleware.UsuarioDaSessao(r.Context()); !ok {
+			slog.Error("ExportarCatalogoHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+
+		termo := strings.TrimSpace(r.URL.Query().Get("q"))
+		if utf8.RuneCountInString(termo) > 255 {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "termo de busca muito longo")
+			return
+		}
+
+		filtros := services.FiltrosCatalogo{
+			Q:           termo,
+			CategoriaID: r.URL.Query().Get("categoriaId"),
+			EstoqueID:   r.URL.Query().Get("estoqueId"),
+		}
+		switch r.URL.Query().Get("comEstoque") {
+		case "":
+			// ausente -> sem filtro (ComEstoque permanece nil).
+		case "true":
+			v := true
+			filtros.ComEstoque = &v
+		case "false":
+			v := false
+			filtros.ComEstoque = &v
+		default:
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "parâmetro comEstoque inválido")
+			return
+		}
+
+		arquivo, err := services.GerarCatalogoXLSX(db, filtros)
+		if err != nil {
+			slog.Error("falha ao exportar catálogo", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao exportar catálogo")
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+		w.Header().Set("Content-Disposition", `attachment; filename="catalogo.xlsx"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(arquivo)
 	}
 }
 

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/xuri/excelize/v2"
 
 	"stockflow/backend/middleware"
 	"stockflow/backend/realtime"
@@ -1394,6 +1397,168 @@ func TestListarCatalogoHandler_FiltroComAgrupar(t *testing.T) {
 	}
 	if resp.Paginacao.Total != 1 || len(resp.Grupos) != 1 || resp.Grupos[0].Nome != "Bucha" {
 		t.Fatalf("resp = %+v, want só o grupo 'Bucha'", resp)
+	}
+}
+
+// --- Story 4.6: Exportação da tabela do catálogo para Excel ---------------
+
+// getProdutosCatalogoExportar despacha GET /api/produtos/catalogo/exportar
+// pela MESMA composição de newMux (RequireAuth -> RequireRole(almoxarife) —
+// Story 4.6). `query` é a query string já montada (sem o `?`).
+func getProdutosCatalogoExportar(db *sql.DB, authHeader, query string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/produtos/catalogo/exportar",
+		middleware.RequireAuth(db, testJWTSecret)(
+			middleware.RequireRole(services.PapelAlmoxarife)(
+				ExportarCatalogoHandler(db))))
+	alvo := "/api/produtos/catalogo/exportar"
+	if query != "" {
+		alvo += "?" + query
+	}
+	r := httptest.NewRequest(http.MethodGet, alvo, nil)
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+// TestExportarCatalogoHandler_200ComHeadersEXLSXValido prova a linha
+// "Exportação com grupos e Estoques" da matriz: 200, `Content-Type`/
+// `Content-Disposition` de download corretos e um `.xlsx` válido
+// (excelize.OpenReader no corpo) refletindo o Produto cadastrado.
+func TestExportarCatalogoHandler_200ComHeadersEXLSXValido(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	criarContaComPapel(t, db, "Exportar Almox", "exportar-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "exportar-almox@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Canteiro Exportar Handler")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	seedProdutoCatalogoHandler(t, db, estoque.ID, "Exportar Handler Produto", categoriaID, 7)
+
+	w := getProdutosCatalogoExportar(db, "Bearer "+token, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+	wantContentType := "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	if ct := w.Header().Get("Content-Type"); ct != wantContentType {
+		t.Errorf("Content-Type = %q, want %q", ct, wantContentType)
+	}
+	wantDisposition := `attachment; filename="catalogo.xlsx"`
+	if cd := w.Header().Get("Content-Disposition"); cd != wantDisposition {
+		t.Errorf("Content-Disposition = %q, want %q", cd, wantDisposition)
+	}
+
+	f, err := excelize.OpenReader(bytes.NewReader(w.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("corpo não é um .xlsx válido: %v", err)
+	}
+	defer f.Close()
+	linhas, err := f.GetRows(f.GetSheetList()[0])
+	if err != nil {
+		t.Fatalf("GetRows: %v", err)
+	}
+	// cabeçalho + 1 detalhe + subtotal + total geral = 4.
+	if len(linhas) != 4 || linhas[1][0] != "Exportar Handler Produto" {
+		t.Fatalf("linhas = %+v, want 4 linhas com 'Exportar Handler Produto' na linha de detalhe", linhas)
+	}
+}
+
+// TestExportarCatalogoHandler_400TermoMuitoLongo prova a linha "`q` > 255
+// runes" da matriz.
+func TestExportarCatalogoHandler_400TermoMuitoLongo(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Exportar Termo Longo", "exportar-termo-longo@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "exportar-termo-longo@empresa.com", "senha-123456")
+
+	termo := strings.Repeat("a", 256)
+	w := getProdutosCatalogoExportar(db, "Bearer "+token, "q="+termo)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "VALIDATION_ERROR" || env.Error.Message != "termo de busca muito longo" {
+		t.Errorf("erro = %+v, want VALIDATION_ERROR / 'termo de busca muito longo'", env.Error)
+	}
+}
+
+// TestExportarCatalogoHandler_400ComEstoqueInvalido prova a linha
+// "`comEstoque` inválido" da matriz.
+func TestExportarCatalogoHandler_400ComEstoqueInvalido(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Exportar ComEstoque Invalido", "exportar-comestoque-invalido@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "exportar-comestoque-invalido@empresa.com", "senha-123456")
+
+	w := getProdutosCatalogoExportar(db, "Bearer "+token, "comEstoque=talvez")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "VALIDATION_ERROR" || env.Error.Message != "parâmetro comEstoque inválido" {
+		t.Errorf("erro = %+v, want VALIDATION_ERROR / 'parâmetro comEstoque inválido'", env.Error)
+	}
+}
+
+// TestExportarCatalogoHandler_403ParaUsuario prova a linha "Papel `usuario`
+// chama direto" da matriz: RequireRole(almoxarife) barra o papel `usuario`
+// antes do handler rodar.
+func TestExportarCatalogoHandler_403ParaUsuario(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Exportar Usuario", "exportar-usuario@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "exportar-usuario@empresa.com", "senha-123456")
+
+	w := getProdutosCatalogoExportar(db, "Bearer "+token, "")
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusForbidden, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "FORBIDDEN" {
+		t.Errorf("code = %q, want FORBIDDEN", env.Error.Code)
+	}
+}
+
+// TestExportarCatalogoHandler_FiltrosRepassadosAoService prova que os
+// filtros da query string chegam intactos a services.GerarCatalogoXLSX pelo
+// mesmo caminho de parsing de ListarCatalogoHandler: `categoriaId` filtra o
+// Produto certo, deixando o outro (categoria diferente) de fora do .xlsx.
+func TestExportarCatalogoHandler_FiltrosRepassadosAoService(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	civil := categoriaIDPorCodigoHandler(t, db, "04.001")
+	eletrico := categoriaIDPorCodigoHandler(t, db, "04.002")
+	criarContaComPapel(t, db, "Exportar Filtro", "exportar-filtro@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "exportar-filtro@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Canteiro Exportar Filtro Handler")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	seedProdutoCatalogoHandler(t, db, estoque.ID, "Exportar Filtro Civil", civil, 3)
+	seedProdutoCatalogoHandler(t, db, estoque.ID, "Exportar Filtro Eletrico", eletrico, 3)
+
+	w := getProdutosCatalogoExportar(db, "Bearer "+token, "categoriaId="+civil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+	f, err := excelize.OpenReader(bytes.NewReader(w.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("corpo não é um .xlsx válido: %v", err)
+	}
+	defer f.Close()
+	linhas, err := f.GetRows(f.GetSheetList()[0])
+	if err != nil {
+		t.Fatalf("GetRows: %v", err)
+	}
+	if len(linhas) != 4 || linhas[1][0] != "Exportar Filtro Civil" {
+		t.Fatalf("linhas = %+v, want só o Produto 'Exportar Filtro Civil' (filtro categoriaId)", linhas)
 	}
 }
 

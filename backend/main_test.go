@@ -2046,3 +2046,72 @@ func TestRealtimeStream_FluxoCompletoTicketStreamEvento(t *testing.T) {
 		t.Fatalf("evento = %+v, want {produtos %s created}", evento, produtoResp.Produto.ID)
 	}
 }
+
+// TestNewMux_ProdutosCatalogoExportarRotaRequireRoleAlmoxarife prova,
+// despachando pela mesma instância de newMux usada por main() (Story 4.6,
+// spec-4-6, FR-30), que GET /api/produtos/catalogo/exportar está atrás de
+// RequireRole(almoxarife): token `usuario` -> 403 FORBIDDEN (o handler nunca
+// roda); token `almoxarife` passa do gate — 200 de verdade, com o
+// `Content-Type` do `.xlsx`, nunca 403. Mesmo molde de
+// TestNewMux_ImportacoesRotaCarregaRequireRole acima.
+func TestNewMux_ProdutosCatalogoExportarRotaRequireRoleAlmoxarife(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate usuarios: %v", err)
+	}
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, produto_estoque, produtos, estoques`); err != nil {
+		t.Fatalf("truncate produtos: %v", err)
+	}
+
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	fotosDir := t.TempDir()
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, fotosDir)
+
+	const senha = "senha-123456"
+	segredos := map[string]string{}
+	seedContaMux(t, db, "catalogo-exportar-mux-usuario@empresa.com", "usuario", senha, segredos)
+	seedContaMux(t, db, "catalogo-exportar-mux-almox@empresa.com", "almoxarife", senha, segredos)
+
+	despachar := func(token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/produtos/catalogo/exportar", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	t.Run("papel usuario -> 403 FORBIDDEN", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "catalogo-exportar-mux-usuario@empresa.com", senha, segredos)
+		w := despachar(token)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusForbidden, w.Body.String())
+		}
+		var env struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+			t.Fatalf("decode envelope: %v", err)
+		}
+		if env.Error.Code != "FORBIDDEN" {
+			t.Errorf("code = %q, want FORBIDDEN", env.Error.Code)
+		}
+	})
+
+	t.Run("almoxarife passa do gate (200 de verdade, nunca 403)", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "catalogo-exportar-mux-almox@empresa.com", senha, segredos)
+		w := despachar(token)
+		if w.Code == http.StatusForbidden {
+			t.Fatalf("status = %d, want != 403 (body=%s)", w.Code, w.Body.String())
+		}
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+		}
+		wantContentType := "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+		if ct := w.Header().Get("Content-Type"); ct != wantContentType {
+			t.Errorf("Content-Type = %q, want %q", ct, wantContentType)
+		}
+	})
+}

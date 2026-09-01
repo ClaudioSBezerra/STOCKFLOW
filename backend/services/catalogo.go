@@ -486,6 +486,82 @@ func ListarCatalogoAgrupado(db *sql.DB, pagina int, filtros FiltrosCatalogo) ([]
 	return grupos, paginacao, nil
 }
 
+// ListarTodosGruposCatalogo devolve TODOS os grupos da tabela agrupada do
+// Catálogo que casam os `filtros` — SEM paginação (Story 4.6, spec-4-6): a
+// exportação para Excel sempre reflete o filtro completo, nunca uma única
+// página (`TamanhoPaginaCatalogo`, Story 4.3, é uma decisão de UI de tela).
+// Reusa catalogoGrupoQueryBase/catalogoGrupoQuerySuffix/preencherPorEstoque
+// de ListarCatalogoAgrupado — mesma query/filtros/ordem, só sem
+// `LIMIT`/`OFFSET`; ListarCatalogoAgrupado em si NUNCA é alterada por esta
+// story (Never, spec-4-6), por isso a duplicação do laço de scan abaixo em
+// vez de um helper compartilhado entre as duas. `categoriaId`/`estoqueId`
+// malformado (não-UUID) colapsa em slice vazio, nunca erro
+// (filtroUUIDInvalido) — mesmo colapso de ListarCatalogoAgrupado.
+func ListarTodosGruposCatalogo(db *sql.DB, filtros FiltrosCatalogo) ([]CatalogoGrupo, error) {
+	where, args := montarFiltrosCatalogo(filtros, 1)
+
+	query := catalogoGrupoQueryBase + where + catalogoGrupoQuerySuffix
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		if filtroUUIDInvalido(err) {
+			return make([]CatalogoGrupo, 0), nil
+		}
+		return nil, fmt.Errorf("falha ao listar todos os grupos do catálogo: %w", err)
+	}
+	defer rows.Close()
+
+	grupos := make([]CatalogoGrupo, 0)
+	produtoParaGrupo := make(map[string]int)
+	var todosIDs []string
+	for rows.Next() {
+		var (
+			g                          CatalogoGrupo
+			comp, larg, diam, alt, esp parDimensao
+			quantidade                 float64
+			ids                        []string
+		)
+		if err := rows.Scan(
+			&g.Chave, &g.Nome,
+			&comp.valor, &comp.unidade,
+			&larg.valor, &larg.unidade,
+			&diam.valor, &diam.unidade,
+			&alt.valor, &alt.unidade,
+			&esp.valor, &esp.unidade,
+			&quantidade,
+			pq.Array(&ids),
+		); err != nil {
+			return nil, fmt.Errorf("falha ao ler linha de todos os grupos do catálogo: %w", err)
+		}
+		g.Dimensoes = DimensoesProduto{
+			Comprimento: comp.paraDimensao(),
+			Largura:     larg.paraDimensao(),
+			Diametro:    diam.paraDimensao(),
+			Altura:      alt.paraDimensao(),
+			Espessura:   esp.paraDimensao(),
+		}
+		g.QuantidadeTotal = quantidade
+		g.Disponivel = quantidade > 0
+		g.PorEstoque = make([]EstoqueQuantidade, 0)
+
+		idx := len(grupos)
+		grupos = append(grupos, g)
+		for _, id := range ids {
+			produtoParaGrupo[id] = idx
+			todosIDs = append(todosIDs, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("falha ao iterar todos os grupos do catálogo: %w", err)
+	}
+
+	if len(todosIDs) > 0 {
+		if err := preencherPorEstoque(db, grupos, produtoParaGrupo, todosIDs); err != nil {
+			return nil, err
+		}
+	}
+	return grupos, nil
+}
+
 // preencherPorEstoque resolve o `porEstoque` de cada grupo da página numa
 // única query (`WHERE pe.produto_id = ANY(...)`), somando por Estoque os
 // Produtos que caem no mesmo grupo e ordenando cada lista por `estoqueNome
