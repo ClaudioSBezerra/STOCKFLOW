@@ -21,7 +21,7 @@ import (
 // importações tiver gravado alguma linha.
 func limparProdutos(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, produto_estoque, produtos, estoques`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("falha ao limpar produtos/produto_estoque/estoques: %v", err)
 	}
 }

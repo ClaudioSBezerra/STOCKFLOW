@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
 import { ProdutoDetalhePage } from './ProdutoDetalhePage';
@@ -9,8 +9,23 @@ vi.mock('@/lib/session', () => ({
   getAccessToken: () => 'token-de-teste',
 }));
 
+// useAuth() fornece o papel — configurável por teste (Story 5.1: gate do
+// botão "Registrar Baixa"). Default `almoxarife`, mesmo molde de
+// EstoquesPage.test.tsx.
+const authState = vi.hoisted(() => ({ papel: 'almoxarife' as string }));
+vi.mock('@/lib/auth', () => ({
+  useAuth: () => ({
+    estado: 'autenticado',
+    usuario: { id: '1', nome: 'Ator', email: 'ator@empresa.com', papel: authState.papel },
+    definirSessao: vi.fn(),
+    atualizarUsuario: vi.fn(),
+    logout: vi.fn(),
+  }),
+}));
+
 const toastInfo = vi.hoisted(() => vi.fn());
-vi.mock('sonner', () => ({ toast: { info: toastInfo } }));
+const toastSuccess = vi.hoisted(() => vi.fn());
+vi.mock('sonner', () => ({ toast: { info: toastInfo, success: toastSuccess } }));
 
 // conectarRealtime é mockado: os testes desta página não reexercitam a
 // mecânica de reconexão/temporizadores do EventSource (já coberta em
@@ -26,6 +41,7 @@ let aoMudarStatus: (status: StatusRealtime) => void;
 const desconectarMock = vi.fn();
 
 beforeEach(() => {
+  authState.papel = 'almoxarife';
   let proximoId = 0;
   URL.createObjectURL = vi.fn(() => `blob:mock-url-${proximoId++}`);
   URL.revokeObjectURL = vi.fn();
@@ -420,5 +436,123 @@ describe('ProdutoDetalhePage', () => {
     });
 
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  describe('Registrar Baixa (Story 5.1)', () => {
+    it.each(['almoxarife', 'gestor', 'adm'])(
+      'papel %s vê o botão "Registrar Baixa" em cada linha de Estoque',
+      async (papel) => {
+        authState.papel = papel;
+        stubPadrao();
+        renderPagina();
+
+        act(() => {
+          aoMudarStatus('conectado');
+        });
+
+        await screen.findByText('Cabo Flexível 4mm');
+        expect(screen.getAllByRole('button', { name: /Registrar Baixa/ })).toHaveLength(2);
+      },
+    );
+
+    it('papel usuario NÃO vê o botão "Registrar Baixa"', async () => {
+      authState.papel = 'usuario';
+      stubPadrao();
+      renderPagina();
+
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+
+      await screen.findByText('Cabo Flexível 4mm');
+      expect(screen.queryByRole('button', { name: /Registrar Baixa/ })).not.toBeInTheDocument();
+    });
+
+    it('submissão bem-sucedida: fecha o diálogo, mostra toast.success e refaz o refetch', async () => {
+      let baixaChamada = false;
+      const fetchMock = stubFetch((url, init) => {
+        if (url === '/api/produtos/p1' && (!init?.method || init.method === 'GET')) {
+          return jsonOk({ produto: PRODUTO_DETALHE });
+        }
+        if (url === '/api/produtos/p1/fotos') return jsonOk({ fotos: [] });
+        if (url === '/api/produtos/p1/estoques/e1/baixa' && init?.method === 'POST') {
+          baixaChamada = true;
+          return Promise.resolve({
+            ok: true,
+            status: 201,
+            json: async () => ({ movimentacao: { id: 'mov1', tipo: 'baixa', quantidade: 2 } }),
+          });
+        }
+        throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
+      });
+
+      const user = userEvent.setup();
+      renderPagina();
+
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+      await screen.findByText('Cabo Flexível 4mm');
+
+      const botoes = screen.getAllByRole('button', { name: /Registrar Baixa/ });
+      await user.click(botoes[0]);
+
+      const dialogo = await screen.findByRole('dialog');
+      const input = within(dialogo).getByLabelText('Quantidade');
+      await user.type(input, '2');
+      await user.click(within(dialogo).getByRole('button', { name: 'Confirmar' }));
+
+      await waitFor(() => expect(baixaChamada).toBe(true));
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(toastSuccess).toHaveBeenCalledWith('Baixa registrada.');
+      // refetch: mais de uma chamada a GET /api/produtos/p1 (mount + pós-baixa).
+      const chamadasDetalhe = fetchMock.mock.calls.filter(([u]) => u === '/api/produtos/p1');
+      expect(chamadasDetalhe.length).toBeGreaterThan(1);
+    });
+
+    it('409 mostra a mensagem do servidor dentro do diálogo, sem fechar', async () => {
+      const fetchMock = stubFetch((url, init) => {
+        if (url === '/api/produtos/p1' && (!init?.method || init.method === 'GET')) {
+          return jsonOk({ produto: PRODUTO_DETALHE });
+        }
+        if (url === '/api/produtos/p1/fotos') return jsonOk({ fotos: [] });
+        if (url === '/api/produtos/p1/estoques/e1/baixa' && init?.method === 'POST') {
+          return Promise.resolve({
+            ok: false,
+            status: 409,
+            json: async () => ({
+              error: {
+                code: 'CONFLICT',
+                message: 'quantidade indisponível: apenas 5 unidade(s) disponível(is)',
+              },
+            }),
+          });
+        }
+        throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
+      });
+      void fetchMock;
+
+      const user = userEvent.setup();
+      renderPagina();
+
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+      await screen.findByText('Cabo Flexível 4mm');
+
+      const botoes = screen.getAllByRole('button', { name: /Registrar Baixa/ });
+      await user.click(botoes[0]);
+
+      const dialogo = await screen.findByRole('dialog');
+      const input = within(dialogo).getByLabelText('Quantidade');
+      await user.type(input, '999');
+      await user.click(within(dialogo).getByRole('button', { name: 'Confirmar' }));
+
+      expect(
+        await within(dialogo).findByText('quantidade indisponível: apenas 5 unidade(s) disponível(is)'),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+      expect(toastSuccess).not.toHaveBeenCalled();
+    });
   });
 });

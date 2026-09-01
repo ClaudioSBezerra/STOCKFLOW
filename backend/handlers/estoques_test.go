@@ -24,7 +24,7 @@ import (
 // é truncada: seed fixo da migração 000010.
 func limparEstoquesHandler(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, produto_estoque, produtos, estoques`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("falha ao limpar estoques: %v", err)
 	}
 }

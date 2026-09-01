@@ -80,7 +80,12 @@
 // mínimo `almoxarife`: gera um `.xlsx` real com os mesmos filtros de GET
 // /api/produtos/catalogo aplicados à tabela agrupada COMPLETA, sem
 // `pagina`/`agrupar` — subtotal por grupo e total geral via fórmula
-// `SUBTOTAL`, nunca soma estática).
+// `SUBTOTAL`, nunca soma estática) e a abertura do domínio de Movimentação de
+// Estoque (Epic 5) com Registrar Baixa (consumo) — Story 5.1
+// (POST /api/produtos/{id}/estoques/{estoqueId}/baixa, mínimo `almoxarife`:
+// debita `produto_estoque.quantidade` e insere a Movimentação `tipo='baixa'`
+// correspondente numa única transação, com `SELECT ... FOR UPDATE` travando
+// a linha alvo; publica no canal SSE `movimentacoes` a cada sucesso).
 package main
 
 import (
@@ -485,6 +490,19 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// 404 NOT_FOUND.
 	mux.HandleFunc("GET /api/produtos/{id}", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ObterProdutoHandler(db)))
+
+	// Registrar Baixa (consumo) — Story 5.1 (Epic 5, Movimentação de
+	// Estoque). POST /api/produtos/{id}/estoques/{estoqueId}/baixa fica
+	// atrás de RequireRole(almoxarife), mesmo mínimo de papel do
+	// cadastro/importação de Produto: registrar consumo é restrito a
+	// `almoxarife`+, decisão do middleware (403 para `usuario`, mesmo em
+	// chamada direta à API). Debita `produto_estoque.quantidade` e insere a
+	// Movimentação `tipo='baixa'` correspondente numa única transação
+	// (services.RegistrarBaixa), publicando no canal `movimentacoes` (AD-3
+	// do epic-5-context.md) a cada sucesso.
+	mux.HandleFunc("POST /api/produtos/{id}/estoques/{estoqueId}/baixa", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAlmoxarife)(
+			handlers.RegistrarBaixaHandler(db, registro))))
 
 	// Infraestrutura de tempo real (AD-2/AD-3) — Story 4.4. POST
 	// /api/realtime/ticket leva só RequireAuth: qualquer conta autenticada

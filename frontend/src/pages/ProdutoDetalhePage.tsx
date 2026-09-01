@@ -3,8 +3,20 @@ import { useParams } from 'react-router-dom';
 import { XIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
-import { Dialog, DialogClose, DialogContent, DialogTitle } from '@/components/ui/dialog';
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { getAccessToken } from '@/lib/session';
+import { useAuth } from '@/lib/auth';
+import { rankPapel } from '@/components/shell/nav-items';
 import { conectarRealtime, type StatusRealtime } from '@/lib/realtime/client';
 import {
   formatarQuantidade,
@@ -61,6 +73,20 @@ import {
  * lightbox está aberto num índice que deixou de existir no novo array, o
  * `Dialog` é fechado — `open` é derivado de `fotos[lightboxIndex]` existir,
  * nunca guardado como um booleano solto que poderia dessincronizar.
+ *
+ * Registrar Baixa (Story 5.1, spec-5-1): cada linha de "Quantidade por
+ * Estoque" ganha um botão "Registrar Baixa" (`variant="outline"`,
+ * `size="sm"`), visível só quando `rankPapel(usuario?.papel ?? '') >=
+ * rankPapel('almoxarife')` (molde de `podeCadastrar`/`podeExportar`,
+ * `CatalogoPage.tsx`) — o servidor continua a autoridade real (403 para
+ * `usuario` mesmo que o botão nunca apareça, `RequireRole` decide). Clique
+ * abre um `Dialog` (estado `baixaEstoque`, distinto do lightbox de fotos)
+ * com um `Input type="number"` para a quantidade. Confirmar dispara
+ * `POST /api/produtos/{id}/estoques/{estoqueId}/baixa`; sucesso ->
+ * `toast.success`, fecha o diálogo e refaz `carregarDetalhe()` (mesma busca
+ * usada no mount/reconexão/refetch por SSE — nenhum caminho de atualização
+ * de estado paralelo); falha mostra a mensagem do servidor (que já cita a
+ * quantidade disponível no 409) DENTRO do diálogo, sem fechar.
  */
 
 interface CategoriaDetalhe {
@@ -102,6 +128,7 @@ type ErroDetalhe = 'nao-encontrado' | 'generico';
 const MENSAGEM_ERRO = 'Não foi possível carregar o produto agora. Tente novamente em instantes.';
 const MENSAGEM_NAO_ENCONTRADO = 'Produto não encontrado.';
 const MENSAGEM_SEM_ESTOQUE_REGISTRADO = 'Sem quantidade registrada por estoque.';
+const MENSAGEM_ERRO_BAIXA = 'Não foi possível registrar a baixa agora. Tente novamente em instantes.';
 
 // ProdutoDetalhePage: wrapper fino de roteamento — ver doc acima sobre por
 // que `key={id}` é essencial aqui (força remontagem completa a cada troca
@@ -118,6 +145,9 @@ export function ProdutoDetalhePage() {
 }
 
 function ProdutoDetalheConteudo({ id }: { id: string }) {
+  const { usuario } = useAuth();
+  const podeRegistrarBaixa = rankPapel(usuario?.papel ?? '') >= rankPapel('almoxarife');
+
   const [produto, setProduto] = useState<ProdutoDetalhe | null>(null);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState<ErroDetalhe | null>(null);
@@ -126,6 +156,14 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
   const [fotos, setFotos] = useState<FotoGaleria[]>([]);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const objectUrlCacheRef = useRef<Map<string, string>>(new Map());
+
+  // Diálogo de Registrar Baixa (Story 5.1): `baixaEstoque` guarda a linha
+  // (estoqueId/estoqueNome) alvo — `null` fecha o diálogo, mesmo padrão
+  // derivado de `fotoLightbox` abaixo (nenhum booleano solto separado).
+  const [baixaEstoque, setBaixaEstoque] = useState<EstoqueQuantidade | null>(null);
+  const [quantidadeBaixa, setQuantidadeBaixa] = useState('');
+  const [enviandoBaixa, setEnviandoBaixa] = useState(false);
+  const [erroBaixa, setErroBaixa] = useState<string | null>(null);
 
   // seqRef descarta qualquer resposta em voo que não corresponda mais à
   // chamada mais recente (mesma guarda de CatalogoListagem/BuscaCatalogo)
@@ -217,6 +255,50 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
     }
   }, [id, carregarFotos]);
 
+  // confirmarBaixa envia POST /api/produtos/{id}/estoques/{estoqueId}/baixa
+  // para a linha guardada em `baixaEstoque` (molde exato do POST de
+  // CadastroProdutoSection.tsx: headers com authHeaders(), body JSON). Defesa
+  // em profundidade contra duplo-submit (`desabilitado`, mesmo padrão de
+  // CadastroProdutoSection): o `disabled` do botão só reflete `enviandoBaixa`
+  // após o próximo repaint. Sucesso -> toast + fecha o diálogo + refetch via
+  // carregarDetalhe (MESMA função do mount/reconexão/SSE, nunca um caminho
+  // de atualização de estado paralelo); falha mantém o diálogo aberto e
+  // mostra a mensagem do servidor (envelope AD-14, já cita a quantidade
+  // disponível no 409) — nunca uma string genérica fixa quando o servidor
+  // devolveu uma.
+  async function confirmarBaixa() {
+    if (!baixaEstoque || enviandoBaixa || quantidadeBaixa.trim() === '') {
+      return;
+    }
+    const quantidade = Number(quantidadeBaixa);
+    if (!Number.isFinite(quantidade)) {
+      setErroBaixa('Quantidade inválida.');
+      return;
+    }
+    setEnviandoBaixa(true);
+    setErroBaixa(null);
+    try {
+      const res = await fetch(`/api/produtos/${id}/estoques/${baixaEstoque.estoqueId}/baixa`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ quantidade }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+        setErroBaixa(body.error?.message ?? MENSAGEM_ERRO_BAIXA);
+        return;
+      }
+      toast.success('Baixa registrada.');
+      setBaixaEstoque(null);
+      setQuantidadeBaixa('');
+      await carregarDetalhe();
+    } catch {
+      setErroBaixa(MENSAGEM_ERRO_BAIXA);
+    } finally {
+      setEnviandoBaixa(false);
+    }
+  }
+
   useEffect(() => {
     const desconectar = conectarRealtime(
       (evento) => {
@@ -289,9 +371,29 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
               ) : (
                 <ul className="flex flex-col gap-1">
                   {produto.porEstoque.map((linha) => (
-                    <li key={linha.estoqueId} className="text-body flex justify-between gap-4">
+                    <li
+                      key={linha.estoqueId}
+                      className="text-body flex items-center justify-between gap-4"
+                    >
                       <span>{linha.estoqueNome}</span>
-                      <span className="tabular-nums">{formatarQuantidade(linha.quantidade)}</span>
+                      <span className="flex items-center gap-3">
+                        <span className="tabular-nums">{formatarQuantidade(linha.quantidade)}</span>
+                        {podeRegistrarBaixa && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            aria-label={`Registrar Baixa em ${linha.estoqueNome}`}
+                            onClick={() => {
+                              setBaixaEstoque(linha);
+                              setQuantidadeBaixa('');
+                              setErroBaixa(null);
+                            }}
+                          >
+                            Registrar Baixa
+                          </Button>
+                        )}
+                      </span>
                     </li>
                   ))}
                 </ul>
@@ -350,6 +452,56 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
               className="max-h-full max-w-full object-contain"
             />
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Registrar Baixa (Story 5.1): controlado por `baixaEstoque` — `null`
+          fecha o diálogo. Fechar enquanto o envio está em voo é ignorado
+          (mesma defesa em profundidade do `enviandoBaixa` no botão). */}
+      <Dialog
+        open={baixaEstoque !== null}
+        onOpenChange={(open) => {
+          if (!open && !enviandoBaixa) {
+            setBaixaEstoque(null);
+            setErroBaixa(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Registrar Baixa — {baixaEstoque?.estoqueNome}</DialogTitle>
+          </DialogHeader>
+          <form
+            className="flex flex-col gap-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void confirmarBaixa();
+            }}
+          >
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="baixa-quantidade">Quantidade</Label>
+              <Input
+                id="baixa-quantidade"
+                type="number"
+                inputMode="decimal"
+                value={quantidadeBaixa}
+                onChange={(event) => setQuantidadeBaixa(event.target.value)}
+              />
+            </div>
+            {erroBaixa && (
+              <p role="alert" className="text-body text-destructive">
+                {erroBaixa}
+              </p>
+            )}
+            <DialogFooter>
+              <Button
+                type="submit"
+                disabled={enviandoBaixa || quantidadeBaixa.trim() === ''}
+              >
+                Confirmar
+              </Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
     </div>

@@ -32,7 +32,7 @@ func limparProdutosHandler(t *testing.T, db *sql.DB) {
 	// `importacao_linhas` entra pelo mesmo motivo (Story 3.3):
 	// importacao_linhas.produto_id -> produtos(id), sem CASCADE.
 	// `categorias` NUNCA é truncada aqui — seed fixo da migração 000010.
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, produto_estoque, produtos, estoques`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("falha ao limpar produtos/produto_estoque/estoques: %v", err)
 	}
 }
