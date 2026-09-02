@@ -542,6 +542,18 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.ListarMovimentacoesHandler(db))))
 
+	// Detecção de inconsistências dimensionais — Story 6.1 (Epic 6,
+	// Normalização de Dados). GET /api/normalizacao/inconsistencias fica
+	// atrás do MESMO gate de papel de GET /api/movimentacoes,
+	// RequireRole(almoxarife): 403 para `usuario`, decisão do middleware.
+	// Rota só-leitura, sem query params — a análise (parser tolerante da
+	// origem "migracao", heurística de campo único vazio da origem "nome")
+	// vive em services.AnalisarInconsistencias. Nenhuma escrita: aplicar/
+	// ignorar sugestão é Story 6.2.
+	mux.HandleFunc("GET /api/normalizacao/inconsistencias", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAlmoxarife)(
+			handlers.AnalisarInconsistenciasHandler(db))))
+
 	// Infraestrutura de tempo real (AD-2/AD-3) — Story 4.4. POST
 	// /api/realtime/ticket leva só RequireAuth: qualquer conta autenticada
 	// pode abrir sua própria conexão SSE. GET /api/realtime/stream é o único

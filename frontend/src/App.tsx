@@ -12,6 +12,7 @@ import { EsqueciSenhaPage } from '@/pages/EsqueciSenhaPage';
 import { RedefinirSenhaPage } from '@/pages/RedefinirSenhaPage';
 import { ConfiguracoesPage } from '@/pages/ConfiguracoesPage';
 import { EstoquesPage } from '@/pages/EstoquesPage';
+import { NormalizacaoPage } from '@/pages/NormalizacaoPage';
 import { AuthCallbackPage } from '@/pages/AuthCallbackPage';
 
 /**
@@ -29,10 +30,12 @@ import { AuthCallbackPage } from '@/pages/AuthCallbackPage';
  * irmãs da raiz, fora do `AppShell` e fora do
  * `RotaProtegida`. `/configuracoes` (Story 1.7, "Meu Perfil" + solicitação de
  * promoção de papel), `/estoques` (Story 2.1, tela "Locais": cadastro + lista
- * de locais de estoque, com gate de papel `almoxarife`+ na própria página) e
+ * de locais de estoque, com gate de papel `almoxarife`+ na própria página),
  * `/produtos/:id` (Story 4.4, detalhe do Produto por Estoque com atualização
- * em tempo real, sem gate de papel próprio — `usuario`+) são rotas-filhas da
- * raiz, dentro do `AppShell`/`RotaProtegida`.
+ * em tempo real, sem gate de papel próprio — `usuario`+) e `/normalizacao`
+ * (Story 6.1, "Inconsistências": detecção dimensional sob demanda, mesmo gate
+ * de papel `almoxarife`+ de `/estoques`) são rotas-filhas da raiz, dentro do
+ * `AppShell`/`RotaProtegida`.
  * A árvore do `AppShell` fica atrás do `RotaProtegida`
  * (Story 1.5): o `AuthProvider` faz o bootstrap silencioso da sessão ao
  * montar o app (silent refresh via cookie), e enquanto isso não resolve a
@@ -98,6 +101,7 @@ export const router = createBrowserRouter([
       { path: 'produtos/:id', element: <ProdutoDetalhePage /> },
       { path: 'configuracoes', element: <ConfiguracoesPage /> },
       { path: 'estoques', element: <EstoquesPage /> },
+      { path: 'normalizacao', element: <NormalizacaoPage /> },
       { path: '*', element: <PlaceholderPage /> },
     ],
   },

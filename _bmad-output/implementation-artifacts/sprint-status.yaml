@@ -83,7 +83,7 @@ development_status:
   epic-5-retrospective: optional
 
   epic-6: backlog
-  6-1-detecção-de-inconsistências-dimensionais: backlog
+  6-1-detecção-de-inconsistências-dimensionais: done
   6-2-aplicação-seletiva-de-correções: backlog
   6-3-detecção-de-duplicatas: backlog
   6-4-mesclagem-de-duplicatas-com-trilha-de-auditoria: backlog
