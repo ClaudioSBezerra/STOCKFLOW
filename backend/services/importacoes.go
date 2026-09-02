@@ -628,7 +628,7 @@ func processarProximaLinha(db *sql.DB, importacaoID string) (bool, error) {
 // significa "nenhum Produto com esse código ainda", que o chamador trata
 // como sinal para seguir o caminho de criação.
 func buscarProdutoPorCodigo(tx *sql.Tx, codigo string) (id string, templateID sql.NullString, encontrado bool, err error) {
-	const selectProdutoPorCodigo = `SELECT id, template_id FROM produtos WHERE codigo = $1`
+	const selectProdutoPorCodigo = `SELECT id, template_id FROM produtos WHERE codigo = $1 AND deleted_at IS NULL`
 	err = tx.QueryRow(selectProdutoPorCodigo, codigo).Scan(&id, &templateID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", sql.NullString{}, false, nil

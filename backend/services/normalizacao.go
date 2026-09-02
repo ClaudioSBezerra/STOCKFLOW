@@ -233,6 +233,7 @@ func AnalisarInconsistencias(db *sql.DB) ([]Sugestao, error) {
 		       espessura_valor, espessura_unidade,
 		       dimensoes_pendentes_revisao
 		FROM produtos
+		WHERE deleted_at IS NULL
 		ORDER BY nome, id`
 
 	rows, err := db.Query(q)
@@ -703,14 +704,28 @@ func dimensoesEquivalentes(a, b produtoCandidatoDuplicata) bool {
 	return true
 }
 
+// executorSQL é a interface mínima (só `Query`) compartilhada por `*sql.DB` e
+// `*sql.Tx` — permite que carregarLocaisProduto seja chamada tanto fora de
+// transação (DetectarDuplicatas, Story 6.3, leitura pontual) quanto DENTRO de
+// uma transação já aberta (MesclarDuplicatas, Story 6.4, spec-6-4): a
+// revalidação do grupo na confirmação de mesclagem precisa enxergar o estado
+// da MESMA transação que já travou as linhas de `produtos` (Always, spec-6-4:
+// "revalida, dentro da mesma transação e sob lock"), nunca uma conexão
+// separada fora dela.
+type executorSQL interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
 // carregarLocaisProduto lê `produto_estoque` inteira e devolve, por
 // `produto_id`, o conjunto de `estoque_id` onde o Produto tem linha — usado
 // por DetectarDuplicatas tanto para o pré-filtro par a par (locaisEmComumPar)
 // quanto para a validação de interseção total do componente inteiro
-// (interseccaoTotalNaoVazia). Um Produto sem nenhuma linha em
-// `produto_estoque` simplesmente não aparece como chave (equivalente a um
-// conjunto vazio para quem consulta o mapa).
-func carregarLocaisProduto(db *sql.DB) (map[string]map[string]bool, error) {
+// (interseccaoTotalNaoVazia), e por MesclarDuplicatas (Story 6.4) para
+// revalidar a interseção total do grupo submetido dentro da transação de
+// mesclagem. Um Produto sem nenhuma linha em `produto_estoque` simplesmente
+// não aparece como chave (equivalente a um conjunto vazio para quem consulta
+// o mapa).
+func carregarLocaisProduto(db executorSQL) (map[string]map[string]bool, error) {
 	rows, err := db.Query(`SELECT produto_id, estoque_id FROM produto_estoque`)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao consultar locais de produto: %w", err)
@@ -840,6 +855,7 @@ func DetectarDuplicatas(db *sql.DB) ([]GrupoDuplicata, error) {
 		       altura_valor, altura_unidade,
 		       espessura_valor, espessura_unidade
 		FROM produtos
+		WHERE deleted_at IS NULL
 		ORDER BY nome, id`
 
 	rows, err := db.Query(q)
@@ -955,4 +971,323 @@ func DetectarDuplicatas(db *sql.DB) ([]GrupoDuplicata, error) {
 	})
 
 	return grupos, nil
+}
+
+// --- Mesclagem de duplicatas com trilha de auditoria (Story 6.4, spec-6-4) -
+
+// ResultadoMesclagem é o resultado devolvido por MesclarDuplicatas — os ids
+// envolvidos e a quantidade total consolidada no Produto mantido (soma de
+// TODOS os removidos, em TODOS os `estoque_id` tocados). Tags de JSON no
+// molde exato exigido pelo Code Map de spec-6-4 (`MesclarDuplicatasHandler`
+// devolve este tipo diretamente, sem embrulho extra).
+type ResultadoMesclagem struct {
+	ProdutoMantidoID      string   `json:"produtoMantidoId"`
+	ProdutosRemovidosIDs  []string `json:"produtosRemovidosIds"`
+	QuantidadeConsolidada float64  `json:"quantidadeConsolidada"`
+}
+
+// ErroMesclagemInvalida cobre os dois casos de "grupo submetido não pode ser
+// mesclado" (Intent Contract, spec-6-4): um membro já foi soft-deletado por
+// outra execução concorrente, ou o grupo deixou de casar os critérios de
+// DetectarDuplicatas (Story 6.3) entre a listagem e a confirmação (ex. uma
+// dimensão foi corrigida no meio do caminho, Story 6.2). Mapeado para
+// 409 CONFLICT — mesmo molde de ErroEstoqueComResiduo/ErroProdutoValidacao.
+type ErroMesclagemInvalida struct {
+	Motivo string
+}
+
+func (e *ErroMesclagemInvalida) Error() string { return e.Motivo }
+
+// validarFormaMesclagem valida só a FORMA da requisição (Code Map,
+// spec-6-4) — nunca a validade do grupo em si (isso é revalidado dentro da
+// transação, sob lock, contra o estado atual do banco): `produtoMantidoID`
+// não-vazio, ao menos 1 `produtoRemovidoID`, sem duplicatas entre os
+// removidos, e o mantido não pode estar entre os removidos. Roda ANTES de
+// abrir a transação — nenhum lock é adquirido para uma requisição já
+// malformada.
+func validarFormaMesclagem(produtoMantidoID string, produtoRemovidoIDs []string) error {
+	if strings.TrimSpace(produtoMantidoID) == "" {
+		return &ErroProdutoValidacao{Mensagem: "produto mantido: id é obrigatório"}
+	}
+	if len(produtoRemovidoIDs) == 0 {
+		return &ErroProdutoValidacao{Mensagem: "produtos removidos: informe ao menos um"}
+	}
+	vistos := make(map[string]bool, len(produtoRemovidoIDs))
+	for _, id := range produtoRemovidoIDs {
+		if id == produtoMantidoID {
+			return &ErroProdutoValidacao{Mensagem: "produto mantido não pode estar entre os produtos removidos"}
+		}
+		if vistos[id] {
+			return &ErroProdutoValidacao{Mensagem: "produtos removidos: ids duplicados"}
+		}
+		vistos[id] = true
+	}
+	return nil
+}
+
+// parProdutoEstoqueMesclagem é um par (produto_id, estoque_id) tocado pela
+// consolidação de MesclarDuplicatas — usado para montar o conjunto completo
+// de pares (mantido + removidos) que precisa ser ordenado ascendente ANTES
+// de qualquer lock (AD-10, Code Map de spec-6-4), reusando
+// travarLinhaProdutoEstoque (movimentacoes.go) por par.
+type parProdutoEstoqueMesclagem struct {
+	produtoID string
+	estoqueID string
+}
+
+// MesclarDuplicatas mescla um GrupoDuplicata (Story 6.3) num único Produto
+// sobrevivente (Story 6.4, spec-6-4): soma a quantidade dos demais no
+// Produto mantido, reescreve `produto_id` nas Movimentações históricas dos
+// removidos, soft-deleta os removidos (`produtos.deleted_at`) e grava a
+// trilha de auditoria permanente (`mesclagens_duplicatas` +
+// `mesclagem_produtos_removidos`) — tudo numa ÚNICA transação.
+//
+// O serviço NUNCA confia na lista de ids enviada pelo cliente (Always,
+// spec-6-4): depois da validação de FORMA (validarFormaMesclagem, fora da
+// transação), abre a transação e trava as linhas de `produtos` (mantido +
+// removidos) em ordem ASCENDENTE de id via
+// `SELECT ... WHERE id = ANY($1) ORDER BY id FOR UPDATE` (AD-10) — um id
+// malformado (SQLSTATE 22P02) ou uma contagem de linhas menor que o
+// esperado (algum id inexistente) colapsam em *ErroMesclagemInvalida, assim
+// como qualquer membro já com `deleted_at` preenchido (mesclado por uma
+// execução concorrente). Em seguida revalida o grupo nos MESMOS critérios de
+// DetectarDuplicatas — nome normalizado igual, dimensões estruturadas
+// equivalentes par a par (dimensoesEquivalentes) e interseção total de
+// locais não-vazia (carregarLocaisProduto/interseccaoTotalNaoVazia,
+// aplicadas só ao conjunto submetido, Design Notes de spec-6-4) — qualquer
+// falha aqui também é *ErroMesclagemInvalida, nada é escrito.
+//
+// Só depois de validado o grupo: monta o conjunto de pares
+// (produto_id,estoque_id) tocados (mantido + removidos), ordena ascendente e
+// trava cada um via travarLinhaProdutoEstoque — a quantidade somada é
+// SEMPRE a lida sob esse lock, nunca um total pré-calculado (Always,
+// spec-6-4). Consolida a quantidade no mantido, deleta as linhas de
+// `produto_estoque` dos removidos, reescreve `produto_id` das Movimentações
+// dos removidos para o mantido, soft-deleta os removidos e grava a
+// auditoria — commit único.
+func MesclarDuplicatas(db *sql.DB, produtoMantidoID string, produtoRemovidoIDs []string, usuarioID string) (ResultadoMesclagem, error) {
+	if err := validarFormaMesclagem(produtoMantidoID, produtoRemovidoIDs); err != nil {
+		return ResultadoMesclagem{}, err
+	}
+
+	todosIDsOrdenados := append([]string{produtoMantidoID}, produtoRemovidoIDs...)
+	sort.Strings(todosIDsOrdenados)
+
+	tx, err := db.Begin()
+	if err != nil {
+		return ResultadoMesclagem{}, fmt.Errorf("falha ao iniciar transação de mesclagem: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
+
+	// --- trava produtos (mantido+removidos) em ordem ascendente de id, AD-10
+
+	const qLockProdutos = `
+		SELECT id, nome, deleted_at,
+		       comprimento_valor, comprimento_unidade,
+		       largura_valor, largura_unidade,
+		       diametro_valor, diametro_unidade,
+		       altura_valor, altura_unidade,
+		       espessura_valor, espessura_unidade
+		FROM produtos
+		WHERE id = ANY($1)
+		ORDER BY id
+		FOR UPDATE`
+
+	rows, err := tx.Query(qLockProdutos, pq.Array(todosIDsOrdenados))
+	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation {
+			return ResultadoMesclagem{}, &ErroMesclagemInvalida{Motivo: "grupo inválido: identificador malformado"}
+		}
+		return ResultadoMesclagem{}, fmt.Errorf("falha ao travar produtos para mesclagem: %w", err)
+	}
+	defer rows.Close()
+
+	var candidatos []produtoCandidatoDuplicata
+	for rows.Next() {
+		var id, nome string
+		var deletedAt sql.NullTime
+		var comp, larg, diam, alt, esp parDimensao
+		if err := rows.Scan(
+			&id, &nome, &deletedAt,
+			&comp.valor, &comp.unidade,
+			&larg.valor, &larg.unidade,
+			&diam.valor, &diam.unidade,
+			&alt.valor, &alt.unidade,
+			&esp.valor, &esp.unidade,
+		); err != nil {
+			return ResultadoMesclagem{}, fmt.Errorf("falha ao ler produto travado para mesclagem: %w", err)
+		}
+		if deletedAt.Valid {
+			return ResultadoMesclagem{}, &ErroMesclagemInvalida{Motivo: "um ou mais produtos já foram mesclados por outra execução"}
+		}
+		candidatos = append(candidatos, produtoCandidatoDuplicata{
+			id:              id,
+			nome:            nome,
+			nomeNormalizado: normalizarNomeProduto(nome),
+			comprimento:     comp,
+			largura:         larg,
+			diametro:        diam,
+			altura:          alt,
+			espessura:       esp,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return ResultadoMesclagem{}, fmt.Errorf("falha ao iterar produtos travados para mesclagem: %w", err)
+	}
+
+	if len(candidatos) != len(todosIDsOrdenados) {
+		return ResultadoMesclagem{}, &ErroMesclagemInvalida{Motivo: "grupo inválido: um ou mais produtos não existem"}
+	}
+
+	// --- revalida o grupo nos mesmos critérios de DetectarDuplicatas -------
+
+	var mantido produtoCandidatoDuplicata
+	achouMantido := false
+	for _, c := range candidatos {
+		if c.id == produtoMantidoID {
+			mantido = c
+			achouMantido = true
+			break
+		}
+	}
+	if !achouMantido {
+		return ResultadoMesclagem{}, &ErroMesclagemInvalida{Motivo: "grupo inválido: produto mantido não encontrado"}
+	}
+
+	for _, c := range candidatos {
+		if c.id == produtoMantidoID {
+			continue
+		}
+		if c.nomeNormalizado != mantido.nomeNormalizado || !dimensoesEquivalentes(mantido, c) {
+			return ResultadoMesclagem{}, &ErroMesclagemInvalida{Motivo: "grupo não é mais uma duplicata válida"}
+		}
+	}
+
+	locais, err := carregarLocaisProduto(tx)
+	if err != nil {
+		return ResultadoMesclagem{}, err
+	}
+	if !interseccaoTotalNaoVazia(candidatos, locais) {
+		return ResultadoMesclagem{}, &ErroMesclagemInvalida{Motivo: "grupo não é mais uma duplicata válida"}
+	}
+
+	// --- consolida produto_estoque: trava todos os pares tocados em ordem --
+
+	paresRemovidosRows, err := tx.Query(
+		`SELECT produto_id, estoque_id FROM produto_estoque WHERE produto_id = ANY($1)`,
+		pq.Array(produtoRemovidoIDs),
+	)
+	if err != nil {
+		return ResultadoMesclagem{}, fmt.Errorf("falha ao consultar locais dos produtos removidos: %w", err)
+	}
+	defer paresRemovidosRows.Close()
+
+	var paresRemovidos []parProdutoEstoqueMesclagem
+	estoqueIDsTocados := make(map[string]bool)
+	for paresRemovidosRows.Next() {
+		var p parProdutoEstoqueMesclagem
+		if err := paresRemovidosRows.Scan(&p.produtoID, &p.estoqueID); err != nil {
+			return ResultadoMesclagem{}, fmt.Errorf("falha ao ler local de produto removido: %w", err)
+		}
+		paresRemovidos = append(paresRemovidos, p)
+		estoqueIDsTocados[p.estoqueID] = true
+	}
+	if err := paresRemovidosRows.Err(); err != nil {
+		return ResultadoMesclagem{}, fmt.Errorf("falha ao iterar locais de produtos removidos: %w", err)
+	}
+
+	pares := append([]parProdutoEstoqueMesclagem(nil), paresRemovidos...)
+	for estoqueID := range estoqueIDsTocados {
+		pares = append(pares, parProdutoEstoqueMesclagem{produtoID: produtoMantidoID, estoqueID: estoqueID})
+	}
+	sort.Slice(pares, func(i, j int) bool {
+		if pares[i].produtoID != pares[j].produtoID {
+			return pares[i].produtoID < pares[j].produtoID
+		}
+		return pares[i].estoqueID < pares[j].estoqueID
+	})
+
+	quantidadeTravada := make(map[string]map[string]float64, len(pares))
+	for _, p := range pares {
+		q, err := travarLinhaProdutoEstoque(tx, p.produtoID, p.estoqueID)
+		if err != nil {
+			return ResultadoMesclagem{}, fmt.Errorf("falha ao travar produto_estoque (%s,%s) na mesclagem: %w", p.produtoID, p.estoqueID, err)
+		}
+		if quantidadeTravada[p.produtoID] == nil {
+			quantidadeTravada[p.produtoID] = make(map[string]float64)
+		}
+		quantidadeTravada[p.produtoID][p.estoqueID] = q
+	}
+
+	somaPorEstoque := make(map[string]float64, len(estoqueIDsTocados))
+	quantidadePorRemovido := make(map[string]float64, len(produtoRemovidoIDs))
+	for _, id := range produtoRemovidoIDs {
+		quantidadePorRemovido[id] = 0
+	}
+	var quantidadeTotal float64
+	for _, p := range paresRemovidos {
+		q := quantidadeTravada[p.produtoID][p.estoqueID]
+		somaPorEstoque[p.estoqueID] += q
+		quantidadePorRemovido[p.produtoID] += q
+		quantidadeTotal += q
+	}
+
+	for estoqueID, soma := range somaPorEstoque {
+		if _, err := tx.Exec(
+			`UPDATE produto_estoque SET quantidade = quantidade + $1 WHERE produto_id = $2 AND estoque_id = $3`,
+			soma, produtoMantidoID, estoqueID,
+		); err != nil {
+			return ResultadoMesclagem{}, fmt.Errorf("falha ao consolidar quantidade no produto mantido: %w", err)
+		}
+	}
+
+	// --- deleta produto_estoque dos removidos (só depois de somado) --------
+
+	if _, err := tx.Exec(`DELETE FROM produto_estoque WHERE produto_id = ANY($1)`, pq.Array(produtoRemovidoIDs)); err != nil {
+		return ResultadoMesclagem{}, fmt.Errorf("falha ao remover produto_estoque dos produtos removidos: %w", err)
+	}
+
+	// --- reescreve movimentacoes ANTES do soft-delete (preserva a invariante)
+
+	if _, err := tx.Exec(
+		`UPDATE movimentacoes SET produto_id = $1 WHERE produto_id = ANY($2)`,
+		produtoMantidoID, pq.Array(produtoRemovidoIDs),
+	); err != nil {
+		return ResultadoMesclagem{}, fmt.Errorf("falha ao reescrever produto_id das movimentações: %w", err)
+	}
+
+	// --- soft-delete dos removidos -------------------------------------
+
+	if _, err := tx.Exec(`UPDATE produtos SET deleted_at = now() WHERE id = ANY($1)`, pq.Array(produtoRemovidoIDs)); err != nil {
+		return ResultadoMesclagem{}, fmt.Errorf("falha ao soft-deletar produtos removidos: %w", err)
+	}
+
+	// --- trilha de auditoria permanente ---------------------------------
+
+	var mesclagemID string
+	if err := tx.QueryRow(
+		`INSERT INTO mesclagens_duplicatas (produto_mantido_id, usuario_id) VALUES ($1, $2) RETURNING id`,
+		produtoMantidoID, usuarioID,
+	).Scan(&mesclagemID); err != nil {
+		return ResultadoMesclagem{}, fmt.Errorf("falha ao gravar auditoria de mesclagem: %w", err)
+	}
+	for _, removidoID := range produtoRemovidoIDs {
+		if _, err := tx.Exec(
+			`INSERT INTO mesclagem_produtos_removidos (mesclagem_id, produto_removido_id, quantidade_consolidada) VALUES ($1, $2, $3)`,
+			mesclagemID, removidoID, quantidadePorRemovido[removidoID],
+		); err != nil {
+			return ResultadoMesclagem{}, fmt.Errorf("falha ao gravar produto removido na auditoria de mesclagem: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return ResultadoMesclagem{}, fmt.Errorf("falha ao commitar mesclagem: %w", err)
+	}
+
+	return ResultadoMesclagem{
+		ProdutoMantidoID:      produtoMantidoID,
+		ProdutosRemovidosIDs:  produtoRemovidoIDs,
+		QuantidadeConsolidada: quantidadeTotal,
+	}, nil
 }

@@ -903,3 +903,248 @@ func TestSugestaoIgnoradaHandler_500FalhaDeBanco(t *testing.T) {
 		t.Errorf("code = %q, want INTERNAL_ERROR", env.Error.Code)
 	}
 }
+
+// --- MesclarDuplicatasHandler: I/O Matrix de spec-6-4 na fronteira HTTP ----
+
+// postMesclar despacha POST /api/normalizacao/mesclar pela MESMA composição
+// de newMux (main.go): RequireAuth -> RequireRole(almoxarife) ->
+// MesclarDuplicatasHandler. Mesmo molde de postCorrecoes.
+func postMesclar(db *sql.DB, registro *realtime.Registry, authHeader, body string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/normalizacao/mesclar",
+		middleware.RequireAuth(db, testJWTSecret)(
+			middleware.RequireRole(services.PapelAlmoxarife)(
+				MesclarDuplicatasHandler(db, registro))))
+	r := httptest.NewRequest(http.MethodPost, "/api/normalizacao/mesclar", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+// TestMesclarDuplicatasHandler_200 prova o caminho de sucesso na fronteira
+// HTTP: 200 com o formato de fio exato `{"produtoMantidoId",
+// "produtosRemovidosIds","quantidadeConsolidada"}` e os 3 eventos em tempo
+// real do Always (produtos updated/deleted + movimentacoes updated).
+func TestMesclarDuplicatasHandler_200(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Almox Mesclar 200", "mesclar-200-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "mesclar-200-almox@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Estoque Mesclar Handler 200")
+	if err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+	produtoA := seedProdutoComEstoqueHandler(t, db, "Tubo PVC 25mm", estoque.ID, services.CriarProdutoInput{
+		Diametro:          &services.DimensaoInput{Valor: ptrFloatHandler(25), Unidade: ptrStrHandler("mm")},
+		QuantidadeInicial: 5,
+	})
+	produtoB := seedProdutoComEstoqueHandler(t, db, "Tubo PVC 25mm", estoque.ID, services.CriarProdutoInput{
+		Diametro:          &services.DimensaoInput{Valor: ptrFloatHandler(25), Unidade: ptrStrHandler("mm")},
+		QuantidadeInicial: 3,
+	})
+
+	registro := realtime.NewRegistry()
+	eventos, cancelar := registro.Subscribe()
+	defer cancelar()
+
+	body := `{"produtoMantidoId":"` + produtoA + `","produtoRemovidoIds":["` + produtoB + `"]}`
+	w := postMesclar(db, registro, "Bearer "+token, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		ProdutoMantidoID      string   `json:"produtoMantidoId"`
+		ProdutosRemovidosIDs  []string `json:"produtosRemovidosIds"`
+		QuantidadeConsolidada float64  `json:"quantidadeConsolidada"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if resp.ProdutoMantidoID != produtoA {
+		t.Errorf("produtoMantidoId = %q, want %q", resp.ProdutoMantidoID, produtoA)
+	}
+	if len(resp.ProdutosRemovidosIDs) != 1 || resp.ProdutosRemovidosIDs[0] != produtoB {
+		t.Errorf("produtosRemovidosIds = %+v, want [%s]", resp.ProdutosRemovidosIDs, produtoB)
+	}
+	if resp.QuantidadeConsolidada != 3 {
+		t.Errorf("quantidadeConsolidada = %v, want 3", resp.QuantidadeConsolidada)
+	}
+
+	var quantidade float64
+	if err := db.QueryRow(
+		`SELECT quantidade FROM produto_estoque WHERE produto_id = $1 AND estoque_id = $2`,
+		produtoA, estoque.ID,
+	).Scan(&quantidade); err != nil {
+		t.Fatalf("falha ao ler quantidade consolidada: %v", err)
+	}
+	if quantidade != 8 {
+		t.Errorf("quantidade(A,X) = %v, want 8", quantidade)
+	}
+
+	// Os 3 eventos em tempo real do Always: produtos updated (mantido),
+	// produtos deleted (removido) e um único movimentacoes updated.
+	vistos := map[string]int{}
+	for i := 0; i < 3; i++ {
+		select {
+		case ev := <-eventos:
+			vistos[ev.Resource+":"+ev.Change]++
+		case <-time.After(time.Second):
+			t.Fatalf("esperava 3 eventos, recebeu %d: %+v", i, vistos)
+		}
+	}
+	if vistos["produtos:updated"] != 1 || vistos["produtos:deleted"] != 1 || vistos["movimentacoes:updated"] != 1 {
+		t.Errorf("eventos = %+v, want 1 produtos:updated + 1 produtos:deleted + 1 movimentacoes:updated", vistos)
+	}
+}
+
+// TestMesclarDuplicatasHandler_400PayloadInvalido prova que um corpo JSON
+// malformado devolve 400 VALIDATION_ERROR sem chamar o service.
+func TestMesclarDuplicatasHandler_400PayloadInvalido(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Almox Mesclar 400", "mesclar-400-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "mesclar-400-almox@empresa.com", "senha-123456")
+
+	w := postMesclar(db, realtime.NewRegistry(), "Bearer "+token, `{"produtoMantidoId": "abc",`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "VALIDATION_ERROR" {
+		t.Errorf("code = %q, want VALIDATION_ERROR", env.Error.Code)
+	}
+}
+
+// TestMesclarDuplicatasHandler_400FormaInvalida prova que uma requisição bem
+// formada como JSON mas com forma inválida para o service (sem produtos
+// removidos) também devolve 400 VALIDATION_ERROR — mapeado a partir de
+// *services.ErroProdutoValidacao.
+func TestMesclarDuplicatasHandler_400FormaInvalida(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Almox Mesclar 400 Forma", "mesclar-400-forma-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "mesclar-400-forma-almox@empresa.com", "senha-123456")
+
+	produtoA := seedProdutoComEstoqueHandlerSimples(t, db, "Produto Mesclar Forma A")
+
+	body := `{"produtoMantidoId":"` + produtoA + `","produtoRemovidoIds":[]}`
+	w := postMesclar(db, realtime.NewRegistry(), "Bearer "+token, body)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "VALIDATION_ERROR" {
+		t.Errorf("code = %q, want VALIDATION_ERROR", env.Error.Code)
+	}
+}
+
+// TestMesclarDuplicatasHandler_403PapelUsuario prova a linha "Papel usuario
+// chama a rota diretamente": 403 FORBIDDEN, decidido por RequireRole — o
+// handler nunca executa, mesmo molde de TestRegistrarBaixaHandler_403PapelUsuario.
+func TestMesclarDuplicatasHandler_403PapelUsuario(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Usuario Mesclar 403", "mesclar-403-usuario@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "mesclar-403-usuario@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Estoque Mesclar Handler 403")
+	if err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+	produtoA := seedProdutoComEstoqueHandler(t, db, "Tubo Mesclar 403", estoque.ID, services.CriarProdutoInput{QuantidadeInicial: 5})
+	produtoB := seedProdutoComEstoqueHandler(t, db, "Tubo Mesclar 403", estoque.ID, services.CriarProdutoInput{QuantidadeInicial: 3})
+
+	body := `{"produtoMantidoId":"` + produtoA + `","produtoRemovidoIds":["` + produtoB + `"]}`
+	w := postMesclar(db, realtime.NewRegistry(), "Bearer "+token, body)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body=%s)", w.Code, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "FORBIDDEN" {
+		t.Errorf("code = %q, want FORBIDDEN", env.Error.Code)
+	}
+
+	if deletado := produtoDeletedAtHandler(t, db, produtoB); deletado {
+		t.Errorf("B não deveria ter sido tocado — o handler nunca deveria ter executado")
+	}
+}
+
+// TestMesclarDuplicatasHandler_401SemToken prova que uma requisição sem
+// Authorization -> 401, produzido só por RequireAuth.
+func TestMesclarDuplicatasHandler_401SemToken(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+
+	w := postMesclar(db, realtime.NewRegistry(), "", `{"produtoMantidoId":"x","produtoRemovidoIds":["y"]}`)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+}
+
+// TestMesclarDuplicatasHandler_409ProdutoJaMesclado prova a linha "Produto já
+// mesclado por execução concorrente" na fronteira HTTP: 409 CONFLICT,
+// mapeado a partir de *services.ErroMesclagemInvalida.
+func TestMesclarDuplicatasHandler_409ProdutoJaMesclado(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Almox Mesclar 409", "mesclar-409-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "mesclar-409-almox@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Estoque Mesclar Handler 409")
+	if err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+	produtoA := seedProdutoComEstoqueHandler(t, db, "Anel Vedacao Mesclar 409", estoque.ID, services.CriarProdutoInput{QuantidadeInicial: 2})
+	produtoB := seedProdutoComEstoqueHandler(t, db, "Anel Vedacao Mesclar 409", estoque.ID, services.CriarProdutoInput{QuantidadeInicial: 3})
+
+	if _, err := db.Exec(`UPDATE produtos SET deleted_at = now() WHERE id = $1`, produtoB); err != nil {
+		t.Fatalf("falha ao simular mesclagem concorrente de B: %v", err)
+	}
+
+	body := `{"produtoMantidoId":"` + produtoA + `","produtoRemovidoIds":["` + produtoB + `"]}`
+	w := postMesclar(db, realtime.NewRegistry(), "Bearer "+token, body)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "CONFLICT" {
+		t.Errorf("code = %q, want CONFLICT", env.Error.Code)
+	}
+
+	var quantidade float64
+	if err := db.QueryRow(
+		`SELECT quantidade FROM produto_estoque WHERE produto_id = $1 AND estoque_id = $2`,
+		produtoA, estoque.ID,
+	).Scan(&quantidade); err != nil {
+		t.Fatalf("falha ao ler quantidade de A: %v", err)
+	}
+	if quantidade != 2 {
+		t.Errorf("quantidade(A,X) não deveria ter mudado, got %v, want 2", quantidade)
+	}
+}
+
+// seedProdutoComEstoqueHandlerSimples cadastra um Produto com `nome`, num
+// Estoque novo dedicado — usado pelos testes que só precisam de um id de
+// Produto válido, sem se importar com dimensões/local.
+func seedProdutoComEstoqueHandlerSimples(t *testing.T, db *sql.DB, nome string) string {
+	t.Helper()
+	estoque, err := services.CriarEstoque(db, "Estoque "+nome)
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	return seedProdutoComEstoqueHandler(t, db, nome, estoque.ID, services.CriarProdutoInput{})
+}
+
+// produtoDeletedAtHandler devolve true quando `produtos.deleted_at` do
+// Produto está preenchido.
+func produtoDeletedAtHandler(t *testing.T, db *sql.DB, produtoID string) bool {
+	t.Helper()
+	var deletedAt sql.NullTime
+	if err := db.QueryRow(`SELECT deleted_at FROM produtos WHERE id = $1`, produtoID).Scan(&deletedAt); err != nil {
+		t.Fatalf("falha ao ler deleted_at de %s: %v", produtoID, err)
+	}
+	return deletedAt.Valid
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 )
 
 // seedProdutoNormalizacao cadastra um Produto com o `nome` e as dimensões
@@ -1173,5 +1174,440 @@ func TestDetectarDuplicatas_FalhaDeBancoAoCarregarLocais(t *testing.T) {
 
 	if _, err := DetectarDuplicatas(db); err == nil {
 		t.Fatal("DetectarDuplicatas deveria falhar com a tabela produto_estoque indisponível")
+	}
+}
+
+// --- MesclarDuplicatas: I/O Matrix de spec-6-4 -----------------------------
+
+// seedProdutoParaMesclagem cadastra um Produto com `nome`, as dimensões
+// dadas, vinculado a `estoqueID` (já existente) com `quantidade` inicial —
+// molde de seedProdutoComEstoque (Story 6.3), acrescido do controle de
+// quantidade que os testes de mesclagem precisam.
+func seedProdutoParaMesclagem(t *testing.T, db *sql.DB, nome, estoqueID string, quantidade float64, dims CriarProdutoInput) string {
+	t.Helper()
+	dims.Nome = nome
+	dims.CategoriaID = categoriaIDPorCodigo(t, db, "04.001")
+	dims.EstoqueID = estoqueID
+	dims.QuantidadeInicial = quantidade
+	produto, err := CriarProduto(db, dims)
+	if err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+	return produto.ID
+}
+
+// quantidadeProdutoEstoque lê a quantidade de um par (produtoID,estoqueID) —
+// 0 quando a linha não existe (mesmo colapso `COALESCE` usado em produção).
+func quantidadeProdutoEstoque(t *testing.T, db *sql.DB, produtoID, estoqueID string) float64 {
+	t.Helper()
+	var quantidade float64
+	err := db.QueryRow(
+		`SELECT quantidade FROM produto_estoque WHERE produto_id = $1 AND estoque_id = $2`,
+		produtoID, estoqueID,
+	).Scan(&quantidade)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0
+	}
+	if err != nil {
+		t.Fatalf("falha ao ler produto_estoque(%s,%s): %v", produtoID, estoqueID, err)
+	}
+	return quantidade
+}
+
+// produtoDeletedAt lê `deleted_at` de um Produto — nil quando ainda ativo.
+func produtoDeletedAt(t *testing.T, db *sql.DB, produtoID string) *time.Time {
+	t.Helper()
+	var deletedAt sql.NullTime
+	if err := db.QueryRow(`SELECT deleted_at FROM produtos WHERE id = $1`, produtoID).Scan(&deletedAt); err != nil {
+		t.Fatalf("falha ao ler deleted_at de %s: %v", produtoID, err)
+	}
+	if !deletedAt.Valid {
+		return nil
+	}
+	return &deletedAt.Time
+}
+
+func contarMesclagens(t *testing.T, db *sql.DB) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM mesclagens_duplicatas`).Scan(&n); err != nil {
+		t.Fatalf("falha ao contar mesclagens_duplicatas: %v", err)
+	}
+	return n
+}
+
+func contarMovimentacoesDoProduto(t *testing.T, db *sql.DB, produtoID string) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM movimentacoes WHERE produto_id = $1`, produtoID).Scan(&n); err != nil {
+		t.Fatalf("falha ao contar movimentações do produto %s: %v", produtoID, err)
+	}
+	return n
+}
+
+// TestMesclarDuplicatas_MesclagemSimples prova a linha "Mesclagem simples" da
+// I/O Matrix: A(qtd 5, Estoque X) + B(qtd 3, Estoque X), mantém A ->
+// produto_estoque(A,X).quantidade=8; B com deleted_at setado; 1 linha em
+// mesclagens_duplicatas + 1 em mesclagem_produtos_removidos.
+func TestMesclarDuplicatas_MesclagemSimples(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Estoque Mesclagem Simples")
+	if err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+	usuarioID := semearConta(t, db, "Almox Mesclagem Simples", "mesclagem-simples-almox@empresa.com", PapelAlmoxarife, 0)
+
+	produtoA := seedProdutoParaMesclagem(t, db, "Tubo PVC 25mm", estoque.ID, 5, CriarProdutoInput{
+		Diametro: &DimensaoInput{Valor: ptrFloat(25), Unidade: ptrStr("mm")},
+	})
+	produtoB := seedProdutoParaMesclagem(t, db, "Tubo PVC 25mm", estoque.ID, 3, CriarProdutoInput{
+		Diametro: &DimensaoInput{Valor: ptrFloat(25), Unidade: ptrStr("mm")},
+	})
+
+	resultado, err := MesclarDuplicatas(db, produtoA, []string{produtoB}, usuarioID)
+	if err != nil {
+		t.Fatalf("MesclarDuplicatas: %v", err)
+	}
+	if resultado.ProdutoMantidoID != produtoA {
+		t.Errorf("ProdutoMantidoID = %q, want %q", resultado.ProdutoMantidoID, produtoA)
+	}
+	if len(resultado.ProdutosRemovidosIDs) != 1 || resultado.ProdutosRemovidosIDs[0] != produtoB {
+		t.Errorf("ProdutosRemovidosIDs = %+v, want [%s]", resultado.ProdutosRemovidosIDs, produtoB)
+	}
+	if resultado.QuantidadeConsolidada != 3 {
+		t.Errorf("QuantidadeConsolidada = %v, want 3", resultado.QuantidadeConsolidada)
+	}
+
+	if q := quantidadeProdutoEstoque(t, db, produtoA, estoque.ID); q != 8 {
+		t.Errorf("quantidade(A,X) = %v, want 8", q)
+	}
+	if q := quantidadeProdutoEstoque(t, db, produtoB, estoque.ID); q != 0 {
+		t.Errorf("quantidade(B,X) = %v, want 0 (linha deveria ter sido deletada)", q)
+	}
+	var existeLinhaB bool
+	if err := db.QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM produto_estoque WHERE produto_id = $1)`, produtoB,
+	).Scan(&existeLinhaB); err != nil {
+		t.Fatalf("falha ao checar produto_estoque de B: %v", err)
+	}
+	if existeLinhaB {
+		t.Errorf("produto_estoque de B deveria ter sido deletado, não zerado")
+	}
+
+	if produtoDeletedAt(t, db, produtoA) != nil {
+		t.Errorf("A não deveria estar soft-deletado")
+	}
+	if produtoDeletedAt(t, db, produtoB) == nil {
+		t.Errorf("B deveria estar soft-deletado")
+	}
+
+	if n := contarMesclagens(t, db); n != 1 {
+		t.Errorf("mesclagens_duplicatas tem %d linhas, want 1", n)
+	}
+	var mantidoGravado, usuarioGravado string
+	if err := db.QueryRow(
+		`SELECT produto_mantido_id, usuario_id FROM mesclagens_duplicatas`,
+	).Scan(&mantidoGravado, &usuarioGravado); err != nil {
+		t.Fatalf("falha ao ler mesclagens_duplicatas: %v", err)
+	}
+	if mantidoGravado != produtoA || usuarioGravado != usuarioID {
+		t.Errorf("mesclagens_duplicatas = (%s,%s), want (%s,%s)", mantidoGravado, usuarioGravado, produtoA, usuarioID)
+	}
+
+	var nRemovidos int
+	if err := db.QueryRow(`SELECT count(*) FROM mesclagem_produtos_removidos`).Scan(&nRemovidos); err != nil {
+		t.Fatalf("falha ao contar mesclagem_produtos_removidos: %v", err)
+	}
+	var removidoGravado string
+	var quantidadeGravada float64
+	if err := db.QueryRow(
+		`SELECT produto_removido_id, quantidade_consolidada FROM mesclagem_produtos_removidos WHERE produto_removido_id = $1`,
+		produtoB,
+	).Scan(&removidoGravado, &quantidadeGravada); err != nil {
+		t.Fatalf("falha ao ler mesclagem_produtos_removidos: %v", err)
+	}
+	if nRemovidos != 1 || removidoGravado != produtoB || quantidadeGravada != 3 {
+		t.Errorf("mesclagem_produtos_removidos = (%d,%s,%v), want (1,%s,3)", nRemovidos, removidoGravado, quantidadeGravada, produtoB)
+	}
+}
+
+// TestMesclarDuplicatas_RemovidoComHistoricoDeMovimentacoes prova a linha
+// "Removido com histórico de Movimentações": as Movimentações de B passam a
+// `produto_id=A`, e a invariante "soma de Movimentações == quantidade atual"
+// se preserva sem nenhuma Movimentação nova.
+func TestMesclarDuplicatas_RemovidoComHistoricoDeMovimentacoes(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Estoque Mesclagem Historico")
+	if err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+	usuarioID := semearConta(t, db, "Almox Mesclagem Historico", "mesclagem-historico-almox@empresa.com", PapelAlmoxarife, 0)
+
+	produtoA := seedProdutoParaMesclagem(t, db, "Cabo Flexivel 4mm", estoque.ID, 10, CriarProdutoInput{
+		Diametro: &DimensaoInput{Valor: ptrFloat(4), Unidade: ptrStr("mm")},
+	})
+	produtoB := seedProdutoParaMesclagem(t, db, "Cabo Flexivel 4mm", estoque.ID, 5, CriarProdutoInput{
+		Diametro: &DimensaoInput{Valor: ptrFloat(4), Unidade: ptrStr("mm")},
+	})
+
+	if _, err := RegistrarBaixa(db, produtoB, estoque.ID, usuarioID, 1); err != nil {
+		t.Fatalf("RegistrarBaixa 1: %v", err)
+	}
+	if _, err := RegistrarBaixa(db, produtoB, estoque.ID, usuarioID, 1); err != nil {
+		t.Fatalf("RegistrarBaixa 2: %v", err)
+	}
+	// B agora tem 3 de saldo (5 - 1 - 1) e 2 linhas em movimentacoes.
+	if q := quantidadeProdutoEstoque(t, db, produtoB, estoque.ID); q != 3 {
+		t.Fatalf("saldo de B antes da mesclagem = %v, want 3", q)
+	}
+	if n := contarMovimentacoesDoProduto(t, db, produtoB); n != 2 {
+		t.Fatalf("movimentações de B antes da mesclagem = %d, want 2", n)
+	}
+
+	resultado, err := MesclarDuplicatas(db, produtoA, []string{produtoB}, usuarioID)
+	if err != nil {
+		t.Fatalf("MesclarDuplicatas: %v", err)
+	}
+	if resultado.QuantidadeConsolidada != 3 {
+		t.Errorf("QuantidadeConsolidada = %v, want 3", resultado.QuantidadeConsolidada)
+	}
+
+	if q := quantidadeProdutoEstoque(t, db, produtoA, estoque.ID); q != 13 {
+		t.Errorf("quantidade(A,X) = %v, want 13 (10+3)", q)
+	}
+	if n := contarMovimentacoesDoProduto(t, db, produtoB); n != 0 {
+		t.Errorf("movimentações de B depois da mesclagem = %d, want 0 (todas reescritas para A)", n)
+	}
+	if n := contarMovimentacoesDoProduto(t, db, produtoA); n != 2 {
+		t.Errorf("movimentações de A depois da mesclagem = %d, want 2 (as 2 antigas de B)", n)
+	}
+}
+
+// TestMesclarDuplicatas_GrupoDeTresLocaisEmIntersecaoTotal prova a linha
+// "Grupo de 3+, locais em interseção total": A, B e C mesclados juntos, B e C
+// somados em A e soft-deletados.
+func TestMesclarDuplicatas_GrupoDeTresLocaisEmIntersecaoTotal(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Estoque Mesclagem Tres Membros")
+	if err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+	usuarioID := semearConta(t, db, "Almox Mesclagem Tres Membros", "mesclagem-tres-almox@empresa.com", PapelAlmoxarife, 0)
+
+	nome := "Joelho PVC 90"
+	produtoA := seedProdutoParaMesclagem(t, db, nome, estoque.ID, 2, CriarProdutoInput{})
+	produtoB := seedProdutoParaMesclagem(t, db, nome, estoque.ID, 3, CriarProdutoInput{})
+	produtoC := seedProdutoParaMesclagem(t, db, nome, estoque.ID, 4, CriarProdutoInput{})
+
+	resultado, err := MesclarDuplicatas(db, produtoA, []string{produtoB, produtoC}, usuarioID)
+	if err != nil {
+		t.Fatalf("MesclarDuplicatas: %v", err)
+	}
+	if resultado.QuantidadeConsolidada != 7 {
+		t.Errorf("QuantidadeConsolidada = %v, want 7 (3+4)", resultado.QuantidadeConsolidada)
+	}
+	if q := quantidadeProdutoEstoque(t, db, produtoA, estoque.ID); q != 9 {
+		t.Errorf("quantidade(A,X) = %v, want 9 (2+3+4)", q)
+	}
+	if produtoDeletedAt(t, db, produtoB) == nil {
+		t.Errorf("B deveria estar soft-deletado")
+	}
+	if produtoDeletedAt(t, db, produtoC) == nil {
+		t.Errorf("C deveria estar soft-deletado")
+	}
+
+	var nRemovidos int
+	if err := db.QueryRow(`SELECT count(*) FROM mesclagem_produtos_removidos`).Scan(&nRemovidos); err != nil {
+		t.Fatalf("falha ao contar mesclagem_produtos_removidos: %v", err)
+	}
+	if nRemovidos != 2 {
+		t.Errorf("mesclagem_produtos_removidos tem %d linhas, want 2", nRemovidos)
+	}
+}
+
+// TestMesclarDuplicatas_ProdutoJaMescladoPorExecucaoConcorrente prova a linha
+// "Produto já mesclado por execução concorrente": B já está com deleted_at
+// setado quando a mesclagem tenta travar -> *ErroMesclagemInvalida, rollback
+// completo, nada escrito.
+func TestMesclarDuplicatas_ProdutoJaMescladoPorExecucaoConcorrente(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Estoque Mesclagem Ja Mesclado")
+	if err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+	usuarioID := semearConta(t, db, "Almox Mesclagem Ja Mesclado", "mesclagem-ja-mesclado-almox@empresa.com", PapelAlmoxarife, 0)
+
+	produtoA := seedProdutoParaMesclagem(t, db, "Anel Vedacao", estoque.ID, 2, CriarProdutoInput{})
+	produtoB := seedProdutoParaMesclagem(t, db, "Anel Vedacao", estoque.ID, 3, CriarProdutoInput{})
+
+	if _, err := db.Exec(`UPDATE produtos SET deleted_at = now() WHERE id = $1`, produtoB); err != nil {
+		t.Fatalf("falha ao simular mesclagem concorrente de B: %v", err)
+	}
+
+	_, err = MesclarDuplicatas(db, produtoA, []string{produtoB}, usuarioID)
+	var erroInvalida *ErroMesclagemInvalida
+	if !errors.As(err, &erroInvalida) {
+		t.Fatalf("err = %v, want *ErroMesclagemInvalida", err)
+	}
+
+	if q := quantidadeProdutoEstoque(t, db, produtoA, estoque.ID); q != 2 {
+		t.Errorf("quantidade(A,X) não deveria ter mudado, got %v, want 2", q)
+	}
+	if n := contarMesclagens(t, db); n != 0 {
+		t.Errorf("mesclagens_duplicatas deveria continuar vazia, tem %d linhas", n)
+	}
+}
+
+// TestMesclarDuplicatas_GrupoNaoEhMaisValido prova a linha "Grupo não é mais
+// válido": a dimensão de B foi corrigida entre a listagem e a confirmação,
+// deixando de ser equivalente à de A -> *ErroMesclagemInvalida, nada escrito.
+func TestMesclarDuplicatas_GrupoNaoEhMaisValido(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Estoque Mesclagem Grupo Invalido")
+	if err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+	usuarioID := semearConta(t, db, "Almox Mesclagem Grupo Invalido", "mesclagem-grupo-invalido-almox@empresa.com", PapelAlmoxarife, 0)
+
+	produtoA := seedProdutoParaMesclagem(t, db, "Tubo PVC 25mm", estoque.ID, 2, CriarProdutoInput{
+		Diametro: &DimensaoInput{Valor: ptrFloat(25), Unidade: ptrStr("mm")},
+	})
+	produtoB := seedProdutoParaMesclagem(t, db, "Tubo PVC 25mm", estoque.ID, 3, CriarProdutoInput{
+		Diametro: &DimensaoInput{Valor: ptrFloat(25), Unidade: ptrStr("mm")},
+	})
+
+	// Story 6.2: a dimensão de B é corrigida para um valor diferente entre a
+	// listagem (Story 6.3) e a confirmação desta mesclagem.
+	if _, err := db.Exec(
+		`UPDATE produtos SET diametro_valor = 30 WHERE id = $1`, produtoB,
+	); err != nil {
+		t.Fatalf("falha ao corrigir dimensão de B: %v", err)
+	}
+
+	_, err = MesclarDuplicatas(db, produtoA, []string{produtoB}, usuarioID)
+	var erroInvalida *ErroMesclagemInvalida
+	if !errors.As(err, &erroInvalida) {
+		t.Fatalf("err = %v, want *ErroMesclagemInvalida", err)
+	}
+
+	if q := quantidadeProdutoEstoque(t, db, produtoA, estoque.ID); q != 2 {
+		t.Errorf("quantidade(A,X) não deveria ter mudado, got %v, want 2", q)
+	}
+	if produtoDeletedAt(t, db, produtoB) != nil {
+		t.Errorf("B não deveria ter sido soft-deletado")
+	}
+}
+
+// TestMesclarDuplicatas_FormaInvalida prova as bordas de validarFormaMesclagem
+// — todas colapsam em *ErroProdutoValidacao, sem abrir transação.
+func TestMesclarDuplicatas_FormaInvalida(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Estoque Mesclagem Forma Invalida")
+	if err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+	usuarioID := semearConta(t, db, "Almox Mesclagem Forma Invalida", "mesclagem-forma-invalida-almox@empresa.com", PapelAlmoxarife, 0)
+	produtoA := seedProdutoParaMesclagem(t, db, "Produto Forma Invalida A", estoque.ID, 1, CriarProdutoInput{})
+	produtoB := seedProdutoParaMesclagem(t, db, "Produto Forma Invalida A", estoque.ID, 1, CriarProdutoInput{})
+
+	casos := []struct {
+		nome               string
+		produtoMantidoID   string
+		produtoRemovidoIDs []string
+	}{
+		{"mantido vazio", "", []string{produtoB}},
+		{"sem removidos", produtoA, []string{}},
+		{"mantido entre os removidos", produtoA, []string{produtoA, produtoB}},
+		{"ids duplicados", produtoA, []string{produtoB, produtoB}},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			_, err := MesclarDuplicatas(db, c.produtoMantidoID, c.produtoRemovidoIDs, usuarioID)
+			var erroValidacao *ErroProdutoValidacao
+			if !errors.As(err, &erroValidacao) {
+				t.Fatalf("err = %v, want *ErroProdutoValidacao", err)
+			}
+		})
+	}
+}
+
+// TestMesclarDuplicatas_ProdutoIdMalformadoOuInexistenteEhGrupoInvalido prova
+// que um `produtoRemovidoIds` malformado (não-UUID, SQLSTATE 22P02) ou um
+// UUID bem-formado mas sem linha correspondente colapsam em
+// *ErroMesclagemInvalida (mesma família de erro de "grupo inválido") — nada
+// é escrito em nenhum dos dois casos.
+func TestMesclarDuplicatas_ProdutoIdMalformadoOuInexistenteEhGrupoInvalido(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Estoque Mesclagem Id Malformado")
+	if err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+	usuarioID := semearConta(t, db, "Almox Mesclagem Id Malformado", "mesclagem-id-malformado-almox@empresa.com", PapelAlmoxarife, 0)
+	produtoA := seedProdutoParaMesclagem(t, db, "Produto Id Malformado A", estoque.ID, 1, CriarProdutoInput{})
+
+	casos := map[string]string{
+		"malformado":  "id-nao-e-um-uuid",
+		"inexistente": "00000000-0000-0000-0000-000000000000",
+	}
+	for nome, produtoRemovidoID := range casos {
+		t.Run(nome, func(t *testing.T) {
+			_, err := MesclarDuplicatas(db, produtoA, []string{produtoRemovidoID}, usuarioID)
+			var erroInvalida *ErroMesclagemInvalida
+			if !errors.As(err, &erroInvalida) {
+				t.Fatalf("err = %v, want *ErroMesclagemInvalida", err)
+			}
+			if q := quantidadeProdutoEstoque(t, db, produtoA, estoque.ID); q != 1 {
+				t.Errorf("quantidade(A,X) não deveria ter mudado, got %v, want 1", q)
+			}
+		})
+	}
+}
+
+// TestMesclarDuplicatas_FalhaDeBanco prova a linha "Falha de banco durante a
+// transação": com a tabela `produtos` indisponível, MesclarDuplicatas
+// devolve erro (o handler mapeia para 500 INTERNAL_ERROR).
+func TestMesclarDuplicatas_FalhaDeBanco(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Estoque Mesclagem Falha Banco")
+	if err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+	usuarioID := semearConta(t, db, "Almox Mesclagem Falha Banco", "mesclagem-falha-banco-almox@empresa.com", PapelAlmoxarife, 0)
+	produtoA := seedProdutoParaMesclagem(t, db, "Produto Falha Banco A", estoque.ID, 1, CriarProdutoInput{})
+	produtoB := seedProdutoParaMesclagem(t, db, "Produto Falha Banco A", estoque.ID, 1, CriarProdutoInput{})
+
+	if _, err := db.Exec(`ALTER TABLE mesclagens_duplicatas RENAME TO mesclagens_duplicatas_indisponivel`); err != nil {
+		t.Fatalf("renomear mesclagens_duplicatas: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := db.Exec(`ALTER TABLE mesclagens_duplicatas_indisponivel RENAME TO mesclagens_duplicatas`); err != nil {
+			t.Fatalf("restaurar mesclagens_duplicatas: %v", err)
+		}
+	})
+
+	_, err = MesclarDuplicatas(db, produtoA, []string{produtoB}, usuarioID)
+	if err == nil {
+		t.Fatal("MesclarDuplicatas deveria falhar com a tabela mesclagens_duplicatas indisponível")
+	}
+	var erroInvalida *ErroMesclagemInvalida
+	var erroValidacao *ErroProdutoValidacao
+	if errors.As(err, &erroInvalida) || errors.As(err, &erroValidacao) {
+		t.Fatalf("err = %v, want um erro genérico de banco (não *ErroMesclagemInvalida/*ErroProdutoValidacao)", err)
 	}
 }

@@ -579,6 +579,17 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.DetectarDuplicatasHandler(db))))
 
+	// Mesclagem de duplicatas com trilha de auditoria — Story 6.4 (Epic 6,
+	// Normalização de Dados). MESMO gate de papel das outras rotas de
+	// Normalização, RequireRole(almoxarife). services.MesclarDuplicatas
+	// revalida o grupo inteiro dentro da transação (nunca confia na lista de
+	// ids do cliente) e grava a auditoria permanente; o handler publica os 3
+	// eventos em tempo real (produtos updated/deleted + movimentacoes
+	// updated) só depois do commit.
+	mux.HandleFunc("POST /api/normalizacao/mesclar", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAlmoxarife)(
+			handlers.MesclarDuplicatasHandler(db, registro))))
+
 	// Infraestrutura de tempo real (AD-2/AD-3) — Story 4.4. POST
 	// /api/realtime/ticket leva só RequireAuth: qualquer conta autenticada
 	// pode abrir sua própria conexão SSE. GET /api/realtime/stream é o único

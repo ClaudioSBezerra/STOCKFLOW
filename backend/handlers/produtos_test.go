@@ -34,7 +34,7 @@ func limparProdutosHandler(t *testing.T, db *sql.DB) {
 	// `normalizacao_ignoradas` entra pelo mesmo motivo (Story 6.2):
 	// normalizacao_ignoradas.produto_id -> produtos(id), sem CASCADE.
 	// `categorias` NUNCA é truncada aqui — seed fixo da migração 000010.
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("falha ao limpar produtos/produto_estoque/estoques: %v", err)
 	}
 }

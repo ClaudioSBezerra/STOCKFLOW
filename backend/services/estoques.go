@@ -153,7 +153,7 @@ func ExcluirEstoque(db *sql.DB, id string) error {
 		SELECT p.nome
 		FROM produto_estoque pe
 		JOIN produtos p ON p.id = pe.produto_id
-		WHERE pe.estoque_id = $1 AND pe.quantidade > 0
+		WHERE pe.estoque_id = $1 AND pe.quantidade > 0 AND p.deleted_at IS NULL
 		ORDER BY p.nome`
 	rows, err := tx.Query(selectResiduo, id)
 	if err != nil {

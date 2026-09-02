@@ -163,7 +163,12 @@ func filtroUUIDInvalido(err error) bool {
 //     constante SQL (">"/"=" 0), nunca com um placeholder de usuário, então
 //     não consome um número de placeholder.
 func montarFiltrosCatalogo(f FiltrosCatalogo, primeiroPlaceholder int) (string, []any) {
-	var condicoes []string
+	// `p.deleted_at IS NULL` é SEMPRE a primeira condição (Story 6.4,
+	// spec-6-4) — deixa de ser opcional: um Produto mesclado nunca aparece na
+	// grade, no agrupado nem na exportação, sem consumir um número de
+	// placeholder (comparação com uma constante SQL, não com input do
+	// usuário).
+	condicoes := []string{"p.deleted_at IS NULL"}
 	var args []any
 	n := primeiroPlaceholder
 
@@ -658,7 +663,7 @@ const produtoDetalheQuery = `
 		FROM produto_estoque
 		GROUP BY produto_id
 	) pe ON pe.produto_id = p.id
-	WHERE p.id = $1`
+	WHERE p.id = $1 AND p.deleted_at IS NULL`
 
 // ObterProdutoDetalhe devolve o detalhe de um único Produto por `id`
 // (Story 4.4, spec-4-4): a mesma quantidade total/disponibilidade da grade

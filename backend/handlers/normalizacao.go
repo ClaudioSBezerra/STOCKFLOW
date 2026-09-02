@@ -22,6 +22,10 @@
 //     demanda e devolve os grupos de Produtos candidatos a duplicata
 //     (services.DetectarDuplicatas). Rota só-leitura, sem query params, sem
 //     publicação em tempo real (mesmo padrão de GET /inconsistencias).
+//   - POST /api/normalizacao/mesclar -> mesmo gate (Story 6.4, spec-6-4):
+//     mescla um grupo de duplicatas num único Produto (services.
+//     MesclarDuplicatas) e publica os 3 eventos em tempo real do Always
+//     (produtos updated/deleted + movimentacoes updated).
 package handlers
 
 import (
@@ -224,5 +228,71 @@ func DetectarDuplicatasHandler(db *sql.DB) http.HandlerFunc {
 		}
 
 		escreverJSON(w, http.StatusOK, map[string]any{"grupos": grupos})
+	}
+}
+
+// mesclarDuplicatasRequest é o corpo aceito por POST
+// /api/normalizacao/mesclar (Story 6.4, spec-6-4): o Produto escolhido para
+// sobreviver e os ids dos demais membros do grupo, exatamente como exibidos
+// na última chamada a GET /api/normalizacao/duplicatas — services.
+// MesclarDuplicatas NUNCA confia nesta lista, revalida tudo dentro da
+// transação (Always, spec-6-4).
+type mesclarDuplicatasRequest struct {
+	ProdutoMantidoID   string   `json:"produtoMantidoId"`
+	ProdutoRemovidoIDs []string `json:"produtoRemovidoIds"`
+}
+
+// MesclarDuplicatasHandler expõe POST /api/normalizacao/mesclar (Story 6.4,
+// spec-6-4): mescla um grupo de Produtos duplicados (Story 6.3) num único
+// Produto sobrevivente — soma de quantidade, reescrita de Movimentações,
+// soft-delete dos removidos e trilha de auditoria permanente, tudo dentro de
+// services.MesclarDuplicatas. Molde de AplicarCorrecoesHandler: guarda de
+// sessão -> 500; payload inválido -> 400 VALIDATION_ERROR; erro de FORMA da
+// requisição (*services.ErroProdutoValidacao) -> 400 VALIDATION_ERROR; grupo
+// inválido ou membro já mesclado (*services.ErroMesclagemInvalida) ->
+// 409 CONFLICT; qualquer outro erro -> 500 INTERNAL_ERROR.
+//
+// Sucesso: `200 {"produtoMantidoId","produtosRemovidosIds",
+// "quantidadeConsolidada"}` (services.ResultadoMesclagem já carrega essas
+// tags de JSON) + os 3 eventos em tempo real do Always (spec-6-4): um
+// `{"resource":"produtos","change":"updated"}` para o mantido, um
+// `{"resource":"produtos","change":"deleted"}` POR removido, e um ÚNICO
+// `{"resource":"movimentacoes","change":"updated"}` (payload mínimo — o
+// cliente rebusca via GET, mesmo padrão dos outros canais).
+func MesclarDuplicatasHandler(db *sql.DB, registro *realtime.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		usuario, ok := middleware.UsuarioDaSessao(r.Context())
+		if !ok {
+			slog.Error("MesclarDuplicatasHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+
+		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
+		var req mesclarDuplicatasRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "payload inválido")
+			return
+		}
+
+		resultado, err := services.MesclarDuplicatas(db, req.ProdutoMantidoID, req.ProdutoRemovidoIDs, usuario.ID)
+		var erroValidacao *services.ErroProdutoValidacao
+		var erroInvalida *services.ErroMesclagemInvalida
+		switch {
+		case err == nil:
+			registro.Publish("produtos", realtime.Evento{ID: resultado.ProdutoMantidoID, Change: "updated"})
+			for _, removidoID := range resultado.ProdutosRemovidosIDs {
+				registro.Publish("produtos", realtime.Evento{ID: removidoID, Change: "deleted"})
+			}
+			registro.Publish("movimentacoes", realtime.Evento{Change: "updated"})
+			escreverJSON(w, http.StatusOK, resultado)
+		case errors.As(err, &erroValidacao):
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
+		case errors.As(err, &erroInvalida):
+			escreverErro(w, http.StatusConflict, "CONFLICT", erroInvalida.Motivo)
+		default:
+			slog.Error("falha ao mesclar duplicatas", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao mesclar duplicatas")
+		}
 	}
 }
