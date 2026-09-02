@@ -519,6 +519,50 @@ func TestMigrarProdutos_CategoriaDesconhecida(t *testing.T) {
 	}
 }
 
+// TestMigrarProdutos_CategoriaComPrefixoDeCodigoEAcentoResolve — achado real
+// ao testar contra um export do Firestore (Ricardo, 2026-09-02): a
+// `categoria` legada real vem como "<código> - <nome>", não só o nome
+// (addendum §F previu só o nome solto), e boa parte dos registros digita o
+// nome sem acento. Nenhum dos dois deveria virar CategoriaDesconhecida.
+func TestMigrarProdutos_CategoriaComPrefixoDeCodigoEAcentoResolve(t *testing.T) {
+	alvo, legado := testDB(t)
+
+	var categoriaID, categoriaNome string
+	if err := alvo.QueryRow(
+		`SELECT id, nome FROM categorias WHERE nome ~ '[áéíóúâêôãõç]' ORDER BY codigo LIMIT 1`,
+	).Scan(&categoriaID, &categoriaNome); err != nil {
+		t.Fatalf("falha ao buscar categoria de seed com acento: %v", err)
+	}
+	categoriaSemAcento := removerAcentos(categoriaNome)
+	if categoriaSemAcento == categoriaNome {
+		t.Fatalf("removerAcentos(%q) não removeu nada — categoria de seed escolhida não tem acento de verdade", categoriaNome)
+	}
+
+	inserirLegadoProduto(t, alvo, legadoProdutoInput{
+		ID:        "prod-1",
+		Nome:      "Item Com Categoria Real Do Firestore",
+		Categoria: strPtr("04.999 - " + categoriaSemAcento),
+	})
+
+	res, err := migrarProdutos(alvo, legado, t.TempDir(), true)
+	if err != nil {
+		t.Fatalf("migrarProdutos não deveria abortar (prefixo de código + sem acento deve resolver): %v (res=%+v)", err, res)
+	}
+	if len(res.CategoriasDesconhecidas) != 0 {
+		t.Fatalf("CategoriasDesconhecidas deveria ser vazio, got %+v", res.CategoriasDesconhecidas)
+	}
+
+	var catID string
+	if err := alvo.QueryRow(
+		`SELECT categoria_id FROM produtos WHERE nome = 'Item Com Categoria Real Do Firestore'`,
+	).Scan(&catID); err != nil {
+		t.Fatalf("falha ao ler produto migrado: %v", err)
+	}
+	if catID != categoriaID {
+		t.Errorf("categoria_id = %q, want %q (%s)", catID, categoriaID, categoriaNome)
+	}
+}
+
 // TestMigrarProdutos_EstoqueDesconhecido — cenário "Estoque referenciado
 // inexistente": aborta, nada escrito.
 func TestMigrarProdutos_EstoqueDesconhecido(t *testing.T) {

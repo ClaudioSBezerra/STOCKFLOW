@@ -8,12 +8,33 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/lib/pq"
+	"golang.org/x/text/runes"
+	"golang.org/x/text/transform"
+	"golang.org/x/text/unicode/norm"
 
 	"stockflow/backend/services"
 )
+
+// removerAcentos descarta marcas diacríticas (NFD -> remove runas Mn -> NFC)
+// — encontrado ao testar contra um export real do Firestore (Ricardo,
+// 2026-09-02): ~4% dos Produtos legados usam "Maquinas" sem acento onde a
+// categoria fixa (migration 000010, addendum §H) é "Máquinas". Padrão
+// sistemático de digitação do legado, não erro aleatório; nenhuma das 25
+// categorias fixas colide com outra ao remover acentos, então isto nunca
+// funde duas categorias distintas. golang.org/x/text já é dependência
+// indireta (via excelize) — nenhuma dependência nova.
+func removerAcentos(s string) string {
+	t := transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
+	out, _, err := transform.String(t, s)
+	if err != nil {
+		return s
+	}
+	return out
+}
 
 // Migração de Produtos legados — Story 3.7 (spec-3-7). Estende
 // backend/cmd/migrate-legado (Story 2.3) com migrarProdutos, chamada
@@ -221,8 +242,19 @@ func migrarProdutos(alvo, legado *sql.DB, fotosDir string, executar bool) (Resul
 	//    Postgres legado (lower(btrim(...))). `nome` é lido SEM coalesce —
 	//    nulo/vazio/longo demais é uma classe de pré-checagem própria
 	//    (NomesInvalidos), não um valor silenciosamente substituído.
+	//
+	//    `categoria` no Firestore real vem como "<código> - <nome>" (ex.
+	//    "04.002 - Materiais Elétricos"), não só o nome — achado ao testar
+	//    contra um export real do Ricardo (addendum §F previu só o nome
+	//    solto; a estrutura real diverge, exatamente o caso que o próprio
+	//    addendum já sinalizava como possível). `categorias.nome` no alvo
+	//    (migration 000010) é só o nome, sem o código. O regexp_replace
+	//    abaixo descarta um prefixo "<dígitos/pontos> - " se existir, antes
+	//    do lower/btrim — nunca falha em registros que já vierem só com o
+	//    nome (o padrão simplesmente não casa e a string passa intacta).
 	rows, err := legado.Query(`
-		SELECT id, nome, codigo, categoria, lower(btrim(categoria)) AS categoria_norm,
+		SELECT id, nome, codigo, categoria,
+		       lower(btrim(regexp_replace(categoria, '^[0-9][0-9.]*\s*-\s*', ''))) AS categoria_norm,
 		       comprimento, largura, diametro, altura, espessura, "lateral", obs, foto, criado_em
 		FROM produtos
 		ORDER BY id`)
@@ -319,7 +351,7 @@ func migrarProdutos(alvo, legado *sql.DB, fotosDir string, executar bool) (Resul
 			catRows.Close()
 			return res, fmt.Errorf("falha ao ler categoria do banco alvo: %w", err)
 		}
-		categoriaPorNorm[norm] = id
+		categoriaPorNorm[removerAcentos(norm)] = id
 	}
 	if err := catRows.Err(); err != nil {
 		catRows.Close()
@@ -330,7 +362,7 @@ func migrarProdutos(alvo, legado *sql.DB, fotosDir string, executar bool) (Resul
 	for _, l := range legados {
 		norm := ""
 		if l.categoriaNorm.Valid {
-			norm = l.categoriaNorm.String
+			norm = removerAcentos(l.categoriaNorm.String)
 		}
 		if norm == "" || categoriaPorNorm[norm] == "" {
 			res.CategoriasDesconhecidas = append(res.CategoriasDesconhecidas, CategoriaDesconhecida{
@@ -591,7 +623,7 @@ func migrarProdutos(alvo, legado *sql.DB, fotosDir string, executar bool) (Resul
 			return res, fmt.Errorf("falha ao consultar migracao_id_map para id_legado=%s: %w", l.id, err)
 		}
 
-		produtoID, err := migrarUmProduto(alvo, l, categoriaPorNorm[l.categoriaNorm.String], estoquesPorProduto[l.id], estoqueIDPorNorm)
+		produtoID, err := migrarUmProduto(alvo, l, categoriaPorNorm[removerAcentos(l.categoriaNorm.String)], estoquesPorProduto[l.id], estoqueIDPorNorm)
 		if err != nil {
 			return res, err
 		}
