@@ -18,10 +18,12 @@ import (
 // `importacao_linhas.produto_id` referencia `produtos(id)` SEM `ON DELETE
 // CASCADE` — truncar só produtos/estoques falharia (0A000, "cannot truncate
 // a table referenced in a foreign key constraint") assim que a suíte de
-// importações tiver gravado alguma linha.
+// importações tiver gravado alguma linha. `normalizacao_ignoradas` entra
+// pelo mesmo motivo (Story 6.2): `normalizacao_ignoradas.produto_id`
+// referencia `produtos(id)`, também sem CASCADE.
 func limparProdutos(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("falha ao limpar produtos/produto_estoque/estoques: %v", err)
 	}
 }

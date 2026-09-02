@@ -453,3 +453,35 @@ source_spec: `spec-5-4-migracao-do-historico-de-movimentacoes-legado.md`
 severity: low
 reason: A migration cria a linha em `usuarios`; a mitigação atual é `ativo=false` + `senha_hash=NULL` (não loga). Nenhum reviewer demonstrou uma superfície concretamente quebrada, e o `JOIN usuarios` interno de `services.ListarMovimentacoes` (Story 5.3) precisa da linha para os registros migrados aparecerem no Histórico. Confirmar se as telas de gestão de usuários filtram `ativo=false` (ou se a presença é aceitável) e tratar na Story 8.x quando a exportação/anonimização LGPD existir.
 status: open
+
+### DW-58: Um item de lote que fica obsoleto entre a listagem e o clique de "Aplicar selecionadas" some silenciosamente da tabela sem mensagem explicando por quê.
+origin: spec-deferred 7abb3432de8e
+location: frontend/src/components/normalizacao/InconsistenciasSection.tsx
+source_spec: `spec-6-2-aplicacao-seletiva-de-correcoes.md`
+severity: low
+reason: InconsistenciasSection.tsx só remove da tabela as linhas confirmadas em `aplicadas`; um item que não veio na resposta (campo preenchido por outra ação nesse meio-tempo) simplesmente permanece na tabela sem nenhum aviso ao usuário sobre por que aquela correção específica não foi aplicada.
+status: open
+
+### DW-59: `chaveIgnorada` compara valores por chave textual `%.3f` em vez de igualdade exata de float64, o que é uma escolha deliberada mas carrega um risco teórico de arredondamento em valores exatamente no li
+origin: spec-deferred 28861dffadb6
+location: backend/services/normalizacao.go (chaveIgnorada)
+source_spec: `spec-6-2-aplicacao-seletiva-de-correcoes.md`
+severity: low
+reason: Um valor nascido de `strconv.ParseFloat` (Go) e o mesmo valor ida-e-volta por uma coluna `NUMERIC(10,3)` (Postgres) podem, em tese, formatar diferente em `%.3f` num caso de arredondamento de fronteira (ex. algo terminando em `.xxx5`), quebrando silenciosamente o match do "ignorar" para esse produto/campo específico. Documentado como trade-off aceito nas Design Notes da spec; nenhum caso real observado nos testes.
+status: open
+
+### DW-60: Ações de aplicar/ignorar bem-sucedidas não são anunciadas a leitores de tela — só o caminho de falha usa `role="alert"`.
+origin: spec-deferred 1de02063b156
+location: frontend/src/components/normalizacao/InconsistenciasSection.tsx
+source_spec: `spec-6-2-aplicacao-seletiva-de-correcoes.md`
+severity: low
+reason: A tabela remove a linha e o rótulo do botão "Aplicar selecionadas (N)" atualiza visualmente em sucesso, mas nenhuma região `aria-live` cobre esse caminho; um usuário de leitor de tela não recebe nenhuma confirmação de que a ação funcionou, só silêncio.
+status: open
+
+### DW-61: `normalizacao_ignoradas.produto_id` referencia `produtos(id)` sem política `ON DELETE` definida, e a interação com a futura mesclagem de duplicatas (Story 6.3/6.4) não está documentada.
+origin: spec-deferred 50c0e4d49eb5
+location: backend/migrations/000023_create_normalizacao_ignoradas.up.sql
+source_spec: `spec-6-2-aplicacao-seletiva-de-correcoes.md`
+severity: low
+reason: A FK vai bloquear a exclusão de qualquer Produto com sugestão ignorada associada (mesmo padrão de `importacao_linhas`/`produto_estoque`), mas nenhuma Design Note trata explicitamente como a mesclagem de duplicatas (que provavelmente remove/funde linhas de Produto) deve lidar com as linhas de `normalizacao_ignoradas` do produto removido.
+status: open

@@ -554,6 +554,21 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.AnalisarInconsistenciasHandler(db))))
 
+	// Aplicação seletiva de correções — Story 6.2 (Epic 6, Normalização de
+	// Dados). MESMO gate de papel de GET /api/normalizacao/inconsistencias,
+	// RequireRole(almoxarife). POST /api/normalizacao/correcoes aplica um
+	// lote de correções (individual, por produto ou geral — o front-end
+	// decide o agrupamento via seleção de checkboxes) e publica no canal
+	// `produtos`; POST /api/normalizacao/ignoradas grava a tupla exata
+	// (produto,campo,valor) que o Almoxarife decidiu não aplicar, para que
+	// AnalisarInconsistencias pare de sugeri-la.
+	mux.HandleFunc("POST /api/normalizacao/correcoes", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAlmoxarife)(
+			handlers.AplicarCorrecoesHandler(db, registro))))
+	mux.HandleFunc("POST /api/normalizacao/ignoradas", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAlmoxarife)(
+			handlers.IgnorarSugestaoHandler(db))))
+
 	// Infraestrutura de tempo real (AD-2/AD-3) — Story 4.4. POST
 	// /api/realtime/ticket leva só RequireAuth: qualquer conta autenticada
 	// pode abrir sua própria conexão SSE. GET /api/realtime/stream é o único

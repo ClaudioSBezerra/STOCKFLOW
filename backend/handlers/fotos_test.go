@@ -25,7 +25,7 @@ import (
 
 func limparProdutosFotos(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("falha ao limpar produtos/estoques: %v", err)
 	}
 }

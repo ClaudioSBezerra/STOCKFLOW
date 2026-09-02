@@ -2,6 +2,8 @@ package services
 
 import (
 	"database/sql"
+	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -378,5 +380,349 @@ func TestAnalisarInconsistencias_DimensoesPendentesMalformadoNaoAbortaAnalise(t 
 	}
 	if outra.Origem != "migracao" || outra.Valor != 6 || outra.Unidade != "m" {
 		t.Errorf("sugestão do segundo produto = %+v, want {Origem:migracao Valor:6 Unidade:m}", outra)
+	}
+}
+
+// --- AplicarCorrecoes/IgnorarSugestao: I/O Matrix de spec-6-2 --------------
+
+// campoDimensao devolve o valor/unidade estruturados atuais de `campo` para
+// `produtoID` — usado pelos testes de AplicarCorrecoes para verificar o
+// estado gravado (ou não-gravado) depois da chamada.
+func campoDimensao(t *testing.T, db *sql.DB, produtoID, campo string) (valor sql.NullFloat64, unidade sql.NullString) {
+	t.Helper()
+	query := fmt.Sprintf(`SELECT %s_valor, %s_unidade FROM produtos WHERE id = $1`, campo, campo)
+	if err := db.QueryRow(query, produtoID).Scan(&valor, &unidade); err != nil {
+		t.Fatalf("falha ao ler %s do produto %s: %v", campo, produtoID, err)
+	}
+	return valor, unidade
+}
+
+func contarIgnoradas(t *testing.T, db *sql.DB) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM normalizacao_ignoradas`).Scan(&n); err != nil {
+		t.Fatalf("falha ao contar normalizacao_ignoradas: %v", err)
+	}
+	return n
+}
+
+// TestAplicarCorrecao_Individual prova a linha "Aplicar individual": 1
+// correção, campo vazio -> campo gravado, `aplicadas` contém o item.
+func TestAplicarCorrecao_Individual(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	produtoID := seedProdutoNormalizacao(t, db, "Tubo Aplicar Individual", CriarProdutoInput{})
+
+	aplicadas, err := AplicarCorrecoes(db, []CorrecaoInput{
+		{ProdutoID: produtoID, Campo: "comprimento", Valor: 6, Unidade: "m"},
+	})
+	if err != nil {
+		t.Fatalf("AplicarCorrecoes: %v", err)
+	}
+	if len(aplicadas) != 1 || aplicadas[0].ProdutoID != produtoID || aplicadas[0].Campo != "comprimento" {
+		t.Fatalf("aplicadas = %+v, want [{%s comprimento}]", aplicadas, produtoID)
+	}
+
+	valor, unidade := campoDimensao(t, db, produtoID, "comprimento")
+	if !valor.Valid || valor.Float64 != 6 || !unidade.Valid || unidade.String != "m" {
+		t.Errorf("comprimento gravado = (%+v,%+v), want (6,m)", valor, unidade)
+	}
+}
+
+// TestAplicarCorrecao_LoteComItemObsoleto prova a linha "Aplicar lote com
+// item obsoleto": das 2 correções, uma já tem o campo preenchido (simulando
+// concorrência) — a outra é gravada normalmente, a obsoleta some de
+// `aplicadas` sem abortar o lote.
+func TestAplicarCorrecao_LoteComItemObsoleto(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	// produtoJaPreenchido já tem `largura` estruturada -> o guard IS NULL
+	// bloqueia a escrita, o item some de `aplicadas`.
+	produtoJaPreenchido := seedProdutoNormalizacao(t, db, "Tubo Ja Preenchido", CriarProdutoInput{
+		Largura: &DimensaoInput{Valor: ptrFloat(50), Unidade: ptrStr("mm")},
+	})
+	produtoVazio := seedProdutoNormalizacao(t, db, "Tubo Vazio", CriarProdutoInput{})
+
+	aplicadas, err := AplicarCorrecoes(db, []CorrecaoInput{
+		{ProdutoID: produtoJaPreenchido, Campo: "largura", Valor: 100, Unidade: "mm"},
+		{ProdutoID: produtoVazio, Campo: "comprimento", Valor: 6, Unidade: "m"},
+	})
+	if err != nil {
+		t.Fatalf("AplicarCorrecoes: %v", err)
+	}
+	if len(aplicadas) != 1 || aplicadas[0].ProdutoID != produtoVazio || aplicadas[0].Campo != "comprimento" {
+		t.Fatalf("aplicadas = %+v, want só [{%s comprimento}]", aplicadas, produtoVazio)
+	}
+
+	// O valor pré-existente NUNCA é sobrescrito pelo item obsoleto.
+	valor, unidade := campoDimensao(t, db, produtoJaPreenchido, "largura")
+	if !valor.Valid || valor.Float64 != 50 || !unidade.Valid || unidade.String != "mm" {
+		t.Errorf("largura pré-existente foi sobrescrita: (%+v,%+v), want (50,mm)", valor, unidade)
+	}
+
+	valorVazio, unidadeVazio := campoDimensao(t, db, produtoVazio, "comprimento")
+	if !valorVazio.Valid || valorVazio.Float64 != 6 || !unidadeVazio.Valid || unidadeVazio.String != "m" {
+		t.Errorf("comprimento do produto vazio = (%+v,%+v), want (6,m)", valorVazio, unidadeVazio)
+	}
+}
+
+// TestAplicarCorrecao_CampoInvalido prova a linha "Correção com campo
+// inválido": nenhuma escrita, erro de validação.
+func TestAplicarCorrecao_CampoInvalido(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	produtoID := seedProdutoNormalizacao(t, db, "Tubo Campo Invalido", CriarProdutoInput{})
+
+	_, err := AplicarCorrecoes(db, []CorrecaoInput{
+		{ProdutoID: produtoID, Campo: "peso", Valor: 6, Unidade: "m"},
+	})
+	var erroValidacao *ErroProdutoValidacao
+	if !errors.As(err, &erroValidacao) {
+		t.Fatalf("err = %v, want *ErroProdutoValidacao", err)
+	}
+
+	valor, unidade := campoDimensao(t, db, produtoID, "comprimento")
+	if valor.Valid || unidade.Valid {
+		t.Errorf("nenhuma escrita deveria ter ocorrido, got (%+v,%+v)", valor, unidade)
+	}
+}
+
+// TestAplicarCorrecao_ListaVazia prova a linha "Correção com correcoes:[]":
+// lista vazia também é erro de validação.
+func TestAplicarCorrecao_ListaVazia(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	_, err := AplicarCorrecoes(db, []CorrecaoInput{})
+	var erroValidacao *ErroProdutoValidacao
+	if !errors.As(err, &erroValidacao) {
+		t.Fatalf("err = %v, want *ErroProdutoValidacao", err)
+	}
+}
+
+// TestAplicarCorrecao_ValorZeroOuUnidadeInvalidaSaoRejeitados cobre as
+// outras duas bordas de validarCorrecao (mesma regra de validarDimensao,
+// produtos.go): valor <= 0 e unidade fora de {mm,cm,m}.
+func TestAplicarCorrecao_ValorZeroOuUnidadeInvalidaSaoRejeitados(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	produtoID := seedProdutoNormalizacao(t, db, "Tubo Valor Invalido", CriarProdutoInput{})
+
+	casos := []CorrecaoInput{
+		{ProdutoID: produtoID, Campo: "comprimento", Valor: 0, Unidade: "m"},
+		{ProdutoID: produtoID, Campo: "comprimento", Valor: 6, Unidade: "polegada"},
+		{ProdutoID: produtoID, Campo: "comprimento", Valor: limiteNumeric103 + 1, Unidade: "m"},
+	}
+	for _, c := range casos {
+		_, err := AplicarCorrecoes(db, []CorrecaoInput{c})
+		var erroValidacao *ErroProdutoValidacao
+		if !errors.As(err, &erroValidacao) {
+			t.Errorf("caso %+v: err = %v, want *ErroProdutoValidacao", c, err)
+		}
+	}
+}
+
+// TestAplicarCorrecao_LoteTotalmenteObsoletoRetornaVazio prova que um lote em
+// que TODOS os itens já estão preenchidos (não só um, como em
+// TestAplicarCorrecaoHandler_200LoteComItemObsoleto) devolve sucesso com
+// `aplicadas` vazio — nunca um erro, mesmo sem nenhum item realmente gravado.
+func TestAplicarCorrecao_LoteTotalmenteObsoletoRetornaVazio(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	produtoID := seedProdutoNormalizacao(t, db, "Tubo Totalmente Obsoleto", CriarProdutoInput{
+		Comprimento: &DimensaoInput{Valor: ptrFloat(6), Unidade: ptrStr("m")},
+	})
+
+	aplicadas, err := AplicarCorrecoes(db, []CorrecaoInput{
+		{ProdutoID: produtoID, Campo: "comprimento", Valor: 9, Unidade: "m"},
+	})
+	if err != nil {
+		t.Fatalf("AplicarCorrecoes não deveria falhar quando todo o lote está obsoleto: %v", err)
+	}
+	if len(aplicadas) != 0 {
+		t.Fatalf("aplicadas = %+v, want []", aplicadas)
+	}
+}
+
+// TestSugestaoIgnorada_ValorAcimaDoLimiteRejeitado prova que a mesma borda de
+// validarCorrecao (valor > limiteNumeric103) também é aplicada por
+// IgnorarSugestao.
+func TestSugestaoIgnorada_ValorAcimaDoLimiteRejeitado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	produtoID := seedProdutoNormalizacao(t, db, "Tubo Ignorar Valor Acima Limite", CriarProdutoInput{})
+
+	err := IgnorarSugestao(db, produtoID, "comprimento", limiteNumeric103+1, "m")
+	var erroValidacao *ErroProdutoValidacao
+	if !errors.As(err, &erroValidacao) {
+		t.Fatalf("err = %v, want *ErroProdutoValidacao", err)
+	}
+	if n := contarIgnoradas(t, db); n != 0 {
+		t.Errorf("normalizacao_ignoradas tem %d linhas, want 0", n)
+	}
+}
+
+// TestSugestaoIgnorada_ProdutoIdMalformado prova que um produtoId
+// malformado (não-UUID) colapsa em ErrProdutoNaoEncontrado — mesmo
+// tratamento do UUID bem-formado mas inexistente (TestSugestaoIgnorada_
+// ProdutoInexistente), via pqInvalidTextRepresentation em vez de
+// pqForeignKeyViolation.
+func TestSugestaoIgnorada_ProdutoIdMalformado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	err := IgnorarSugestao(db, "id-nao-e-um-uuid", "comprimento", 6, "m")
+	if !errors.Is(err, ErrProdutoNaoEncontrado) {
+		t.Fatalf("err = %v, want ErrProdutoNaoEncontrado", err)
+	}
+}
+
+// TestAplicarCorrecao_LoteComProdutoIdMalformadoNaoAbortaLote prova o fix do
+// code review: um produtoId malformado (não-UUID) no MEIO de um lote não
+// pode abortar a transação inteira — mesmo tratamento de "item obsoleto"
+// (some do retorno, sem erro), e o item válido do MESMO lote continua sendo
+// gravado normalmente (SAVEPOINT por item, ver comentário de
+// AplicarCorrecoes).
+func TestAplicarCorrecao_LoteComProdutoIdMalformadoNaoAbortaLote(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	produtoValido := seedProdutoNormalizacao(t, db, "Tubo ProdutoId Malformado", CriarProdutoInput{})
+
+	aplicadas, err := AplicarCorrecoes(db, []CorrecaoInput{
+		{ProdutoID: "id-nao-e-um-uuid", Campo: "comprimento", Valor: 6, Unidade: "m"},
+		{ProdutoID: produtoValido, Campo: "comprimento", Valor: 6, Unidade: "m"},
+	})
+	if err != nil {
+		t.Fatalf("AplicarCorrecoes não deveria falhar por causa de um produtoId malformado no meio do lote: %v", err)
+	}
+	if len(aplicadas) != 1 || aplicadas[0].ProdutoID != produtoValido || aplicadas[0].Campo != "comprimento" {
+		t.Fatalf("aplicadas = %+v, want só [{%s comprimento}]", aplicadas, produtoValido)
+	}
+
+	valor, unidade := campoDimensao(t, db, produtoValido, "comprimento")
+	if !valor.Valid || valor.Float64 != 6 || !unidade.Valid || unidade.String != "m" {
+		t.Errorf("comprimento do produto válido = (%+v,%+v), want (6,m)", valor, unidade)
+	}
+}
+
+// TestSugestaoIgnorada_RemoveDaProximaAnalise prova a linha "Ignorar uma
+// sugestão": a tupla é gravada em normalizacao_ignoradas e uma nova chamada
+// a AnalisarInconsistencias não traz mais essa sugestão.
+func TestSugestaoIgnorada_RemoveDaProximaAnalise(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	produtoID := seedProdutoNormalizacao(t, db, "Tubo Ignorar", CriarProdutoInput{})
+	setDimensoesPendentesRevisao(t, db, produtoID, `{"comprimento": "cerca de 3 metros"}`)
+
+	// Confere que a sugestão existe ANTES de ignorar.
+	antes, err := AnalisarInconsistencias(db)
+	if err != nil {
+		t.Fatalf("AnalisarInconsistencias (antes): %v", err)
+	}
+	if _, ok := sugestaoDe(antes, produtoID, "comprimento"); !ok {
+		t.Fatalf("sugestão deveria existir antes de ignorar")
+	}
+
+	if err := IgnorarSugestao(db, produtoID, "comprimento", 3, "m"); err != nil {
+		t.Fatalf("IgnorarSugestao: %v", err)
+	}
+
+	depois, err := AnalisarInconsistencias(db)
+	if err != nil {
+		t.Fatalf("AnalisarInconsistencias (depois): %v", err)
+	}
+	if s, ok := sugestaoDe(depois, produtoID, "comprimento"); ok {
+		t.Errorf("sugestão ignorada reapareceu: %+v", s)
+	}
+}
+
+// TestSugestaoIgnorada_MesmaTuplaDuasVezesEIdempotente prova a linha "Ignorar
+// a mesma tupla duas vezes": sucesso idempotente, nenhuma linha duplicada
+// (ON CONFLICT DO NOTHING sobre a própria PRIMARY KEY).
+func TestSugestaoIgnorada_MesmaTuplaDuasVezesEIdempotente(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	produtoID := seedProdutoNormalizacao(t, db, "Tubo Ignorar Duas Vezes", CriarProdutoInput{})
+
+	if err := IgnorarSugestao(db, produtoID, "comprimento", 3, "m"); err != nil {
+		t.Fatalf("IgnorarSugestao (1a chamada): %v", err)
+	}
+	if err := IgnorarSugestao(db, produtoID, "comprimento", 3, "m"); err != nil {
+		t.Fatalf("IgnorarSugestao (2a chamada, reenvio): %v", err)
+	}
+
+	if n := contarIgnoradas(t, db); n != 1 {
+		t.Errorf("normalizacao_ignoradas tem %d linhas, want 1 (idempotente)", n)
+	}
+}
+
+// TestSugestaoIgnorada_ValorMudaParaOutroInconsistenteReaparece prova a linha
+// "Valor muda para outro inconsistente depois de ignorado": a tupla antiga
+// fica ignorada, mas quando a origem produz um valor DIFERENTE, a nova
+// análise traz a sugestão de novo (chave textual diferente).
+func TestSugestaoIgnorada_ValorMudaParaOutroInconsistenteReaparece(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	produtoID := seedProdutoNormalizacao(t, db, "Tubo Valor Muda", CriarProdutoInput{})
+	setDimensoesPendentesRevisao(t, db, produtoID, `{"comprimento": "cerca de 3 metros"}`)
+
+	if err := IgnorarSugestao(db, produtoID, "comprimento", 3, "m"); err != nil {
+		t.Fatalf("IgnorarSugestao: %v", err)
+	}
+
+	// A origem "migracao" muda para um valor diferente do que foi ignorado.
+	setDimensoesPendentesRevisao(t, db, produtoID, `{"comprimento": "5 metros"}`)
+
+	sugestoes, err := AnalisarInconsistencias(db)
+	if err != nil {
+		t.Fatalf("AnalisarInconsistencias: %v", err)
+	}
+	s, ok := sugestaoDe(sugestoes, produtoID, "comprimento")
+	if !ok {
+		t.Fatalf("sugestão com o novo valor deveria reaparecer")
+	}
+	if s.Valor != 5 || s.Unidade != "m" {
+		t.Errorf("sugestão = %+v, want {Valor:5 Unidade:m}", s)
+	}
+}
+
+// TestSugestaoIgnorada_CampoInvalido prova que IgnorarSugestao aplica a MESMA
+// validação de AplicarCorrecoes: nenhuma escrita para campo inválido.
+func TestSugestaoIgnorada_CampoInvalido(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	produtoID := seedProdutoNormalizacao(t, db, "Tubo Ignorar Campo Invalido", CriarProdutoInput{})
+
+	err := IgnorarSugestao(db, produtoID, "peso", 6, "m")
+	var erroValidacao *ErroProdutoValidacao
+	if !errors.As(err, &erroValidacao) {
+		t.Fatalf("err = %v, want *ErroProdutoValidacao", err)
+	}
+	if n := contarIgnoradas(t, db); n != 0 {
+		t.Errorf("normalizacao_ignoradas tem %d linhas, want 0", n)
+	}
+}
+
+// TestSugestaoIgnorada_ProdutoInexistente prova que um produtoId inexistente
+// (UUID bem-formado, mas sem linha correspondente) colapsa em
+// ErrProdutoNaoEncontrado — violação da FK produto_id -> produtos(id).
+func TestSugestaoIgnorada_ProdutoInexistente(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	err := IgnorarSugestao(db, "00000000-0000-0000-0000-000000000000", "comprimento", 6, "m")
+	if !errors.Is(err, ErrProdutoNaoEncontrado) {
+		t.Fatalf("err = %v, want ErrProdutoNaoEncontrado", err)
 	}
 }

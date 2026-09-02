@@ -27,7 +27,7 @@ func limparImportacoesHandler(t *testing.T, db *sql.DB) {
 	// `usuarios CASCADE` (testDB) já esvazia `importacoes`/`importacao_linhas`
 	// (FK transitiva via criado_por) a cada teste — aqui só limpamos o que
 	// `testDB` não alcança: produtos/estoques criados pela própria importação.
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("falha ao limpar produtos/estoques: %v", err)
 	}
 }
