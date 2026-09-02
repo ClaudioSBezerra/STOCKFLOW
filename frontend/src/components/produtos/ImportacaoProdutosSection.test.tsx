@@ -339,6 +339,6 @@ describe('ImportacaoProdutosSection — relatório com atualizados e CTA de dupl
     expect(await screen.findByText('1 criado(s), 2 atualizado(s), 0 rejeitado(s).')).toBeInTheDocument();
     const cta = screen.getByRole('link', { name: 'Verificar duplicatas agora' });
     expect(cta).toBeInTheDocument();
-    expect(cta).toHaveAttribute('href', '/normalizacao');
+    expect(cta).toHaveAttribute('href', '/normalizacao?verificarDuplicatas=1');
   });
 });

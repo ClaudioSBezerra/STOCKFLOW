@@ -53,6 +53,231 @@ func seedProdutoComPendenciaHandler(t *testing.T, db *sql.DB, nome string, dims 
 	return produto.ID
 }
 
+// seedProdutoComEstoqueHandler cadastra um Produto vinculado a um
+// `estoqueID` já existente (ao contrário de seedProdutoComPendenciaHandler,
+// que sempre cria um Estoque novo) — usado pelos testes de
+// DetectarDuplicatasHandler, onde "local em comum" é a própria condição sob
+// teste.
+func seedProdutoComEstoqueHandler(t *testing.T, db *sql.DB, nome, estoqueID string, dims services.CriarProdutoInput) string {
+	t.Helper()
+	dims.Nome = nome
+	dims.CategoriaID = categoriaIDPorCodigoHandler(t, db, "04.001")
+	dims.EstoqueID = estoqueID
+	produto, err := services.CriarProduto(db, dims)
+	if err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+	return produto.ID
+}
+
+// getDuplicatas despacha GET /api/normalizacao/duplicatas pela MESMA
+// composição de newMux (main.go): RequireAuth -> RequireRole(almoxarife) ->
+// DetectarDuplicatasHandler. Mesmo molde de getInconsistencias.
+func getDuplicatas(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/normalizacao/duplicatas",
+		middleware.RequireAuth(db, testJWTSecret)(
+			middleware.RequireRole(services.PapelAlmoxarife)(
+				DetectarDuplicatasHandler(db))))
+	r := httptest.NewRequest(http.MethodGet, "/api/normalizacao/duplicatas", nil)
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+// TestDetectarDuplicatasHandler_200ComGrupos prova a linha "Duplicata clara"
+// da I/O Matrix de spec-6-3 na fronteira HTTP: 200 com o formato de fio
+// exato `{"grupos":[{"produtos":[{"id","nome","dimensoes":{...}}]}]}`.
+func TestDetectarDuplicatasHandler_200ComGrupos(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Almox Duplicatas 200", "duplicatas-200-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "duplicatas-200-almox@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Estoque Duplicatas Handler 200")
+	if err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+	p1 := seedProdutoComEstoqueHandler(t, db, "Tubo PVC 25mm", estoque.ID, services.CriarProdutoInput{
+		Diametro: &services.DimensaoInput{Valor: ptrFloatHandler(25), Unidade: ptrStrHandler("mm")},
+	})
+	p2 := seedProdutoComEstoqueHandler(t, db, "Tubo PVC 25mm", estoque.ID, services.CriarProdutoInput{
+		Diametro: &services.DimensaoInput{Valor: ptrFloatHandler(2.5), Unidade: ptrStrHandler("cm")},
+	})
+
+	w := getDuplicatas(db, "Bearer "+token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Grupos []struct {
+			Produtos []struct {
+				ID        string `json:"id"`
+				Nome      string `json:"nome"`
+				Dimensoes struct {
+					Diametro *struct {
+						Valor   float64 `json:"valor"`
+						Unidade string  `json:"unidade"`
+					} `json:"diametro"`
+				} `json:"dimensoes"`
+			} `json:"produtos"`
+		} `json:"grupos"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+
+	if len(resp.Grupos) != 1 {
+		t.Fatalf("len(resp.Grupos) = %d, want 1: %+v", len(resp.Grupos), resp.Grupos)
+	}
+
+	var grupoEncontrado bool
+	for _, g := range resp.Grupos {
+		ids := map[string]bool{}
+		for _, p := range g.Produtos {
+			ids[p.ID] = true
+		}
+		if ids[p1] && ids[p2] {
+			grupoEncontrado = true
+			if len(g.Produtos) != 2 {
+				t.Errorf("len(g.Produtos) = %d, want 2: %+v", len(g.Produtos), g.Produtos)
+			}
+		}
+	}
+	if !grupoEncontrado {
+		t.Fatalf("nenhum grupo contendo %s e %s em %+v", p1, p2, resp.Grupos)
+	}
+}
+
+// TestDetectarDuplicatasHandler_200ListaVazia prova a linha "Catálogo sem
+// duplicatas": 200 {"grupos":[]} (array, nunca null).
+func TestDetectarDuplicatasHandler_200ListaVazia(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Almox Duplicatas Vazia", "duplicatas-vazia-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "duplicatas-vazia-almox@empresa.com", "senha-123456")
+
+	w := getDuplicatas(db, "Bearer "+token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Grupos []json.RawMessage `json:"grupos"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if len(resp.Grupos) != 0 {
+		t.Errorf("len(resp.Grupos) = %d, want 0 (body=%s)", len(resp.Grupos), w.Body.String())
+	}
+}
+
+// TestDetectarDuplicatasHandler_200ListaVaziaComProdutosNaoDuplicados prova,
+// na fronteira HTTP, a linha "Mesmo nome, dimensão diferente" da I/O Matrix
+// (já coberta a nível de service por TestDetectarDuplicatas_
+// MesmoNomeDimensaoDiferente): um catálogo POPULADO onde nenhum Produto
+// qualifica como duplicata ainda devolve `200 {"grupos":[]}` — não confundir
+// com TestDetectarDuplicatasHandler_200ListaVazia, que prova o caso trivial
+// de catálogo vazio.
+func TestDetectarDuplicatasHandler_200ListaVaziaComProdutosNaoDuplicados(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Almox Duplicatas Nao Qualificam", "duplicatas-nao-qualificam-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "duplicatas-nao-qualificam-almox@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, "Estoque Duplicatas Nao Qualificam")
+	if err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+	seedProdutoComEstoqueHandler(t, db, "Parafuso M6", estoque.ID, services.CriarProdutoInput{
+		Comprimento: &services.DimensaoInput{Valor: ptrFloatHandler(20), Unidade: ptrStrHandler("mm")},
+	})
+	seedProdutoComEstoqueHandler(t, db, "Parafuso M6", estoque.ID, services.CriarProdutoInput{
+		Comprimento: &services.DimensaoInput{Valor: ptrFloatHandler(30), Unidade: ptrStrHandler("mm")},
+	})
+
+	w := getDuplicatas(db, "Bearer "+token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Grupos []json.RawMessage `json:"grupos"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if len(resp.Grupos) != 0 {
+		t.Errorf("len(resp.Grupos) = %d, want 0 (body=%s)", len(resp.Grupos), w.Body.String())
+	}
+}
+
+// TestDetectarDuplicatasHandler_403PapelUsuario prova a linha "Papel usuario
+// chama a rota diretamente": 403 FORBIDDEN, decidido por RequireRole — o
+// handler nunca executa.
+func TestDetectarDuplicatasHandler_403PapelUsuario(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Usuario Duplicatas 403", "duplicatas-403-usuario@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "duplicatas-403-usuario@empresa.com", "senha-123456")
+
+	w := getDuplicatas(db, "Bearer "+token)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body=%s)", w.Code, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "FORBIDDEN" {
+		t.Errorf("code = %q, want FORBIDDEN", env.Error.Code)
+	}
+	var comLista map[string]json.RawMessage
+	_ = json.Unmarshal(w.Body.Bytes(), &comLista)
+	if _, tem := comLista["grupos"]; tem {
+		t.Errorf("corpo do 403 contém \"grupos\" — o handler nunca deveria ter executado")
+	}
+}
+
+// TestDetectarDuplicatasHandler_401SemToken prova que uma requisição sem
+// Authorization -> 401, produzido só por RequireAuth.
+func TestDetectarDuplicatasHandler_401SemToken(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+
+	w := getDuplicatas(db, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+}
+
+// TestDetectarDuplicatasHandler_500FalhaDeBanco prova que, com a tabela
+// `produtos` indisponível, um `almoxarife` autenticado recebe 500
+// INTERNAL_ERROR — mesmo molde de TestAnalisarInconsistenciasHandler_500FalhaDeBanco.
+func TestDetectarDuplicatasHandler_500FalhaDeBanco(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Almox Duplicatas 500", "duplicatas-500-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "duplicatas-500-almox@empresa.com", "senha-123456")
+
+	if _, err := db.Exec(`ALTER TABLE produtos RENAME TO produtos_indisponivel_duplicatas_handler`); err != nil {
+		t.Fatalf("renomear produtos: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := db.Exec(`ALTER TABLE produtos_indisponivel_duplicatas_handler RENAME TO produtos`); err != nil {
+			t.Fatalf("restaurar produtos: %v", err)
+		}
+	})
+
+	w := getDuplicatas(db, "Bearer "+token)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "INTERNAL_ERROR" {
+		t.Errorf("code = %q, want INTERNAL_ERROR", env.Error.Code)
+	}
+}
+
 // TestAnalisarInconsistenciasHandler_200ComSugestoes prova a linha "Nome com
 // valor implícito, único campo vazio" da I/O Matrix na fronteira HTTP: 200
 // com o formato de fio exato `{"sugestoes":[{"produtoId","produtoNome",

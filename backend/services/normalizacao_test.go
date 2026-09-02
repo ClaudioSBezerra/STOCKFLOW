@@ -726,3 +726,452 @@ func TestSugestaoIgnorada_ProdutoInexistente(t *testing.T) {
 		t.Fatalf("err = %v, want ErrProdutoNaoEncontrado", err)
 	}
 }
+
+// --- DetectarDuplicatas: I/O Matrix de spec-6-3 ----------------------------
+
+// seedProdutoComEstoque cadastra um Produto com `nome` e as dimensões dadas,
+// vinculado a um `estoqueID` já existente (ao contrário de
+// seedProdutoNormalizacao, que sempre cria um Estoque novo por Produto) —
+// necessário para os testes de DetectarDuplicatas, onde "local em comum"
+// entre dois Produtos é justamente a condição sob teste.
+func seedProdutoComEstoque(t *testing.T, db *sql.DB, nome, estoqueID string, dims CriarProdutoInput) string {
+	t.Helper()
+	dims.Nome = nome
+	dims.CategoriaID = categoriaIDPorCodigo(t, db, "04.001")
+	dims.EstoqueID = estoqueID
+	produto, err := CriarProduto(db, dims)
+	if err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+	return produto.ID
+}
+
+// adicionarProdutoEstoque grava uma linha extra em `produto_estoque` — usada
+// pelos testes que precisam de um Produto presente em MAIS de um Estoque
+// (mesmo padrão de catalogo_test.go).
+func adicionarProdutoEstoque(t *testing.T, db *sql.DB, produtoID, estoqueID string, quantidade float64) {
+	t.Helper()
+	if _, err := db.Exec(
+		`INSERT INTO produto_estoque (produto_id, estoque_id, quantidade) VALUES ($1, $2, $3)`,
+		produtoID, estoqueID, quantidade,
+	); err != nil {
+		t.Fatalf("seed produto_estoque: %v", err)
+	}
+}
+
+// grupoContemProduto testa se algum grupo devolvido por DetectarDuplicatas
+// contém `produtoID` — usado pelos testes "não deveria agrupar" para provar
+// a AUSÊNCIA sem depender de len(grupos) (outros Produtos do mesmo teste
+// podiam, em tese, formar grupo por engano).
+func grupoContemProduto(grupos []GrupoDuplicata, produtoID string) bool {
+	for _, g := range grupos {
+		for _, p := range g.Produtos {
+			if p.ID == produtoID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// TestNormalizarNomeProduto prova a regra do glossário do PRD (Always,
+// spec-6-3): sem acento, case-insensitive, aparado só nas pontas (espaço
+// interno duplicado NÃO é colapsado).
+func TestNormalizarNomeProduto(t *testing.T) {
+	casos := []struct{ nome, quer string }{
+		{"Tubo PVC 25mm", "tubo pvc 25mm"},
+		{"  Tubo PVC 25mm  ", "tubo pvc 25mm"},
+		{"TUBO PVC 25MM", "tubo pvc 25mm"},
+		{"Válvula Registro Água", "valvula registro agua"},
+		{"Conexão em Nylon", "conexao em nylon"},
+		{"Tubo  PVC", "tubo  pvc"}, // espaço duplo INTERNO preservado
+	}
+	for _, c := range casos {
+		if got := normalizarNomeProduto(c.nome); got != c.quer {
+			t.Errorf("normalizarNomeProduto(%q) = %q, want %q", c.nome, got, c.quer)
+		}
+	}
+}
+
+// TestDetectarDuplicatas_DuplicataClara prova a linha "Duplicata clara": 2
+// Produtos com mesmo nome, dimensões equivalentes após conversão de unidade
+// (25mm == 2,5cm) e uma linha em produto_estoque para o MESMO Estoque -> 1
+// grupo com os 2 Produtos.
+func TestDetectarDuplicatas_DuplicataClara(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Estoque Duplicata Clara")
+	if err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+
+	p1 := seedProdutoComEstoque(t, db, "Tubo PVC 25mm", estoque.ID, CriarProdutoInput{
+		Diametro: &DimensaoInput{Valor: ptrFloat(25), Unidade: ptrStr("mm")},
+	})
+	p2 := seedProdutoComEstoque(t, db, "Tubo PVC 25mm", estoque.ID, CriarProdutoInput{
+		Diametro: &DimensaoInput{Valor: ptrFloat(2.5), Unidade: ptrStr("cm")},
+	})
+
+	grupos, err := DetectarDuplicatas(db)
+	if err != nil {
+		t.Fatalf("DetectarDuplicatas: %v", err)
+	}
+	if len(grupos) != 1 {
+		t.Fatalf("len(grupos) = %d, want 1: %+v", len(grupos), grupos)
+	}
+	if len(grupos[0].Produtos) != 2 {
+		t.Fatalf("len(grupos[0].Produtos) = %d, want 2: %+v", len(grupos[0].Produtos), grupos[0].Produtos)
+	}
+	ids := map[string]bool{grupos[0].Produtos[0].ID: true, grupos[0].Produtos[1].ID: true}
+	if !ids[p1] || !ids[p2] {
+		t.Errorf("grupo = %+v, want produtos %s e %s", grupos[0].Produtos, p1, p2)
+	}
+	// Cada Produto conserva a UNIDADE ORIGINAL gravada — a conversão para mm
+	// é só interna, para comparação, nunca é escrita nem devolvida no lugar
+	// do valor original.
+	for _, p := range grupos[0].Produtos {
+		if p.ID == p1 && (p.Dimensoes.Diametro == nil || p.Dimensoes.Diametro.Valor != 25 || p.Dimensoes.Diametro.Unidade != "mm") {
+			t.Errorf("diametro de %s = %+v, want {25 mm}", p1, p.Dimensoes.Diametro)
+		}
+		if p.ID == p2 && (p.Dimensoes.Diametro == nil || p.Dimensoes.Diametro.Valor != 2.5 || p.Dimensoes.Diametro.Unidade != "cm") {
+			t.Errorf("diametro de %s = %+v, want {2.5 cm}", p2, p.Dimensoes.Diametro)
+		}
+	}
+}
+
+// TestDetectarDuplicatas_MesmoNomeDimensaoDiferente prova a linha "Mesmo
+// nome, dimensão diferente": 2 Produtos com o mesmo nome mas comprimento
+// diferente (20mm vs 30mm) -> não agrupados.
+func TestDetectarDuplicatas_MesmoNomeDimensaoDiferente(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Estoque Dimensao Diferente")
+	if err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+	p1 := seedProdutoComEstoque(t, db, "Parafuso M6", estoque.ID, CriarProdutoInput{
+		Comprimento: &DimensaoInput{Valor: ptrFloat(20), Unidade: ptrStr("mm")},
+	})
+	p2 := seedProdutoComEstoque(t, db, "Parafuso M6", estoque.ID, CriarProdutoInput{
+		Comprimento: &DimensaoInput{Valor: ptrFloat(30), Unidade: ptrStr("mm")},
+	})
+
+	grupos, err := DetectarDuplicatas(db)
+	if err != nil {
+		t.Fatalf("DetectarDuplicatas: %v", err)
+	}
+	if grupoContemProduto(grupos, p1) || grupoContemProduto(grupos, p2) {
+		t.Errorf("Parafuso M6 20mm/30mm não deveriam ser agrupados, got %+v", grupos)
+	}
+}
+
+// TestDetectarDuplicatas_SemLocalEmComum prova a linha "Mesmo nome+dimensão,
+// sem local em comum": Produto A só no Estoque X, Produto B só no Estoque Y
+// -> não agrupados.
+func TestDetectarDuplicatas_SemLocalEmComum(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoqueX, err := CriarEstoque(db, "Estoque X Sem Local Comum")
+	if err != nil {
+		t.Fatalf("CriarEstoque X: %v", err)
+	}
+	estoqueY, err := CriarEstoque(db, "Estoque Y Sem Local Comum")
+	if err != nil {
+		t.Fatalf("CriarEstoque Y: %v", err)
+	}
+
+	p1 := seedProdutoComEstoque(t, db, "Cabo Flexivel 4mm", estoqueX.ID, CriarProdutoInput{
+		Diametro: &DimensaoInput{Valor: ptrFloat(4), Unidade: ptrStr("mm")},
+	})
+	p2 := seedProdutoComEstoque(t, db, "Cabo Flexivel 4mm", estoqueY.ID, CriarProdutoInput{
+		Diametro: &DimensaoInput{Valor: ptrFloat(4), Unidade: ptrStr("mm")},
+	})
+
+	grupos, err := DetectarDuplicatas(db)
+	if err != nil {
+		t.Fatalf("DetectarDuplicatas: %v", err)
+	}
+	if grupoContemProduto(grupos, p1) || grupoContemProduto(grupos, p2) {
+		t.Errorf("Produtos sem local em comum não deveriam ser agrupados, got %+v", grupos)
+	}
+}
+
+// TestDetectarDuplicatas_CampoParcialmentePreenchido prova a linha "Campo
+// dimensional parcialmente preenchido": A com altura=10mm, B com altura NULL
+// -> não agrupados, mesmo com nome igual e local em comum.
+func TestDetectarDuplicatas_CampoParcialmentePreenchido(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Estoque Campo Parcial")
+	if err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+
+	p1 := seedProdutoComEstoque(t, db, "Chapa Metalica", estoque.ID, CriarProdutoInput{
+		Altura: &DimensaoInput{Valor: ptrFloat(10), Unidade: ptrStr("mm")},
+	})
+	p2 := seedProdutoComEstoque(t, db, "Chapa Metalica", estoque.ID, CriarProdutoInput{})
+
+	grupos, err := DetectarDuplicatas(db)
+	if err != nil {
+		t.Fatalf("DetectarDuplicatas: %v", err)
+	}
+	if grupoContemProduto(grupos, p1) || grupoContemProduto(grupos, p2) {
+		t.Errorf("altura preenchida de um lado e NULL do outro não deveria agrupar, got %+v", grupos)
+	}
+}
+
+// TestDetectarDuplicatas_NomeComAcentoECaseDiferentesAgrupa prova a regra de
+// nome normalizado (sem acento, case-insensitive) participando do
+// agrupamento de ponta a ponta, não só na função normalizarNomeProduto
+// isolada.
+func TestDetectarDuplicatas_NomeComAcentoECaseDiferentesAgrupa(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Estoque Acento")
+	if err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+
+	p1 := seedProdutoComEstoque(t, db, "Válvula Registro", estoque.ID, CriarProdutoInput{})
+	p2 := seedProdutoComEstoque(t, db, "valvula registro", estoque.ID, CriarProdutoInput{})
+
+	grupos, err := DetectarDuplicatas(db)
+	if err != nil {
+		t.Fatalf("DetectarDuplicatas: %v", err)
+	}
+	if len(grupos) != 1 || len(grupos[0].Produtos) != 2 {
+		t.Fatalf("grupos = %+v, want 1 grupo com 2 produtos (%s,%s)", grupos, p1, p2)
+	}
+}
+
+// TestDetectarDuplicatas_TresMembrosSemInterseccaoTotalNaoAgrupa prova o
+// Design Notes de spec-6-3: A e B compartilham um Estoque, B e C compartilham
+// OUTRO Estoque, mas A e C não compartilham NENHUM Estoque entre si — a
+// interseção TOTAL entre os 3 membros é vazia, então NENHUM grupo nasce
+// (nem "A+B" nem "B+C" nem os 3 juntos) — evita o grupo "encadeado" que
+// confundiria a revisão humana da Story 6.4.
+func TestDetectarDuplicatas_TresMembrosSemInterseccaoTotalNaoAgrupa(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoqueAB, err := CriarEstoque(db, "Estoque AB")
+	if err != nil {
+		t.Fatalf("CriarEstoque AB: %v", err)
+	}
+	estoqueBC, err := CriarEstoque(db, "Estoque BC")
+	if err != nil {
+		t.Fatalf("CriarEstoque BC: %v", err)
+	}
+
+	nome := "Anel Vedacao"
+	produtoA := seedProdutoComEstoque(t, db, nome, estoqueAB.ID, CriarProdutoInput{})
+	produtoB := seedProdutoComEstoque(t, db, nome, estoqueAB.ID, CriarProdutoInput{})
+	adicionarProdutoEstoque(t, db, produtoB, estoqueBC.ID, 1) // B também está no Estoque BC
+	produtoC := seedProdutoComEstoque(t, db, nome, estoqueBC.ID, CriarProdutoInput{})
+
+	grupos, err := DetectarDuplicatas(db)
+	if err != nil {
+		t.Fatalf("DetectarDuplicatas: %v", err)
+	}
+	for _, id := range []string{produtoA, produtoB, produtoC} {
+		if grupoContemProduto(grupos, id) {
+			t.Fatalf("produto %s não deveria estar em nenhum grupo (interseção total vazia): %+v", id, grupos)
+		}
+	}
+}
+
+// TestDetectarDuplicatas_TresMembrosComInterseccaoTotalAgrupaEmUmGrupo prova
+// o caso de sucesso simétrico a TestDetectarDuplicatas_
+// TresMembrosSemInterseccaoTotalNaoAgrupa: 3 Produtos com o MESMO nome
+// normalizado e dimensões equivalentes, cada um com um Estoque próprio ALÉM
+// de um Estoque em comum aos 3 (não um único Estoque compartilhado simples) —
+// a interseção TOTAL entre os 3 (não só par a par) é não-vazia, então os 3
+// devem nascer num ÚNICO GrupoDuplicata, com todos os membros presentes.
+func TestDetectarDuplicatas_TresMembrosComInterseccaoTotalAgrupaEmUmGrupo(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoqueComum, err := CriarEstoque(db, "Estoque Comum Tres Membros")
+	if err != nil {
+		t.Fatalf("CriarEstoque comum: %v", err)
+	}
+	estoqueExtraA, err := CriarEstoque(db, "Estoque Extra A")
+	if err != nil {
+		t.Fatalf("CriarEstoque extra A: %v", err)
+	}
+	estoqueExtraB, err := CriarEstoque(db, "Estoque Extra B")
+	if err != nil {
+		t.Fatalf("CriarEstoque extra B: %v", err)
+	}
+	estoqueExtraC, err := CriarEstoque(db, "Estoque Extra C")
+	if err != nil {
+		t.Fatalf("CriarEstoque extra C: %v", err)
+	}
+
+	nome := "Joelho PVC 90"
+	produtoA := seedProdutoComEstoque(t, db, nome, estoqueComum.ID, CriarProdutoInput{})
+	adicionarProdutoEstoque(t, db, produtoA, estoqueExtraA.ID, 1)
+	produtoB := seedProdutoComEstoque(t, db, nome, estoqueComum.ID, CriarProdutoInput{})
+	adicionarProdutoEstoque(t, db, produtoB, estoqueExtraB.ID, 1)
+	produtoC := seedProdutoComEstoque(t, db, nome, estoqueComum.ID, CriarProdutoInput{})
+	adicionarProdutoEstoque(t, db, produtoC, estoqueExtraC.ID, 1)
+
+	grupos, err := DetectarDuplicatas(db)
+	if err != nil {
+		t.Fatalf("DetectarDuplicatas: %v", err)
+	}
+	if len(grupos) != 1 {
+		t.Fatalf("len(grupos) = %d, want 1: %+v", len(grupos), grupos)
+	}
+	if len(grupos[0].Produtos) != 3 {
+		t.Fatalf("len(grupos[0].Produtos) = %d, want 3: %+v", len(grupos[0].Produtos), grupos[0].Produtos)
+	}
+	ids := map[string]bool{}
+	for _, p := range grupos[0].Produtos {
+		ids[p.ID] = true
+	}
+	for _, id := range []string{produtoA, produtoB, produtoC} {
+		if !ids[id] {
+			t.Errorf("grupo = %+v, esperava conter o produto %s", grupos[0].Produtos, id)
+		}
+	}
+}
+
+// TestDetectarDuplicatas_MultiplosGruposIndependentesNaoContaminam prova que
+// duas duplicatas independentes (nomes diferentes, sem nenhum Produto em
+// comum) devolvem DOIS GrupoDuplicata separados numa única chamada, sem
+// contaminação cruzada entre os grupos — e em ordem determinística por
+// (nome, id) do primeiro membro (Code Map, spec-6-3): "Parafuso M6" vem antes
+// de "Tubo PVC 25mm" alfabeticamente.
+func TestDetectarDuplicatas_MultiplosGruposIndependentesNaoContaminam(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoqueTubo, err := CriarEstoque(db, "Estoque Grupo Tubo")
+	if err != nil {
+		t.Fatalf("CriarEstoque tubo: %v", err)
+	}
+	estoqueParafuso, err := CriarEstoque(db, "Estoque Grupo Parafuso")
+	if err != nil {
+		t.Fatalf("CriarEstoque parafuso: %v", err)
+	}
+
+	tuboA := seedProdutoComEstoque(t, db, "Tubo PVC 25mm", estoqueTubo.ID, CriarProdutoInput{
+		Diametro: &DimensaoInput{Valor: ptrFloat(25), Unidade: ptrStr("mm")},
+	})
+	tuboB := seedProdutoComEstoque(t, db, "Tubo PVC 25mm", estoqueTubo.ID, CriarProdutoInput{
+		Diametro: &DimensaoInput{Valor: ptrFloat(25), Unidade: ptrStr("mm")},
+	})
+	parafusoC := seedProdutoComEstoque(t, db, "Parafuso M6", estoqueParafuso.ID, CriarProdutoInput{})
+	parafusoD := seedProdutoComEstoque(t, db, "Parafuso M6", estoqueParafuso.ID, CriarProdutoInput{})
+
+	grupos, err := DetectarDuplicatas(db)
+	if err != nil {
+		t.Fatalf("DetectarDuplicatas: %v", err)
+	}
+	if len(grupos) != 2 {
+		t.Fatalf("len(grupos) = %d, want 2: %+v", len(grupos), grupos)
+	}
+
+	// Ordem determinística: "Parafuso M6" < "Tubo PVC 25mm".
+	if len(grupos[0].Produtos) != 2 || grupos[0].Produtos[0].Nome != "Parafuso M6" {
+		t.Fatalf("grupos[0] = %+v, want grupo Parafuso M6 primeiro", grupos[0])
+	}
+	if len(grupos[1].Produtos) != 2 || grupos[1].Produtos[0].Nome != "Tubo PVC 25mm" {
+		t.Fatalf("grupos[1] = %+v, want grupo Tubo PVC 25mm segundo", grupos[1])
+	}
+
+	idsParafuso := map[string]bool{grupos[0].Produtos[0].ID: true, grupos[0].Produtos[1].ID: true}
+	if !idsParafuso[parafusoC] || !idsParafuso[parafusoD] {
+		t.Errorf("grupo Parafuso = %+v, want produtos %s e %s", grupos[0].Produtos, parafusoC, parafusoD)
+	}
+
+	idsTubo := map[string]bool{grupos[1].Produtos[0].ID: true, grupos[1].Produtos[1].ID: true}
+	if !idsTubo[tuboA] || !idsTubo[tuboB] {
+		t.Errorf("grupo Tubo = %+v, want produtos %s e %s", grupos[1].Produtos, tuboA, tuboB)
+	}
+
+	// Nenhuma contaminação cruzada: nenhum produto de um grupo aparece no
+	// outro.
+	for id := range idsParafuso {
+		if idsTubo[id] {
+			t.Errorf("produto %s aparece nos dois grupos", id)
+		}
+	}
+}
+
+// TestDetectarDuplicatas_CatalogoSemDuplicatas prova a linha equivalente a
+// "Catálogo sem nenhum Produto pendente" (spec-6-1) para duplicatas: lista
+// vazia, sem erro, quando não há Produtos repetidos.
+func TestDetectarDuplicatas_CatalogoSemDuplicatas(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	seedProdutoNormalizacao(t, db, "Produto Unico A", CriarProdutoInput{})
+	seedProdutoNormalizacao(t, db, "Produto Unico B", CriarProdutoInput{})
+
+	grupos, err := DetectarDuplicatas(db)
+	if err != nil {
+		t.Fatalf("DetectarDuplicatas: %v", err)
+	}
+	if len(grupos) != 0 {
+		t.Errorf("len(grupos) = %d, want 0: %+v", len(grupos), grupos)
+	}
+}
+
+// TestDetectarDuplicatas_FalhaDeBanco prova a linha "Falha de banco durante a
+// consulta": com a tabela `produtos` indisponível, DetectarDuplicatas devolve
+// erro (o handler mapeia para 500 INTERNAL_ERROR).
+func TestDetectarDuplicatas_FalhaDeBanco(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	if _, err := db.Exec(`ALTER TABLE produtos RENAME TO produtos_indisponivel_duplicatas`); err != nil {
+		t.Fatalf("renomear produtos: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := db.Exec(`ALTER TABLE produtos_indisponivel_duplicatas RENAME TO produtos`); err != nil {
+			t.Fatalf("restaurar produtos: %v", err)
+		}
+	})
+
+	if _, err := DetectarDuplicatas(db); err == nil {
+		t.Fatal("DetectarDuplicatas deveria falhar com a tabela produtos indisponível")
+	}
+}
+
+// TestDetectarDuplicatas_FalhaDeBancoAoCarregarLocais prova o fix do code
+// review: ao contrário de TestDetectarDuplicatas_FalhaDeBanco (que derruba
+// `produtos`, a PRIMEIRA consulta — carregarLocaisProduto, que consulta
+// `produto_estoque`, nunca chega a ser exercitada nesse caminho), este teste
+// derruba `produto_estoque` especificamente — a tabela que
+// carregarLocaisProduto consulta. Prova que uma falha NESSA consulta também
+// aborta DetectarDuplicatas com erro; sem este teste, uma regressão que
+// engolisse silenciosamente o erro de carregarLocaisProduto (ex.
+// `locais, _ := carregarLocaisProduto(db)`) passaria despercebida —
+// DetectarDuplicatas seguiria com locais == nil, todo par falharia
+// locaisEmComumPar, e a função devolveria erroneamente `200 {"grupos":[]}`
+// em vez do `500 INTERNAL_ERROR` correto.
+func TestDetectarDuplicatas_FalhaDeBancoAoCarregarLocais(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	if _, err := db.Exec(`ALTER TABLE produto_estoque RENAME TO produto_estoque_indisponivel_duplicatas`); err != nil {
+		t.Fatalf("renomear produto_estoque: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := db.Exec(`ALTER TABLE produto_estoque_indisponivel_duplicatas RENAME TO produto_estoque`); err != nil {
+			t.Fatalf("restaurar produto_estoque: %v", err)
+		}
+	})
+
+	if _, err := DetectarDuplicatas(db); err == nil {
+		t.Fatal("DetectarDuplicatas deveria falhar com a tabela produto_estoque indisponível")
+	}
+}

@@ -485,3 +485,27 @@ source_spec: `spec-6-2-aplicacao-seletiva-de-correcoes.md`
 severity: low
 reason: A FK vai bloquear a exclusão de qualquer Produto com sugestão ignorada associada (mesmo padrão de `importacao_linhas`/`produto_estoque`), mas nenhuma Design Note trata explicitamente como a mesclagem de duplicatas (que provavelmente remove/funde linhas de Produto) deve lidar com as linhas de `normalizacao_ignoradas` do produto removido.
 status: open
+
+### DW-62: A detecção de duplicatas (FR-19) não considera `categoria_id` — dois Produtos com nome normalizado igual, dimensões equivalentes e local em comum, mas em categorias diferentes, são agrupados como cand
+origin: spec-deferred 61097cadc94a
+location: backend/services/normalizacao.go (DetectarDuplicatas/dimensoesEquivalentes)
+source_spec: `spec-6-3-deteccao-de-duplicatas.md`
+severity: medium
+reason: FR-19 do PRD e o Intent Contract de spec-6-3 definem o agrupamento explicitamente como nome normalizado + dimensões equivalentes + locais coincidentes — sem menção a categoria; `DetectarDuplicatas` (backend/services/normalizacao.go) segue essa definição à risca. Em teoria dois Produtos de categorias diferentes poderiam colidir nesses 3 critérios, mas a nomenclatura guiada por subtipo (Story 3.2) torna nomes idênticos entre categorias distintas pouco prováveis na prática.
+status: open
+
+### DW-63: `DuplicatasSection` não distingue visualmente/acessivelmente onde um grupo de duplicatas termina e o próximo começa quando `GET /api/normalizacao/duplicatas` devolve múltiplos grupos — cada grupo é só
+origin: spec-deferred 39f7df537c01
+location: frontend/src/components/normalizacao/DuplicatasSection.tsx
+source_spec: `spec-6-3-deteccao-de-duplicatas.md`
+severity: low
+reason: frontend/src/components/normalizacao/DuplicatasSection.tsx renderiza `grupos.map(...)` como uma sequência de `<table>` com espaçamento visual (`gap-4`) mas nenhum landmark/heading por grupo — leitor de tela não tem como anunciar a fronteira entre grupos.
+status: open
+
+### DW-64: `DuplicatasSection` não anuncia a conclusão bem-sucedida da análise para leitor de tela — só o caminho de erro tem `role="alert"`; um usuário de leitor de tela que clica "Analisar duplicatas" não rece
+origin: spec-deferred 4819e417116d
+location: frontend/src/components/normalizacao/DuplicatasSection.tsx (e, na origem, InconsistenciasSection.tsx)
+source_spec: `spec-6-3-deteccao-de-duplicatas.md`
+severity: low
+reason: frontend/src/components/normalizacao/DuplicatasSection.tsx só usa `role="alert"` no `<p>` de erro (linha ~120); não há `aria-live`/`role="status"` para o resultado de sucesso. Este é o mesmo padrão pré-existente de `InconsistenciasSection.tsx` (Story 6.1, também só `role="alert"` no erro, confirmado por grep) — `DuplicatasSection` é molde explícito desse componente (Code Map de spec-6-3), então herdou fielmente a lacuna em vez de introduzi-la.
+status: open

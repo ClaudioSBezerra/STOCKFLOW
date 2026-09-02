@@ -1,6 +1,7 @@
 // Package services, arquivo normalizacao.go: núcleo da Detecção de
 // inconsistências dimensionais (Story 6.1, spec-6-1, Epic 6 — Normalização de
-// Dados) e da Aplicação seletiva de correções (Story 6.2, spec-6-2).
+// Dados), da Aplicação seletiva de correções (Story 6.2, spec-6-2) e da
+// Detecção de duplicatas (Story 6.3, spec-6-3).
 // AnalisarInconsistencias varre `produtos` sob demanda e devolve uma lista de
 // sugestões (produto, campo, valor sugerido, origem) — nenhuma escrita.
 // AplicarCorrecoes/IgnorarSugestao (Story 6.2) são as duas únicas escritas
@@ -9,6 +10,9 @@
 // (produto, campo, valor, unidade) em `normalizacao_ignoradas`, e
 // AnalisarInconsistencias passa a excluir da lista qualquer sugestão cuja
 // tupla já esteja lá (ver carregarIgnoradas/chaveIgnorada abaixo).
+// DetectarDuplicatas (Story 6.3) varre `produtos` + `produto_estoque` sob
+// demanda e devolve grupos de Produtos candidatos a duplicata — também
+// nenhuma escrita (mesclar é Story 6.4).
 //
 // Duas fontes de sugestão, por campo dimensional vazio (`{campo}_valor`/
 // `{campo}_unidade` ambos NULL):
@@ -31,6 +35,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -564,4 +569,390 @@ func IgnorarSugestao(db *sql.DB, produtoID, campo string, valor float64, unidade
 		return fmt.Errorf("falha ao gravar sugestão ignorada: %w", err)
 	}
 	return nil
+}
+
+// --- Detecção de duplicatas (Story 6.3, spec-6-3) --------------------------
+
+// ProdutoDuplicata é um Produto membro de um GrupoDuplicata — id, nome e as 5
+// dimensões estruturadas (mesmo shape DimensoesProduto de catalogo.go, para
+// que o front-end reuse a mesma formatação do Catálogo).
+type ProdutoDuplicata struct {
+	ID        string           `json:"id"`
+	Nome      string           `json:"nome"`
+	Dimensoes DimensoesProduto `json:"dimensoes"`
+}
+
+// GrupoDuplicata é um componente conectado de 2+ Produtos candidatos a
+// duplicata — nome normalizado igual, dimensões equivalentes par a par e ao
+// menos 1 `estoque_id` em comum entre TODOS os membros (Intent Contract,
+// spec-6-3). Rota só-leitura: nunca persistido, recalculado a cada chamada de
+// DetectarDuplicatas.
+type GrupoDuplicata struct {
+	Produtos []ProdutoDuplicata `json:"produtos"`
+}
+
+// normalizarAcentosReplacer reduz os acentos/cedilha/til pt-BR mais comuns
+// para o caractere ASCII equivalente — usado só por normalizarNomeProduto,
+// sobre texto já em minúsculas (strings.NewReplacer é case-sensitive, então
+// só as formas minúsculas precisam constar aqui). Sem dependência nova
+// (`golang.org/x/text/unicode/norm` ou similar) de propósito — o alfabeto
+// fechado do glossário do PRD (nome de Produto, pt-BR) cabe inteiro numa
+// tabela fixa pequena.
+var normalizarAcentosReplacer = strings.NewReplacer(
+	"á", "a", "à", "a", "ã", "a", "â", "a", "ä", "a",
+	"é", "e", "è", "e", "ê", "e", "ë", "e",
+	"í", "i", "ì", "i", "î", "i", "ï", "i",
+	"ó", "o", "ò", "o", "õ", "o", "ô", "o", "ö", "o",
+	"ú", "u", "ù", "u", "û", "u", "ü", "u",
+	"ç", "c", "ñ", "n",
+)
+
+// normalizarNomeProduto normaliza `nome` para a comparação de agrupamento de
+// DetectarDuplicatas (Always, spec-6-3): sem acento, case-insensitive,
+// aparado nas pontas — glossário do PRD. Note que só os espaços das PONTAS
+// são removidos; espaço duplo no meio do nome (ex. "Tubo  PVC") permanece,
+// então dois nomes que só diferem por espaçamento interno NÃO normalizam
+// igual — o glossário do PRD não pede colapso de espaço interno.
+func normalizarNomeProduto(nome string) string {
+	return strings.TrimSpace(normalizarAcentosReplacer.Replace(strings.ToLower(nome)))
+}
+
+// converterParaMM converte `valor` (na unidade `unidade`, uma das 3 do enum
+// `dimensao_unidade`: mm/cm/m) para milímetros — a unidade comum usada por
+// dimensaoEquivalente para comparar duas dimensões de origens diferentes sem
+// depender da unidade escolhida em cada Produto (Code Map, spec-6-3).
+// `unidade` já chega validada (uma das 3 do enum, gravada por
+// CriarProduto/AplicarCorrecoes) — o `default` cobre "mm" (fator 1) sem um
+// `case` redundante.
+func converterParaMM(valor float64, unidade string) float64 {
+	switch unidade {
+	case "cm":
+		return valor * 10
+	case "m":
+		return valor * 1000
+	default: // "mm"
+		return valor
+	}
+}
+
+// dimensaoEquivalente decide se duas dimensões (mesmo campo, dois Produtos
+// diferentes) estão no MESMO estado (Always, spec-6-3): as duas `NULL`, ou as
+// duas preenchidas com o MESMO valor após conversão para milímetros. Um lado
+// preenchido e o outro vazio nunca é equivalente — evita falso positivo entre
+// um Produto já corrigido (Story 6.1/6.2) e um ainda pendente de revisão.
+// Comparação via string `%.3f` (não igualdade direta de float64), mesmo
+// truque de chaveIgnorada (Story 6.2, Design Notes de spec-6-3): evita
+// diferenças de arredondamento de ponto flutuante na conversão de unidade.
+func dimensaoEquivalente(a, b parDimensao) bool {
+	aPreenchida := a.valor.Valid && a.unidade.Valid
+	bPreenchida := b.valor.Valid && b.unidade.Valid
+	if aPreenchida != bPreenchida {
+		return false
+	}
+	if !aPreenchida {
+		return true // as duas NULL
+	}
+	return fmt.Sprintf("%.3f", converterParaMM(a.valor.Float64, a.unidade.String)) ==
+		fmt.Sprintf("%.3f", converterParaMM(b.valor.Float64, b.unidade.String))
+}
+
+// produtoCandidatoDuplicata é a projeção de 1 linha de `produtos` usada por
+// DetectarDuplicatas — os pares crus (parDimensao, catalogo.go) das 5
+// dimensões ficam retidos (em vez de já convertidos para *DimensaoValor) para
+// alimentar dimensaoEquivalente diretamente.
+type produtoCandidatoDuplicata struct {
+	id              string
+	nome            string
+	nomeNormalizado string
+	comprimento     parDimensao
+	largura         parDimensao
+	diametro        parDimensao
+	altura          parDimensao
+	espessura       parDimensao
+}
+
+// dimensaoPorCampo devolve o parDimensao de `campo` (um dos 5 nomes de
+// ordemCamposDimensao) — usado por dimensoesEquivalentes para iterar os 5
+// campos na mesma ordem fixa do resto do pacote.
+func (c produtoCandidatoDuplicata) dimensaoPorCampo(campo string) parDimensao {
+	switch campo {
+	case "comprimento":
+		return c.comprimento
+	case "largura":
+		return c.largura
+	case "diametro":
+		return c.diametro
+	case "altura":
+		return c.altura
+	case "espessura":
+		return c.espessura
+	default:
+		return parDimensao{}
+	}
+}
+
+// dimensoesEquivalentes decide se DOIS Produtos têm as 5 dimensões
+// estruturadas equivalentes par a par (Always, spec-6-3) — reusa
+// ordemCamposDimensao para a ordem de iteração (Code Map, spec-6-3).
+func dimensoesEquivalentes(a, b produtoCandidatoDuplicata) bool {
+	for _, campo := range ordemCamposDimensao {
+		if !dimensaoEquivalente(a.dimensaoPorCampo(campo), b.dimensaoPorCampo(campo)) {
+			return false
+		}
+	}
+	return true
+}
+
+// carregarLocaisProduto lê `produto_estoque` inteira e devolve, por
+// `produto_id`, o conjunto de `estoque_id` onde o Produto tem linha — usado
+// por DetectarDuplicatas tanto para o pré-filtro par a par (locaisEmComumPar)
+// quanto para a validação de interseção total do componente inteiro
+// (interseccaoTotalNaoVazia). Um Produto sem nenhuma linha em
+// `produto_estoque` simplesmente não aparece como chave (equivalente a um
+// conjunto vazio para quem consulta o mapa).
+func carregarLocaisProduto(db *sql.DB) (map[string]map[string]bool, error) {
+	rows, err := db.Query(`SELECT produto_id, estoque_id FROM produto_estoque`)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao consultar locais de produto: %w", err)
+	}
+	defer rows.Close()
+
+	locais := make(map[string]map[string]bool)
+	for rows.Next() {
+		var produtoID, estoqueID string
+		if err := rows.Scan(&produtoID, &estoqueID); err != nil {
+			return nil, fmt.Errorf("falha ao ler linha de local de produto: %w", err)
+		}
+		if locais[produtoID] == nil {
+			locais[produtoID] = make(map[string]bool)
+		}
+		locais[produtoID][estoqueID] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("falha ao iterar locais de produto: %w", err)
+	}
+	return locais, nil
+}
+
+// locaisEmComumPar decide se dois conjuntos de `estoque_id` têm ao menos 1
+// elemento em comum — pré-filtro PAR A PAR usado só para decidir se dois
+// Produtos podem ser unidos no mesmo componente (uma condição NECESSÁRIA:
+// se dois Produtos não compartilham NENHUM local entre si, eles nunca podem
+// acabar no mesmo grupo final). A condição SUFICIENTE (todos os membros do
+// componente compartilham >=1 local em comum) é verificada separadamente por
+// interseccaoTotalNaoVazia sobre o componente inteiro, depois de formado —
+// ver Design Notes de spec-6-3 sobre por que a interseção PAR A PAR sozinha
+// não basta (risco de grupo "encadeado").
+func locaisEmComumPar(a, b map[string]bool) bool {
+	for estoqueID := range a {
+		if b[estoqueID] {
+			return true
+		}
+	}
+	return false
+}
+
+// interseccaoTotalNaoVazia decide se TODOS os `membros` de um componente
+// compartilham ao menos 1 `estoque_id` em comum entre si (Always, spec-6-3:
+// "ao menos 1 estoque_id em comum entre TODOS os Produtos do grupo") — a
+// interseção de N conjuntos, não só de pares. Design Notes de spec-6-3: esta
+// é a validação FINAL que decide se um componente formado pelo pré-filtro par
+// a par (locaisEmComumPar, dentro do union-find) realmente vira um grupo —
+// um componente onde A∩B e B∩C não são vazios mas A∩C é (nenhum local comum
+// entre TODOS os 3) falha aqui e NENHUM grupo nasce dele (mais simples que
+// tentar sub-agrupar, e evita confundir a revisão humana da Story 6.4 com um
+// grupo "encadeado").
+func interseccaoTotalNaoVazia(membros []produtoCandidatoDuplicata, locais map[string]map[string]bool) bool {
+	if len(membros) == 0 {
+		return false
+	}
+	comuns := make(map[string]bool, len(locais[membros[0].id]))
+	for estoqueID := range locais[membros[0].id] {
+		comuns[estoqueID] = true
+	}
+	for _, m := range membros[1:] {
+		atual := locais[m.id]
+		for estoqueID := range comuns {
+			if !atual[estoqueID] {
+				delete(comuns, estoqueID)
+			}
+		}
+		if len(comuns) == 0 {
+			return false
+		}
+	}
+	return len(comuns) > 0
+}
+
+// duplicatasUnionFind é um union-find simples (Code Map, spec-6-3) sobre
+// `produtoID` — usado por DetectarDuplicatas para conectar pares de Produtos
+// que passam no pré-filtro (dimensão equivalente + locaisEmComumPar) dentro
+// de um mesmo balde de nome normalizado. Só entram no mapa `pai` os Produtos
+// que participaram de ao menos uma união — um Produto ausente do mapa nunca
+// fez par com ninguém, então nunca pode estar num grupo de tamanho >= 2.
+type duplicatasUnionFind struct {
+	pai map[string]string
+}
+
+func novoDuplicatasUnionFind() *duplicatasUnionFind {
+	return &duplicatasUnionFind{pai: make(map[string]string)}
+}
+
+func (u *duplicatasUnionFind) raiz(x string) string {
+	if _, ok := u.pai[x]; !ok {
+		u.pai[x] = x
+		return x
+	}
+	if u.pai[x] != x {
+		u.pai[x] = u.raiz(u.pai[x])
+	}
+	return u.pai[x]
+}
+
+func (u *duplicatasUnionFind) unir(a, b string) {
+	ra, rb := u.raiz(a), u.raiz(b)
+	if ra != rb {
+		u.pai[ra] = rb
+	}
+}
+
+// DetectarDuplicatas varre TODOS os Produtos (sem paginação/teto, mesmo
+// padrão de AnalisarInconsistencias) e devolve os grupos de Produtos
+// candidatos a duplicata (Story 6.3, spec-6-3): nome normalizado igual +
+// dimensões estruturadas equivalentes par a par + ao menos 1 `estoque_id` em
+// comum entre TODOS os membros do grupo. Rota só-leitura: nenhuma escrita,
+// cada chamada recalcula do zero (mesclar é Story 6.4).
+//
+// Algoritmo: agrupa os Produtos por nomeNormalizado; dentro de cada balde,
+// testa cada PAR por dimensão equivalente + interseção de locais PAR A PAR
+// não-vazia (condição necessária) e une os pares que batem via union-find;
+// para cada componente conectado de tamanho >= 2, valida a interseção TOTAL
+// de locais entre TODOS os membros (interseccaoTotalNaoVazia) — só então o
+// componente vira um GrupoDuplicata (Design Notes, spec-6-3). Grupos
+// devolvidos ordenados por (nome, id) do primeiro membro; membros de cada
+// grupo também ordenados por (nome, id).
+func DetectarDuplicatas(db *sql.DB) ([]GrupoDuplicata, error) {
+	const q = `
+		SELECT id, nome,
+		       comprimento_valor, comprimento_unidade,
+		       largura_valor, largura_unidade,
+		       diametro_valor, diametro_unidade,
+		       altura_valor, altura_unidade,
+		       espessura_valor, espessura_unidade
+		FROM produtos
+		ORDER BY nome, id`
+
+	rows, err := db.Query(q)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao consultar produtos para detecção de duplicatas: %w", err)
+	}
+	defer rows.Close()
+
+	var candidatos []produtoCandidatoDuplicata
+	for rows.Next() {
+		var id, nome string
+		var comp, larg, diam, alt, esp parDimensao
+		if err := rows.Scan(
+			&id, &nome,
+			&comp.valor, &comp.unidade,
+			&larg.valor, &larg.unidade,
+			&diam.valor, &diam.unidade,
+			&alt.valor, &alt.unidade,
+			&esp.valor, &esp.unidade,
+		); err != nil {
+			return nil, fmt.Errorf("falha ao ler linha de produto: %w", err)
+		}
+		candidatos = append(candidatos, produtoCandidatoDuplicata{
+			id:              id,
+			nome:            nome,
+			nomeNormalizado: normalizarNomeProduto(nome),
+			comprimento:     comp,
+			largura:         larg,
+			diametro:        diam,
+			altura:          alt,
+			espessura:       esp,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("falha ao iterar produtos: %w", err)
+	}
+
+	locais, err := carregarLocaisProduto(db)
+	if err != nil {
+		return nil, err
+	}
+
+	baldes := make(map[string][]int)
+	for i, c := range candidatos {
+		baldes[c.nomeNormalizado] = append(baldes[c.nomeNormalizado], i)
+	}
+
+	uf := novoDuplicatasUnionFind()
+	for _, indices := range baldes {
+		if len(indices) < 2 {
+			continue
+		}
+		for i := 0; i < len(indices); i++ {
+			for j := i + 1; j < len(indices); j++ {
+				a, b := candidatos[indices[i]], candidatos[indices[j]]
+				if !dimensoesEquivalentes(a, b) {
+					continue
+				}
+				if !locaisEmComumPar(locais[a.id], locais[b.id]) {
+					continue
+				}
+				uf.unir(a.id, b.id)
+			}
+		}
+	}
+
+	componentes := make(map[string][]produtoCandidatoDuplicata)
+	for _, c := range candidatos {
+		if _, participou := uf.pai[c.id]; !participou {
+			continue
+		}
+		raiz := uf.raiz(c.id)
+		componentes[raiz] = append(componentes[raiz], c)
+	}
+
+	grupos := make([]GrupoDuplicata, 0)
+	for _, membros := range componentes {
+		if len(membros) < 2 {
+			continue
+		}
+		if !interseccaoTotalNaoVazia(membros, locais) {
+			continue
+		}
+		sort.Slice(membros, func(i, j int) bool {
+			if membros[i].nome != membros[j].nome {
+				return membros[i].nome < membros[j].nome
+			}
+			return membros[i].id < membros[j].id
+		})
+		produtos := make([]ProdutoDuplicata, 0, len(membros))
+		for _, m := range membros {
+			produtos = append(produtos, ProdutoDuplicata{
+				ID:   m.id,
+				Nome: m.nome,
+				Dimensoes: DimensoesProduto{
+					Comprimento: m.comprimento.paraDimensao(),
+					Largura:     m.largura.paraDimensao(),
+					Diametro:    m.diametro.paraDimensao(),
+					Altura:      m.altura.paraDimensao(),
+					Espessura:   m.espessura.paraDimensao(),
+				},
+			})
+		}
+		grupos = append(grupos, GrupoDuplicata{Produtos: produtos})
+	}
+
+	sort.Slice(grupos, func(i, j int) bool {
+		pi, pj := grupos[i].Produtos[0], grupos[j].Produtos[0]
+		if pi.Nome != pj.Nome {
+			return pi.Nome < pj.Nome
+		}
+		return pi.ID < pj.ID
+	})
+
+	return grupos, nil
 }

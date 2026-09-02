@@ -1,8 +1,9 @@
 // Package handlers, arquivo normalizacao.go: fronteira HTTP da Detecção de
-// inconsistências dimensionais (Story 6.1, spec-6-1) e da Aplicação
-// seletiva de correções (Story 6.2, spec-6-2). Molde exato de
-// handlers/movimentacoes.go (ListarMovimentacoesHandler): decodifica sessão
-// do contexto, chama o service, serializa; nenhuma regra de negócio própria.
+// inconsistências dimensionais (Story 6.1, spec-6-1), da Aplicação
+// seletiva de correções (Story 6.2, spec-6-2) e da Detecção de duplicatas
+// (Story 6.3, spec-6-3). Molde exato de handlers/movimentacoes.go
+// (ListarMovimentacoesHandler): decodifica sessão do contexto, chama o
+// service, serializa; nenhuma regra de negócio própria.
 //
 // Registro em newMux (main.go):
 //   - GET /api/normalizacao/inconsistencias -> RequireAuth ->
@@ -17,6 +18,10 @@
 //   - POST /api/normalizacao/ignoradas -> mesmo gate: grava a tupla exata
 //     (produto,campo,valor) ignorada (services.IgnorarSugestao) — sem
 //     publicação em tempo real (não altera nenhum Produto).
+//   - GET /api/normalizacao/duplicatas -> mesmo gate: varre o catálogo sob
+//     demanda e devolve os grupos de Produtos candidatos a duplicata
+//     (services.DetectarDuplicatas). Rota só-leitura, sem query params, sem
+//     publicação em tempo real (mesmo padrão de GET /inconsistencias).
 package handlers
 
 import (
@@ -195,5 +200,29 @@ func IgnorarSugestaoHandler(db *sql.DB) http.HandlerFunc {
 			slog.Error("falha ao ignorar sugestão", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao ignorar sugestão")
 		}
+	}
+}
+
+// DetectarDuplicatasHandler expõe GET /api/normalizacao/duplicatas (Story
+// 6.3, spec-6-3): varre todos os Produtos sob demanda e devolve os grupos de
+// Produtos candidatos a duplicata — leitura pontual, nenhuma escrita
+// (mesclar é Story 6.4). Guard de contexto ausente -> 500, mesmo padrão de
+// AnalisarInconsistenciasHandler. Erro do service -> 500 INTERNAL_ERROR.
+func DetectarDuplicatasHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := middleware.UsuarioDaSessao(r.Context()); !ok {
+			slog.Error("DetectarDuplicatasHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+
+		grupos, err := services.DetectarDuplicatas(db)
+		if err != nil {
+			slog.Error("falha ao detectar duplicatas", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao detectar duplicatas")
+			return
+		}
+
+		escreverJSON(w, http.StatusOK, map[string]any{"grupos": grupos})
 	}
 }

@@ -250,13 +250,15 @@ export function ImportacaoProdutosSection() {
               {relatorio.rejeitados} rejeitado(s).
             </p>
             {/*
-              CTA "Verificar duplicatas agora" (Story 3.4, spec-3-4): só
-              navega para `/normalizacao` (rota já cadastrada no nav,
-              PlaceholderPage até o Epic 6 existir) — nenhuma análise é
-              disparada por este link, escopo estritamente fora desta story.
+              CTA "Verificar duplicatas agora" (Story 3.4, spec-3-4; ligado à
+              Detecção de duplicatas pela Story 6.3, spec-6-3):
+              `?verificarDuplicatas=1` leva `/normalizacao` direto para a aba
+              Duplicatas com a análise já em andamento — `NormalizacaoPage`
+              lê o parâmetro e passa `autoAnalisar` para `DuplicatasSection`,
+              sem exigir um segundo clique do Almoxarife.
             */}
             <Button asChild variant="outline" className="self-start">
-              <Link to="/normalizacao">Verificar duplicatas agora</Link>
+              <Link to="/normalizacao?verificarDuplicatas=1">Verificar duplicatas agora</Link>
             </Button>
             {relatorio.linhas_rejeitadas.length > 0 && (
               <div className="overflow-x-auto">

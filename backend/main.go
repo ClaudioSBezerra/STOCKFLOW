@@ -569,6 +569,16 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.IgnorarSugestaoHandler(db))))
 
+	// Detecção de duplicatas — Story 6.3 (Epic 6, Normalização de Dados).
+	// MESMO gate de papel das outras rotas de Normalização,
+	// RequireRole(almoxarife). Rota só-leitura, sem query params — o
+	// agrupamento (nome normalizado + dimensões equivalentes + local em
+	// comum) vive em services.DetectarDuplicatas. Sem publicação em tempo
+	// real: análise sob demanda, nenhum estado persistido para notificar.
+	mux.HandleFunc("GET /api/normalizacao/duplicatas", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAlmoxarife)(
+			handlers.DetectarDuplicatasHandler(db))))
+
 	// Infraestrutura de tempo real (AD-2/AD-3) — Story 4.4. POST
 	// /api/realtime/ticket leva só RequireAuth: qualquer conta autenticada
 	// pode abrir sua própria conexão SSE. GET /api/realtime/stream é o único
