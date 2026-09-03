@@ -76,3 +76,69 @@ func SubmeterPedidoHandler(db *sql.DB, registro *realtime.Registry) http.Handler
 		}
 	}
 }
+
+// ListarPedidosHandler expõe GET /api/pedidos (Story 7.3, spec-7-3),
+// registrado em newMux atrás SÓ de RequireAuth (SEM RequireRole — mesmo
+// mínimo de papel do envio). Devolve os Pedidos do PRÓPRIO usuário da sessão
+// (`services.ListarPedidosProprios` filtra por `usuario_id` da sessão, para
+// qualquer papel), do mais recente ao mais antigo. Filtro opcional
+// `?status=` restrito a `pendente|aprovado|rejeitado`; valor fora disso ->
+// `400 VALIDATION_ERROR` (o service rejeita antes de tocar o banco). Sucesso
+// -> `200 {"pedidos":[...]}` (nunca nil -> `[]`). Sem regra de negócio
+// própria — molde de ListarMovimentacoesHandler (movimentacoes.go).
+func ListarPedidosHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		usuario, ok := middleware.UsuarioDaSessao(r.Context())
+		if !ok {
+			slog.Error("ListarPedidosHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+
+		filtroStatus := r.URL.Query().Get("status")
+		resumos, err := services.ListarPedidosProprios(db, usuario.ID, filtroStatus)
+		var erroValidacao *services.ErroPedidoValidacao
+		switch {
+		case err == nil:
+			if resumos == nil {
+				resumos = []services.PedidoResumo{}
+			}
+			escreverJSON(w, http.StatusOK, map[string]any{"pedidos": resumos})
+		case errors.As(err, &erroValidacao):
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
+		default:
+			slog.Error("falha ao listar pedidos próprios", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao listar pedidos")
+		}
+	}
+}
+
+// BuscarPedidoHandler expõe GET /api/pedidos/{id} (Story 7.3, spec-7-3),
+// registrado em newMux atrás SÓ de RequireAuth. Devolve o cabeçalho + os
+// itens em snapshot do Pedido `{id}` se o solicitante for o dono da sessão
+// OU tiver papel `almoxarife`+ (padrão de escopo AD-8, resolvido em
+// `services.BuscarPedidoProprio`). Qualquer outro caso — Pedido de outro
+// usuário sem papel suficiente, id inexistente, id malformado — colapsa em
+// `404 NOT_FOUND` com a MESMA mensagem: nunca revela a existência de um
+// Pedido alheio, nunca responde `403`. Sucesso -> `200 {"pedido": {...}}`.
+func BuscarPedidoHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		usuario, ok := middleware.UsuarioDaSessao(r.Context())
+		if !ok {
+			slog.Error("BuscarPedidoHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+
+		detalhe, err := services.BuscarPedidoProprio(db, r.PathValue("id"), usuario.ID, usuario.Papel)
+		switch {
+		case err == nil:
+			escreverJSON(w, http.StatusOK, map[string]any{"pedido": detalhe})
+		case errors.Is(err, services.ErrPedidoNaoEncontrado):
+			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "pedido não encontrado")
+		default:
+			slog.Error("falha ao buscar pedido", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao buscar pedido")
+		}
+	}
+}

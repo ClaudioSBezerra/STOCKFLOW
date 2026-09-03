@@ -280,3 +280,301 @@ func TestSubmeterPedidoHandler_401SemToken(t *testing.T) {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
 	}
 }
+
+// --- Consulta de Pedidos próprios — Story 7.3, spec-7-3 -------------------
+//
+// GET /api/pedidos e GET /api/pedidos/{id} ficam atrás SÓ de RequireAuth
+// (SEM RequireRole — mesmo mínimo de papel do envio). Molde de despacho de
+// getCarrinho (carrinho_test.go).
+
+func getPedidos(db *sql.DB, authHeader, query string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/pedidos",
+		middleware.RequireAuth(db, testJWTSecret)(ListarPedidosHandler(db)))
+	url := "/api/pedidos"
+	if query != "" {
+		url += "?" + query
+	}
+	r := httptest.NewRequest(http.MethodGet, url, nil)
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+func getPedido(db *sql.DB, authHeader, id string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/pedidos/{id}",
+		middleware.RequireAuth(db, testJWTSecret)(BuscarPedidoHandler(db)))
+	r := httptest.NewRequest(http.MethodGet, "/api/pedidos/"+id, nil)
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+// seedPedidoViaServico monta e envia um Pedido de 1 item para `usuarioID`
+// direto pela camada de serviço (sem a dança HTTP de carrinho+envio).
+func seedPedidoViaServico(t *testing.T, db *sql.DB, usuarioID, nomeBase string, qtd float64) services.Pedido {
+	t.Helper()
+	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, nomeBase, qtd+10)
+	if _, err := services.AdicionarItemCarrinho(db, usuarioID, produtoID, estoqueID, qtd); err != nil {
+		t.Fatalf("seed AdicionarItemCarrinho (%s): %v", nomeBase, err)
+	}
+	pedido, err := services.SubmeterPedido(db, usuarioID, "Solicitante "+nomeBase, "Obra "+nomeBase, "")
+	if err != nil {
+		t.Fatalf("seed SubmeterPedido (%s): %v", nomeBase, err)
+	}
+	return pedido
+}
+
+// --- ListarPedidosHandler -----------------------------------------------
+
+// TestListarPedidosHandler_200Escopado cobre "Lista escopada ao dono" na
+// fronteira HTTP: a sessão A só recebe os Pedidos de A.
+func TestListarPedidosHandler_200Escopado(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	usuarioA, tokenA := seedContaComumECarrinho(t, db, "H Lista A 73", "h-pedidos-73-lista-a@empresa.com")
+	usuarioB, _ := seedContaComumECarrinho(t, db, "H Lista B 73", "h-pedidos-73-lista-b@empresa.com")
+
+	seedPedidoViaServico(t, db, usuarioA, "H73 Lista A1", 1)
+	seedPedidoViaServico(t, db, usuarioA, "H73 Lista A2", 1)
+	seedPedidoViaServico(t, db, usuarioB, "H73 Lista B1", 1)
+
+	w := getPedidos(db, "Bearer "+tokenA, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Pedidos []services.PedidoResumo `json:"pedidos"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if len(resp.Pedidos) != 2 {
+		t.Fatalf("len(pedidos) = %d, want 2", len(resp.Pedidos))
+	}
+	for _, p := range resp.Pedidos {
+		if p.UsuarioID != usuarioA {
+			t.Errorf("pedido %s: UsuarioID = %q, want %q", p.ID, p.UsuarioID, usuarioA)
+		}
+		if p.QtdItens != 1 {
+			t.Errorf("pedido %s: QtdItens = %d, want 1", p.ID, p.QtdItens)
+		}
+	}
+}
+
+// TestListarPedidosHandler_FiltroPorStatus cobre "Filtro por status".
+func TestListarPedidosHandler_FiltroPorStatus(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	usuarioID, token := seedContaComumECarrinho(t, db, "H Filtro 73", "h-pedidos-73-filtro@empresa.com")
+
+	seedPedidoViaServico(t, db, usuarioID, "H73 Filtro Pend", 1)
+	aprovado := seedPedidoViaServico(t, db, usuarioID, "H73 Filtro Aprov", 1)
+	if _, err := db.Exec(`UPDATE pedidos SET status = 'aprovado' WHERE id = $1`, aprovado.ID); err != nil {
+		t.Fatalf("seed status: %v", err)
+	}
+
+	w := getPedidos(db, "Bearer "+token, "status=aprovado")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Pedidos []services.PedidoResumo `json:"pedidos"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Pedidos) != 1 || resp.Pedidos[0].ID != aprovado.ID {
+		t.Fatalf("pedidos = %+v, want só %s", resp.Pedidos, aprovado.ID)
+	}
+}
+
+// TestListarPedidosHandler_400FiltroInvalido cobre "Filtro de status
+// inválido" -> 400 VALIDATION_ERROR.
+func TestListarPedidosHandler_400FiltroInvalido(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	_, token := seedContaComumECarrinho(t, db, "H Filtro Ruim 73", "h-pedidos-73-filtro-ruim@empresa.com")
+
+	w := getPedidos(db, "Bearer "+token, "status=banana")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "VALIDATION_ERROR" {
+		t.Errorf("code = %q, want VALIDATION_ERROR", env.Error.Code)
+	}
+}
+
+// TestListarPedidosHandler_200Vazio cobre "Sem Pedidos" -> {"pedidos":[]}.
+func TestListarPedidosHandler_200Vazio(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	_, token := seedContaComumECarrinho(t, db, "H Vazio 73", "h-pedidos-73-vazio@empresa.com")
+
+	w := getPedidos(db, "Bearer "+token, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Pedidos []services.PedidoResumo `json:"pedidos"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if resp.Pedidos == nil || len(resp.Pedidos) != 0 {
+		t.Errorf("pedidos = %+v, want []", resp.Pedidos)
+	}
+}
+
+// TestListarPedidosHandler_401SemToken cobre a ausência de Authorization.
+func TestListarPedidosHandler_401SemToken(t *testing.T) {
+	db := testDB(t)
+	w := getPedidos(db, "", "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+}
+
+// --- BuscarPedidoHandler ----------------------------------------------------
+
+// TestBuscarPedidoHandler_200Dono cobre "Detalhe pelo dono".
+func TestBuscarPedidoHandler_200Dono(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	usuarioID, token := seedContaComumECarrinho(t, db, "H Detalhe Dono 73", "h-pedidos-73-detalhe-dono@empresa.com")
+	pedido := seedPedidoViaServico(t, db, usuarioID, "H73 Detalhe Dono", 2)
+
+	w := getPedido(db, "Bearer "+token, pedido.ID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Pedido services.PedidoDetalhe `json:"pedido"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if resp.Pedido.ID != pedido.ID || resp.Pedido.UsuarioID != usuarioID {
+		t.Errorf("cabeçalho = {ID:%s UsuarioID:%s}", resp.Pedido.ID, resp.Pedido.UsuarioID)
+	}
+	if len(resp.Pedido.Itens) != 1 || resp.Pedido.Itens[0].Quantidade != 2 {
+		t.Errorf("itens = %+v, want 1 item qtd 2", resp.Pedido.Itens)
+	}
+}
+
+// TestBuscarPedidoHandler_404PedidoAlheioComoUsuario cobre "Detalhe de
+// Pedido alheio, papel usuario" -> 404 NOT_FOUND (nunca 403, nunca revela).
+func TestBuscarPedidoHandler_404PedidoAlheioComoUsuario(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	dono, _ := seedContaComumECarrinho(t, db, "H Dono Alheio 73", "h-pedidos-73-dono-alheio@empresa.com")
+	_, tokenOutro := seedContaComumECarrinho(t, db, "H Outro 73", "h-pedidos-73-outro@empresa.com")
+	pedido := seedPedidoViaServico(t, db, dono, "H73 Alheio", 1)
+
+	w := getPedido(db, "Bearer "+tokenOutro, pedido.ID)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "NOT_FOUND" {
+		t.Errorf("code = %q, want NOT_FOUND", env.Error.Code)
+	}
+}
+
+// TestBuscarPedidoHandler_200ComoAlmoxarife cobre "Detalhe de Pedido alheio,
+// papel almoxarife+" -> 200 (padrão de escopo AD-8).
+func TestBuscarPedidoHandler_200ComoAlmoxarife(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	dono, _ := seedContaComumECarrinho(t, db, "H Dono p/ Almox 73", "h-pedidos-73-dono-almox@empresa.com")
+	criarContaComPapel(t, db, "H Almox 73", "h-pedidos-73-almox@empresa.com", "senha-123456", "almoxarife")
+	tokenAlmox := tokenDeLogin(t, db, "h-pedidos-73-almox@empresa.com", "senha-123456")
+	pedido := seedPedidoViaServico(t, db, dono, "H73 Almox Ve", 1)
+
+	w := getPedido(db, "Bearer "+tokenAlmox, pedido.ID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Pedido services.PedidoDetalhe `json:"pedido"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Pedido.ID != pedido.ID || len(resp.Pedido.Itens) != 1 {
+		t.Errorf("pedido = {ID:%s Itens:%d}, want {ID:%s Itens:1}", resp.Pedido.ID, len(resp.Pedido.Itens), pedido.ID)
+	}
+}
+
+// TestBuscarPedidoHandler_404IdMalformado cobre "Detalhe com id
+// inexistente/malformado" -> mesma resposta 404 NOT_FOUND.
+func TestBuscarPedidoHandler_404IdMalformado(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	_, token := seedContaComumECarrinho(t, db, "H Id Ruim 73", "h-pedidos-73-id-ruim@empresa.com")
+
+	w := getPedido(db, "Bearer "+token, "nao-e-uuid")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "NOT_FOUND" {
+		t.Errorf("code = %q, want NOT_FOUND", env.Error.Code)
+	}
+}
+
+// TestBuscarPedidoHandler_404IdInexistenteBemFormado cobre "Detalhe com id
+// inexistente" na variante de UUID bem-formado (mas de nenhum Pedido) — a
+// mesma resposta 404 NOT_FOUND, agora provada na fronteira HTTP e não só no
+// service (TestBuscarPedidoProprio_IdMalformadoOuInexistente cobre isso em
+// services/pedidos_test.go; este caso faltava aqui).
+func TestBuscarPedidoHandler_404IdInexistenteBemFormado(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	_, token := seedContaComumECarrinho(t, db, "H Id Inexistente 73", "h-pedidos-73-id-inexistente@empresa.com")
+
+	w := getPedido(db, "Bearer "+token, "00000000-0000-0000-0000-000000000000")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "NOT_FOUND" {
+		t.Errorf("code = %q, want NOT_FOUND", env.Error.Code)
+	}
+}
+
+// TestListarPedidosHandler_AlmoxarifeSoVeOsProprios cobre que GET
+// /api/pedidos permanece escopado à sessão MESMO para papel almoxarife+: o
+// padrão de escopo AD-8 (dono OU almoxarife+) vale só para o acesso por id
+// (BuscarPedidoHandler) — a listagem (ListarPedidosHandler) nunca devolve
+// Pedidos de outro usuário, para nenhum papel. ListarPedidosHandler nem
+// recebe o papel da sessão como parâmetro; este teste trava esse contrato na
+// fronteira HTTP para que uma futura mudança não estenda por engano a mesma
+// escalada de papel da consulta por id para a listagem.
+func TestListarPedidosHandler_AlmoxarifeSoVeOsProprios(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	dono, _ := seedContaComumECarrinho(t, db, "H Lista Dono Alheio 73", "h-pedidos-73-lista-dono-alheio@empresa.com")
+	criarContaComPapel(t, db, "H Lista Almox 73", "h-pedidos-73-lista-almox@empresa.com", "senha-123456", "almoxarife")
+	tokenAlmox := tokenDeLogin(t, db, "h-pedidos-73-lista-almox@empresa.com", "senha-123456")
+
+	seedPedidoViaServico(t, db, dono, "H73 Lista Almox Alheio", 1)
+
+	w := getPedidos(db, "Bearer "+tokenAlmox, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Pedidos []services.PedidoResumo `json:"pedidos"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if len(resp.Pedidos) != 0 {
+		t.Fatalf("pedidos = %+v, want [] (almoxarife não tem Pedidos próprios e não deve ver os do dono)", resp.Pedidos)
+	}
+}

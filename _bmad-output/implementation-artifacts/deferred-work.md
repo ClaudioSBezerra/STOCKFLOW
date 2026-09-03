@@ -509,3 +509,35 @@ source_spec: `spec-6-3-deteccao-de-duplicatas.md`
 severity: low
 reason: frontend/src/components/normalizacao/DuplicatasSection.tsx só usa `role="alert"` no `<p>` de erro (linha ~120); não há `aria-live`/`role="status"` para o resultado de sucesso. Este é o mesmo padrão pré-existente de `InconsistenciasSection.tsx` (Story 6.1, também só `role="alert"` no erro, confirmado por grep) — `DuplicatasSection` é molde explícito desse componente (Code Map de spec-6-3), então herdou fielmente a lacuna em vez de introduzi-la.
 status: open
+
+### DW-65: GET /api/pedidos e a contagem de itens não têm índice/escopo de query dedicado: falta índice em pedidos.usuario_id e a subquery de contagem de ListarPedidosProprios agrega pedido_itens da empresa inte
+origin: spec-deferred fd80220707b9
+location: backend/services/pedidos.go (ListarPedidosProprios) / backend/migrations/000026_create_pedidos.up.sql
+source_spec: `spec-7-3-consulta-de-pedidos-proprios.md`
+severity: low
+reason: backend/migrations/000026_create_pedidos.up.sql não cria índice em pedidos.usuario_id nem em pedido_itens.pedido_id; a subquery de contagem em ListarPedidosProprios (backend/services/pedidos.go) agrega pedido_itens inteiro antes do join com o p filtrado — inconsistente com o padrão já usado em movimentacoes (idx_movimentacoes_produto_id/idx_movimentacoes_criado_em, criados especificamente para essa forma de query).
+status: open
+
+### DW-66: O campo observacao (nota livre do solicitante no envio) é buscado e transportado ponta a ponta mas nunca é exibido em "Meus Pedidos" — nem na lista, nem no diálogo "Ver itens".
+origin: spec-deferred ad7472caf1aa
+location: frontend/src/pages/MeusPedidosPage.tsx
+source_spec: `spec-7-3-consulta-de-pedidos-proprios.md`
+severity: low
+reason: MeusPedidosPage.tsx nunca lê pedido.observacao/detalhe.observacao em nenhum JSX; o Code Map/Tasks desta story enumeram explicitamente só solicitante, obra, data, badge, qtd de itens e "Ver itens" — não incluem a observação, então não é um requisito claro desta story, mas o dado já chega ao cliente sem uso.
+status: open
+
+### DW-67: A invariância de snapshot do AD-17 (rótulo do item não muda se o Produto for editado/mesclado depois) só tem teste de correção no momento da leitura, não de invariância ao longo do tempo.
+origin: spec-deferred 0640432d43c1
+location: backend/services/pedidos_test.go (BuscarPedidoProprio)
+source_spec: `spec-7-3-consulta-de-pedidos-proprios.md`
+severity: low
+reason: TestBuscarPedidoProprio_DonoComItens e TestBuscarPedidoProprio_ItensOrdenadosPorNome (backend/services/pedidos_test.go) só provam correção no momento da leitura; a query em BuscarPedidoProprio de fato nunca faz join com produtos/estoques, então a implementação está correta hoje, mas nenhum teste edita o Produto/Estoque depois do envio e rebusca o Pedido para confirmar que o rótulo do item permanece congelado.
+status: open
+
+### DW-68: Follow-up review still recommended for 7-3-consulta-de-pedidos-próprios after the damping cap was spent
+origin: review-budget-followup
+location: n/a
+source_spec: `spec-7-3-consulta-de-pedidos-proprios.md`
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260903-104700-a410; this entry preserves the lingering recommendation for a deliberate later review.
+status: open

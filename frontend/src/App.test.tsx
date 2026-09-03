@@ -40,6 +40,16 @@ vi.mock('@/lib/carrinho', () => ({
   }),
 }));
 
+// `@/lib/realtime/client` é mockado por inteiro (mesmo motivo do
+// CarrinhoProvider acima) — só MeusPedidosPage o usa entre as páginas
+// exercitadas neste arquivo, então este mock não afeta as demais rotas.
+// Sem ele, o teste de `/pedidos` abaixo montaria um `EventSource` de verdade
+// sem stub, risco de flake.
+const conectarRealtimeMock = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/realtime/client', () => ({
+  conectarRealtime: conectarRealtimeMock,
+}));
+
 function LocationDisplay() {
   const { pathname } = useLocation();
   return <span data-testid="pathname">{pathname}</span>;
@@ -202,6 +212,7 @@ describe('<App /> — wiring real de AuthProvider + RotaProtegida', () => {
     vi.unstubAllGlobals();
     clearAccessToken();
     useAuthMock.mockReset();
+    conectarRealtimeMock.mockReset();
   });
 
   it('sem cookie de refresh: bootstrap falha e a rota protegida cai em /login', async () => {
@@ -281,6 +292,36 @@ describe('<App /> — wiring real de AuthProvider + RotaProtegida', () => {
     expect(await screen.findByRole('heading', { name: 'Meu Perfil' })).toBeInTheDocument();
     expect(window.location.pathname).toBe('/configuracoes');
     expect(screen.getByRole('button', { name: 'Solicitar promoção para Almoxarife' })).toBeInTheDocument();
+    expect(screen.getAllByRole('navigation', { name: 'Navegação principal' }).length).toBeGreaterThan(0);
+    expect(screen.queryByText('Em construção')).not.toBeInTheDocument();
+  });
+
+  it('/pedidos renderiza MeusPedidosPage dentro do shell, não a PlaceholderPage', async () => {
+    conectarRealtimeMock.mockImplementation((_receber, mudar) => {
+      mudar('conectado');
+      return vi.fn();
+    });
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/api/auth/refresh') {
+        return Promise.resolve({ ok: true, json: async () => ({ token: 'access-abc' }) });
+      }
+      if (url === '/api/auth/me') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ id: '1', nome: 'Fulano', email: 'f@empresa.com', papel: 'usuario' }),
+        });
+      }
+      if (url === '/api/pedidos') {
+        return Promise.resolve({ ok: true, json: async () => ({ pedidos: [] }) });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    await router.navigate('/pedidos');
+
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Meus Pedidos' })).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/pedidos');
     expect(screen.getAllByRole('navigation', { name: 'Navegação principal' }).length).toBeGreaterThan(0);
     expect(screen.queryByText('Em construção')).not.toBeInTheDocument();
   });

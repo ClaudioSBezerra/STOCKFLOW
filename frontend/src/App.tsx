@@ -7,6 +7,7 @@ import { PlaceholderPage } from '@/pages/PlaceholderPage';
 import { CatalogoPage } from '@/pages/CatalogoPage';
 import { ProdutoDetalhePage } from '@/pages/ProdutoDetalhePage';
 import { CarrinhoPage } from '@/pages/CarrinhoPage';
+import { MeusPedidosPage } from '@/pages/MeusPedidosPage';
 import { CadastroPage } from '@/pages/CadastroPage';
 import { VerificarEmailPage } from '@/pages/VerificarEmailPage';
 import { LoginPage } from '@/pages/LoginPage';
@@ -36,7 +37,9 @@ import { AuthCallbackPage } from '@/pages/AuthCallbackPage';
  * `/produtos/:id` (Story 4.4, detalhe do Produto por Estoque com atualização
  * em tempo real, sem gate de papel próprio — `usuario`+), `/carrinho`
  * (Story 7.1, Carrinho de reserva — mesmo `usuario`+ sem gate de papel
- * próprio) e `/normalizacao` (Story 6.1, "Inconsistências": detecção
+ * próprio), `/pedidos` (Story 7.3, "Meus Pedidos": consulta dos Pedidos
+ * próprios, mesmo `usuario`+ sem gate de papel próprio) e `/normalizacao`
+ * (Story 6.1, "Inconsistências": detecção
  * dimensional sob demanda, mesmo gate de papel `almoxarife`+ de
  * `/estoques`) são rotas-filhas da raiz, dentro do `AppShell`/`RotaProtegida`.
  * A árvore do `AppShell` fica atrás do `RotaProtegida`
@@ -109,6 +112,7 @@ export const router = createBrowserRouter([
       { index: true, element: <CatalogoPage /> },
       { path: 'produtos/:id', element: <ProdutoDetalhePage /> },
       { path: 'carrinho', element: <CarrinhoPage /> },
+      { path: 'pedidos', element: <MeusPedidosPage /> },
       { path: 'configuracoes', element: <ConfiguracoesPage /> },
       { path: 'estoques', element: <EstoquesPage /> },
       { path: 'normalizacao', element: <NormalizacaoPage /> },

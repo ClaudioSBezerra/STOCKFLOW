@@ -2248,6 +2248,101 @@ func TestNewMux_CarrinhoRotasSoRequireAuth(t *testing.T) {
 	})
 }
 
+// TestNewMux_PedidosConsultaRotasSoRequireAuth prova, despachando pela mesma
+// instância de newMux usada por main() (Story 7.3, spec-7-3), que as duas
+// rotas de consulta de Pedidos — GET /api/pedidos e GET /api/pedidos/{id} —
+// NÃO levam RequireRole: sem token -> 401 (RequireAuth); token `usuario` ->
+// sucesso de verdade, NUNCA 403 — mesmo molde de
+// TestNewMux_CarrinhoRotasSoRequireAuth. Sem este caso, um erro de registro
+// em main.go (handler trocado, RequireRole indevido, path errado) deixaria a
+// suíte verde: os testes de handlers/pedidos_test.go montam seu próprio mux
+// local e nunca despacham pela composição real de main.go.
+func TestNewMux_PedidosConsultaRotasSoRequireAuth(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate usuarios: %v", err)
+	}
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
+		t.Fatalf("truncate produtos: %v", err)
+	}
+
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	fotosDir := t.TempDir()
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, fotosDir)
+
+	const senha = "senha-123456"
+	segredos := map[string]string{}
+
+	despachar := func(metodo, caminho, token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(metodo, caminho, nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	seedContaMux(t, db, "pedidos-mux-usuario@empresa.com", "usuario", senha, segredos)
+	var usuarioID string
+	if err := db.QueryRow(`SELECT id FROM usuarios WHERE email = $1`, "pedidos-mux-usuario@empresa.com").Scan(&usuarioID); err != nil {
+		t.Fatalf("seed usuarioID: %v", err)
+	}
+
+	var categoriaID string
+	if err := db.QueryRow(`SELECT id FROM categorias LIMIT 1`).Scan(&categoriaID); err != nil {
+		t.Fatalf("seed categoria: %v", err)
+	}
+	estoque, err := services.CriarEstoque(db, "Canteiro Pedidos Mux")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	produto, err := services.CriarProduto(db, services.CriarProdutoInput{
+		Nome: "Produto Pedidos Mux", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 10,
+	})
+	if err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+	if _, err := services.AdicionarItemCarrinho(db, usuarioID, produto.ID, estoque.ID, 1); err != nil {
+		t.Fatalf("seed AdicionarItemCarrinho: %v", err)
+	}
+	pedido, err := services.SubmeterPedido(db, usuarioID, "Solicitante Mux", "Obra Mux", "")
+	if err != nil {
+		t.Fatalf("seed SubmeterPedido: %v", err)
+	}
+
+	t.Run("GET /api/pedidos sem token -> 401", func(t *testing.T) {
+		w := despachar(http.MethodGet, "/api/pedidos", "")
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+		}
+	})
+
+	t.Run("GET /api/pedidos token usuario -> 200 (rota sem RequireRole)", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "pedidos-mux-usuario@empresa.com", senha, segredos)
+		w := despachar(http.MethodGet, "/api/pedidos", token)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d (body=%s) — rota não deveria exigir RequireRole", w.Code, http.StatusOK, w.Body.String())
+		}
+	})
+
+	t.Run("GET /api/pedidos/{id} sem token -> 401", func(t *testing.T) {
+		w := despachar(http.MethodGet, "/api/pedidos/"+pedido.ID, "")
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+		}
+	})
+
+	t.Run("GET /api/pedidos/{id} token usuario dono -> 200 (rota sem RequireRole)", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "pedidos-mux-usuario@empresa.com", senha, segredos)
+		w := despachar(http.MethodGet, "/api/pedidos/"+pedido.ID, token)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d (body=%s) — rota não deveria exigir RequireRole", w.Code, http.StatusOK, w.Body.String())
+		}
+	})
+}
+
 // TestNewMux_RealtimeTicketRotaSoRequireAuth prova, despachando pela mesma
 // instância de newMux usada por main() (Story 4.4, spec-4-4), que POST
 // /api/realtime/ticket NÃO leva RequireRole: sem token -> 401

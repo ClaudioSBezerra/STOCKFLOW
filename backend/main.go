@@ -613,6 +613,18 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	mux.HandleFunc("POST /api/pedidos", middleware.RequireAuth(db, jwtSecret)(
 		handlers.SubmeterPedidoHandler(db, registro)))
 
+	// Consulta de Pedidos próprios — Story 7.3 (Epic 7, Pedidos de Retirada).
+	// Mesma composição só com RequireAuth do POST acima (mux Go 1.22: os três
+	// padrões coexistem). GET /api/pedidos lista os Pedidos do próprio usuário
+	// da sessão (filtrável por ?status=); GET /api/pedidos/{id} devolve
+	// cabeçalho + itens em snapshot, liberado ao dono ou a `almoxarife`+ pelo
+	// padrão de escopo AD-8. Esta story só CONSOME o canal SSE `pedidos` — não
+	// publica nada.
+	mux.HandleFunc("GET /api/pedidos", middleware.RequireAuth(db, jwtSecret)(
+		handlers.ListarPedidosHandler(db)))
+	mux.HandleFunc("GET /api/pedidos/{id}", middleware.RequireAuth(db, jwtSecret)(
+		handlers.BuscarPedidoHandler(db)))
+
 	// Infraestrutura de tempo real (AD-2/AD-3) — Story 4.4. POST
 	// /api/realtime/ticket leva só RequireAuth: qualquer conta autenticada
 	// pode abrir sua própria conexão SSE. GET /api/realtime/stream é o único
