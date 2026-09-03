@@ -23,6 +23,7 @@ import {
 } from '@/components/ui/select';
 import { getAccessToken } from '@/lib/session';
 import { useAuth } from '@/lib/auth';
+import { useCarrinho } from '@/lib/carrinho';
 import { rankPapel } from '@/components/shell/nav-items';
 import { conectarRealtime, type StatusRealtime } from '@/lib/realtime/client';
 import {
@@ -102,6 +103,23 @@ import {
  * mount/reconexão/refetch por SSE — nenhum caminho de atualização de estado
  * paralelo); falha mostra a mensagem do servidor (que já cita a quantidade
  * disponível no 409) DENTRO do diálogo, sem fechar.
+ *
+ * Adicionar ao Carrinho (Story 7.1, spec-7-1): visível para QUALQUER
+ * usuário autenticado (`usuario`+, sem gate de papel — ao contrário de
+ * Baixa/Transferir), primeiro ponto de entrada da AC1. Desabilitado
+ * (`disabled`, mesmo tratamento visual `disabled:opacity-50` de qualquer
+ * outro botão deste app) quando `linha.quantidade <= 0` — sem isso o
+ * Usuário abriria o diálogo só para levar um 409 depois de um round-trip ao
+ * servidor por uma linha que já mostra "0" na tabela. Abre um `Dialog`
+ * (estado `carrinhoEstoque`) com um `Input type="number"` — molde exato do
+ * diálogo de Registrar Baixa. Confirmar chama `useCarrinho().adicionarItem`
+ * (que já faz o `POST /api/carrinho/itens` e, em sucesso, o refresh do
+ * estado global do carrinho — badge incluso): sucesso -> `toast.success`,
+ * fecha o diálogo; falha mostra a mensagem do servidor (409 já cita quanto
+ * ainda cabe, 404 se o Produto foi mesclado entre a abertura da tela e a
+ * confirmação) DENTRO do diálogo, sem fechar — nunca dispara
+ * `carregarDetalhe()` (adicionar ao carrinho não muda `produto_estoque`,
+ * Design Notes de spec-7-1).
  */
 
 interface CategoriaDetalhe {
@@ -188,6 +206,16 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
   const [quantidadeBaixa, setQuantidadeBaixa] = useState('');
   const [enviandoBaixa, setEnviandoBaixa] = useState(false);
   const [erroBaixa, setErroBaixa] = useState<string | null>(null);
+
+  // Diálogo de Adicionar ao Carrinho (Story 7.1): `carrinhoEstoque` guarda a
+  // linha alvo — `null` fecha o diálogo, mesmo padrão de `baixaEstoque`
+  // acima. `adicionarItem` (useCarrinho()) já cuida do POST + refresh do
+  // estado global; este componente só guarda o estado de UI do diálogo.
+  const { adicionarItem } = useCarrinho();
+  const [carrinhoEstoque, setCarrinhoEstoque] = useState<EstoqueQuantidade | null>(null);
+  const [quantidadeCarrinho, setQuantidadeCarrinho] = useState('');
+  const [enviandoCarrinho, setEnviandoCarrinho] = useState(false);
+  const [erroCarrinho, setErroCarrinho] = useState<string | null>(null);
 
   // Diálogo de Transferir (Story 5.2): `transferenciaEstoque` guarda a linha
   // de ORIGEM alvo — `null` fecha o diálogo. A lista de Estoques destino
@@ -333,6 +361,36 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
       setErroBaixa(MENSAGEM_ERRO_BAIXA);
     } finally {
       setEnviandoBaixa(false);
+    }
+  }
+
+  // confirmarAdicionarCarrinho chama useCarrinho().adicionarItem para a
+  // linha guardada em `carrinhoEstoque` (Story 7.1, spec-7-1) — molde de
+  // confirmarBaixa, mas sem refetch de `carregarDetalhe()` no sucesso:
+  // adicionar ao carrinho não escreve em `produto_estoque`, a tabela
+  // "Quantidade por Estoque" não muda.
+  async function confirmarAdicionarCarrinho() {
+    if (!carrinhoEstoque || enviandoCarrinho || quantidadeCarrinho.trim() === '') {
+      return;
+    }
+    const quantidade = Number(quantidadeCarrinho);
+    if (!Number.isFinite(quantidade)) {
+      setErroCarrinho('Quantidade inválida.');
+      return;
+    }
+    setEnviandoCarrinho(true);
+    setErroCarrinho(null);
+    try {
+      const resultado = await adicionarItem(id, carrinhoEstoque.estoqueId, quantidade);
+      if (!resultado.ok) {
+        setErroCarrinho(resultado.mensagem);
+        return;
+      }
+      toast.success('Item adicionado ao carrinho.');
+      setCarrinhoEstoque(null);
+      setQuantidadeCarrinho('');
+    } finally {
+      setEnviandoCarrinho(false);
     }
   }
 
@@ -504,6 +562,20 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
                       <span>{linha.estoqueNome}</span>
                       <span className="flex items-center gap-3">
                         <span className="tabular-nums">{formatarQuantidade(linha.quantidade)}</span>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          aria-label={`Adicionar ao Carrinho em ${linha.estoqueNome}`}
+                          disabled={linha.quantidade <= 0}
+                          onClick={() => {
+                            setCarrinhoEstoque(linha);
+                            setQuantidadeCarrinho('');
+                            setErroCarrinho(null);
+                          }}
+                        >
+                          Adicionar ao Carrinho
+                        </Button>
                         {podeRegistrarMovimentacao && (
                           <>
                             <Button
@@ -589,6 +661,54 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
               className="max-h-full max-w-full object-contain"
             />
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Adicionar ao Carrinho (Story 7.1): controlado por `carrinhoEstoque`
+          — `null` fecha o diálogo. Fechar enquanto o envio está em voo é
+          ignorado (mesma defesa em profundidade do `enviandoCarrinho` no
+          botão). Molde exato do diálogo de Registrar Baixa logo abaixo. */}
+      <Dialog
+        open={carrinhoEstoque !== null}
+        onOpenChange={(open) => {
+          if (!open && !enviandoCarrinho) {
+            setCarrinhoEstoque(null);
+            setErroCarrinho(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Adicionar ao Carrinho — {carrinhoEstoque?.estoqueNome}</DialogTitle>
+          </DialogHeader>
+          <form
+            className="flex flex-col gap-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void confirmarAdicionarCarrinho();
+            }}
+          >
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="carrinho-quantidade">Quantidade</Label>
+              <Input
+                id="carrinho-quantidade"
+                type="number"
+                inputMode="decimal"
+                value={quantidadeCarrinho}
+                onChange={(event) => setQuantidadeCarrinho(event.target.value)}
+              />
+            </div>
+            {erroCarrinho && (
+              <p role="alert" className="text-body text-destructive">
+                {erroCarrinho}
+              </p>
+            )}
+            <DialogFooter>
+              <Button type="submit" disabled={enviandoCarrinho || quantidadeCarrinho.trim() === ''}>
+                Confirmar
+              </Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
 

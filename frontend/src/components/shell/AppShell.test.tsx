@@ -22,6 +22,28 @@ vi.mock('@/lib/auth', () => ({
   }),
 }));
 
+// AppShell consome useCarrinho() para o cart-badge (Story 7.1) — mock com
+// contagem configurável por teste, padrão 0 (badge ausente), mantendo os
+// testes de layout pré-Story-7.1 inalterados.
+const carrinhoState = vi.hoisted(() => ({ count: 0 }));
+vi.mock('@/lib/carrinho', () => ({
+  useCarrinho: () => ({
+    itens: [],
+    count: carrinhoState.count,
+    carregando: false,
+    refresh: vi.fn(),
+    adicionarItem: vi.fn(),
+    removerItem: vi.fn(),
+  }),
+}));
+
+// Reset global — cobre TODOS os describes deste arquivo, não só o primeiro,
+// para nenhum teste herdar uma contagem deixada por um teste anterior do
+// cart-badge.
+beforeEach(() => {
+  carrinhoState.count = 0;
+});
+
 function renderShell(initialPath = '/') {
   return render(
     <MemoryRouter initialEntries={[initialPath]}>
@@ -265,6 +287,76 @@ describe('AppShell — navegação gated por papel (Story 1.5)', () => {
     expect(scoped.getByRole('link', { name: 'Estoques' })).toBeInTheDocument();
     expect(scoped.getByRole('link', { name: 'Normalização' })).toBeInTheDocument();
     expect(scoped.getByRole('link', { name: 'Relatórios' })).toBeInTheDocument();
+  });
+});
+
+describe('AppShell — cart-badge (Story 7.1)', () => {
+  it('não mostra o cart-badge quando o carrinho está vazio (count 0)', () => {
+    carrinhoState.count = 0;
+    renderShell();
+    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
+    const bottomNav = screen.getAllByRole('navigation', { name: 'Navegação principal' })[1];
+
+    expect(within(rail).getByRole('link', { name: 'Carrinho' })).toBeInTheDocument();
+    expect(within(rail).queryByText('3')).not.toBeInTheDocument();
+    expect(within(bottomNav).getByRole('link', { name: 'Carrinho' })).toBeInTheDocument();
+  });
+
+  it('mostra o cart-badge com a contagem no rail e na bottom nav quando count > 0', () => {
+    carrinhoState.count = 3;
+    renderShell();
+    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
+    const bottomNav = screen.getAllByRole('navigation', { name: 'Navegação principal' })[1];
+
+    expect(within(rail).getByText('3')).toBeInTheDocument();
+    expect(within(bottomNav).getByText('3')).toBeInTheDocument();
+  });
+
+  it('o cart-badge nunca muda o nome acessível do link "Carrinho"', () => {
+    carrinhoState.count = 5;
+    renderShell();
+    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
+
+    // O número é aria-hidden — o link continua com o rótulo acessível "Carrinho"
+    // (nunca "Carrinho 5"), então getByRole com o nome exato ainda o encontra.
+    expect(within(rail).getByRole('link', { name: 'Carrinho' })).toBeInTheDocument();
+  });
+
+  it('trunca a contagem acima de 99 para "99+"', () => {
+    carrinhoState.count = 150;
+    renderShell();
+    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
+
+    expect(within(rail).getByText('99+')).toBeInTheDocument();
+  });
+
+  it('mostra "99" por extenso no limite (count = 99, fronteira nunca trunca)', () => {
+    carrinhoState.count = 99;
+    renderShell();
+    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
+
+    expect(within(rail).getByText('99')).toBeInTheDocument();
+    expect(within(rail).queryByText('99+')).not.toBeInTheDocument();
+  });
+
+  it('trunca para "99+" já em count = 100 (um a mais que a fronteira)', () => {
+    carrinhoState.count = 100;
+    renderShell();
+    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
+
+    expect(within(rail).getByText('99+')).toBeInTheDocument();
+  });
+
+  it('nunca mostra o cart-badge em outro item de navegação além de Carrinho', () => {
+    carrinhoState.count = 4;
+    authState.papel = 'almoxarife';
+    renderShell();
+    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
+
+    expect(within(rail).getByRole('link', { name: 'Estoques' })).toBeInTheDocument();
+    // O rail inteiro tem exatamente UM "4" (o badge do Carrinho) — não duas
+    // ocorrências (o que aconteceria se outro item também ganhasse badge).
+    expect(within(rail).getAllByText('4')).toHaveLength(1);
   });
 });
 

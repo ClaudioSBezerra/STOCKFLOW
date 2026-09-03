@@ -1,10 +1,12 @@
 import { createBrowserRouter, Navigate, RouterProvider, useLocation } from 'react-router-dom';
 import { AppShell } from '@/components/shell/AppShell';
 import { AuthProvider, useAuth } from '@/lib/auth';
+import { CarrinhoProvider } from '@/lib/carrinho';
 import { rankPapel } from '@/components/shell/nav-items';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
 import { CatalogoPage } from '@/pages/CatalogoPage';
 import { ProdutoDetalhePage } from '@/pages/ProdutoDetalhePage';
+import { CarrinhoPage } from '@/pages/CarrinhoPage';
 import { CadastroPage } from '@/pages/CadastroPage';
 import { VerificarEmailPage } from '@/pages/VerificarEmailPage';
 import { LoginPage } from '@/pages/LoginPage';
@@ -32,15 +34,22 @@ import { AuthCallbackPage } from '@/pages/AuthCallbackPage';
  * promoção de papel), `/estoques` (Story 2.1, tela "Locais": cadastro + lista
  * de locais de estoque, com gate de papel `almoxarife`+ na própria página),
  * `/produtos/:id` (Story 4.4, detalhe do Produto por Estoque com atualização
- * em tempo real, sem gate de papel próprio — `usuario`+) e `/normalizacao`
- * (Story 6.1, "Inconsistências": detecção dimensional sob demanda, mesmo gate
- * de papel `almoxarife`+ de `/estoques`) são rotas-filhas da raiz, dentro do
- * `AppShell`/`RotaProtegida`.
+ * em tempo real, sem gate de papel próprio — `usuario`+), `/carrinho`
+ * (Story 7.1, Carrinho de reserva — mesmo `usuario`+ sem gate de papel
+ * próprio) e `/normalizacao` (Story 6.1, "Inconsistências": detecção
+ * dimensional sob demanda, mesmo gate de papel `almoxarife`+ de
+ * `/estoques`) são rotas-filhas da raiz, dentro do `AppShell`/`RotaProtegida`.
  * A árvore do `AppShell` fica atrás do `RotaProtegida`
  * (Story 1.5): o `AuthProvider` faz o bootstrap silencioso da sessão ao
  * montar o app (silent refresh via cookie), e enquanto isso não resolve a
  * rota protegida mostra uma tela mínima de carregamento; conta anônima é
  * redirecionada para `/login`.
+ *
+ * `<CarrinhoProvider>` (Story 7.1) envolve `<RouterProvider>` por DENTRO de
+ * `<AuthProvider>` — precisa de `useAuth()` (estado da sessão) para saber
+ * quando buscar `GET /api/carrinho` pela primeira vez, e fica acima do
+ * router porque tanto `AppShell` (cart-badge) quanto `CarrinhoPage`
+ * consomem `useCarrinho()`.
  */
 
 /**
@@ -99,6 +108,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <CatalogoPage /> },
       { path: 'produtos/:id', element: <ProdutoDetalhePage /> },
+      { path: 'carrinho', element: <CarrinhoPage /> },
       { path: 'configuracoes', element: <ConfiguracoesPage /> },
       { path: 'estoques', element: <EstoquesPage /> },
       { path: 'normalizacao', element: <NormalizacaoPage /> },
@@ -116,7 +126,9 @@ export const router = createBrowserRouter([
 function App() {
   return (
     <AuthProvider>
-      <RouterProvider router={router} />
+      <CarrinhoProvider>
+        <RouterProvider router={router} />
+      </CarrinhoProvider>
     </AuthProvider>
   );
 }

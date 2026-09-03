@@ -24,6 +24,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useAuth } from '@/lib/auth';
+import { useCarrinho } from '@/lib/carrinho';
 import {
   adminNavItems,
   filtrarNavPorPapel,
@@ -58,13 +59,33 @@ function navLinkClasses(isActive: boolean, extra?: string) {
   );
 }
 
-function RailNavIcon({ item }: { item: NavItem }) {
+// CartBadge é o `cart-badge` (UX-DR5, epic-7-context.md): contador circular
+// com preenchimento `destructive` sobreposto ao ícone do item `carrinho` —
+// nunca renderizado sozinho, sempre atrás de `item.id === 'carrinho' &&
+// count > 0` no chamador (o chamador também garante que nunca aparece
+// "0"). `aria-hidden`: o número é decorativo aqui — o rótulo acessível do
+// link continua sendo só `item.label` ("Carrinho"), a contagem em si não é
+// parte do nome do link; quem precisa da contagem falada tem `/carrinho`
+// (Story 7.1) como fonte, não o ícone de navegação.
+function CartBadge({ count }: { count: number }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] leading-none font-medium text-white"
+    >
+      {count > 99 ? '99+' : count}
+    </span>
+  );
+}
+
+function RailNavIcon({ item, count }: { item: NavItem; count: number }) {
   const Icon = item.icon;
   // `TooltipTrigger asChild` clona este NavLink via Radix Slot, que mescla
   // `className` assumindo string dos dois lados — um `className` em forma de
   // função (a API padrão do NavLink) seria serializado incorretamente nesse
   // merge. Por isso o `isActive` é resolvido aqui fora e passado como string.
   const isActive = Boolean(useMatch({ path: item.to, end: item.to === '/' }));
+  const mostrarBadge = item.id === 'carrinho' && count > 0;
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -72,9 +93,10 @@ function RailNavIcon({ item }: { item: NavItem }) {
           to={item.to}
           end={item.to === '/'}
           aria-label={item.label}
-          className={navLinkClasses(isActive)}
+          className={navLinkClasses(isActive, 'relative')}
         >
           <Icon className="size-5" aria-hidden="true" />
+          {mostrarBadge && <CartBadge count={count} />}
         </NavLink>
       </TooltipTrigger>
       <TooltipContent side="right">{item.label}</TooltipContent>
@@ -82,17 +104,19 @@ function RailNavIcon({ item }: { item: NavItem }) {
   );
 }
 
-function BottomNavIcon({ item }: { item: NavItem }) {
+function BottomNavIcon({ item, count }: { item: NavItem; count: number }) {
   const Icon = item.icon;
+  const mostrarBadge = item.id === 'carrinho' && count > 0;
   return (
     <NavLink
       to={item.to}
       end={item.to === '/'}
       className={({ isActive }) =>
-        navLinkClasses(isActive, 'flex-1 flex-col gap-0.5 text-label')
+        navLinkClasses(isActive, 'relative flex-1 flex-col gap-0.5 text-label')
       }
     >
       <Icon className="size-5" aria-hidden="true" />
+      {mostrarBadge && <CartBadge count={count} />}
       <span>{item.label}</span>
     </NavLink>
   );
@@ -131,6 +155,10 @@ export function AppShell({ children, tabs, sideNav }: AppShellProps) {
   // itens cujo `papelMinimo` o papel do usuário alcança. Item sem permissão
   // simplesmente não aparece — nunca desabilitado, nunca "acesso negado".
   const { usuario, logout } = useAuth();
+  // cart-badge (Story 7.1, UX-DR5): contagem do carrinho do usuário, lida do
+  // estado global já mantido por CarrinhoProvider (App.tsx) — este
+  // componente nunca busca /api/carrinho por conta própria.
+  const { count } = useCarrinho();
   const papel = usuario?.papel ?? '';
   const primaryItems = filtrarNavPorPapel(primaryNavItems, papel);
   const adminItems = filtrarNavPorPapel(adminNavItems, papel);
@@ -148,11 +176,11 @@ export function AppShell({ children, tabs, sideNav }: AppShellProps) {
         >
           <div className="flex flex-col items-center gap-1">
             {primaryItems.map((item) => (
-              <RailNavIcon key={item.id} item={item} />
+              <RailNavIcon key={item.id} item={item} count={count} />
             ))}
             {adminItems.length > 0 ? <hr className="my-2 w-8 border-border" /> : null}
             {adminItems.map((item) => (
-              <RailNavIcon key={item.id} item={item} />
+              <RailNavIcon key={item.id} item={item} count={count} />
             ))}
           </div>
 
@@ -213,7 +241,7 @@ export function AppShell({ children, tabs, sideNav }: AppShellProps) {
           className="fixed inset-x-0 bottom-0 z-40 flex h-bottom-nav-height items-stretch border-t border-border bg-card md:hidden"
         >
           {primaryItems.map((item) => (
-            <BottomNavIcon key={item.id} item={item} />
+            <BottomNavIcon key={item.id} item={item} count={count} />
           ))}
 
           <Sheet open={moreOpen} onOpenChange={setMoreOpen}>

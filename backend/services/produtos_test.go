@@ -20,10 +20,12 @@ import (
 // a table referenced in a foreign key constraint") assim que a suíte de
 // importações tiver gravado alguma linha. `normalizacao_ignoradas` entra
 // pelo mesmo motivo (Story 6.2): `normalizacao_ignoradas.produto_id`
-// referencia `produtos(id)`, também sem CASCADE.
+// referencia `produtos(id)`, também sem CASCADE. `carrinho_itens` entra pelo
+// mesmo motivo (Story 7.1): `carrinho_itens.produto_id` referencia
+// `produtos(id)` sem CASCADE (Design Notes de spec-7-1).
 func limparProdutos(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("falha ao limpar produtos/produto_estoque/estoques: %v", err)
 	}
 }

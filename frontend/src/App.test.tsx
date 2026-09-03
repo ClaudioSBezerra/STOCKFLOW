@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import type { ReactNode } from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import * as authModule from '@/lib/auth';
@@ -17,6 +18,27 @@ vi.mock('@/lib/auth', async (importOriginal) => {
 });
 
 const useAuthMock = vi.mocked(authModule.useAuth);
+
+// useCarrinho() é mockado por inteiro (mesmo molde de AppShell.test.tsx e
+// ProdutoDetalhePage.test.tsx) — sem isso, os casos `estado: 'autenticado'`
+// abaixo montavam o `CarrinhoProvider` REAL, que dispara um `GET
+// /api/carrinho` de verdade sem `fetch` stubado (risco de flake: chamada de
+// rede não-mockada). `CarrinhoProvider` também é mockado como um passthrough
+// — <App /> (testes de "wiring real" abaixo) continua importando-o de
+// verdade internamente, só que agora resolve para este mock — então o
+// wrapper manual de CarrinhoProvider deixou de ser necessário neste arquivo.
+vi.mock('@/lib/carrinho', () => ({
+  CarrinhoProvider: ({ children }: { children: ReactNode }) => children,
+  useCarrinho: () => ({
+    itens: [],
+    count: 0,
+    carregando: false,
+    erro: false,
+    refresh: vi.fn(),
+    adicionarItem: vi.fn(),
+    removerItem: vi.fn(),
+  }),
+}));
 
 function LocationDisplay() {
   const { pathname } = useLocation();

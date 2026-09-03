@@ -27,6 +27,22 @@ const toastInfo = vi.hoisted(() => vi.fn());
 const toastSuccess = vi.hoisted(() => vi.fn());
 vi.mock('sonner', () => ({ toast: { info: toastInfo, success: toastSuccess } }));
 
+// useCarrinho() fornece adicionarItem para o diálogo "Adicionar ao
+// Carrinho" (Story 7.1) — mock configurável por teste; o padrão resolve com
+// sucesso, para os testes pré-Story-7.1 (que nunca abrem esse diálogo)
+// ficarem inalterados.
+const adicionarItemMock = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/carrinho', () => ({
+  useCarrinho: () => ({
+    itens: [],
+    count: 0,
+    carregando: false,
+    refresh: vi.fn(),
+    adicionarItem: adicionarItemMock,
+    removerItem: vi.fn(),
+  }),
+}));
+
 // conectarRealtime é mockado: os testes desta página não reexercitam a
 // mecânica de reconexão/temporizadores do EventSource (já coberta em
 // src/lib/realtime/client.test.ts) — só capturam os dois callbacks
@@ -42,6 +58,8 @@ const desconectarMock = vi.fn();
 
 beforeEach(() => {
   authState.papel = 'almoxarife';
+  adicionarItemMock.mockReset();
+  adicionarItemMock.mockResolvedValue({ ok: true });
   let proximoId = 0;
   URL.createObjectURL = vi.fn(() => `blob:mock-url-${proximoId++}`);
   URL.revokeObjectURL = vi.fn();
@@ -553,6 +571,127 @@ describe('ProdutoDetalhePage', () => {
       ).toBeInTheDocument();
       expect(screen.getByRole('dialog')).toBeInTheDocument();
       expect(toastSuccess).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Adicionar ao Carrinho (Story 7.1)', () => {
+    it.each(['usuario', 'almoxarife', 'gestor', 'adm'])(
+      'papel %s vê o botão "Adicionar ao Carrinho" em cada linha de Estoque (sem gate de papel)',
+      async (papel) => {
+        authState.papel = papel;
+        stubPadrao();
+        renderPagina();
+
+        act(() => {
+          aoMudarStatus('conectado');
+        });
+
+        await screen.findByText('Cabo Flexível 4mm');
+        expect(screen.getAllByRole('button', { name: /Adicionar ao Carrinho/ })).toHaveLength(2);
+      },
+    );
+
+    it('desabilita o botão "Adicionar ao Carrinho" na linha com quantidade zerada (evita 409 previsível)', async () => {
+      stubPadrao({
+        produto: {
+          ...PRODUTO_DETALHE,
+          porEstoque: [
+            { estoqueId: 'e1', estoqueNome: 'Almoxarifado Central', quantidade: 5 },
+            { estoqueId: 'e2', estoqueNome: 'Obra Norte', quantidade: 0 },
+          ],
+        },
+      });
+      renderPagina();
+
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+      await screen.findByText('Cabo Flexível 4mm');
+
+      const botoes = screen.getAllByRole('button', { name: /Adicionar ao Carrinho/ });
+      expect(botoes[0]).toBeEnabled();
+      expect(botoes[1]).toBeDisabled();
+
+      const user = userEvent.setup();
+      await user.click(botoes[1]);
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+
+    it('submissão bem-sucedida: chama useCarrinho().adicionarItem, fecha o diálogo e mostra toast.success', async () => {
+      stubPadrao();
+      const user = userEvent.setup();
+      renderPagina();
+
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+      await screen.findByText('Cabo Flexível 4mm');
+
+      const botoes = screen.getAllByRole('button', { name: /Adicionar ao Carrinho/ });
+      await user.click(botoes[0]);
+
+      const dialogo = await screen.findByRole('dialog');
+      const input = within(dialogo).getByLabelText('Quantidade');
+      await user.type(input, '2');
+      await user.click(within(dialogo).getByRole('button', { name: 'Confirmar' }));
+
+      await waitFor(() => expect(adicionarItemMock).toHaveBeenCalledWith('p1', 'e1', 2));
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(toastSuccess).toHaveBeenCalledWith('Item adicionado ao carrinho.');
+    });
+
+    it('falha (409/404): mostra a mensagem do servidor dentro do diálogo, sem fechar, sem toast', async () => {
+      adicionarItemMock.mockResolvedValue({
+        ok: false,
+        mensagem: 'quantidade indisponível: apenas 1 unidade(s) disponível(is) para adicionar ao carrinho',
+      });
+      stubPadrao();
+      const user = userEvent.setup();
+      renderPagina();
+
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+      await screen.findByText('Cabo Flexível 4mm');
+
+      const botoes = screen.getAllByRole('button', { name: /Adicionar ao Carrinho/ });
+      await user.click(botoes[0]);
+
+      const dialogo = await screen.findByRole('dialog');
+      const input = within(dialogo).getByLabelText('Quantidade');
+      await user.type(input, '999');
+      await user.click(within(dialogo).getByRole('button', { name: 'Confirmar' }));
+
+      expect(
+        await within(dialogo).findByText(
+          'quantidade indisponível: apenas 1 unidade(s) disponível(is) para adicionar ao carrinho',
+        ),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+      expect(toastSuccess).not.toHaveBeenCalled();
+    });
+
+    it('sucesso NÃO refaz o refetch de GET /api/produtos/p1 (adicionar ao carrinho não muda produto_estoque)', async () => {
+      const fetchMock = stubPadrao();
+      const user = userEvent.setup();
+      renderPagina();
+
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+      await screen.findByText('Cabo Flexível 4mm');
+      const chamadasAntes = fetchMock.mock.calls.filter(([u]) => u === '/api/produtos/p1').length;
+
+      const botoes = screen.getAllByRole('button', { name: /Adicionar ao Carrinho/ });
+      await user.click(botoes[0]);
+      const dialogo = await screen.findByRole('dialog');
+      const input = within(dialogo).getByLabelText('Quantidade');
+      await user.type(input, '2');
+      await user.click(within(dialogo).getByRole('button', { name: 'Confirmar' }));
+
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      const chamadasDepois = fetchMock.mock.calls.filter(([u]) => u === '/api/produtos/p1').length;
+      expect(chamadasDepois).toBe(chamadasAntes);
     });
   });
 

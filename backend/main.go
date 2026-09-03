@@ -590,6 +590,21 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.MesclarDuplicatasHandler(db, registro))))
 
+	// Carrinho de reserva — Story 7.1 (Epic 7, Pedidos de Retirada). As três
+	// rotas ficam atrás só de RequireAuth, SEM RequireRole: qualquer conta
+	// autenticada (`usuario`+) monta seu próprio carrinho — mesmo mínimo de
+	// papel de GET /api/produtos/{id}. `usuarioID` vem sempre de
+	// middleware.UsuarioDaSessao dentro do handler, nunca de um campo do
+	// corpo/rota (Always, spec-7-1). Sem publicação em canal SSE (Never,
+	// spec-7-1): o carrinho sincroniza só por refetch da própria aba após a
+	// própria ação do usuário.
+	mux.HandleFunc("POST /api/carrinho/itens", middleware.RequireAuth(db, jwtSecret)(
+		handlers.AdicionarItemCarrinhoHandler(db)))
+	mux.HandleFunc("GET /api/carrinho", middleware.RequireAuth(db, jwtSecret)(
+		handlers.ListarCarrinhoHandler(db)))
+	mux.HandleFunc("DELETE /api/carrinho/itens/{produtoId}/{estoqueId}", middleware.RequireAuth(db, jwtSecret)(
+		handlers.RemoverItemCarrinhoHandler(db)))
+
 	// Infraestrutura de tempo real (AD-2/AD-3) — Story 4.4. POST
 	// /api/realtime/ticket leva só RequireAuth: qualquer conta autenticada
 	// pode abrir sua própria conexão SSE. GET /api/realtime/stream é o único
