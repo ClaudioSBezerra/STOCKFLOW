@@ -2,15 +2,26 @@ import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { formatarQuantidade } from '@/components/catalogo/formatacao';
 import { useCarrinho, type ItemCarrinho } from '@/lib/carrinho';
+import { useAuth } from '@/lib/auth';
 
 /**
- * Página `/carrinho` (Story 7.1, spec-7-1, rota filha de `RotaProtegida` —
- * sem gate de papel próprio, `usuario`+): superfície principal da story.
- * Lista os itens do carrinho (`useCarrinho().itens`), cada linha com o nome
- * do Produto, o nome do Estoque, a quantidade e um botão "Remover".
+ * Página `/carrinho` (Story 7.1, spec-7-1, e Envio de Pedido, Story 7.2,
+ * spec-7-2, rota filha de `RotaProtegida` — sem gate de papel próprio,
+ * `usuario`+): superfície principal das duas stories. Lista os itens do
+ * carrinho (`useCarrinho().itens`), cada linha com o nome do Produto, o nome
+ * do Estoque, a quantidade e um botão "Remover".
  *
  * Toda busca/limpeza (inclusive o aviso automático por item obsoleto —
  * Produto mesclado ou Estoque excluído, AC2) já é responsabilidade do
@@ -33,6 +44,17 @@ import { useCarrinho, type ItemCarrinho } from '@/lib/carrinho';
  * (molde de LocaisEstoqueSection para o guard de exclusão, adaptado a toast
  * porque `ConfirmDialog` não tem um slot de erro inline como os `Dialog` de
  * formulário).
+ *
+ * Enviar Pedido (Story 7.2): o botão "Enviar Pedido" só aparece com o
+ * carrinho não-vazio e abre um `Dialog` de formulário (molde dos diálogos de
+ * `ProdutoDetalhePage`, nunca `ConfirmDialog` — este não tem slot de input).
+ * O campo "Solicitante" vem pré-preenchido com `useAuth().usuario.nome`, mas
+ * é texto livre editável — a identidade real gravada em `pedidos.usuario_id`
+ * é sempre a da sessão no servidor. "Obra / centro de custo" é obrigatório;
+ * "Observação" é opcional. Sucesso -> `toast.success` + o `refresh` disparado
+ * por `enviarPedido` já reflete o carrinho esvaziado. Falha (carrinho vazio
+ * revalidado, item indisponível, validação) -> `toast.error` com a mensagem
+ * do servidor, diálogo permanece aberto para nova tentativa.
  */
 
 const MENSAGEM_CARRINHO_VAZIO =
@@ -41,9 +63,15 @@ const MENSAGEM_CARRINHO_ERRO =
   'Não foi possível carregar o carrinho agora. Tente novamente em instantes.';
 
 export function CarrinhoPage() {
-  const { itens, carregando, erro, refresh, removerItem } = useCarrinho();
+  const { itens, carregando, erro, refresh, removerItem, enviarPedido } = useCarrinho();
+  const { usuario } = useAuth();
   const [remocaoPendente, setRemocaoPendente] = useState<ItemCarrinho | null>(null);
   const [removendo, setRemovendo] = useState(false);
+  const [envioAberto, setEnvioAberto] = useState(false);
+  const [solicitante, setSolicitante] = useState('');
+  const [obraCentroCusto, setObraCentroCusto] = useState('');
+  const [observacao, setObservacao] = useState('');
+  const [enviando, setEnviando] = useState(false);
   const vazio = !carregando && !erro && itens.length === 0;
 
   useEffect(() => {
@@ -63,6 +91,35 @@ export function CarrinhoPage() {
       toast.success('Item removido do carrinho.');
     } else {
       toast.error(resultado.mensagem);
+    }
+  }
+
+  function abrirEnvio() {
+    setSolicitante(usuario?.nome ?? '');
+    setObraCentroCusto('');
+    setObservacao('');
+    setEnvioAberto(true);
+  }
+
+  async function confirmarEnvio() {
+    if (enviando || solicitante.trim() === '' || obraCentroCusto.trim() === '') {
+      return;
+    }
+    setEnviando(true);
+    try {
+      const resultado = await enviarPedido(
+        solicitante.trim(),
+        obraCentroCusto.trim(),
+        observacao.trim(),
+      );
+      if (!resultado.ok) {
+        toast.error(resultado.mensagem);
+        return;
+      }
+      toast.success('Pedido enviado.');
+      setEnvioAberto(false);
+    } finally {
+      setEnviando(false);
     }
   }
 
@@ -113,6 +170,14 @@ export function CarrinhoPage() {
               ))}
             </ul>
           )}
+
+          {!erro && itens.length > 0 && (
+            <div className="flex justify-end">
+              <Button type="button" onClick={abrirEnvio}>
+                Enviar Pedido
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -127,6 +192,64 @@ export function CarrinhoPage() {
         title={`Remover "${remocaoPendente?.produtoNome ?? ''}" do carrinho?`}
         confirmLabel="Remover"
       />
+
+      <Dialog
+        open={envioAberto}
+        onOpenChange={(aberto) => {
+          if (!aberto && !enviando) {
+            setEnvioAberto(false);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Enviar Pedido</DialogTitle>
+          </DialogHeader>
+          <form
+            className="flex flex-col gap-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void confirmarEnvio();
+            }}
+          >
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="pedido-solicitante">Solicitante</Label>
+              <Input
+                id="pedido-solicitante"
+                value={solicitante}
+                onChange={(event) => setSolicitante(event.target.value)}
+                autoComplete="off"
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="pedido-obra">Obra / centro de custo</Label>
+              <Input
+                id="pedido-obra"
+                value={obraCentroCusto}
+                onChange={(event) => setObraCentroCusto(event.target.value)}
+                autoComplete="off"
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="pedido-observacao">Observação (opcional)</Label>
+              <textarea
+                id="pedido-observacao"
+                className="min-h-16 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-2 text-base shadow-xs outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm dark:bg-input/30"
+                value={observacao}
+                onChange={(event) => setObservacao(event.target.value)}
+              />
+            </div>
+            <DialogFooter>
+              <Button
+                type="submit"
+                disabled={enviando || solicitante.trim() === '' || obraCentroCusto.trim() === ''}
+              >
+                Confirmar
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

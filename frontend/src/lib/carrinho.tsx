@@ -78,6 +78,20 @@ interface CarrinhoContextValue {
   adicionarItem: (produtoId: string, estoqueId: string, quantidade: number) => Promise<ResultadoOperacaoCarrinho>;
   /** `DELETE /api/carrinho/itens/{produtoId}/{estoqueId}` + refresh em caso de sucesso. */
   removerItem: (produtoId: string, estoqueId: string) => Promise<ResultadoOperacaoCarrinho>;
+  /**
+   * `POST /api/pedidos` (Story 7.2, spec-7-2): formaliza o carrinho ativo
+   * como um Pedido `pendente`. `solicitante` é texto livre — a identidade
+   * gravada em `pedidos.usuario_id` é sempre a da sessão no servidor, este
+   * módulo nunca envia um `usuarioId`. Em caso de sucesso chama `refresh()`,
+   * que já reflete o carrinho esvaziado pelo próprio envio. Falha (carrinho
+   * vazio, item indisponível, validação) devolve `{ ok: false, mensagem }`
+   * com a mensagem do servidor.
+   */
+  enviarPedido: (
+    solicitante: string,
+    obraCentroCusto: string,
+    observacao: string,
+  ) => Promise<ResultadoOperacaoCarrinho>;
 }
 
 const CarrinhoContext = createContext<CarrinhoContextValue | null>(null);
@@ -91,6 +105,8 @@ const MENSAGEM_ERRO_ADICIONAR =
   'Não foi possível adicionar o item ao carrinho agora. Tente novamente em instantes.';
 const MENSAGEM_ERRO_REMOVER =
   'Não foi possível remover o item do carrinho agora. Tente novamente em instantes.';
+const MENSAGEM_ERRO_ENVIAR =
+  'Não foi possível enviar o pedido agora. Tente novamente em instantes.';
 
 /**
  * Mensagem de aviso por item removido preguiçosamente (AC2, spec-7-1).
@@ -226,9 +242,34 @@ export function CarrinhoProvider({ children }: { children: ReactNode }) {
     [refresh],
   );
 
+  const enviarPedido = useCallback(
+    async (
+      solicitante: string,
+      obraCentroCusto: string,
+      observacao: string,
+    ): Promise<ResultadoOperacaoCarrinho> => {
+      try {
+        const res = await fetch('/api/pedidos', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ solicitante, obraCentroCusto, observacao }),
+        });
+        if (!res.ok) {
+          const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+          return { ok: false, mensagem: body.error?.message ?? MENSAGEM_ERRO_ENVIAR };
+        }
+        await refresh();
+        return { ok: true };
+      } catch {
+        return { ok: false, mensagem: MENSAGEM_ERRO_ENVIAR };
+      }
+    },
+    [refresh],
+  );
+
   const value = useMemo<CarrinhoContextValue>(
-    () => ({ itens, count: itens.length, carregando, erro, refresh, adicionarItem, removerItem }),
-    [itens, carregando, erro, refresh, adicionarItem, removerItem],
+    () => ({ itens, count: itens.length, carregando, erro, refresh, adicionarItem, removerItem, enviarPedido }),
+    [itens, carregando, erro, refresh, adicionarItem, removerItem, enviarPedido],
   );
 
   return <CarrinhoContext.Provider value={value}>{children}</CarrinhoContext.Provider>;

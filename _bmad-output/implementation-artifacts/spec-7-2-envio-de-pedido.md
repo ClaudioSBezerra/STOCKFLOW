@@ -2,7 +2,7 @@
 title: 'Envio de Pedido'
 type: 'feature'
 created: '2026-09-03'
-status: 'in-review'
+status: 'done'
 baseline_revision: '722ce9e90053c56f17dae1f25f999c6a58b9af6b'
 review_loop_iteration: 1
 followup_review_recommended: false
