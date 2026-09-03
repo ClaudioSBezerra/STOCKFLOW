@@ -9,9 +9,14 @@ import { getAccessToken } from '@/lib/session';
  * inteiramente no servidor.
  *
  * `GET /api/pedidos` -> `listarPedidos(status?)` (lista "Meus Pedidos",
- * filtrável por status). `GET /api/pedidos/{id}` -> `buscarPedido(id)`
- * (cabeçalho + itens em SNAPSHOT — AD-17, nunca join ao vivo). Resposta
- * não-ok propaga `body.error?.message` do servidor (ou um fallback).
+ * filtrável por status). `GET /api/pedidos?escopo=todos` ->
+ * `listarFilaPedidos(status?)` (Story 7.4, spec-7-4 — a Fila do Almoxarife+:
+ * MESMA rota, MESMO endpoint, só o parâmetro de escopo muda; o servidor
+ * decide se o chamador realmente enxerga todos os Pedidos ou só os
+ * próprios — este módulo nunca checa papel). `GET /api/pedidos/{id}` ->
+ * `buscarPedido(id)` (cabeçalho + itens em SNAPSHOT — AD-17, nunca join ao
+ * vivo). Resposta não-ok propaga `body.error?.message` do servidor (ou um
+ * fallback).
  */
 
 export type StatusPedido = 'pendente' | 'aprovado' | 'rejeitado';
@@ -50,6 +55,8 @@ function authHeaders(): Record<string, string> {
 
 const MENSAGEM_ERRO_LISTAR =
   'Não foi possível carregar seus pedidos agora. Tente novamente em instantes.';
+const MENSAGEM_ERRO_LISTAR_FILA =
+  'Não foi possível carregar a fila de pedidos agora. Tente novamente em instantes.';
 const MENSAGEM_ERRO_DETALHE =
   'Não foi possível carregar os itens do pedido agora. Tente novamente em instantes.';
 
@@ -59,6 +66,19 @@ export async function listarPedidos(status?: StatusPedido): Promise<PedidoResumo
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
     throw new Error(body.error?.message ?? MENSAGEM_ERRO_LISTAR);
+  }
+  const body = (await res.json()) as { pedidos: PedidoResumo[] };
+  return body.pedidos ?? [];
+}
+
+export async function listarFilaPedidos(status?: StatusPedido): Promise<PedidoResumo[]> {
+  const url = status
+    ? `/api/pedidos?escopo=todos&status=${encodeURIComponent(status)}`
+    : '/api/pedidos?escopo=todos';
+  const res = await fetch(url, { headers: authHeaders() });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+    throw new Error(body.error?.message ?? MENSAGEM_ERRO_LISTAR_FILA);
   }
   const body = (await res.json()) as { pedidos: PedidoResumo[] };
   return body.pedidos ?? [];

@@ -41,10 +41,10 @@ vi.mock('@/lib/carrinho', () => ({
 }));
 
 // `@/lib/realtime/client` é mockado por inteiro (mesmo motivo do
-// CarrinhoProvider acima) — só MeusPedidosPage o usa entre as páginas
-// exercitadas neste arquivo, então este mock não afeta as demais rotas.
-// Sem ele, o teste de `/pedidos` abaixo montaria um `EventSource` de verdade
-// sem stub, risco de flake.
+// CarrinhoProvider acima) — só PedidosPage (via MeusPedidosSection/
+// FilaPedidosSection) o usa entre as páginas exercitadas neste arquivo,
+// então este mock não afeta as demais rotas. Sem ele, o teste de `/pedidos`
+// abaixo montaria um `EventSource` de verdade sem stub, risco de flake.
 const conectarRealtimeMock = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/realtime/client', () => ({
   conectarRealtime: conectarRealtimeMock,
@@ -296,7 +296,7 @@ describe('<App /> — wiring real de AuthProvider + RotaProtegida', () => {
     expect(screen.queryByText('Em construção')).not.toBeInTheDocument();
   });
 
-  it('/pedidos renderiza MeusPedidosPage dentro do shell, não a PlaceholderPage', async () => {
+  it('/pedidos renderiza PedidosPage (aba "Meus Pedidos") dentro do shell, não a PlaceholderPage', async () => {
     conectarRealtimeMock.mockImplementation((_receber, mudar) => {
       mudar('conectado');
       return vi.fn();

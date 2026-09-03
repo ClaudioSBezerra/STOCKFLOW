@@ -541,3 +541,27 @@ source_spec: `spec-7-3-consulta-de-pedidos-proprios.md`
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260903-104700-a410; this entry preserves the lingering recommendation for a deliberate later review.
 status: open
+
+### DW-69: A leitura org-wide da Fila (ListarPedidosFila) não tem índice de apoio (pedidos.status/criado_em) nem LIMIT/paginação, e a tela FilaPedidosSection renderiza a lista inteira sem paginação/virtualização
+origin: spec-deferred 1818e267ec5f
+location: backend/services/pedidos.go (ListarPedidosFila) / frontend/src/components/pedidos/FilaPedidosSection.tsx
+source_spec: `spec-7-4-consulta-de-todos-os-pedidos-fila-almoxarife.md`
+severity: low
+reason: backend/services/pedidos.go (ListarPedidosFila) reaproveita a mesma SELECT/ORDER BY de ListarPedidosProprios mas sem WHERE usuario_id, escaneando pedidos de TODOS os usuários; nenhuma migration de índice foi criada nesta story (Never explícito do spec-7-4); estende o gap de índice já deferido em spec-7-3 (usuario_id) para o caso agora sem nenhum filtro de dono.
+status: open
+
+### DW-70: O refetch disparado por evento SSE em FilaPedidosSection não tem debounce/coalescência: como o canal `pedidos` agora é compartilhado por TODOS os usuários (não só o dono, como em MeusPedidosSection),
+origin: spec-deferred 75c0378cc79e
+location: frontend/src/components/pedidos/FilaPedidosSection.tsx
+source_spec: `spec-7-4-consulta-de-todos-os-pedidos-fila-almoxarife.md`
+severity: low
+reason: frontend/src/components/pedidos/FilaPedidosSection.tsx chama toast.info(...) + carregar() a cada evento resource==="pedidos" sem nenhuma janela de agrupamento — mesmo padrão (sem debounce) já usado em MovimentacoesSection/MeusPedidosSection, mas lá o volume de eventos por tela é naturalmente limitado a um usuário; na Fila, é organização inteira.
+status: open
+
+### DW-71: Alternar entre as abas "Meus Pedidos" e "Fila" em PedidosPage reconecta o SSE e refaz a busca do zero a cada troca, porque o Radix TabsContent desmonta a seção inativa e cada *Section abre sua própria
+origin: spec-deferred 16f1a4a9ab7c
+location: frontend/src/pages/PedidosPage.tsx
+source_spec: `spec-7-4-consulta-de-todos-os-pedidos-fila-almoxarife.md`
+severity: low
+reason: frontend/src/pages/PedidosPage.tsx usa Tabs/TabsContent (Radix, desmonta conteúdo inativo por padrão) envolvendo MeusPedidosSection e FilaPedidosSection, cada uma com seu próprio useEffect de conectarRealtime — mesmo padrão já presente em EstoquesPage (Locais/Movimentações), agora também em Pedidos.
+status: open

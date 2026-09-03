@@ -77,15 +77,20 @@ func SubmeterPedidoHandler(db *sql.DB, registro *realtime.Registry) http.Handler
 	}
 }
 
-// ListarPedidosHandler expõe GET /api/pedidos (Story 7.3, spec-7-3),
-// registrado em newMux atrás SÓ de RequireAuth (SEM RequireRole — mesmo
-// mínimo de papel do envio). Devolve os Pedidos do PRÓPRIO usuário da sessão
-// (`services.ListarPedidosProprios` filtra por `usuario_id` da sessão, para
-// qualquer papel), do mais recente ao mais antigo. Filtro opcional
-// `?status=` restrito a `pendente|aprovado|rejeitado`; valor fora disso ->
-// `400 VALIDATION_ERROR` (o service rejeita antes de tocar o banco). Sucesso
-// -> `200 {"pedidos":[...]}` (nunca nil -> `[]`). Sem regra de negócio
-// própria — molde de ListarMovimentacoesHandler (movimentacoes.go).
+// ListarPedidosHandler expõe GET /api/pedidos (Story 7.3, spec-7-3; escopo
+// `?escopo=todos` da Fila, Story 7.4, spec-7-4), registrado em newMux atrás
+// SÓ de RequireAuth (SEM RequireRole — mesmo mínimo de papel do envio).
+// Devolve os Pedidos do PRÓPRIO usuário da sessão por padrão; com
+// `?escopo=todos` E papel `almoxarife`+, devolve TODOS os Pedidos da
+// organização (a Fila) — a decisão de escopo é inteiramente de
+// `services.ListarPedidosParaSessao` (AD-8 forma 3): este handler só repassa
+// `usuario.Papel` adiante, nunca chama RankPapel ele mesmo. Qualquer outro
+// caso (papel insuficiente OU `escopo` ausente/outro valor) cai no
+// comportamento de sempre — nunca 403. Filtro opcional `?status=` restrito a
+// `pendente|aprovado|rejeitado`; valor fora disso -> `400 VALIDATION_ERROR`
+// (o service rejeita antes de tocar o banco). Sucesso -> `200
+// {"pedidos":[...]}` (nunca nil -> `[]`). Sem regra de negócio própria —
+// molde de ListarMovimentacoesHandler (movimentacoes.go).
 func ListarPedidosHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		usuario, ok := middleware.UsuarioDaSessao(r.Context())
@@ -95,8 +100,9 @@ func ListarPedidosHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
+		escopoTodos := r.URL.Query().Get("escopo") == "todos"
 		filtroStatus := r.URL.Query().Get("status")
-		resumos, err := services.ListarPedidosProprios(db, usuario.ID, filtroStatus)
+		resumos, err := services.ListarPedidosParaSessao(db, usuario.ID, usuario.Papel, escopoTodos, filtroStatus)
 		var erroValidacao *services.ErroPedidoValidacao
 		switch {
 		case err == nil:

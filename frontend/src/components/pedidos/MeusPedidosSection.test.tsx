@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MeusPedidosPage } from './MeusPedidosPage';
+import { MeusPedidosSection } from './MeusPedidosSection';
 import type { EventoRealtime, StatusRealtime } from '@/lib/realtime/client';
 
 const toastInfo = vi.hoisted(() => vi.fn());
@@ -64,9 +64,9 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('MeusPedidosPage', () => {
+describe('MeusPedidosSection', () => {
   it('carrega a lista SÓ quando conectarRealtime chama aoMudarStatus("conectado")', async () => {
-    render(<MeusPedidosPage />);
+    render(<MeusPedidosSection />);
 
     expect(listarPedidosMock).not.toHaveBeenCalled();
     expect(screen.getByText('Carregando pedidos...')).toBeInTheDocument();
@@ -81,7 +81,7 @@ describe('MeusPedidosPage', () => {
   });
 
   it('renderiza o badge de status de cada linha com ícone + texto', async () => {
-    render(<MeusPedidosPage />);
+    render(<MeusPedidosSection />);
     act(() => {
       aoMudarStatus('conectado');
     });
@@ -97,7 +97,7 @@ describe('MeusPedidosPage', () => {
   });
 
   it('escolher um status no filtro refaz a busca com ?status=', async () => {
-    render(<MeusPedidosPage />);
+    render(<MeusPedidosSection />);
     act(() => {
       aoMudarStatus('conectado');
     });
@@ -114,7 +114,7 @@ describe('MeusPedidosPage', () => {
   });
 
   it('um evento SSE resource="pedidos" dispara toast + refetch, sem recarregar a tela', async () => {
-    render(<MeusPedidosPage />);
+    render(<MeusPedidosSection />);
     act(() => {
       aoMudarStatus('conectado');
     });
@@ -132,7 +132,7 @@ describe('MeusPedidosPage', () => {
   });
 
   it('um evento SSE de outro canal é ignorado', async () => {
-    render(<MeusPedidosPage />);
+    render(<MeusPedidosSection />);
     act(() => {
       aoMudarStatus('conectado');
     });
@@ -149,7 +149,7 @@ describe('MeusPedidosPage', () => {
 
   it('mostra o estado vazio orientador quando não há pedidos', async () => {
     listarPedidosMock.mockResolvedValue([]);
-    render(<MeusPedidosPage />);
+    render(<MeusPedidosSection />);
     act(() => {
       aoMudarStatus('conectado');
     });
@@ -159,7 +159,7 @@ describe('MeusPedidosPage', () => {
 
   it('mostra a mensagem de erro do servidor (role="alert") quando a busca falha', async () => {
     listarPedidosMock.mockRejectedValue(new Error('sessão expirada'));
-    render(<MeusPedidosPage />);
+    render(<MeusPedidosSection />);
     act(() => {
       aoMudarStatus('conectado');
     });
@@ -170,7 +170,7 @@ describe('MeusPedidosPage', () => {
 
   it('cai na mensagem genérica quando a falha não é um Error', async () => {
     listarPedidosMock.mockRejectedValue('falha crua, sem Error');
-    render(<MeusPedidosPage />);
+    render(<MeusPedidosSection />);
     act(() => {
       aoMudarStatus('conectado');
     });
@@ -180,7 +180,7 @@ describe('MeusPedidosPage', () => {
   });
 
   it('mostra "Reconectando..." enquanto a conexão está reconectando', async () => {
-    render(<MeusPedidosPage />);
+    render(<MeusPedidosSection />);
     act(() => {
       aoMudarStatus('reconectando');
     });
@@ -204,7 +204,7 @@ describe('MeusPedidosPage', () => {
       ],
     });
 
-    render(<MeusPedidosPage />);
+    render(<MeusPedidosSection />);
     act(() => {
       aoMudarStatus('conectado');
     });
@@ -223,7 +223,7 @@ describe('MeusPedidosPage', () => {
   it('mostra a mensagem de erro do servidor (role="alert") no diálogo quando buscarPedido falha', async () => {
     buscarPedidoMock.mockRejectedValue(new Error('pedido não encontrado'));
 
-    render(<MeusPedidosPage />);
+    render(<MeusPedidosSection />);
     act(() => {
       aoMudarStatus('conectado');
     });
@@ -242,7 +242,7 @@ describe('MeusPedidosPage', () => {
   it('cai na mensagem genérica de itens quando a falha de buscarPedido não é um Error', async () => {
     buscarPedidoMock.mockRejectedValue('falha crua, sem Error');
 
-    render(<MeusPedidosPage />);
+    render(<MeusPedidosSection />);
     act(() => {
       aoMudarStatus('conectado');
     });
@@ -279,7 +279,7 @@ describe('MeusPedidosPage', () => {
       ],
     });
 
-    render(<MeusPedidosPage />);
+    render(<MeusPedidosSection />);
     act(() => {
       aoMudarStatus('conectado');
     });
@@ -343,7 +343,7 @@ describe('MeusPedidosPage', () => {
       ],
     });
 
-    render(<MeusPedidosPage />);
+    render(<MeusPedidosSection />);
     act(() => {
       aoMudarStatus('conectado');
     });
@@ -371,7 +371,7 @@ describe('MeusPedidosPage', () => {
   });
 
   it('mostra a mensagem orientadora específica do filtro quando não há pedidos naquele status', async () => {
-    render(<MeusPedidosPage />);
+    render(<MeusPedidosSection />);
     act(() => {
       aoMudarStatus('conectado');
     });
@@ -387,7 +387,7 @@ describe('MeusPedidosPage', () => {
   });
 
   it('voltar o filtro para "Todos" refaz a busca sem status', async () => {
-    render(<MeusPedidosPage />);
+    render(<MeusPedidosSection />);
     act(() => {
       aoMudarStatus('conectado');
     });

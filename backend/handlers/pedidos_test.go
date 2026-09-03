@@ -578,3 +578,140 @@ func TestListarPedidosHandler_AlmoxarifeSoVeOsProprios(t *testing.T) {
 		t.Fatalf("pedidos = %+v, want [] (almoxarife não tem Pedidos próprios e não deve ver os do dono)", resp.Pedidos)
 	}
 }
+
+// --- ?escopo=todos — Fila do Almoxarife (Story 7.4, spec-7-4) --------------
+//
+// MESMA rota GET /api/pedidos (getPedidos, definido acima) — só o parâmetro
+// de query muda. TestListarPedidosHandler_AlmoxarifeSoVeOsProprios acima
+// permanece intocado: cobre a chamada SEM `escopo`.
+
+// TestListarPedidosHandler_EscopoTodosAlmoxarifeVeDeTodos cobre a linha
+// "Fila escopada a todos" da I/O Matrix: almoxarife+ com `?escopo=todos`
+// recebe os Pedidos de QUALQUER usuário.
+func TestListarPedidosHandler_EscopoTodosAlmoxarifeVeDeTodos(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	dono, _ := seedContaComumECarrinho(t, db, "H74 Escopo Dono", "h-pedidos-74-escopo-dono@empresa.com")
+	criarContaComPapel(t, db, "H74 Escopo Almox", "h-pedidos-74-escopo-almox@empresa.com", "senha-123456", "almoxarife")
+	tokenAlmox := tokenDeLogin(t, db, "h-pedidos-74-escopo-almox@empresa.com", "senha-123456")
+
+	pedido := seedPedidoViaServico(t, db, dono, "H74 Escopo Todos", 1)
+
+	w := getPedidos(db, "Bearer "+tokenAlmox, "escopo=todos")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Pedidos []services.PedidoResumo `json:"pedidos"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if len(resp.Pedidos) != 1 || resp.Pedidos[0].ID != pedido.ID {
+		t.Fatalf("pedidos = %+v, want só %s (do dono, visto pelo almoxarife na fila)", resp.Pedidos, pedido.ID)
+	}
+}
+
+// TestListarPedidosHandler_EscopoTodosPapelInsuficienteCaiNoProprio cobre a
+// linha "Escopo todos ignorado para papel insuficiente": usuário comum com
+// `?escopo=todos` recebe só os próprios Pedidos, NUNCA 403 (AD-8, epics.md
+// Story 7.4 AC2).
+func TestListarPedidosHandler_EscopoTodosPapelInsuficienteCaiNoProprio(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	usuarioA, tokenA := seedContaComumECarrinho(t, db, "H74 Insuf A", "h-pedidos-74-insuf-a@empresa.com")
+	usuarioB, _ := seedContaComumECarrinho(t, db, "H74 Insuf B", "h-pedidos-74-insuf-b@empresa.com")
+
+	proprio := seedPedidoViaServico(t, db, usuarioA, "H74 Insuf Proprio", 1)
+	seedPedidoViaServico(t, db, usuarioB, "H74 Insuf Alheio", 1)
+
+	w := getPedidos(db, "Bearer "+tokenA, "escopo=todos")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Pedidos []services.PedidoResumo `json:"pedidos"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if len(resp.Pedidos) != 1 || resp.Pedidos[0].ID != proprio.ID {
+		t.Fatalf("pedidos = %+v, want só o próprio %s", resp.Pedidos, proprio.ID)
+	}
+}
+
+// TestListarPedidosHandler_EscopoTodosFiltroInvalido cobre "Filtro de status
+// inválido no escopo todos" -> 400 VALIDATION_ERROR, requisição rejeitada
+// antes de tocar o banco.
+func TestListarPedidosHandler_EscopoTodosFiltroInvalido(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "H74 Filtro Ruim Almox", "h-pedidos-74-filtro-ruim-almox@empresa.com", "senha-123456", "almoxarife")
+	tokenAlmox := tokenDeLogin(t, db, "h-pedidos-74-filtro-ruim-almox@empresa.com", "senha-123456")
+
+	w := getPedidos(db, "Bearer "+tokenAlmox, "escopo=todos&status=banana")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "VALIDATION_ERROR" {
+		t.Errorf("code = %q, want VALIDATION_ERROR", env.Error.Code)
+	}
+}
+
+// TestListarPedidosHandler_EscopoTodosFiltroPorStatus cobre "Fila filtrada
+// por status": almoxarife+ com `?escopo=todos&status=pendente` recebe só os
+// Pedidos `pendente` de QUALQUER usuário.
+func TestListarPedidosHandler_EscopoTodosFiltroPorStatus(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	dono, _ := seedContaComumECarrinho(t, db, "H74 Fila Status Dono", "h-pedidos-74-fila-status-dono@empresa.com")
+	criarContaComPapel(t, db, "H74 Fila Status Almox", "h-pedidos-74-fila-status-almox@empresa.com", "senha-123456", "almoxarife")
+	tokenAlmox := tokenDeLogin(t, db, "h-pedidos-74-fila-status-almox@empresa.com", "senha-123456")
+
+	pendente := seedPedidoViaServico(t, db, dono, "H74 Fila Status Pend", 1)
+	aprovado := seedPedidoViaServico(t, db, dono, "H74 Fila Status Aprov", 1)
+	if _, err := db.Exec(`UPDATE pedidos SET status = 'aprovado' WHERE id = $1`, aprovado.ID); err != nil {
+		t.Fatalf("seed status: %v", err)
+	}
+
+	w := getPedidos(db, "Bearer "+tokenAlmox, "escopo=todos&status=pendente")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Pedidos []services.PedidoResumo `json:"pedidos"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if len(resp.Pedidos) != 1 || resp.Pedidos[0].ID != pendente.ID {
+		t.Fatalf("pedidos = %+v, want só %s", resp.Pedidos, pendente.ID)
+	}
+}
+
+// TestListarPedidosHandler_EscopoDesconhecidoCaiNoProprio cobre "Valor de
+// escopo desconhecido": só `"todos"` ativa a fila — qualquer outro valor
+// cai no escopo próprio, sem erro.
+func TestListarPedidosHandler_EscopoDesconhecidoCaiNoProprio(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	dono, _ := seedContaComumECarrinho(t, db, "H74 Escopo Banana Dono", "h-pedidos-74-escopo-banana-dono@empresa.com")
+	criarContaComPapel(t, db, "H74 Escopo Banana Almox", "h-pedidos-74-escopo-banana-almox@empresa.com", "senha-123456", "almoxarife")
+	tokenAlmox := tokenDeLogin(t, db, "h-pedidos-74-escopo-banana-almox@empresa.com", "senha-123456")
+
+	seedPedidoViaServico(t, db, dono, "H74 Escopo Banana Alheio", 1)
+
+	w := getPedidos(db, "Bearer "+tokenAlmox, "escopo=banana")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Pedidos []services.PedidoResumo `json:"pedidos"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if len(resp.Pedidos) != 0 {
+		t.Fatalf("pedidos = %+v, want [] (almoxarife sem Pedidos próprios; escopo=banana não ativa a fila)", resp.Pedidos)
+	}
+}

@@ -28,14 +28,18 @@ import {
 } from '@/lib/pedidos';
 
 /**
- * Página `/pedidos` — "Meus Pedidos" (Story 7.3, spec-7-3). Rota-filha de
- * `RotaProtegida` sem gate de papel próprio (`usuario`+). Superfície
- * principal da story: a lista dos Pedidos que o próprio usuário enviou
- * (`GET /api/pedidos`, sempre escopado à sessão no servidor), do mais
- * recente ao mais antigo, cada linha com solicitante, obra, data,
- * `StatusPedidoBadge` (ícone + texto), quantidade de itens e um botão
- * "Ver itens" que abre um `Dialog` com os itens em SNAPSHOT
- * (`GET /api/pedidos/{id}`, AD-17 — nunca join ao vivo).
+ * Seção "Meus Pedidos" da página `/pedidos` (Story 7.3, spec-7-3; extraída
+ * para `*Section` na Story 7.4, spec-7-4, quando `/pedidos` ganhou a aba
+ * "Fila" — molde Página=Tabs+`*Section` já usado por
+ * `EstoquesPage`/`LocaisEstoqueSection`/`MovimentacoesSection`). Renderizada
+ * dentro de `PedidosPage`, sem gate de papel próprio (`usuario`+) — a aba
+ * "Meus Pedidos" existe para QUALQUER papel. Superfície principal da Story
+ * 7.3: a lista dos Pedidos que o próprio usuário enviou (`GET /api/pedidos`,
+ * sempre escopado à sessão no servidor), do mais recente ao mais antigo,
+ * cada linha com solicitante, obra, data, `StatusPedidoBadge` (ícone +
+ * texto), quantidade de itens e um botão "Ver itens" que abre um `Dialog`
+ * com os itens em SNAPSHOT (`GET /api/pedidos/{id}`, AD-17 — nunca join ao
+ * vivo).
  *
  * Tempo real (molde de `MovimentacoesSection`, Story 5.3): a carga inicial E
  * todo refetch passam pelo MESMO `carregar`, disparado por
@@ -49,6 +53,9 @@ import {
  *
  * O filtro por status (`Select` com opção "Todos") também rebusca pelo mesmo
  * `carregar` (lê `filtroRef.current`), sem reconectar a SSE.
+ *
+ * Nenhuma mudança de COMPORTAMENTO em relação à antiga `MeusPedidosPage` —
+ * só o local/nome (Never de spec-7-4).
  */
 
 const MENSAGEM_ERRO_CARREGAR =
@@ -69,7 +76,7 @@ const OPCOES_FILTRO: Array<{ valor: FiltroStatus; rotulo: string }> = [
   { valor: 'rejeitado', rotulo: 'Rejeitado' },
 ];
 
-export function MeusPedidosPage() {
+export function MeusPedidosSection() {
   const [pedidos, setPedidos] = useState<PedidoResumo[]>([]);
   const [erroCarregar, setErroCarregar] = useState<string | null>(null);
   const [carregou, setCarregou] = useState(false);
@@ -304,4 +311,4 @@ export function MeusPedidosPage() {
   );
 }
 
-export default MeusPedidosPage;
+export default MeusPedidosSection;

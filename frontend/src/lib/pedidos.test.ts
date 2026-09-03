@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { buscarPedido, listarPedidos } from './pedidos';
+import { buscarPedido, listarFilaPedidos, listarPedidos } from './pedidos';
 
 vi.mock('@/lib/session', () => ({
   getAccessToken: () => 'token-de-teste',
@@ -65,6 +65,60 @@ describe('listarPedidos', () => {
     });
 
     await expect(listarPedidos('banana' as never)).rejects.toThrow('status inválido');
+  });
+});
+
+describe('listarFilaPedidos', () => {
+  it('GET /api/pedidos?escopo=todos sem status quando nenhum filtro é passado, com Authorization', async () => {
+    fetchMock.mockReturnValue(respostaOk({ pedidos: [RESUMO] }));
+
+    const pedidos = await listarFilaPedidos();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/pedidos?escopo=todos');
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer token-de-teste' });
+    expect(pedidos).toEqual([RESUMO]);
+  });
+
+  it('acrescenta &status= quando um filtro é passado, sempre incluindo escopo=todos', async () => {
+    fetchMock.mockReturnValue(respostaOk({ pedidos: [] }));
+
+    await listarFilaPedidos('aprovado');
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/pedidos?escopo=todos&status=aprovado');
+  });
+
+  it('devolve [] quando o corpo não traz pedidos', async () => {
+    fetchMock.mockReturnValue(respostaOk({}));
+    expect(await listarFilaPedidos()).toEqual([]);
+  });
+
+  it('propaga a mensagem de erro do servidor numa resposta não-ok', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: { code: 'VALIDATION_ERROR', message: 'status inválido' } }),
+    });
+
+    await expect(listarFilaPedidos('banana' as never)).rejects.toThrow('status inválido');
+  });
+
+  // Code review: listarFilaPedidos tinha herdado por engano o fallback de
+  // "Meus Pedidos" (MENSAGEM_ERRO_LISTAR) quando o corpo de uma resposta
+  // não-ok não traz `error.message` — este teste exercita EXATAMENTE esse
+  // caminho (corpo sem `error.message`) para provar que a mensagem
+  // devolvida é específica da Fila, não a de "Meus Pedidos".
+  it('cai no fallback específico da Fila quando a resposta não-ok não traz error.message', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({}),
+    });
+
+    await expect(listarFilaPedidos()).rejects.toThrow(
+      'Não foi possível carregar a fila de pedidos agora. Tente novamente em instantes.',
+    );
   });
 });
 

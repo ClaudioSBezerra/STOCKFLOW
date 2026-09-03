@@ -303,6 +303,77 @@ func ListarPedidosProprios(db *sql.DB, usuarioID, filtroStatus string) ([]Pedido
 	return resumos, nil
 }
 
+// ListarPedidosFila devolve TODOS os Pedidos da organização (sem filtro por
+// `usuario_id`), do mais recente ao mais antigo, cada um com a contagem de
+// itens — a Fila do Almoxarife (Story 7.4, spec-7-4). Mesma
+// validação/projeção/scan/ordenação de ListarPedidosProprios (Story 7.3), só
+// sem a cláusula `WHERE p.usuario_id = $1`. `filtroStatus` vazio -> sem
+// filtro; não-vazio e fora de statusPedidoValido -> &ErroPedidoValidacao
+// (400 VALIDATION_ERROR) ANTES de qualquer query, mesmo contrato de
+// ListarPedidosProprios. Quem pode chamar esta função (autorização por
+// papel) é decidido por ListarPedidosParaSessao, nunca aqui.
+func ListarPedidosFila(db *sql.DB, filtroStatus string) ([]PedidoResumo, error) {
+	if filtroStatus != "" && !statusPedidoValido[filtroStatus] {
+		return nil, &ErroPedidoValidacao{Mensagem: "status inválido"}
+	}
+
+	q := `
+		SELECT p.id, p.usuario_id, p.solicitante, p.obra_centro_custo, p.observacao, p.status, p.criado_em,
+		       COALESCE(i.qtd, 0)
+		FROM pedidos p
+		LEFT JOIN (SELECT pedido_id, count(*) AS qtd FROM pedido_itens GROUP BY pedido_id) i ON i.pedido_id = p.id`
+	args := []any{}
+	if filtroStatus != "" {
+		q += " WHERE p.status = $1"
+		args = append(args, filtroStatus)
+	}
+	q += " ORDER BY p.criado_em DESC, p.id DESC"
+
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao listar fila de pedidos: %w", err)
+	}
+	defer rows.Close()
+
+	resumos := make([]PedidoResumo, 0)
+	for rows.Next() {
+		var r PedidoResumo
+		var observacao sql.NullString
+		if err := rows.Scan(
+			&r.ID, &r.UsuarioID, &r.Solicitante, &r.ObraCentroCusto,
+			&observacao, &r.Status, &r.CriadoEm, &r.QtdItens,
+		); err != nil {
+			return nil, fmt.Errorf("falha ao ler linha da fila de pedidos: %w", err)
+		}
+		if observacao.Valid {
+			r.Observacao = &observacao.String
+		}
+		resumos = append(resumos, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("falha ao iterar fila de pedidos: %w", err)
+	}
+	return resumos, nil
+}
+
+// ListarPedidosParaSessao decide o escopo de GET /api/pedidos (Story 7.4,
+// spec-7-4) — MESMA rota, parâmetro opcional `?escopo=todos` — a partir do
+// papel JÁ resolvido pelo contexto da requisição, passado explicitamente
+// (molde de services.ListarUsuarios, usuarios.go:33, AD-8 forma 3; o handler
+// nunca chama RankPapel ele mesmo).
+//
+// `escopoTodos && RankPapel(papel) >= RankPapel(PapelAlmoxarife)` -> chama
+// ListarPedidosFila (todos os Pedidos da organização). Qualquer outro caso —
+// `escopoTodos` falso OU papel insuficiente — chama ListarPedidosProprios
+// inalterado: um Usuário sem papel almoxarife+ que force `?escopo=todos`
+// recebe só os próprios Pedidos, nunca um erro (epics.md Story 7.4 AC2).
+func ListarPedidosParaSessao(db *sql.DB, usuarioID, papel string, escopoTodos bool, filtroStatus string) ([]PedidoResumo, error) {
+	if escopoTodos && RankPapel(papel) >= RankPapel(PapelAlmoxarife) {
+		return ListarPedidosFila(db, filtroStatus)
+	}
+	return ListarPedidosProprios(db, usuarioID, filtroStatus)
+}
+
 // BuscarPedidoProprio devolve o cabeçalho + os itens em snapshot do Pedido
 // `pedidoID`, liberado ao DONO (`pedido.usuario_id == usuarioID`) OU a um
 // papel que alcança `almoxarife` na hierarquia (AD-8: a Story 7.5/7.6

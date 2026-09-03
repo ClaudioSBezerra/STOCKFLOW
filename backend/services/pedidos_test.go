@@ -538,6 +538,212 @@ func TestBuscarPedidoProprio_IdMalformadoOuInexistente(t *testing.T) {
 	}
 }
 
+// --- ListarPedidosFila / ListarPedidosParaSessao (Story 7.4, spec-7-4) -----
+
+// TestListarPedidosFila_TodosOsUsuarios cobre a linha "Fila escopada a
+// todos" da I/O Matrix: a fila devolve Pedidos de VÁRIOS usuários, não só de
+// um.
+func TestListarPedidosFila_TodosOsUsuarios(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioA := semearConta(t, db, "Fila Dono A", "pedidos-74-fila-dono-a@empresa.com", PapelUsuario, 0)
+	usuarioB := semearConta(t, db, "Fila Dono B", "pedidos-74-fila-dono-b@empresa.com", PapelUsuario, 0)
+
+	pA := seedPedidoComItem(t, db, usuarioA, "74 Fila A", 1)
+	pB := seedPedidoComItem(t, db, usuarioB, "74 Fila B", 2)
+
+	lista, err := ListarPedidosFila(db, "")
+	if err != nil {
+		t.Fatalf("ListarPedidosFila erro: %v", err)
+	}
+	if len(lista) != 2 {
+		t.Fatalf("len(lista) = %d, want 2 (de ambos os usuários)", len(lista))
+	}
+	ids := map[string]bool{lista[0].ID: true, lista[1].ID: true}
+	if !ids[pA.ID] || !ids[pB.ID] {
+		t.Errorf("lista = %+v, want conter %s e %s", lista, pA.ID, pB.ID)
+	}
+}
+
+// TestListarPedidosFila_OrdemDesc cobre a ordenação `criado_em DESC` da
+// fila, mesmo molde de TestListarPedidosProprios_OrdemDescEQtdItens.
+func TestListarPedidosFila_OrdemDesc(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Fila Ordem", "pedidos-74-fila-ordem@empresa.com", PapelUsuario, 0)
+
+	antigo := seedPedidoComItem(t, db, usuarioID, "74 Fila Ordem Antigo", 1)
+	if _, err := db.Exec(`UPDATE pedidos SET criado_em = now() - interval '1 hour' WHERE id = $1`, antigo.ID); err != nil {
+		t.Fatalf("envelhecer pedido antigo: %v", err)
+	}
+	recente := seedPedidoComItem(t, db, usuarioID, "74 Fila Ordem Recente", 1)
+
+	lista, err := ListarPedidosFila(db, "")
+	if err != nil {
+		t.Fatalf("ListarPedidosFila erro: %v", err)
+	}
+	if len(lista) != 2 {
+		t.Fatalf("len(lista) = %d, want 2", len(lista))
+	}
+	if lista[0].ID != recente.ID || lista[1].ID != antigo.ID {
+		t.Errorf("ordem = [%s, %s], want [%s, %s] (recente primeiro)", lista[0].ID, lista[1].ID, recente.ID, antigo.ID)
+	}
+}
+
+// TestListarPedidosFila_FiltroPorStatus cobre a linha "Fila filtrada por
+// status": só os Pedidos naquele status de QUALQUER usuário.
+func TestListarPedidosFila_FiltroPorStatus(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioA := semearConta(t, db, "Fila Filtro A", "pedidos-74-fila-filtro-a@empresa.com", PapelUsuario, 0)
+	usuarioB := semearConta(t, db, "Fila Filtro B", "pedidos-74-fila-filtro-b@empresa.com", PapelUsuario, 0)
+
+	pendenteA := seedPedidoComItem(t, db, usuarioA, "74 Fila Filtro Pend A", 1)
+	aprovadoB := seedPedidoComItem(t, db, usuarioB, "74 Fila Filtro Aprov B", 1)
+	setStatusPedido(t, db, aprovadoB.ID, "aprovado")
+
+	lista, err := ListarPedidosFila(db, "aprovado")
+	if err != nil {
+		t.Fatalf("ListarPedidosFila(aprovado) erro: %v", err)
+	}
+	if len(lista) != 1 || lista[0].ID != aprovadoB.ID {
+		t.Fatalf("lista = %+v, want só %s", lista, aprovadoB.ID)
+	}
+	_ = pendenteA
+}
+
+// TestListarPedidosFila_FiltroInvalido cobre "Filtro de status inválido no
+// escopo todos": &ErroPedidoValidacao devolvido sem tocar o banco.
+func TestListarPedidosFila_FiltroInvalido(t *testing.T) {
+	db := testDB(t)
+
+	_, err := ListarPedidosFila(db, "banana")
+	var erroValidacao *ErroPedidoValidacao
+	if !errors.As(err, &erroValidacao) {
+		t.Fatalf("erro = %v, want *ErroPedidoValidacao", err)
+	}
+}
+
+// TestListarPedidosFila_Vazia cobre "Fila vazia": slice vazio não-nil, sem
+// erro.
+func TestListarPedidosFila_Vazia(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	lista, err := ListarPedidosFila(db, "")
+	if err != nil {
+		t.Fatalf("ListarPedidosFila erro: %v", err)
+	}
+	if lista == nil {
+		t.Fatal("lista == nil, want slice vazio não-nil")
+	}
+	if len(lista) != 0 {
+		t.Fatalf("len(lista) = %d, want 0", len(lista))
+	}
+}
+
+// TestListarPedidosParaSessao_AlmoxarifeEscopoTodos cobre almoxarife+
+// `escopoTodos=true` -> todos os Pedidos da organização, não só os próprios
+// — e, especificamente, a Fila INCLUI também os Pedidos que o próprio
+// almoxarife (o ator da sessão) enviou, lado a lado com os de outro
+// usuário: nenhuma exclusão por `usuario_id` existe em ListarPedidosFila (ao
+// contrário de ListarPedidosProprios), então "todos" precisa mesmo dizer
+// todos, inclusive os do próprio ator.
+func TestListarPedidosParaSessao_AlmoxarifeEscopoTodos(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	almox := semearConta(t, db, "Sessao Almox Todos", "pedidos-74-sessao-almox-todos@empresa.com", PapelAlmoxarife, 0)
+	outro := semearConta(t, db, "Sessao Dono Alheio", "pedidos-74-sessao-dono-alheio@empresa.com", PapelUsuario, 0)
+	pedidoOutro := seedPedidoComItem(t, db, outro, "74 Sessao Almox Todos", 1)
+	pedidoProprioAlmox := seedPedidoComItem(t, db, almox, "74 Sessao Almox Todos Proprio", 1)
+
+	lista, err := ListarPedidosParaSessao(db, almox, PapelAlmoxarife, true, "")
+	if err != nil {
+		t.Fatalf("ListarPedidosParaSessao erro: %v", err)
+	}
+	if len(lista) != 2 {
+		t.Fatalf("len(lista) = %d, want 2 (do outro usuário E do próprio almoxarife)", len(lista))
+	}
+	ids := map[string]bool{lista[0].ID: true, lista[1].ID: true}
+	if !ids[pedidoOutro.ID] {
+		t.Errorf("lista = %+v, want conter o Pedido do outro usuário %s", lista, pedidoOutro.ID)
+	}
+	if !ids[pedidoProprioAlmox.ID] {
+		t.Errorf("lista = %+v, want conter TAMBÉM o Pedido do próprio almoxarife %s (Fila não exclui o ator)", lista, pedidoProprioAlmox.ID)
+	}
+}
+
+// TestListarPedidosParaSessao_AlmoxarifeEscopoProprio cobre almoxarife+
+// `escopoTodos=false` -> só os próprios Pedidos, mesmo comportamento de
+// ListarPedidosProprios.
+func TestListarPedidosParaSessao_AlmoxarifeEscopoProprio(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	almox := semearConta(t, db, "Sessao Almox Proprio", "pedidos-74-sessao-almox-proprio@empresa.com", PapelAlmoxarife, 0)
+	outro := semearConta(t, db, "Sessao Dono Alheio 2", "pedidos-74-sessao-dono-alheio-2@empresa.com", PapelUsuario, 0)
+	seedPedidoComItem(t, db, outro, "74 Sessao Almox Proprio Alheio", 1)
+
+	lista, err := ListarPedidosParaSessao(db, almox, PapelAlmoxarife, false, "")
+	if err != nil {
+		t.Fatalf("ListarPedidosParaSessao erro: %v", err)
+	}
+	if len(lista) != 0 {
+		t.Fatalf("lista = %+v, want [] (almoxarife sem Pedidos próprios, escopoTodos=false)", lista)
+	}
+}
+
+// TestListarPedidosParaSessao_PapelInsuficienteEscopoTodos cobre "Escopo
+// todos ignorado para papel insuficiente": usuário comum + escopoTodos=true
+// -> só os próprios, NUNCA erro (epics.md Story 7.4 AC2).
+func TestListarPedidosParaSessao_PapelInsuficienteEscopoTodos(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioA := semearConta(t, db, "Sessao Papel Insuf A", "pedidos-74-sessao-papel-insuf-a@empresa.com", PapelUsuario, 0)
+	usuarioB := semearConta(t, db, "Sessao Papel Insuf B", "pedidos-74-sessao-papel-insuf-b@empresa.com", PapelUsuario, 0)
+
+	proprio := seedPedidoComItem(t, db, usuarioA, "74 Sessao Papel Insuf Proprio", 1)
+	seedPedidoComItem(t, db, usuarioB, "74 Sessao Papel Insuf Alheio", 1)
+
+	lista, err := ListarPedidosParaSessao(db, usuarioA, PapelUsuario, true, "")
+	if err != nil {
+		t.Fatalf("ListarPedidosParaSessao erro: %v", err)
+	}
+	if len(lista) != 1 || lista[0].ID != proprio.ID {
+		t.Fatalf("lista = %+v, want só o próprio %s", lista, proprio.ID)
+	}
+}
+
+// TestListarPedidosParaSessao_GestorEAdmEscopoTodos cobre que papéis acima
+// de almoxarife (gestor, adm) também alcançam a fila — confirma a
+// comparação `>=`, não `==`.
+func TestListarPedidosParaSessao_GestorEAdmEscopoTodos(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	for _, papel := range []string{PapelGestor, PapelAdm} {
+		t.Run(papel, func(t *testing.T) {
+			limparProdutos(t, db)
+			ator := semearConta(t, db, "Sessao "+papel, "pedidos-74-sessao-"+papel+"@empresa.com", papel, 0)
+			outro := semearConta(t, db, "Sessao Dono "+papel, "pedidos-74-sessao-dono-"+papel+"@empresa.com", PapelUsuario, 0)
+			pedido := seedPedidoComItem(t, db, outro, "74 Sessao "+papel, 1)
+
+			lista, err := ListarPedidosParaSessao(db, ator, papel, true, "")
+			if err != nil {
+				t.Fatalf("ListarPedidosParaSessao(%s) erro: %v", papel, err)
+			}
+			if len(lista) != 1 || lista[0].ID != pedido.ID {
+				t.Fatalf("lista = %+v, want só %s", lista, pedido.ID)
+			}
+		})
+	}
+}
+
 // TestBuscarPedidoProprio_ItensOrdenadosPorNome cobre um Pedido com 2+ itens:
 // a ordenação declarada em BuscarPedidoProprio (`ORDER BY produto_nome`) vem
 // alfabética na resposta, mesmo quando os itens foram inseridos em ordem
