@@ -19,3 +19,4 @@ backend/fotos/
 frontend/node_modules/
 frontend/dist/
 frontend/*.env
+__pycache__/
