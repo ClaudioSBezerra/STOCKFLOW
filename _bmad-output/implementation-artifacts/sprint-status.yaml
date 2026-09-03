@@ -90,7 +90,7 @@ development_status:
   epic-6-retrospective: optional
 
   epic-7: backlog
-  7-1-carrinho-de-reserva: backlog
+  7-1-carrinho-de-reserva: done
   7-2-envio-de-pedido: backlog
   7-3-consulta-de-pedidos-próprios: backlog
   7-4-consulta-de-todos-os-pedidos-fila-almoxarife: backlog
