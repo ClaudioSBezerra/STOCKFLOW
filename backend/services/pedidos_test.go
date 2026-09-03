@@ -3,7 +3,11 @@ package services
 import (
 	"database/sql"
 	"errors"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/lib/pq"
 )
 
 // pedidoItemLinha é a leitura crua de uma linha de pedido_itens usada pelos
@@ -425,6 +429,32 @@ func TestListarPedidosProprios_FiltroPorStatus(t *testing.T) {
 	_ = pendente
 }
 
+// TestListarPedidosProprios_FiltroPorStatusParcialmenteAprovado cobre o
+// valor novo de status introduzido pela Story 7.5 (spec-7-5) no mesmo filtro
+// `?status=` — sem este teste, um erro de digitação ou remoção da chave
+// `"parcialmente_aprovado"` em statusPedidoValido devolveria
+// &ErroPedidoValidacao para todo Usuário tentando filtrar "Meus Pedidos"
+// por esse status, sem que nenhum teste existente detectasse a regressão.
+func TestListarPedidosProprios_FiltroPorStatusParcialmenteAprovado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Filtro 75 Parcial", "pedidos-75-filtro-parcial@empresa.com", PapelUsuario, 0)
+
+	pendente := seedPedidoComItem(t, db, usuarioID, "75 Filtro Pendente", 1)
+	parcial := seedPedidoComItem(t, db, usuarioID, "75 Filtro Parcial", 1)
+	setStatusPedido(t, db, parcial.ID, "parcialmente_aprovado")
+
+	lista, err := ListarPedidosProprios(db, usuarioID, "parcialmente_aprovado")
+	if err != nil {
+		t.Fatalf("ListarPedidosProprios(parcialmente_aprovado) erro: %v", err)
+	}
+	if len(lista) != 1 || lista[0].ID != parcial.ID || lista[0].Status != "parcialmente_aprovado" {
+		t.Errorf("lista = %+v, want só {ID:%s Status:parcialmente_aprovado}", lista, parcial.ID)
+	}
+	_ = pendente
+}
+
 // TestListarPedidosProprios_FiltroInvalido cobre "Filtro de status inválido":
 // &ErroPedidoValidacao devolvido sem tocar o banco.
 func TestListarPedidosProprios_FiltroInvalido(t *testing.T) {
@@ -615,6 +645,33 @@ func TestListarPedidosFila_FiltroPorStatus(t *testing.T) {
 	_ = pendenteA
 }
 
+// TestListarPedidosFila_FiltroPorStatusParcialmenteAprovado cobre, na Fila,
+// o mesmo valor novo de status coberto acima em
+// TestListarPedidosProprios_FiltroPorStatusParcialmenteAprovado — a chave
+// `"parcialmente_aprovado"` em statusPedidoValido é compartilhada pelos dois
+// filtros (Meus Pedidos e Fila), mas nenhum teste exercitava esse valor na
+// Fila antes deste.
+func TestListarPedidosFila_FiltroPorStatusParcialmenteAprovado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioA := semearConta(t, db, "Fila Filtro A Parcial", "pedidos-75-fila-filtro-a-parcial@empresa.com", PapelUsuario, 0)
+	usuarioB := semearConta(t, db, "Fila Filtro B Parcial", "pedidos-75-fila-filtro-b-parcial@empresa.com", PapelUsuario, 0)
+
+	pendenteA := seedPedidoComItem(t, db, usuarioA, "75 Fila Filtro Pend A", 1)
+	parcialB := seedPedidoComItem(t, db, usuarioB, "75 Fila Filtro Parcial B", 1)
+	setStatusPedido(t, db, parcialB.ID, "parcialmente_aprovado")
+
+	lista, err := ListarPedidosFila(db, "parcialmente_aprovado")
+	if err != nil {
+		t.Fatalf("ListarPedidosFila(parcialmente_aprovado) erro: %v", err)
+	}
+	if len(lista) != 1 || lista[0].ID != parcialB.ID {
+		t.Fatalf("lista = %+v, want só %s", lista, parcialB.ID)
+	}
+	_ = pendenteA
+}
+
 // TestListarPedidosFila_FiltroInvalido cobre "Filtro de status inválido no
 // escopo todos": &ErroPedidoValidacao devolvido sem tocar o banco.
 func TestListarPedidosFila_FiltroInvalido(t *testing.T) {
@@ -780,5 +837,506 @@ func TestBuscarPedidoProprio_ItensOrdenadosPorNome(t *testing.T) {
 	if det.Itens[0].ProdutoNome != "Produto 73 Ordem Itens Arame" || det.Itens[1].ProdutoNome != "Produto 73 Ordem Itens Zebra" {
 		t.Errorf("ordem = [%s, %s], want [Arame, Zebra] (alfabética por produto_nome)",
 			det.Itens[0].ProdutoNome, det.Itens[1].ProdutoNome)
+	}
+}
+
+// --- DecidirPedido (Story 7.5, spec-7-5) -----------------------------------
+
+// itemPedidoSeedSpec descreve um item a semear via seedPedidoComItens: um
+// Produto novo com `SaldoInicial` de saldo real em `produto_estoque`, pedido
+// no Pedido com `QtdSolicitada`.
+type itemPedidoSeedSpec struct {
+	NomeBase      string
+	SaldoInicial  float64
+	QtdSolicitada float64
+}
+
+// parProdutoEstoque é o par (produto_id, estoque_id) resolvido para um item
+// semeado por seedPedidoComItens — devolvido na MESMA ordem de `itens` para
+// os testes inspecionarem saldo/movimentação por item após a decisão.
+type parProdutoEstoque struct {
+	ProdutoID string
+	EstoqueID string
+}
+
+// seedPedidoComItens monta e envia (via carrinho -> SubmeterPedido) um
+// Pedido `pendente` com múltiplos itens, cada um com seu próprio Produto
+// (saldo controlado independentemente) — o cenário que TestSubmeterPedido_*
+// não precisava mas os testes de DecidirPedido precisam (saldo real
+// divergente do solicitado, item a item).
+func seedPedidoComItens(t *testing.T, db *sql.DB, usuarioID string, itens []itemPedidoSeedSpec) (Pedido, []parProdutoEstoque) {
+	t.Helper()
+	pares := make([]parProdutoEstoque, len(itens))
+	for i, it := range itens {
+		produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, it.NomeBase, it.SaldoInicial)
+		pares[i] = parProdutoEstoque{ProdutoID: produtoID, EstoqueID: estoqueID}
+		if _, err := AdicionarItemCarrinho(db, usuarioID, produtoID, estoqueID, it.QtdSolicitada); err != nil {
+			t.Fatalf("seed AdicionarItemCarrinho (%s): %v", it.NomeBase, err)
+		}
+	}
+	pedido, err := SubmeterPedido(db, usuarioID, "Solicitante Decisao", "Obra Decisao", "")
+	if err != nil {
+		t.Fatalf("seed SubmeterPedido: %v", err)
+	}
+	return pedido, pares
+}
+
+// TestDecidirPedido_AprovacaoTotal cobre a linha "Aprovação total" da I/O
+// Matrix: todos os itens com disponível >= solicitado -> status `aprovado`,
+// cada item com `QuantidadeAprovada == Quantidade`, estoque debitado +
+// Movimentação por item, SSE implícito fica a cargo do handler (não
+// testado aqui).
+func TestDecidirPedido_AprovacaoTotal(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Decisao Total", "decisao-total@empresa.com", PapelUsuario, 0)
+	almoxID := semearConta(t, db, "Decisao Total Almox", "decisao-total-almox@empresa.com", PapelAlmoxarife, 0)
+	pedido, pares := seedPedidoComItens(t, db, usuarioID, []itemPedidoSeedSpec{
+		{NomeBase: "Decisao Total A", SaldoInicial: 10, QtdSolicitada: 4},
+		{NomeBase: "Decisao Total B", SaldoInicial: 5, QtdSolicitada: 5},
+	})
+
+	det, err := DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, true)
+	if err != nil {
+		t.Fatalf("DecidirPedido erro inesperado: %v", err)
+	}
+	if det.Status != "aprovado" {
+		t.Errorf("Status = %q, want aprovado", det.Status)
+	}
+	if len(det.Itens) != 2 {
+		t.Fatalf("len(Itens) = %d, want 2", len(det.Itens))
+	}
+	for _, it := range det.Itens {
+		if it.QuantidadeAprovada == nil || *it.QuantidadeAprovada != it.Quantidade {
+			t.Errorf("item %s: QuantidadeAprovada = %v, want %v", it.ProdutoNome, it.QuantidadeAprovada, it.Quantidade)
+		}
+	}
+
+	if saldo := saldoProdutoEstoque(t, db, pares[0].ProdutoID, pares[0].EstoqueID); saldo != 6 {
+		t.Errorf("saldo A = %v, want 6 (10 - 4)", saldo)
+	}
+	if saldo := saldoProdutoEstoque(t, db, pares[1].ProdutoID, pares[1].EstoqueID); saldo != 0 {
+		t.Errorf("saldo B = %v, want 0 (5 - 5)", saldo)
+	}
+	if n := contarMovimentacoes(t, db, pares[0].ProdutoID); n != 1 {
+		t.Errorf("movimentacoes de A = %d, want 1", n)
+	}
+	if n := contarMovimentacoes(t, db, pares[1].ProdutoID); n != 1 {
+		t.Errorf("movimentacoes de B = %d, want 1", n)
+	}
+
+	// P5 (spec-7-5 review): auditoria da decisão ("toda decisão registra quem
+	// decidiu e quando", PRD) — decidido_por/decidido_em vêm preenchidos na
+	// própria resposta de DecidirPedido, sem precisar de uma releitura à
+	// parte.
+	if det.DecididoPor == nil || *det.DecididoPor != almoxID {
+		t.Errorf("DecididoPor = %v, want %q", det.DecididoPor, almoxID)
+	}
+	if det.DecididoEm == nil {
+		t.Fatal("DecididoEm = nil, want um timestamp preenchido")
+	}
+	if agora := time.Since(*det.DecididoEm); agora < 0 || agora > time.Minute {
+		t.Errorf("DecididoEm = %v, want um timestamp recente (< 1 minuto atrás)", *det.DecididoEm)
+	}
+}
+
+// TestDecidirPedido_AprovacaoParcial cobre a linha "Aprovação parcial" da
+// I/O Matrix: 1 item com disponível(4) < solicitado(10), outro item ok ->
+// status `parcialmente_aprovado`, item divergente com `QuantidadeAprovada=4`
+// (débito só de 4), item ok com `QuantidadeAprovada == Quantidade`.
+func TestDecidirPedido_AprovacaoParcial(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Decisao Parcial", "decisao-parcial@empresa.com", PapelUsuario, 0)
+	almoxID := semearConta(t, db, "Decisao Parcial Almox", "decisao-parcial-almox@empresa.com", PapelAlmoxarife, 0)
+	pedido, pares := seedPedidoComItens(t, db, usuarioID, []itemPedidoSeedSpec{
+		{NomeBase: "Decisao Parcial Divergente", SaldoInicial: 10, QtdSolicitada: 10},
+		{NomeBase: "Decisao Parcial Ok", SaldoInicial: 5, QtdSolicitada: 3},
+	})
+	// Saldo real do item divergente cai para 4 (< 10 pedidos) DEPOIS da
+	// montagem/envio — simula uma Baixa concorrente entre o envio e a
+	// decisão.
+	if _, err := db.Exec(`UPDATE produto_estoque SET quantidade = 4 WHERE produto_id = $1 AND estoque_id = $2`,
+		pares[0].ProdutoID, pares[0].EstoqueID); err != nil {
+		t.Fatalf("seed reduzir saldo divergente: %v", err)
+	}
+
+	det, err := DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, true)
+	if err != nil {
+		t.Fatalf("DecidirPedido erro inesperado: %v", err)
+	}
+	if det.Status != "parcialmente_aprovado" {
+		t.Errorf("Status = %q, want parcialmente_aprovado", det.Status)
+	}
+
+	var divergente, ok PedidoItem
+	for _, it := range det.Itens {
+		switch it.ProdutoID {
+		case pares[0].ProdutoID:
+			divergente = it
+		case pares[1].ProdutoID:
+			ok = it
+		}
+	}
+	if divergente.QuantidadeAprovada == nil || *divergente.QuantidadeAprovada != 4 {
+		t.Errorf("item divergente: QuantidadeAprovada = %v, want 4", divergente.QuantidadeAprovada)
+	}
+	if ok.QuantidadeAprovada == nil || *ok.QuantidadeAprovada != ok.Quantidade {
+		t.Errorf("item ok: QuantidadeAprovada = %v, want %v", ok.QuantidadeAprovada, ok.Quantidade)
+	}
+
+	if saldo := saldoProdutoEstoque(t, db, pares[0].ProdutoID, pares[0].EstoqueID); saldo != 0 {
+		t.Errorf("saldo divergente = %v, want 0 (4 - 4, débito só do disponível)", saldo)
+	}
+	if saldo := saldoProdutoEstoque(t, db, pares[1].ProdutoID, pares[1].EstoqueID); saldo != 2 {
+		t.Errorf("saldo ok = %v, want 2 (5 - 3)", saldo)
+	}
+}
+
+// TestDecidirPedido_ItemSemEstoqueAlgum cobre a linha "Item sem estoque
+// algum" da I/O Matrix: disponível=0 para 1 item -> esse item
+// `QuantidadeAprovada=0`, nenhuma Movimentação para ele, status
+// `parcialmente_aprovado`.
+func TestDecidirPedido_ItemSemEstoqueAlgum(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Decisao SemEstoque", "decisao-sem-estoque@empresa.com", PapelUsuario, 0)
+	almoxID := semearConta(t, db, "Decisao SemEstoque Almox", "decisao-sem-estoque-almox@empresa.com", PapelAlmoxarife, 0)
+	pedido, pares := seedPedidoComItens(t, db, usuarioID, []itemPedidoSeedSpec{
+		{NomeBase: "Decisao SemEstoque Zerado", SaldoInicial: 10, QtdSolicitada: 5},
+	})
+	if _, err := db.Exec(`UPDATE produto_estoque SET quantidade = 0 WHERE produto_id = $1 AND estoque_id = $2`,
+		pares[0].ProdutoID, pares[0].EstoqueID); err != nil {
+		t.Fatalf("seed zerar saldo: %v", err)
+	}
+
+	det, err := DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, true)
+	if err != nil {
+		t.Fatalf("DecidirPedido erro inesperado: %v", err)
+	}
+	if det.Status != "parcialmente_aprovado" {
+		t.Errorf("Status = %q, want parcialmente_aprovado", det.Status)
+	}
+	if len(det.Itens) != 1 || det.Itens[0].QuantidadeAprovada == nil || *det.Itens[0].QuantidadeAprovada != 0 {
+		t.Errorf("itens = %+v, want 1 item com QuantidadeAprovada=0", det.Itens)
+	}
+	if n := contarMovimentacoes(t, db, pares[0].ProdutoID); n != 0 {
+		t.Errorf("movimentacoes = %d, want 0 (nenhum débito de item zerado)", n)
+	}
+	if saldo := saldoProdutoEstoque(t, db, pares[0].ProdutoID, pares[0].EstoqueID); saldo != 0 {
+		t.Errorf("saldo = %v, want 0 (inalterado)", saldo)
+	}
+}
+
+// TestDecidirPedido_Rejeicao cobre a linha "Rejeição" da I/O Matrix: status
+// `rejeitado`, todos os itens `QuantidadeAprovada=0`, nenhum débito, nenhuma
+// Movimentação.
+func TestDecidirPedido_Rejeicao(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Decisao Rejeicao", "decisao-rejeicao@empresa.com", PapelUsuario, 0)
+	almoxID := semearConta(t, db, "Decisao Rejeicao Almox", "decisao-rejeicao-almox@empresa.com", PapelAlmoxarife, 0)
+	pedido, pares := seedPedidoComItens(t, db, usuarioID, []itemPedidoSeedSpec{
+		{NomeBase: "Decisao Rejeicao A", SaldoInicial: 10, QtdSolicitada: 4},
+	})
+
+	det, err := DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, false)
+	if err != nil {
+		t.Fatalf("DecidirPedido erro inesperado: %v", err)
+	}
+	if det.Status != "rejeitado" {
+		t.Errorf("Status = %q, want rejeitado", det.Status)
+	}
+	if len(det.Itens) != 1 || det.Itens[0].QuantidadeAprovada == nil || *det.Itens[0].QuantidadeAprovada != 0 {
+		t.Errorf("itens = %+v, want 1 item com QuantidadeAprovada=0", det.Itens)
+	}
+	if n := contarMovimentacoes(t, db, pares[0].ProdutoID); n != 0 {
+		t.Errorf("movimentacoes = %d, want 0", n)
+	}
+	if saldo := saldoProdutoEstoque(t, db, pares[0].ProdutoID, pares[0].EstoqueID); saldo != 10 {
+		t.Errorf("saldo = %v, want 10 (inalterado — rejeição nunca lê/trava produto_estoque)", saldo)
+	}
+}
+
+// TestDecidirPedido_PedidoJaDecidido cobre "Pedido já decidido" da I/O
+// Matrix: status != 'pendente' -> ErrPedidoNaoPendente, nenhuma escrita
+// nova (saldo/Movimentação inalterados a partir do estado já decidido).
+func TestDecidirPedido_PedidoJaDecidido(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Decisao JaFeita", "decisao-ja-feita@empresa.com", PapelUsuario, 0)
+	almoxID := semearConta(t, db, "Decisao JaFeita Almox", "decisao-ja-feita-almox@empresa.com", PapelAlmoxarife, 0)
+	pedido, _ := seedPedidoComItens(t, db, usuarioID, []itemPedidoSeedSpec{
+		{NomeBase: "Decisao JaFeita A", SaldoInicial: 10, QtdSolicitada: 4},
+	})
+	setStatusPedido(t, db, pedido.ID, "aprovado")
+
+	_, err := DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, true)
+	if !errors.Is(err, ErrPedidoNaoPendente) {
+		t.Fatalf("erro = %v, want ErrPedidoNaoPendente", err)
+	}
+}
+
+// TestDecidirPedido_IdInexistenteOuMalformado cobre "Id inexistente/
+// malformado" da I/O Matrix: os dois colapsam em ErrPedidoNaoEncontrado.
+func TestDecidirPedido_IdInexistenteOuMalformado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	almoxID := semearConta(t, db, "Decisao IdRuim Almox", "decisao-id-ruim-almox@empresa.com", PapelAlmoxarife, 0)
+
+	if _, err := DecidirPedido(db, "nao-e-uuid", almoxID, PapelAlmoxarife, true); !errors.Is(err, ErrPedidoNaoEncontrado) {
+		t.Errorf("id malformado: erro = %v, want ErrPedidoNaoEncontrado", err)
+	}
+	if _, err := DecidirPedido(db, "00000000-0000-0000-0000-000000000000", almoxID, PapelAlmoxarife, true); !errors.Is(err, ErrPedidoNaoEncontrado) {
+		t.Errorf("id inexistente: erro = %v, want ErrPedidoNaoEncontrado", err)
+	}
+}
+
+// TestDecidirPedido_DecisoesConcorrentesSoAPrimeiraGanha cobre a AC5: duas
+// decisões concorrentes para o MESMO Pedido — só a primeira a commitar
+// decide de fato, a segunda recebe ErrPedidoNaoPendente sem debitar nada
+// (o UPDATE guardado `WHERE status = 'pendente'` de DecidirPedido fecha a
+// corrida). Dimensionado com saldo de sobra (10 disponível, 4 pedidos) para
+// que a decisão vencedora sempre aprove totalmente — a asserção final
+// confirma o débito de EXATAMENTE 4 (nunca 8, que seria dupla aplicação).
+func TestDecidirPedido_DecisoesConcorrentesSoAPrimeiraGanha(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Decisao Corrida", "decisao-corrida@empresa.com", PapelUsuario, 0)
+	almoxID := semearConta(t, db, "Decisao Corrida Almox", "decisao-corrida-almox@empresa.com", PapelAlmoxarife, 0)
+	pedido, pares := seedPedidoComItens(t, db, usuarioID, []itemPedidoSeedSpec{
+		{NomeBase: "Decisao Corrida A", SaldoInicial: 10, QtdSolicitada: 4},
+	})
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var err1, err2 error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		_, err1 = DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, true)
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		_, err2 = DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, true)
+	}()
+	close(start)
+	wg.Wait()
+
+	sucessos := 0
+	conflitos := 0
+	for _, err := range []error{err1, err2} {
+		switch {
+		case err == nil:
+			sucessos++
+		case errors.Is(err, ErrPedidoNaoPendente):
+			conflitos++
+		default:
+			t.Fatalf("erro inesperado numa decisão concorrente: %v", err)
+		}
+	}
+	if sucessos != 1 || conflitos != 1 {
+		t.Fatalf("sucessos=%d conflitos=%d, want 1 e 1 (só a primeira decide)", sucessos, conflitos)
+	}
+	if saldo := saldoProdutoEstoque(t, db, pares[0].ProdutoID, pares[0].EstoqueID); saldo != 6 {
+		t.Errorf("saldo = %v, want 6 (10 - 4, débito de UMA SÓ decisão)", saldo)
+	}
+	if n := contarMovimentacoes(t, db, pares[0].ProdutoID); n != 1 {
+		t.Errorf("movimentacoes = %d, want 1 (nunca dupla aplicação)", n)
+	}
+}
+
+// TestDecidirPedido_DecisoesConcorrentesMistasSoAPrimeiraGanha cobre a mesma
+// AC5 que TestDecidirPedido_DecisoesConcorrentesSoAPrimeiraGanha, mas para
+// uma corrida MISTA — uma goroutine aprova, a outra rejeita, para o MESMO
+// Pedido pendente. Só a primeira a commitar decide de fato: a outra recebe
+// ErrPedidoNaoPendente sem debitar nada, sem zerar nada, e sem mudar o
+// status de novo (o UPDATE guardado `WHERE status = 'pendente'` de
+// DecidirPedido fecha a corrida independente de QUAL das duas decisões
+// vence). O saldo/Movimentação final refletem exatamente qual delas venceu
+// — nunca uma mistura das duas nem uma dupla aplicação.
+func TestDecidirPedido_DecisoesConcorrentesMistasSoAPrimeiraGanha(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Decisao Corrida Mista", "decisao-corrida-mista@empresa.com", PapelUsuario, 0)
+	almoxID := semearConta(t, db, "Decisao Corrida Mista Almox", "decisao-corrida-mista-almox@empresa.com", PapelAlmoxarife, 0)
+	pedido, pares := seedPedidoComItens(t, db, usuarioID, []itemPedidoSeedSpec{
+		{NomeBase: "Decisao Corrida Mista A", SaldoInicial: 10, QtdSolicitada: 4},
+	})
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var det1, det2 PedidoDetalhe
+	var err1, err2 error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		det1, err1 = DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, true)
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		det2, err2 = DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, false)
+	}()
+	close(start)
+	wg.Wait()
+
+	sucessos := 0
+	conflitos := 0
+	var vencedor *PedidoDetalhe
+	if err1 == nil {
+		sucessos++
+		vencedor = &det1
+	} else if errors.Is(err1, ErrPedidoNaoPendente) {
+		conflitos++
+	} else {
+		t.Fatalf("erro inesperado na decisão de aprovação: %v", err1)
+	}
+	if err2 == nil {
+		sucessos++
+		vencedor = &det2
+	} else if errors.Is(err2, ErrPedidoNaoPendente) {
+		conflitos++
+	} else {
+		t.Fatalf("erro inesperado na decisão de rejeição: %v", err2)
+	}
+	if sucessos != 1 || conflitos != 1 {
+		t.Fatalf("sucessos=%d conflitos=%d, want 1 e 1 (só a primeira decide, seja aprovação ou rejeição)", sucessos, conflitos)
+	}
+
+	switch vencedor.Status {
+	case "aprovado":
+		if saldo := saldoProdutoEstoque(t, db, pares[0].ProdutoID, pares[0].EstoqueID); saldo != 6 {
+			t.Errorf("saldo = %v, want 6 (10 - 4, aprovação venceu a corrida)", saldo)
+		}
+		if n := contarMovimentacoes(t, db, pares[0].ProdutoID); n != 1 {
+			t.Errorf("movimentacoes = %d, want 1 (aprovação venceu a corrida)", n)
+		}
+	case "rejeitado":
+		if saldo := saldoProdutoEstoque(t, db, pares[0].ProdutoID, pares[0].EstoqueID); saldo != 10 {
+			t.Errorf("saldo = %v, want 10 (inalterado — rejeição venceu a corrida)", saldo)
+		}
+		if n := contarMovimentacoes(t, db, pares[0].ProdutoID); n != 0 {
+			t.Errorf("movimentacoes = %d, want 0 (rejeição venceu a corrida)", n)
+		}
+	default:
+		t.Fatalf("status do vencedor = %q, want aprovado ou rejeitado", vencedor.Status)
+	}
+}
+
+// TestDecidirPedido_OrdemLocksAscendenteSemDeadlock cobre a AC1: duas
+// decisões concorrentes de Pedidos DIFERENTES que compartilham os MESMOS
+// dois pares (produto_id, estoque_id), mas com os itens inseridos em
+// `pedido_itens` em ordem OPOSTA entre os dois Pedidos (Pedido1: item B
+// enviado antes de A; Pedido2: item A antes de B) — se DecidirPedido travasse
+// na ordem de inserção do lote (em vez da ordem ascendente de
+// produto_id/estoque_id exigida pela AC1/AD-10), as duas decisões
+// tentariam adquirir os locks em ordens opostas e o Postgres devolveria
+// 40P01 (deadlock). Molde de TestRegistrarTransferencia_ConcorrenciaSemDeadlock.
+func TestDecidirPedido_OrdemLocksAscendenteSemDeadlock(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Decisao OrdemLocks", "decisao-ordem-locks@empresa.com", PapelUsuario, 0)
+	almoxID := semearConta(t, db, "Decisao OrdemLocks Almox", "decisao-ordem-locks-almox@empresa.com", PapelAlmoxarife, 0)
+
+	produtoA, estoqueA, _ := seedProdutoComSaldo(t, db, "Decisao OrdemLocks A", 100)
+	produtoB, estoqueB, _ := seedProdutoComSaldo(t, db, "Decisao OrdemLocks B", 100)
+
+	// Pedido1: item B adicionado ao carrinho ANTES de A (ordem de inserção
+	// inversa à ordem ascendente de produto_id/estoque_id).
+	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoB, estoqueB, 2); err != nil {
+		t.Fatalf("seed Pedido1 item B: %v", err)
+	}
+	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoA, estoqueA, 2); err != nil {
+		t.Fatalf("seed Pedido1 item A: %v", err)
+	}
+	pedido1, err := SubmeterPedido(db, usuarioID, "Solicitante 1", "Obra 1", "")
+	if err != nil {
+		t.Fatalf("seed SubmeterPedido Pedido1: %v", err)
+	}
+
+	// Pedido2: mesmos dois produtos, item A adicionado ANTES de B.
+	usuario2ID := semearConta(t, db, "Decisao OrdemLocks U2", "decisao-ordem-locks-u2@empresa.com", PapelUsuario, 0)
+	if _, err := AdicionarItemCarrinho(db, usuario2ID, produtoA, estoqueA, 2); err != nil {
+		t.Fatalf("seed Pedido2 item A: %v", err)
+	}
+	if _, err := AdicionarItemCarrinho(db, usuario2ID, produtoB, estoqueB, 2); err != nil {
+		t.Fatalf("seed Pedido2 item B: %v", err)
+	}
+	pedido2, err := SubmeterPedido(db, usuario2ID, "Solicitante 2", "Obra 2", "")
+	if err != nil {
+		t.Fatalf("seed SubmeterPedido Pedido2: %v", err)
+	}
+
+	const iteracoes = 10
+	for i := 0; i < iteracoes; i++ {
+		// Cada rodada precisa de saldo de sobra e de um Pedido `pendente`
+		// para cada lado — reseta o saldo e cria um novo par de Pedidos
+		// pendentes a cada iteração (o par da primeira rodada já foi
+		// consumido pela decisão acima).
+		if i > 0 {
+			if _, err := db.Exec(`UPDATE produto_estoque SET quantidade = 100 WHERE produto_id IN ($1, $2)`, produtoA, produtoB); err != nil {
+				t.Fatalf("iteração %d: reset saldo: %v", i, err)
+			}
+			if _, err := AdicionarItemCarrinho(db, usuarioID, produtoB, estoqueB, 2); err != nil {
+				t.Fatalf("iteração %d: seed Pedido1 item B: %v", i, err)
+			}
+			if _, err := AdicionarItemCarrinho(db, usuarioID, produtoA, estoqueA, 2); err != nil {
+				t.Fatalf("iteração %d: seed Pedido1 item A: %v", i, err)
+			}
+			pedido1, err = SubmeterPedido(db, usuarioID, "Solicitante 1", "Obra 1", "")
+			if err != nil {
+				t.Fatalf("iteração %d: seed SubmeterPedido Pedido1: %v", i, err)
+			}
+			if _, err := AdicionarItemCarrinho(db, usuario2ID, produtoA, estoqueA, 2); err != nil {
+				t.Fatalf("iteração %d: seed Pedido2 item A: %v", i, err)
+			}
+			if _, err := AdicionarItemCarrinho(db, usuario2ID, produtoB, estoqueB, 2); err != nil {
+				t.Fatalf("iteração %d: seed Pedido2 item B: %v", i, err)
+			}
+			pedido2, err = SubmeterPedido(db, usuario2ID, "Solicitante 2", "Obra 2", "")
+			if err != nil {
+				t.Fatalf("iteração %d: seed SubmeterPedido Pedido2: %v", i, err)
+			}
+		}
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		var err1, err2 error
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err1 = DecidirPedido(db, pedido1.ID, almoxID, PapelAlmoxarife, true)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err2 = DecidirPedido(db, pedido2.ID, almoxID, PapelAlmoxarife, true)
+		}()
+		close(start)
+		wg.Wait()
+
+		for nome, err := range map[string]error{"Pedido1": err1, "Pedido2": err2} {
+			var pqErr *pq.Error
+			if errors.As(err, &pqErr) && pqErr.Code == "40P01" {
+				t.Fatalf("iteração %d, %s: deadlock detectado pelo Postgres (40P01) — ordenação por produto_id/estoque_id falhou: %v", i, nome, err)
+			}
+			if err != nil {
+				t.Fatalf("iteração %d, %s: erro inesperado (saldo sempre de sobra): %v", i, nome, err)
+			}
+		}
 	}
 }

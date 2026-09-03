@@ -625,6 +625,16 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	mux.HandleFunc("GET /api/pedidos/{id}", middleware.RequireAuth(db, jwtSecret)(
 		handlers.BuscarPedidoHandler(db)))
 
+	// Aprovação/rejeição com revalidação de estoque item a item — Story 7.5
+	// (Epic 7, Pedidos de Retirada), spec-7-5. Molde EXATO de POST
+	// /api/estoques (linha ~369): RequireAuth + RequireRole(almoxarife) —
+	// RequireRole roda a CADA requisição, nunca cacheado, o que já satisfaz
+	// "papel do aprovador revalidado na submissão da decisão" só por
+	// composição. Publica no canal `pedidos` (novo status) no sucesso.
+	mux.HandleFunc("POST /api/pedidos/{id}/decisao", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAlmoxarife)(
+			handlers.DecidirPedidoHandler(db, registro))))
+
 	// Infraestrutura de tempo real (AD-2/AD-3) — Story 4.4. POST
 	// /api/realtime/ticket leva só RequireAuth: qualquer conta autenticada
 	// pode abrir sua própria conexão SSE. GET /api/realtime/stream é o único

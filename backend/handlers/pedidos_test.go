@@ -689,6 +689,40 @@ func TestListarPedidosHandler_EscopoTodosFiltroPorStatus(t *testing.T) {
 	}
 }
 
+// TestListarPedidosHandler_EscopoTodosFiltroPorStatusParcialmenteAprovado
+// cobre, na fronteira HTTP, o mesmo valor novo de status introduzido pela
+// Story 7.5 (spec-7-5) — nenhum teste até aqui exercitava
+// `?status=parcialmente_aprovado` além dos testes de RESULTADO de
+// DecidirPedidoHandler; este cobre o FILTRO da Fila por esse valor.
+func TestListarPedidosHandler_EscopoTodosFiltroPorStatusParcialmenteAprovado(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	dono, _ := seedContaComumECarrinho(t, db, "H75 Fila Status Dono", "h-pedidos-75-fila-status-dono@empresa.com")
+	criarContaComPapel(t, db, "H75 Fila Status Almox", "h-pedidos-75-fila-status-almox@empresa.com", "senha-123456", "almoxarife")
+	tokenAlmox := tokenDeLogin(t, db, "h-pedidos-75-fila-status-almox@empresa.com", "senha-123456")
+
+	pendente := seedPedidoViaServico(t, db, dono, "H75 Fila Status Pend", 1)
+	parcial := seedPedidoViaServico(t, db, dono, "H75 Fila Status Parcial", 1)
+	if _, err := db.Exec(`UPDATE pedidos SET status = 'parcialmente_aprovado' WHERE id = $1`, parcial.ID); err != nil {
+		t.Fatalf("seed status: %v", err)
+	}
+
+	w := getPedidos(db, "Bearer "+tokenAlmox, "escopo=todos&status=parcialmente_aprovado")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Pedidos []services.PedidoResumo `json:"pedidos"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if len(resp.Pedidos) != 1 || resp.Pedidos[0].ID != parcial.ID {
+		t.Fatalf("pedidos = %+v, want só %s", resp.Pedidos, parcial.ID)
+	}
+	_ = pendente
+}
+
 // TestListarPedidosHandler_EscopoDesconhecidoCaiNoProprio cobre "Valor de
 // escopo desconhecido": só `"todos"` ativa a fila — qualquer outro valor
 // cai no escopo próprio, sem erro.
@@ -713,5 +747,275 @@ func TestListarPedidosHandler_EscopoDesconhecidoCaiNoProprio(t *testing.T) {
 	}
 	if len(resp.Pedidos) != 0 {
 		t.Fatalf("pedidos = %+v, want [] (almoxarife sem Pedidos próprios; escopo=banana não ativa a fila)", resp.Pedidos)
+	}
+}
+
+// --- DecidirPedidoHandler (Story 7.5, spec-7-5) -----------------------------
+//
+// POST /api/pedidos/{id}/decisao -> RequireAuth -> RequireRole(almoxarife) ->
+// handler. Molde de postPedido acima, com RequireRole na composição (mesmo
+// molde de getInconsistencias, normalizacao_test.go).
+
+func postDecisaoPedido(db *sql.DB, authHeader, id, body string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/pedidos/{id}/decisao",
+		middleware.RequireAuth(db, testJWTSecret)(
+			middleware.RequireRole(services.PapelAlmoxarife)(
+				DecidirPedidoHandler(db, realtime.NewRegistry()))))
+	var r *http.Request
+	if body != "" {
+		r = httptest.NewRequest(http.MethodPost, "/api/pedidos/"+id+"/decisao", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+	} else {
+		r = httptest.NewRequest(http.MethodPost, "/api/pedidos/"+id+"/decisao", nil)
+	}
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+// TestDecidirPedidoHandler_200AprovacaoTotal cobre "Aprovação total" na
+// fronteira HTTP: saldo suficiente -> 200, status `aprovado`, item com
+// `quantidadeAprovada` igual ao solicitado.
+func TestDecidirPedidoHandler_200AprovacaoTotal(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	dono, _ := seedContaComumECarrinho(t, db, "H75 Aprov Total Dono", "h-pedidos-75-aprov-total-dono@empresa.com")
+	criarContaComPapel(t, db, "H75 Aprov Total Almox", "h-pedidos-75-aprov-total-almox@empresa.com", "senha-123456", "almoxarife")
+	tokenAlmox := tokenDeLogin(t, db, "h-pedidos-75-aprov-total-almox@empresa.com", "senha-123456")
+	pedido := seedPedidoViaServico(t, db, dono, "H75 Aprov Total", 3)
+
+	w := postDecisaoPedido(db, "Bearer "+tokenAlmox, pedido.ID, `{"aprovar":true}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Pedido services.PedidoDetalhe `json:"pedido"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if resp.Pedido.Status != "aprovado" {
+		t.Errorf("Status = %q, want aprovado", resp.Pedido.Status)
+	}
+	if len(resp.Pedido.Itens) != 1 || resp.Pedido.Itens[0].QuantidadeAprovada == nil || *resp.Pedido.Itens[0].QuantidadeAprovada != 3 {
+		t.Errorf("itens = %+v, want 1 item com quantidadeAprovada=3", resp.Pedido.Itens)
+	}
+}
+
+// TestDecidirPedidoHandler_200AprovacaoParcial cobre "Aprovação parcial" na
+// fronteira HTTP: saldo real cai abaixo do solicitado entre o envio e a
+// decisão -> 200, status `parcialmente_aprovado`, `quantidadeAprovada`
+// reflete só o disponível.
+func TestDecidirPedidoHandler_200AprovacaoParcial(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	dono, _ := seedContaComumECarrinho(t, db, "H75 Aprov Parcial Dono", "h-pedidos-75-aprov-parcial-dono@empresa.com")
+	criarContaComPapel(t, db, "H75 Aprov Parcial Almox", "h-pedidos-75-aprov-parcial-almox@empresa.com", "senha-123456", "almoxarife")
+	tokenAlmox := tokenDeLogin(t, db, "h-pedidos-75-aprov-parcial-almox@empresa.com", "senha-123456")
+	pedido := seedPedidoViaServico(t, db, dono, "H75 Aprov Parcial", 10)
+
+	var produtoID, estoqueID string
+	if err := db.QueryRow(`SELECT produto_id, estoque_id FROM pedido_itens WHERE pedido_id = $1`, pedido.ID).
+		Scan(&produtoID, &estoqueID); err != nil {
+		t.Fatalf("seed: buscar item do pedido: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE produto_estoque SET quantidade = 4 WHERE produto_id = $1 AND estoque_id = $2`, produtoID, estoqueID); err != nil {
+		t.Fatalf("seed: reduzir saldo real: %v", err)
+	}
+
+	w := postDecisaoPedido(db, "Bearer "+tokenAlmox, pedido.ID, `{"aprovar":true}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Pedido services.PedidoDetalhe `json:"pedido"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if resp.Pedido.Status != "parcialmente_aprovado" {
+		t.Errorf("Status = %q, want parcialmente_aprovado", resp.Pedido.Status)
+	}
+	if len(resp.Pedido.Itens) != 1 || resp.Pedido.Itens[0].QuantidadeAprovada == nil || *resp.Pedido.Itens[0].QuantidadeAprovada != 4 {
+		t.Errorf("itens = %+v, want 1 item com quantidadeAprovada=4", resp.Pedido.Itens)
+	}
+	if resp.Pedido.Itens[0].Quantidade != 10 {
+		t.Errorf("Quantidade solicitada = %v, want 10 (lado a lado com quantidadeAprovada)", resp.Pedido.Itens[0].Quantidade)
+	}
+}
+
+// TestDecidirPedidoHandler_200Rejeicao cobre "Rejeição" na fronteira HTTP:
+// `{"aprovar":false}` -> 200, status `rejeitado`, item `quantidadeAprovada=0`.
+func TestDecidirPedidoHandler_200Rejeicao(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	dono, _ := seedContaComumECarrinho(t, db, "H75 Rejeicao Dono", "h-pedidos-75-rejeicao-dono@empresa.com")
+	criarContaComPapel(t, db, "H75 Rejeicao Almox", "h-pedidos-75-rejeicao-almox@empresa.com", "senha-123456", "almoxarife")
+	tokenAlmox := tokenDeLogin(t, db, "h-pedidos-75-rejeicao-almox@empresa.com", "senha-123456")
+	pedido := seedPedidoViaServico(t, db, dono, "H75 Rejeicao", 2)
+
+	w := postDecisaoPedido(db, "Bearer "+tokenAlmox, pedido.ID, `{"aprovar":false}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Pedido services.PedidoDetalhe `json:"pedido"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if resp.Pedido.Status != "rejeitado" {
+		t.Errorf("Status = %q, want rejeitado", resp.Pedido.Status)
+	}
+	if len(resp.Pedido.Itens) != 1 || resp.Pedido.Itens[0].QuantidadeAprovada == nil || *resp.Pedido.Itens[0].QuantidadeAprovada != 0 {
+		t.Errorf("itens = %+v, want 1 item com quantidadeAprovada=0", resp.Pedido.Itens)
+	}
+}
+
+// TestDecidirPedidoHandler_403PapelInsuficiente cobre "Papel insuficiente"
+// na fronteira HTTP: papel `usuario` -> 403 FORBIDDEN, decidido por
+// RequireRole ANTES de qualquer leitura/escrita em produto_estoque —
+// status do Pedido continua `pendente`.
+func TestDecidirPedidoHandler_403PapelInsuficiente(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	dono, tokenDono := seedContaComumECarrinho(t, db, "H75 Papel Insuf", "h-pedidos-75-papel-insuf@empresa.com")
+	pedido := seedPedidoViaServico(t, db, dono, "H75 Papel Insuf", 1)
+
+	w := postDecisaoPedido(db, "Bearer "+tokenDono, pedido.ID, `{"aprovar":true}`)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body=%s)", w.Code, w.Body.String())
+	}
+
+	var status string
+	if err := db.QueryRow(`SELECT status FROM pedidos WHERE id = $1`, pedido.ID).Scan(&status); err != nil {
+		t.Fatalf("reler status: %v", err)
+	}
+	if status != "pendente" {
+		t.Errorf("status = %q, want pendente (nenhuma escrita antes do service)", status)
+	}
+}
+
+// TestDecidirPedidoHandler_409PedidoJaDecidido cobre "Pedido já decidido" na
+// fronteira HTTP -> 409 CONFLICT.
+func TestDecidirPedidoHandler_409PedidoJaDecidido(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	dono, _ := seedContaComumECarrinho(t, db, "H75 JaDecidido Dono", "h-pedidos-75-ja-decidido-dono@empresa.com")
+	criarContaComPapel(t, db, "H75 JaDecidido Almox", "h-pedidos-75-ja-decidido-almox@empresa.com", "senha-123456", "almoxarife")
+	tokenAlmox := tokenDeLogin(t, db, "h-pedidos-75-ja-decidido-almox@empresa.com", "senha-123456")
+	pedido := seedPedidoViaServico(t, db, dono, "H75 JaDecidido", 1)
+	if _, err := db.Exec(`UPDATE pedidos SET status = 'aprovado' WHERE id = $1`, pedido.ID); err != nil {
+		t.Fatalf("seed status: %v", err)
+	}
+
+	w := postDecisaoPedido(db, "Bearer "+tokenAlmox, pedido.ID, `{"aprovar":true}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "CONFLICT" {
+		t.Errorf("code = %q, want CONFLICT", env.Error.Code)
+	}
+}
+
+// TestDecidirPedidoHandler_400CorpoSemAprovar cobre "Corpo sem aprovar" na
+// fronteira HTTP -> 400 VALIDATION_ERROR, requisição recusada antes de
+// tocar o banco.
+func TestDecidirPedidoHandler_400CorpoSemAprovar(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	dono, _ := seedContaComumECarrinho(t, db, "H75 SemAprovar Dono", "h-pedidos-75-sem-aprovar-dono@empresa.com")
+	criarContaComPapel(t, db, "H75 SemAprovar Almox", "h-pedidos-75-sem-aprovar-almox@empresa.com", "senha-123456", "almoxarife")
+	tokenAlmox := tokenDeLogin(t, db, "h-pedidos-75-sem-aprovar-almox@empresa.com", "senha-123456")
+	pedido := seedPedidoViaServico(t, db, dono, "H75 SemAprovar", 1)
+
+	casos := map[string]string{
+		"corpo vazio":        `{}`,
+		"aprovar nulo":       `{"aprovar":null}`,
+		"payload malformado": `{"aprovar":`,
+	}
+	for nome, corpo := range casos {
+		t.Run(nome, func(t *testing.T) {
+			w := postDecisaoPedido(db, "Bearer "+tokenAlmox, pedido.ID, corpo)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 (body=%s)", w.Code, w.Body.String())
+			}
+			if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "VALIDATION_ERROR" {
+				t.Errorf("code = %q, want VALIDATION_ERROR", env.Error.Code)
+			}
+		})
+	}
+}
+
+// TestDecidirPedidoHandler_404IdInexistenteOuMalformado cobre "Id
+// inexistente/malformado" na fronteira HTTP -> 404 NOT_FOUND para os dois
+// casos.
+func TestDecidirPedidoHandler_404IdInexistenteOuMalformado(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "H75 IdRuim Almox", "h-pedidos-75-id-ruim-almox@empresa.com", "senha-123456", "almoxarife")
+	tokenAlmox := tokenDeLogin(t, db, "h-pedidos-75-id-ruim-almox@empresa.com", "senha-123456")
+
+	w1 := postDecisaoPedido(db, "Bearer "+tokenAlmox, "nao-e-uuid", `{"aprovar":true}`)
+	if w1.Code != http.StatusNotFound {
+		t.Fatalf("id malformado: status = %d, want 404 (body=%s)", w1.Code, w1.Body.String())
+	}
+	w2 := postDecisaoPedido(db, "Bearer "+tokenAlmox, "00000000-0000-0000-0000-000000000000", `{"aprovar":true}`)
+	if w2.Code != http.StatusNotFound {
+		t.Fatalf("id inexistente: status = %d, want 404 (body=%s)", w2.Code, w2.Body.String())
+	}
+}
+
+// TestDecidirPedidoHandler_401SemToken cobre a ausência de Authorization.
+func TestDecidirPedidoHandler_401SemToken(t *testing.T) {
+	db := testDB(t)
+	w := postDecisaoPedido(db, "", "00000000-0000-0000-0000-000000000000", `{"aprovar":true}`)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+}
+
+// TestDecidirPedidoHandler_PublicaEventoNoSucesso prova que uma decisão
+// bem-sucedida publica `{"resource":"pedidos","id":<pedido>,"change":<novo
+// status>}` no canal `pedidos` — o badge muda via SSE, sem recarregar a
+// página (AC2). Molde de TestSubmeterPedidoHandler_PublicaEventoNoSucesso.
+func TestDecidirPedidoHandler_PublicaEventoNoSucesso(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	dono, _ := seedContaComumECarrinho(t, db, "H75 Evento Dono", "h-pedidos-75-evento-dono@empresa.com")
+	criarContaComPapel(t, db, "H75 Evento Almox", "h-pedidos-75-evento-almox@empresa.com", "senha-123456", "almoxarife")
+	tokenAlmox := tokenDeLogin(t, db, "h-pedidos-75-evento-almox@empresa.com", "senha-123456")
+	pedido := seedPedidoViaServico(t, db, dono, "H75 Evento", 1)
+
+	registro := realtime.NewRegistry()
+	eventos, cancelar := registro.Subscribe()
+	defer cancelar()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/pedidos/{id}/decisao",
+		middleware.RequireAuth(db, testJWTSecret)(
+			middleware.RequireRole(services.PapelAlmoxarife)(
+				DecidirPedidoHandler(db, registro))))
+
+	r := httptest.NewRequest(http.MethodPost, "/api/pedidos/"+pedido.ID+"/decisao", strings.NewReader(`{"aprovar":true}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer "+tokenAlmox)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+
+	select {
+	case ev := <-eventos:
+		if ev.Resource != "pedidos" || ev.ID != pedido.ID || ev.Change != "aprovado" {
+			t.Fatalf("evento = %+v, want {pedidos %s aprovado}", ev, pedido.ID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("nenhum evento publicado em 1s após DecidirPedidoHandler bem-sucedido")
 	}
 }

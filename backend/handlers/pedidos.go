@@ -119,6 +119,65 @@ func ListarPedidosHandler(db *sql.DB) http.HandlerFunc {
 	}
 }
 
+// decisaoPedidoRequest é o corpo aceito por POST /api/pedidos/{id}/decisao.
+// `Aprovar` é um ponteiro DE PROPÓSITO — mesmo molde de `decisaoRequest`
+// (handlers/promocao.go): um corpo `{}`, `{"aprovar":null}` ou com a chave
+// errada decodifica sem erro e, com um `bool` puro, viraria silenciosamente
+// `aprovar=false` — uma rejeição involuntária de um Pedido pendente. Nil ->
+// 400 VALIDATION_ERROR.
+type decisaoPedidoRequest struct {
+	Aprovar *bool `json:"aprovar"`
+}
+
+// DecidirPedidoHandler expõe POST /api/pedidos/{id}/decisao (Story 7.5,
+// spec-7-5), registrado em newMux atrás de
+// RequireAuth(db,jwtSecret)(RequireRole(services.PapelAlmoxarife)(...)) —
+// RequireRole roda a cada requisição, nunca cacheado, o que já satisfaz "o
+// papel do aprovador é revalidado na submissão da decisão" só por
+// composição; este handler NÃO faz checagem de papel adicional.
+//
+// Lê `{"aprovar": bool}` sob http.MaxBytesReader — corpo malformado OU sem a
+// chave `aprovar` (nil) -> 400 VALIDATION_ERROR, nunca uma rejeição
+// silenciosa. Sucesso -> `200 {"pedido": PedidoDetalhe}` (cada item com
+// `quantidade` e `quantidadeAprovada` lado a lado), publicando
+// `{"resource":"pedidos","id":<pedido>,"change":<novo status>}` no canal
+// `pedidos` — mesmo padrão de SubmeterPedidoHandler.
+func DecidirPedidoHandler(db *sql.DB, registro *realtime.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		usuario, ok := middleware.UsuarioDaSessao(r.Context())
+		if !ok {
+			slog.Error("DecidirPedidoHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+
+		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
+		var req decisaoPedidoRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "payload inválido")
+			return
+		}
+		if req.Aprovar == nil {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "payload inválido")
+			return
+		}
+
+		pedido, err := services.DecidirPedido(db, r.PathValue("id"), usuario.ID, usuario.Papel, *req.Aprovar)
+		switch {
+		case err == nil:
+			registro.Publish("pedidos", realtime.Evento{ID: pedido.ID, Change: pedido.Status})
+			escreverJSON(w, http.StatusOK, map[string]any{"pedido": pedido})
+		case errors.Is(err, services.ErrPedidoNaoEncontrado):
+			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "pedido não encontrado")
+		case errors.Is(err, services.ErrPedidoNaoPendente):
+			escreverErro(w, http.StatusConflict, "CONFLICT", "este pedido não está mais pendente")
+		default:
+			slog.Error("falha ao decidir pedido", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao decidir pedido")
+		}
+	}
+}
+
 // BuscarPedidoHandler expõe GET /api/pedidos/{id} (Story 7.3, spec-7-3),
 // registrado em newMux atrás SÓ de RequireAuth. Devolve o cabeçalho + os
 // itens em snapshot do Pedido `{id}` se o solicitante for o dono da sessão

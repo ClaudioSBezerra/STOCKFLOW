@@ -6,6 +6,7 @@ describe('StatusPedidoBadge', () => {
   it.each([
     ['pendente', 'Pendente', 'text-on-tint-warning'],
     ['aprovado', 'Aprovado', 'text-on-tint-success'],
+    ['parcialmente_aprovado', 'Parcialmente aprovado', 'text-on-tint-info'],
     ['rejeitado', 'Rejeitado', 'text-on-tint-destructive'],
   ])('status %j renderiza ícone + rótulo textual %j na variante de cor correta', (status, rotulo, tintEsperado) => {
     const { container } = render(<StatusPedidoBadge status={status} />);

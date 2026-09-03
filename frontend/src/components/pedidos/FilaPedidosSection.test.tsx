@@ -1,17 +1,21 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { FilaPedidosSection } from './FilaPedidosSection';
 import type { EventoRealtime, StatusRealtime } from '@/lib/realtime/client';
 
 const toastInfo = vi.hoisted(() => vi.fn());
-vi.mock('sonner', () => ({ toast: { info: toastInfo } }));
+const toastSuccess = vi.hoisted(() => vi.fn());
+const toastError = vi.hoisted(() => vi.fn());
+vi.mock('sonner', () => ({ toast: { info: toastInfo, success: toastSuccess, error: toastError } }));
 
 const listarFilaPedidosMock = vi.hoisted(() => vi.fn());
 const buscarPedidoMock = vi.hoisted(() => vi.fn());
+const decidirPedidoMock = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/pedidos', () => ({
   listarFilaPedidos: listarFilaPedidosMock,
   buscarPedido: buscarPedidoMock,
+  decidirPedido: decidirPedidoMock,
 }));
 
 // conectarRealtime mockado (molde de MeusPedidosSection.test.tsx): captura
@@ -60,6 +64,7 @@ beforeEach(() => {
   );
   listarFilaPedidosMock.mockResolvedValue(PEDIDOS);
   buscarPedidoMock.mockResolvedValue({ ...PEDIDOS[0], itens: [] });
+  decidirPedidoMock.mockResolvedValue({ ...PEDIDOS[0], status: 'aprovado', itens: [] });
 });
 
 afterEach(() => {
@@ -123,6 +128,23 @@ describe('FilaPedidosSection', () => {
     await user.click(await screen.findByRole('option', { name: 'Aprovado' }));
 
     await waitFor(() => expect(listarFilaPedidosMock).toHaveBeenCalledWith('aprovado'));
+  });
+
+  it('escolher "Parcialmente aprovado" no filtro refaz a busca com ?status=parcialmente_aprovado', async () => {
+    render(<FilaPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText('Obra Norte');
+
+    listarFilaPedidosMock.mockClear();
+    listarFilaPedidosMock.mockResolvedValue([]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('combobox', { name: 'Status' }));
+    await user.click(await screen.findByRole('option', { name: 'Parcialmente aprovado' }));
+
+    await waitFor(() => expect(listarFilaPedidosMock).toHaveBeenCalledWith('parcialmente_aprovado'));
   });
 
   it('um evento SSE resource="pedidos" dispara toast + refetch, sem recarregar a tela', async () => {
@@ -431,5 +453,208 @@ describe('FilaPedidosSection', () => {
     await user.click(await screen.findByRole('option', { name: 'Todos' }));
 
     await waitFor(() => expect(listarFilaPedidosMock).toHaveBeenCalledWith(undefined));
+  });
+
+  // --- Decisão (aprovar/rejeitar) — Story 7.5, spec-7-5 ---------------------
+
+  async function abrirVerItensDoPendente(user: ReturnType<typeof userEvent.setup>) {
+    render(<FilaPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText('Obra Norte');
+    await user.click(
+      screen.getByRole('button', { name: /^Ver itens do pedido de Ana Silva — Obra Norte/ }),
+    );
+    await screen.findByRole('dialog');
+  }
+
+  it('"Ver itens" de um Pedido pendente mostra os botões Aprovar/Rejeitar', async () => {
+    const user = userEvent.setup();
+    await abrirVerItensDoPendente(user);
+
+    expect(screen.getByRole('button', { name: 'Aprovar' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Rejeitar' })).toBeInTheDocument();
+  });
+
+  it('"Ver itens" de um Pedido NÃO-pendente não mostra os botões de decisão', async () => {
+    buscarPedidoMock.mockResolvedValue({ ...PEDIDOS[1], itens: [] });
+    const user = userEvent.setup();
+    render(<FilaPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText('Obra Norte');
+    await user.click(
+      screen.getByRole('button', { name: /^Ver itens do pedido de Bruno Costa — Obra Sul/ }),
+    );
+    await screen.findByRole('dialog');
+
+    expect(screen.queryByRole('button', { name: 'Aprovar' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Rejeitar' })).not.toBeInTheDocument();
+  });
+
+  it('clicar em Aprovar abre um ConfirmDialog PRÓPRIO com texto genérico, sem chamar decidirPedido antes de confirmar', async () => {
+    const user = userEvent.setup();
+    await abrirVerItensDoPendente(user);
+
+    await user.click(screen.getByRole('button', { name: 'Aprovar' }));
+
+    const confirmacao = await screen.findByRole('alertdialog');
+    expect(within(confirmacao).getByText('Aprovar este pedido?')).toBeInTheDocument();
+    expect(decidirPedidoMock).not.toHaveBeenCalled();
+  });
+
+  it('confirmar Aprovar chama decidirPedido(id, true), fecha o Dialog "Ver itens" e mostra toast de sucesso a partir do status devolvido', async () => {
+    decidirPedidoMock.mockResolvedValue({ ...PEDIDOS[0], status: 'aprovado', itens: [] });
+    const user = userEvent.setup();
+    await abrirVerItensDoPendente(user);
+
+    await user.click(screen.getByRole('button', { name: 'Aprovar' }));
+    const confirmacao = await screen.findByRole('alertdialog');
+    await user.click(within(confirmacao).getByRole('button', { name: 'Aprovar' }));
+
+    await waitFor(() => expect(decidirPedidoMock).toHaveBeenCalledWith('p-1', true));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(toastSuccess).toHaveBeenCalledWith('Pedido aprovado.');
+  });
+
+  it('confirmar Aprovar quando o resultado é parcialmente_aprovado mostra a mensagem específica de parcial', async () => {
+    decidirPedidoMock.mockResolvedValue({ ...PEDIDOS[0], status: 'parcialmente_aprovado', itens: [] });
+    const user = userEvent.setup();
+    await abrirVerItensDoPendente(user);
+
+    await user.click(screen.getByRole('button', { name: 'Aprovar' }));
+    const confirmacao = await screen.findByRole('alertdialog');
+    await user.click(within(confirmacao).getByRole('button', { name: 'Aprovar' }));
+
+    await waitFor(() =>
+      expect(toastSuccess).toHaveBeenCalledWith(
+        'Pedido aprovado parcialmente — parte do estoque não estava disponível.',
+      ),
+    );
+  });
+
+  it('confirmar Rejeitar chama decidirPedido(id, false) e mostra o toast de rejeição', async () => {
+    decidirPedidoMock.mockResolvedValue({ ...PEDIDOS[0], status: 'rejeitado', itens: [] });
+    const user = userEvent.setup();
+    await abrirVerItensDoPendente(user);
+
+    await user.click(screen.getByRole('button', { name: 'Rejeitar' }));
+    const confirmacao = await screen.findByRole('alertdialog');
+    await user.click(within(confirmacao).getByRole('button', { name: 'Rejeitar' }));
+
+    await waitFor(() => expect(decidirPedidoMock).toHaveBeenCalledWith('p-1', false));
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Pedido rejeitado.'));
+  });
+
+  it('cancelar o ConfirmDialog de Aprovar não chama decidirPedido e mantém o Dialog "Ver itens" aberto', async () => {
+    const user = userEvent.setup();
+    await abrirVerItensDoPendente(user);
+
+    await user.click(screen.getByRole('button', { name: 'Aprovar' }));
+    const confirmacao = await screen.findByRole('alertdialog');
+    await user.click(within(confirmacao).getByRole('button', { name: 'Cancelar' }));
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+    expect(decidirPedidoMock).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('falha ao decidir mostra toast.error com a mensagem do servidor e mantém o Dialog "Ver itens" aberto', async () => {
+    decidirPedidoMock.mockRejectedValue(new Error('este pedido não está mais pendente'));
+    const user = userEvent.setup();
+    await abrirVerItensDoPendente(user);
+
+    await user.click(screen.getByRole('button', { name: 'Aprovar' }));
+    const confirmacao = await screen.findByRole('alertdialog');
+    await user.click(within(confirmacao).getByRole('button', { name: 'Aprovar' }));
+
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith('este pedido não está mais pendente'),
+    );
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('os botões Aprovar/Rejeitar ficam desabilitados enquanto uma decisão está em andamento', async () => {
+    let resolverDecisao!: (valor: unknown) => void;
+    decidirPedidoMock.mockImplementationOnce(
+      () => new Promise((resolve) => { resolverDecisao = resolve; }),
+    );
+    const user = userEvent.setup();
+    await abrirVerItensDoPendente(user);
+
+    await user.click(screen.getByRole('button', { name: 'Aprovar' }));
+    const confirmacao = await screen.findByRole('alertdialog');
+    await user.click(within(confirmacao).getByRole('button', { name: 'Aprovar' }));
+
+    await waitFor(() => expect(decidirPedidoMock).toHaveBeenCalled());
+    expect(screen.getByRole('button', { name: 'Aprovar' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Rejeitar' })).toBeDisabled();
+
+    act(() => {
+      resolverDecisao({ ...PEDIDOS[0], status: 'aprovado', itens: [] });
+    });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('item já decidido com quantidadeAprovada divergente mostra Solicitado/Aprovado/Pendente, nunca escondido', async () => {
+    buscarPedidoMock.mockResolvedValue({
+      ...PEDIDOS[1],
+      itens: [
+        {
+          produtoId: 'pr-1',
+          produtoNome: 'Cabo Flexível 4mm',
+          categoriaNome: 'Fios e Cabos',
+          estoqueId: 'e-1',
+          estoqueNome: 'Almoxarifado Central',
+          quantidade: 10,
+          quantidadeAprovada: 4,
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<FilaPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText('Obra Norte');
+    await user.click(
+      screen.getByRole('button', { name: /^Ver itens do pedido de Bruno Costa — Obra Sul/ }),
+    );
+
+    expect(await screen.findByText(/Solicitado: 10/)).toBeInTheDocument();
+    expect(screen.getByText(/Aprovado: 4/)).toBeInTheDocument();
+    expect(screen.getByText(/Pendente: 6/)).toBeInTheDocument();
+  });
+
+  it('item já decidido SEM divergência mostra só Solicitado (sem repetir Aprovado/Pendente)', async () => {
+    buscarPedidoMock.mockResolvedValue({
+      ...PEDIDOS[1],
+      itens: [
+        {
+          produtoId: 'pr-1',
+          produtoNome: 'Cabo Flexível 4mm',
+          categoriaNome: 'Fios e Cabos',
+          estoqueId: 'e-1',
+          estoqueNome: 'Almoxarifado Central',
+          quantidade: 5,
+          quantidadeAprovada: 5,
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<FilaPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText('Obra Norte');
+    await user.click(
+      screen.getByRole('button', { name: /^Ver itens do pedido de Bruno Costa — Obra Sul/ }),
+    );
+
+    expect(await screen.findByText(/Solicitado: 5/)).toBeInTheDocument();
+    expect(screen.queryByText(/Aprovado:/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Pendente:/)).not.toBeInTheDocument();
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { buscarPedido, listarFilaPedidos, listarPedidos } from './pedidos';
+import { buscarPedido, decidirPedido, listarFilaPedidos, listarPedidos } from './pedidos';
 
 vi.mock('@/lib/session', () => ({
   getAccessToken: () => 'token-de-teste',
@@ -144,5 +144,56 @@ describe('buscarPedido', () => {
     });
 
     await expect(buscarPedido('p-x')).rejects.toThrow('pedido não encontrado');
+  });
+});
+
+describe('decidirPedido', () => {
+  it('POST /api/pedidos/{id}/decisao com {"aprovar":true}, Authorization e Content-Type, devolve o pedido do corpo', async () => {
+    const decidido = { ...RESUMO, status: 'aprovado', itens: [] };
+    fetchMock.mockReturnValue(respostaOk({ pedido: decidido }));
+
+    const pedido = await decidirPedido('p-1', true);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/pedidos/p-1/decisao');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toMatchObject({
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer token-de-teste',
+    });
+    expect(JSON.parse(init.body)).toEqual({ aprovar: true });
+    expect(pedido).toEqual(decidido);
+  });
+
+  it('envia {"aprovar":false} para rejeição', async () => {
+    fetchMock.mockReturnValue(respostaOk({ pedido: { ...RESUMO, status: 'rejeitado', itens: [] } }));
+
+    await decidirPedido('p-1', false);
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual({ aprovar: false });
+  });
+
+  it('propaga a mensagem de erro do servidor num 409 (pedido já decidido)', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({ error: { code: 'CONFLICT', message: 'este pedido não está mais pendente' } }),
+    });
+
+    await expect(decidirPedido('p-1', true)).rejects.toThrow('este pedido não está mais pendente');
+  });
+
+  it('cai no fallback específico da decisão quando a resposta não-ok não traz error.message', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({}),
+    });
+
+    await expect(decidirPedido('p-1', true)).rejects.toThrow(
+      'Não foi possível registrar a decisão agora. Tente novamente em instantes.',
+    );
   });
 });

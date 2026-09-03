@@ -565,3 +565,59 @@ source_spec: `spec-7-4-consulta-de-todos-os-pedidos-fila-almoxarife.md`
 severity: low
 reason: frontend/src/pages/PedidosPage.tsx usa Tabs/TabsContent (Radix, desmonta conteúdo inativo por padrão) envolvendo MeusPedidosSection e FilaPedidosSection, cada uma com seu próprio useEffect de conectarRealtime — mesmo padrão já presente em EstoquesPage (Locais/Movimentações), agora também em Pedidos.
 status: open
+
+### DW-72: `MeusPedidosSection.tsx` (a visão "Meus Pedidos" do próprio solicitante) não mostra a quebra Solicitado/Aprovado/Pendente por item que `FilaPedidosSection` passou a mostrar para um Pedido já decidido
+origin: spec-deferred 159be01c2b7f
+location: frontend/src/components/pedidos/MeusPedidosSection.tsx
+source_spec: `spec-7-5-aprovacao-rejeicao-com-revalidacao-de-estoque-item-a-item.md`
+severity: medium
+reason: `PedidoItem.quantidadeAprovada` já está disponível na mesma resposta de `buscarPedido` usada por `MeusPedidosSection.tsx` (idêntica à usada por `FilaPedidosSection`), mas o arquivo nunca lê esse campo. As ACs da Story 7.5 (epics.md, UJ-2) são todas do lado Almoxarife/Fila; "Meus Pedidos" é superfície da Story 7.3, cujas ACs (FR-23) só exigem "filtrável por status, com texto explicativo por status" — nenhuma exige detalhe por item. O solicitante ainda vê o resultado agregado via `StatusPedidoBadge` (já compartilhado, sem mudança).
+status: open
+
+### DW-73: O filtro de status de `MeusPedidosSection.tsx` (`OPCOES_FILTRO`) não ganhou a opção `parcialmente_aprovado`, mesmo esse valor já sendo aceito pelo backend para `?status=` em Meus Pedidos.
+origin: spec-deferred a6aaadd3ee4a
+location: frontend/src/components/pedidos/MeusPedidosSection.tsx
+source_spec: `spec-7-5-aprovacao-rejeicao-com-revalidacao-de-estoque-item-a-item.md`
+severity: low
+reason: Mesma causa raiz do item anterior — superfície da Story 7.3, fora do escopo das ACs desta story (7.5).
+status: open
+
+### DW-74: Nenhum log estruturado de sucesso (`slog.Info`) registra quem aprovou/rejeitou qual Pedido — só falhas são logadas via `slog.Error` em `DecidirPedidoHandler`.
+origin: spec-deferred 4d9bfa421a69
+location: backend/handlers/pedidos.go (DecidirPedidoHandler)
+source_spec: `spec-7-5-aprovacao-rejeicao-com-revalidacao-de-estoque-item-a-item.md`
+severity: low
+reason: Mesmo padrão pré-existente em `SubmeterPedidoHandler` e `DecidirPromocaoHandler` (nenhum dos dois loga sucesso) — escolha de filosofia de logging já estabelecida no projeto, não uma regressão desta story. A trilha de auditoria real (`decidido_por`/`decidido_em`) já fica na própria linha de `pedidos`.
+status: open
+
+### DW-75: `DecidirPedido` trava/debita/insere Movimentação um item por vez, sequencialmente, dentro da mesma transação — sem nenhum batching — estendendo o tempo de retenção dos locks para Pedidos com muitos it
+origin: spec-deferred 86d5eda29e57
+location: backend/services/pedidos.go (DecidirPedido)
+source_spec: `spec-7-5-aprovacao-rejeicao-com-revalidacao-de-estoque-item-a-item.md`
+severity: low
+reason: Mesmo padrão já usado por `SubmeterPedido` (services/pedidos.go) para o mesmo tipo de loop item-a-item — escolha arquitetural pré-existente do domínio de Pedidos, não introduzida por esta story.
+status: open
+
+### DW-76: Nenhum teste de `DecidirPedido`/`BuscarPedidoProprio` cobre uma quantidade fracionária (ex.: `10.500`) atravessando o fluxo de decisão — toda a I/O Matrix testada usa só quantidades inteiras, apesar d
+origin: spec-deferred b223ebb3d9f6
+location: backend/services/pedidos_test.go; frontend/src/components/pedidos/FilaPedidosSection.tsx
+source_spec: `spec-7-5-aprovacao-rejeicao-com-revalidacao-de-estoque-item-a-item.md`
+severity: low
+reason: `formatarQuantidade` (frontend/src/components/catalogo/formatacao.tsx) usa `toLocaleString('pt-BR')`, que arredonda para 3 casas decimais por padrão — um erro de ponto flutuante do JS na subtração `quantidade - quantidadeAprovada` (FilaPedidosSection.tsx) apareceria muito além da 3ª casa e seria absorvido por esse arredondamento, então o risco prático é baixo; mas nenhum teste do backend ou do frontend prova isso com um valor fracionário real.
+status: open
+
+### DW-77: O Dialog "Ver itens" aberto num Pedido `pendente` não reage ao evento SSE `pedidos` para o PRÓPRIO Pedido em exibição — se um segundo Almoxarife decidir o mesmo Pedido enquanto o Dialog está aberto, o
+origin: spec-deferred e70e6be286ea
+location: frontend/src/components/pedidos/FilaPedidosSection.tsx
+source_spec: `spec-7-5-aprovacao-rejeicao-com-revalidacao-de-estoque-item-a-item.md`
+severity: low
+reason: `FilaPedidosSection.tsx` já se inscreve no canal `pedidos` para atualizar a LISTA (`toast.info('Fila de Pedidos atualizada.')`), mas o estado `detalheDe` do Dialog aberto não é invalidado/refeito por esse mesmo evento — comportamento coberto pelo 409 CONFLICT da AC de concorrência (spec-7-5), não uma perda de dados, só uma janela de UX sem feedback proativo.
+status: open
+
+### DW-78: Nenhum teste prova que `decididoPor`/`decididoEm` permanecem `null` em `GET /api/pedidos/{id}` (via `BuscarPedidoProprio`) depois de uma decisão — o "Never" da spec-7-5 ("não exibe no frontend quem de
+origin: spec-deferred baf8561e9a16
+location: backend/services/pedidos.go (BuscarPedidoProprio)
+source_spec: `spec-7-5-aprovacao-rejeicao-com-revalidacao-de-estoque-item-a-item.md`
+severity: low
+reason: `BuscarPedidoProprio` (services/pedidos.go) faz `SELECT id, usuario_id, solicitante, obra_centro_custo, observacao, status, criado_em FROM pedidos` — `decidido_por`/`decidido_em` de fato nunca entram no SELECT, então os ponteiros ficam `nil` por construção; mas se uma mudança futura estender esse SELECT (ex.: para outro campo), nada barra `decididoPor`/`decididoEm` de vazar junto sem que nenhum teste acuse.
+status: open

@@ -15,11 +15,13 @@ import { getAccessToken } from '@/lib/session';
  * decide se o chamador realmente enxerga todos os Pedidos ou só os
  * próprios — este módulo nunca checa papel). `GET /api/pedidos/{id}` ->
  * `buscarPedido(id)` (cabeçalho + itens em SNAPSHOT — AD-17, nunca join ao
- * vivo). Resposta não-ok propaga `body.error?.message` do servidor (ou um
- * fallback).
+ * vivo). `POST /api/pedidos/{id}/decisao` -> `decidirPedido(id, aprovar)`
+ * (Story 7.5, spec-7-5 — aprovação/rejeição com revalidação de estoque item
+ * a item, só `almoxarife`+). Resposta não-ok propaga `body.error?.message`
+ * do servidor (ou um fallback).
  */
 
-export type StatusPedido = 'pendente' | 'aprovado' | 'rejeitado';
+export type StatusPedido = 'pendente' | 'aprovado' | 'parcialmente_aprovado' | 'rejeitado';
 
 interface PedidoCabecalho {
   id: string;
@@ -29,6 +31,13 @@ interface PedidoCabecalho {
   observacao: string | null;
   status: StatusPedido;
   criadoEm: string;
+  // decididoPor/decididoEm (Story 7.5, spec-7-5): auditoria da decisão —
+  // presentes no corpo pela mesma projeção do backend, mas NUNCA exibidos
+  // nesta story (Never, spec-7-5) — o frontend não os lê em lugar nenhum
+  // além destes tipos; a Story 7.6 (recibo, campo "aprovador") consome
+  // depois.
+  decididoPor: string | null;
+  decididoEm: string | null;
 }
 
 export interface PedidoResumo extends PedidoCabecalho {
@@ -42,6 +51,10 @@ export interface PedidoItem {
   estoqueId: string;
   estoqueNome: string;
   quantidade: number;
+  // quantidadeAprovada (Story 7.5, spec-7-5): null enquanto o Pedido
+  // permanece `pendente`; a partir da decisão, um valor concreto de 0 até
+  // `quantidade` — o quanto de fato foi aprovado/debitado deste item.
+  quantidadeAprovada: number | null;
 }
 
 export interface PedidoDetalhe extends PedidoCabecalho {
@@ -59,6 +72,8 @@ const MENSAGEM_ERRO_LISTAR_FILA =
   'Não foi possível carregar a fila de pedidos agora. Tente novamente em instantes.';
 const MENSAGEM_ERRO_DETALHE =
   'Não foi possível carregar os itens do pedido agora. Tente novamente em instantes.';
+const MENSAGEM_ERRO_DECISAO =
+  'Não foi possível registrar a decisão agora. Tente novamente em instantes.';
 
 export async function listarPedidos(status?: StatusPedido): Promise<PedidoResumo[]> {
   const url = status ? `/api/pedidos?status=${encodeURIComponent(status)}` : '/api/pedidos';
@@ -89,6 +104,29 @@ export async function buscarPedido(id: string): Promise<PedidoDetalhe> {
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
     throw new Error(body.error?.message ?? MENSAGEM_ERRO_DETALHE);
+  }
+  const body = (await res.json()) as { pedido: PedidoDetalhe };
+  return body.pedido;
+}
+
+/**
+ * Aprova ou rejeita um Pedido `pendente` (Story 7.5, spec-7-5) — só
+ * `almoxarife`+ (o servidor revalida o papel a cada requisição via
+ * `RequireRole`, nunca cacheado no cliente). A revalidação de estoque item a
+ * item acontece inteiramente no servidor, na MESMA chamada de escrita — este
+ * módulo nunca faz um GET de preview antes (Design Notes de spec-7-5): o
+ * resultado real (`quantidadeAprovada` por item, novo `status`) vem só na
+ * resposta deste POST.
+ */
+export async function decidirPedido(id: string, aprovar: boolean): Promise<PedidoDetalhe> {
+  const res = await fetch(`/api/pedidos/${encodeURIComponent(id)}/decisao`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ aprovar }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+    throw new Error(body.error?.message ?? MENSAGEM_ERRO_DECISAO);
   }
   const body = (await res.json()) as { pedido: PedidoDetalhe };
   return body.pedido;

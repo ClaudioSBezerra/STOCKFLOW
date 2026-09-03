@@ -1,4 +1,11 @@
-import { CheckCircle2, Clock, HelpCircle, XCircle, type LucideIcon } from 'lucide-react';
+import {
+  CheckCircle2,
+  Clock,
+  HelpCircle,
+  SplitSquareHorizontal,
+  XCircle,
+  type LucideIcon,
+} from 'lucide-react';
 import type { StatusPedido } from '@/lib/pedidos';
 
 /**
@@ -31,6 +38,19 @@ function estiloDoStatus(status: string): EstiloStatus {
         rotulo: 'Aprovado',
         Icone: CheckCircle2,
         classe: 'bg-success/10 text-[color:var(--color-text-on-tint-success)]',
+      };
+    case 'parcialmente_aprovado':
+      // Tinta `info` (azul) — deliberadamente NÃO `accent`/`success`: no
+      // token set do DESIGN.md, --color-accent É literalmente igual a
+      // --color-success (#16a249); usar accent aqui seria visualmente
+      // idêntico a 'aprovado'. `info` é a única tinta ainda não usada por
+      // nenhum outro status de Pedido — garante "tinta/ícone distintos de
+      // aprovado/pendente" (spec-7-5) sem introduzir cor nova fora do
+      // DESIGN.md.
+      return {
+        rotulo: 'Parcialmente aprovado',
+        Icone: SplitSquareHorizontal,
+        classe: 'bg-info/10 text-[color:var(--color-text-on-tint-info)]',
       };
     case 'rejeitado':
       return {

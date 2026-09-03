@@ -26,6 +26,13 @@ type Pedido struct {
 	Observacao      *string   `json:"observacao"`
 	Status          string    `json:"status"`
 	CriadoEm        time.Time `json:"criadoEm"`
+	// DecididoPor/DecididoEm (Story 7.5, spec-7-5): auditoria da decisão —
+	// nil enquanto `status == "pendente"`. Só DecidirPedido as popula
+	// diretamente; BuscarPedidoProprio NUNCA as lê de volta do banco (Never,
+	// spec-7-5: auditoria fica só no banco/API nesta story, consumida pela
+	// Story 7.6 depois — o frontend desta story não exibe estes campos).
+	DecididoPor *string    `json:"decididoPor"`
+	DecididoEm  *time.Time `json:"decididoEm"`
 }
 
 // PedidoItem é uma linha do SNAPSHOT imutável em `pedido_itens` (AD-17,
@@ -40,6 +47,12 @@ type PedidoItem struct {
 	EstoqueID     string  `json:"estoqueId"`
 	EstoqueNome   string  `json:"estoqueNome"`
 	Quantidade    float64 `json:"quantidade"`
+	// QuantidadeAprovada (Story 7.5, spec-7-5): nil enquanto o Pedido
+	// permanece `pendente`; a partir da decisão, um valor concreto de 0 até
+	// `Quantidade` — o quanto de fato foi debitado/aprovado deste item.
+	// `Quantidade - *QuantidadeAprovada` é a pendência não atendida, sempre
+	// visível (nunca escondida, nunca descartada).
+	QuantidadeAprovada *float64 `json:"quantidadeAprovada"`
 }
 
 // PedidoDetalhe é o cabeçalho do Pedido (struct Pedido, reaproveitado) mais
@@ -65,14 +78,24 @@ type PedidoResumo struct {
 // responde 403. Mesmo colapso de ObterProdutoDetalhe (catalogo.go).
 var ErrPedidoNaoEncontrado = errors.New("pedido não encontrado")
 
+// ErrPedidoNaoPendente indica que o Pedido já foi decidido (`aprovado`,
+// `parcialmente_aprovado` ou `rejeitado`) — inclui reuso do endpoint de
+// decisão e a corrida entre duas decisões concorrentes para o MESMO
+// Pedido (o UPDATE guardado de DecidirPedido devolve este mesmo erro
+// quando a corrida é detectada). Mapeado para 409 CONFLICT. Molde de
+// ErrSolicitacaoNaoPendente (promocao.go).
+var ErrPedidoNaoPendente = errors.New("pedido não está mais pendente")
+
 // statusPedidoValido fecha o conjunto de valores aceitos no filtro opcional
-// `?status=` de GET /api/pedidos — espelha o CHECK da migração 000026. Um
-// valor fora deste conjunto é rejeitado por ListarPedidosProprios ANTES de
-// tocar o banco (&ErroPedidoValidacao, 400 VALIDATION_ERROR).
+// `?status=` de GET /api/pedidos — espelha o CHECK da migração 000027 (Story
+// 7.5 acrescentou `parcialmente_aprovado` ao CHECK original da migração
+// 000026). Um valor fora deste conjunto é rejeitado por ListarPedidosProprios
+// ANTES de tocar o banco (&ErroPedidoValidacao, 400 VALIDATION_ERROR).
 var statusPedidoValido = map[string]bool{
-	"pendente":  true,
-	"aprovado":  true,
-	"rejeitado": true,
+	"pendente":              true,
+	"aprovado":              true,
+	"parcialmente_aprovado": true,
+	"rejeitado":             true,
 }
 
 // ErroPedidoValidacao é o erro de validação devolvido por SubmeterPedido
@@ -413,7 +436,7 @@ func BuscarPedidoProprio(db *sql.DB, pedidoID, usuarioID, papel string) (PedidoD
 	}
 
 	const selectItens = `
-		SELECT produto_id, produto_nome, categoria_nome, estoque_id, estoque_nome, quantidade
+		SELECT produto_id, produto_nome, categoria_nome, estoque_id, estoque_nome, quantidade, quantidade_aprovada
 		FROM pedido_itens WHERE pedido_id = $1 ORDER BY produto_nome`
 	rows, err := db.Query(selectItens, pedidoID)
 	if err != nil {
@@ -424,16 +447,263 @@ func BuscarPedidoProprio(db *sql.DB, pedidoID, usuarioID, papel string) (PedidoD
 	det.Itens = make([]PedidoItem, 0)
 	for rows.Next() {
 		var it PedidoItem
+		var quantidadeAprovada sql.NullFloat64
 		if err := rows.Scan(
 			&it.ProdutoID, &it.ProdutoNome, &it.CategoriaNome,
-			&it.EstoqueID, &it.EstoqueNome, &it.Quantidade,
+			&it.EstoqueID, &it.EstoqueNome, &it.Quantidade, &quantidadeAprovada,
 		); err != nil {
 			return PedidoDetalhe{}, fmt.Errorf("falha ao ler item do pedido: %w", err)
+		}
+		if quantidadeAprovada.Valid {
+			it.QuantidadeAprovada = &quantidadeAprovada.Float64
 		}
 		det.Itens = append(det.Itens, it)
 	}
 	if err := rows.Err(); err != nil {
 		return PedidoDetalhe{}, fmt.Errorf("falha ao iterar itens do pedido: %w", err)
 	}
+	return det, nil
+}
+
+// itemPedidoParaDecisao é a leitura crua de uma linha de `pedido_itens`
+// usada só dentro de DecidirPedido — inclui o snapshot completo (nome de
+// produto/categoria/estoque) para que a resposta de DecidirPedido possa ser
+// montada SEM reconsultar o banco depois do commit (ver comentário de
+// DecidirPedido).
+type itemPedidoParaDecisao struct {
+	ProdutoID     string
+	ProdutoNome   string
+	CategoriaNome string
+	EstoqueID     string
+	EstoqueNome   string
+	Quantidade    float64
+}
+
+// DecidirPedido aprova ou rejeita um Pedido `pendente`
+// (POST /api/pedidos/{id}/decisao, Story 7.5, spec-7-5), revalidando a
+// disponibilidade real de cada item na MESMA transação da decisão — nunca
+// confia no snapshot gravado no envio (Story 7.2). `decisorID`/`papelDecisor`
+// vêm do contexto da sessão (o papel já foi revalidado pelo
+// `RequireRole(almoxarife)` da rota, a cada requisição — nenhuma checagem de
+// papel adicional acontece aqui).
+//
+// Guards (antes de qualquer escrita):
+//   - `id` inexistente ou não-UUID (`pq` 22P02) -> ErrPedidoNaoEncontrado.
+//   - `status != "pendente"` -> ErrPedidoNaoPendente.
+//
+// Dentro da transação, o UPDATE guardado de `pedidos`
+// (`WHERE id = $1 AND status = 'pendente'`) fecha a corrida entre duas
+// decisões concorrentes para o MESMO Pedido: `sql.ErrNoRows` no RETURNING ->
+// mesmo ErrPedidoNaoPendente, rollback desfaz qualquer débito já feito nesta
+// transação (molde de DecidirSolicitacao, promocao.go).
+//
+// `aprovar=false`: nenhuma leitura/trava de `produto_estoque`, nenhuma
+// Movimentação — todos os itens gravam `quantidade_aprovada=0` (nunca NULL
+// depois de decidido), status vira `'rejeitado'`.
+//
+// `aprovar=true`: os pares (produto_id, estoque_id) de TODOS os itens do
+// Pedido vêm de `SELECT ... ORDER BY produto_id, estoque_id` — ordem
+// ascendente sobre o LOTE INTEIRO (AD-10, mesmo molde de SubmeterPedido,
+// pedidos.go) — travados um a um nessa ordem via `SELECT ... FOR UPDATE`.
+// Ausência de linha em `produto_estoque` colapsa em "0 disponível" (mesmo
+// colapso de SubmeterPedido/RegistrarBaixa). Por item,
+// `quantidadeAprovada := min(quantidade solicitada, disponível)` — nunca
+// mais que o solicitado; se `> 0`, debita `produto_estoque` e insere uma
+// Movimentação (`tipo='baixa'`, `estoque_origem_id`=o do item,
+// `usuario_id`=o DECISOR — mesma convenção de RegistrarBaixa) na MESMA
+// transação; `quantidadeAprovada` é sempre gravada em `pedido_itens`, mesmo
+// quando 0. Status final do cabeçalho: `'aprovado'` se TODOS os itens
+// tiveram `quantidadeAprovada == quantidade`; senão `'parcialmente_aprovado'`
+// (inclui `quantidadeAprovada == 0` em TODOS os itens — o Almoxarife
+// escolheu aprovar, não rejeitar; nunca reclassificado como `'rejeitado'`
+// por baixo do capô).
+//
+// Sucesso: devolve a MESMA projeção de PedidoDetalhe (cabeçalho + itens,
+// cada um com `quantidadeAprovada` preenchido) — montada inteiramente com
+// dados já lidos/computados DENTRO da transação, ANTES do commit. Nenhuma
+// releitura do banco acontece depois de `tx.Commit()`: se um novo round-trip
+// pós-commit falhasse (blip transitório de conexão, por exemplo), o chamador
+// receberia um 500 mesmo com a decisão já durável (estoque já debitado,
+// Movimentação já registrada, status já mudado) — um falso-negativo enganoso
+// para uma mudança de estado que já aconteceu de verdade. Por isso o
+// cabeçalho vem do próprio `RETURNING` do UPDATE de decisão (abaixo) e os
+// itens vêm do snapshot lido no início da transação (`itemPedidoParaDecisao`)
+// combinado com `quantidadeAprovada` computado no loop.
+func DecidirPedido(db *sql.DB, pedidoID, decisorID, papelDecisor string, aprovar bool) (PedidoDetalhe, error) {
+	var status string
+	const selectStatus = `SELECT status FROM pedidos WHERE id = $1`
+	if err := db.QueryRow(selectStatus, pedidoID).Scan(&status); err != nil {
+		var pqErr *pq.Error
+		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
+			return PedidoDetalhe{}, ErrPedidoNaoEncontrado
+		}
+		return PedidoDetalhe{}, fmt.Errorf("falha ao consultar pedido para decisão: %w", err)
+	}
+	if status != "pendente" {
+		return PedidoDetalhe{}, ErrPedidoNaoPendente
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return PedidoDetalhe{}, fmt.Errorf("falha ao iniciar transação de decisão do pedido: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
+
+	// Snapshot completo dos itens (nome de produto/categoria/estoque
+	// incluídos) lido uma única vez, ANTES de qualquer trava de
+	// produto_estoque. A ordem ascendente por (produto_id, estoque_id) é o
+	// AD-10 exigido só para `aprovar=true` (ordem dos locks) — inofensiva
+	// para `aprovar=false`, que não trava produto_estoque nenhum. Servirá
+	// tanto para computar a decisão quanto para montar a resposta final sem
+	// releitura pós-commit.
+	const selectItens = `
+		SELECT produto_id, produto_nome, categoria_nome, estoque_id, estoque_nome, quantidade
+		FROM pedido_itens WHERE pedido_id = $1 ORDER BY produto_id, estoque_id`
+	rows, err := tx.Query(selectItens, pedidoID)
+	if err != nil {
+		return PedidoDetalhe{}, fmt.Errorf("falha ao listar itens do pedido para decisão: %w", err)
+	}
+	var itens []itemPedidoParaDecisao
+	for rows.Next() {
+		var it itemPedidoParaDecisao
+		if err := rows.Scan(&it.ProdutoID, &it.ProdutoNome, &it.CategoriaNome, &it.EstoqueID, &it.EstoqueNome, &it.Quantidade); err != nil {
+			rows.Close()
+			return PedidoDetalhe{}, fmt.Errorf("falha ao ler item do pedido para decisão: %w", err)
+		}
+		itens = append(itens, it)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return PedidoDetalhe{}, fmt.Errorf("falha ao iterar itens do pedido para decisão: %w", err)
+	}
+	rows.Close()
+
+	novoStatus := "rejeitado"
+	itensResposta := make([]PedidoItem, 0, len(itens))
+	if aprovar {
+		const selectDisponivel = `
+			SELECT quantidade FROM produto_estoque
+			WHERE produto_id = $1 AND estoque_id = $2
+			FOR UPDATE`
+		const updateEstoque = `
+			UPDATE produto_estoque SET quantidade = quantidade - $1
+			WHERE produto_id = $2 AND estoque_id = $3`
+		const insertMovimentacao = `
+			INSERT INTO movimentacoes (produto_id, tipo, estoque_origem_id, quantidade, usuario_id)
+			VALUES ($1, 'baixa', $2, $3, $4)`
+		const updateItem = `
+			UPDATE pedido_itens SET quantidade_aprovada = $1
+			WHERE pedido_id = $2 AND produto_id = $3 AND estoque_id = $4`
+
+		totalmenteAprovado := true
+		for _, it := range itens {
+			var disponivel float64
+			if err := tx.QueryRow(selectDisponivel, it.ProdutoID, it.EstoqueID).Scan(&disponivel); err != nil {
+				if !errors.Is(err, sql.ErrNoRows) {
+					return PedidoDetalhe{}, fmt.Errorf("falha ao travar linha de produto_estoque na decisão: %w", err)
+				}
+				disponivel = 0
+			}
+
+			quantidadeAprovada := it.Quantidade
+			if disponivel < quantidadeAprovada {
+				quantidadeAprovada = disponivel
+			}
+			if quantidadeAprovada < it.Quantidade {
+				totalmenteAprovado = false
+			}
+
+			if quantidadeAprovada > 0 {
+				if _, err := tx.Exec(updateEstoque, quantidadeAprovada, it.ProdutoID, it.EstoqueID); err != nil {
+					return PedidoDetalhe{}, fmt.Errorf("falha ao debitar produto_estoque na decisão: %w", err)
+				}
+				if _, err := tx.Exec(insertMovimentacao, it.ProdutoID, it.EstoqueID, quantidadeAprovada, decisorID); err != nil {
+					return PedidoDetalhe{}, fmt.Errorf("falha ao inserir movimentação de baixa na decisão: %w", err)
+				}
+			}
+			if _, err := tx.Exec(updateItem, quantidadeAprovada, pedidoID, it.ProdutoID, it.EstoqueID); err != nil {
+				return PedidoDetalhe{}, fmt.Errorf("falha ao gravar quantidade aprovada do item na decisão: %w", err)
+			}
+
+			itensResposta = append(itensResposta, PedidoItem{
+				ProdutoID:          it.ProdutoID,
+				ProdutoNome:        it.ProdutoNome,
+				CategoriaNome:      it.CategoriaNome,
+				EstoqueID:          it.EstoqueID,
+				EstoqueNome:        it.EstoqueNome,
+				Quantidade:         it.Quantidade,
+				QuantidadeAprovada: &quantidadeAprovada,
+			})
+		}
+
+		if totalmenteAprovado {
+			novoStatus = "aprovado"
+		} else {
+			novoStatus = "parcialmente_aprovado"
+		}
+	} else {
+		const zerarItens = `UPDATE pedido_itens SET quantidade_aprovada = 0 WHERE pedido_id = $1`
+		if _, err := tx.Exec(zerarItens, pedidoID); err != nil {
+			return PedidoDetalhe{}, fmt.Errorf("falha ao zerar quantidade aprovada na rejeição: %w", err)
+		}
+		for _, it := range itens {
+			zero := 0.0
+			itensResposta = append(itensResposta, PedidoItem{
+				ProdutoID:          it.ProdutoID,
+				ProdutoNome:        it.ProdutoNome,
+				CategoriaNome:      it.CategoriaNome,
+				EstoqueID:          it.EstoqueID,
+				EstoqueNome:        it.EstoqueNome,
+				Quantidade:         it.Quantidade,
+				QuantidadeAprovada: &zero,
+			})
+		}
+	}
+
+	// O cabeçalho da resposta vem inteiro deste RETURNING — inclusive
+	// decidido_por/decidido_em (Story 7.5, P5: auditoria testável a partir
+	// do próprio retorno) — nenhuma segunda consulta depois do commit.
+	var det PedidoDetalhe
+	var observacao sql.NullString
+	var decididoPor sql.NullString
+	var decididoEm sql.NullTime
+	const registrarDecisao = `
+		UPDATE pedidos SET status = $2, decidido_por = $3, decidido_em = now()
+		WHERE id = $1 AND status = 'pendente'
+		RETURNING id, usuario_id, solicitante, obra_centro_custo, observacao, status, criado_em, decidido_por, decidido_em`
+	if err := tx.QueryRow(registrarDecisao, pedidoID, novoStatus, decisorID).Scan(
+		&det.ID, &det.UsuarioID, &det.Solicitante, &det.ObraCentroCusto,
+		&observacao, &det.Status, &det.CriadoEm, &decididoPor, &decididoEm,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Outra requisição decidiu este Pedido entre o SELECT inicial e
+			// este UPDATE (corrida entre duas decisões concorrentes) — o
+			// rollback do defer desfaz qualquer débito já feito acima.
+			return PedidoDetalhe{}, ErrPedidoNaoPendente
+		}
+		return PedidoDetalhe{}, fmt.Errorf("falha ao registrar decisão do pedido: %w", err)
+	}
+	if observacao.Valid {
+		det.Observacao = &observacao.String
+	}
+	if decididoPor.Valid {
+		det.DecididoPor = &decididoPor.String
+	}
+	if decididoEm.Valid {
+		det.DecididoEm = &decididoEm.Time
+	}
+
+	if err := tx.Commit(); err != nil {
+		return PedidoDetalhe{}, fmt.Errorf("falha ao commitar decisão do pedido: %w", err)
+	}
+
+	// Mesma ordem de BuscarPedidoProprio (alfabética por produto_nome) —
+	// `itensResposta` foi montado na ordem de locks (produto_id, estoque_id),
+	// não na ordem de exibição.
+	sort.Slice(itensResposta, func(i, j int) bool {
+		return itensResposta[i].ProdutoNome < itensResposta[j].ProdutoNome
+	})
+	det.Itens = itensResposta
+
 	return det, nil
 }
