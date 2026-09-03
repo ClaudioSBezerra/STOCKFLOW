@@ -1257,6 +1257,91 @@ func MesclarDuplicatas(db *sql.DB, produtoMantidoID string, produtoRemovidoIDs [
 		return ResultadoMesclagem{}, fmt.Errorf("falha ao reescrever produto_id das movimentações: %w", err)
 	}
 
+	// --- reescreve pedido_itens ANTES do soft-delete (Story 7.2, spec-7-2) -
+	//
+	// `pedido_itens` tem `PRIMARY KEY (pedido_id, produto_id, estoque_id)`:
+	// um `UPDATE` ingênuo de `produto_id` quebraria essa chave sempre que o
+	// MESMO Pedido já tivesse uma linha do produto MANTIDO no mesmo
+	// (pedido_id, estoque_id) de uma linha do produto REMOVIDO — cenário
+	// plausível (pedir os dois "duplicados" no mesmo Estoque é exatamente o
+	// tipo de entrada que a deduplicação existe para resolver; achado de
+	// review, ver Spec Change Log de spec-7-2). Por isso, para cada linha de
+	// um produto removido, primeiro verifica se já existe uma linha do
+	// produto mantido no MESMO (pedido_id, estoque_id): se sim, soma a
+	// quantidade da removida na mantida e apaga a linha do removido (mesmo
+	// espírito do bloco de consolidação de produto_estoque acima, nesta
+	// mesma função); se não, `UPDATE` simples do produto_id. Em nenhum dos
+	// dois casos o snapshot (`produto_nome`/`categoria_nome`/`estoque_nome`)
+	// é reescrito — representa o que foi pedido no momento do envio, mesma
+	// imutabilidade do futuro recibo (Story 7.6).
+	pedidoItensRemovidosRows, err := tx.Query(
+		`SELECT pedido_id, produto_id, estoque_id, quantidade FROM pedido_itens WHERE produto_id = ANY($1)`,
+		pq.Array(produtoRemovidoIDs),
+	)
+	if err != nil {
+		return ResultadoMesclagem{}, fmt.Errorf("falha ao consultar pedido_itens dos produtos removidos: %w", err)
+	}
+	defer pedidoItensRemovidosRows.Close()
+
+	var pedidoItensRemovidos []struct {
+		pedidoID   string
+		produtoID  string
+		estoqueID  string
+		quantidade float64
+	}
+	for pedidoItensRemovidosRows.Next() {
+		var it struct {
+			pedidoID   string
+			produtoID  string
+			estoqueID  string
+			quantidade float64
+		}
+		if err := pedidoItensRemovidosRows.Scan(&it.pedidoID, &it.produtoID, &it.estoqueID, &it.quantidade); err != nil {
+			return ResultadoMesclagem{}, fmt.Errorf("falha ao ler pedido_itens do produto removido: %w", err)
+		}
+		pedidoItensRemovidos = append(pedidoItensRemovidos, it)
+	}
+	if err := pedidoItensRemovidosRows.Err(); err != nil {
+		return ResultadoMesclagem{}, fmt.Errorf("falha ao iterar pedido_itens dos produtos removidos: %w", err)
+	}
+	pedidoItensRemovidosRows.Close()
+
+	for _, it := range pedidoItensRemovidos {
+		var quantidadeExistenteNoMantido float64
+		errColisao := tx.QueryRow(
+			`SELECT quantidade FROM pedido_itens WHERE pedido_id = $1 AND produto_id = $2 AND estoque_id = $3`,
+			it.pedidoID, produtoMantidoID, it.estoqueID,
+		).Scan(&quantidadeExistenteNoMantido)
+		switch {
+		case errColisao == nil:
+			// Colisão de chave composta: soma-e-descarta — a linha mantida
+			// absorve a quantidade da removida, a linha do removido é
+			// apagada. Snapshot da linha mantida intocado.
+			if _, err := tx.Exec(
+				`UPDATE pedido_itens SET quantidade = quantidade + $1 WHERE pedido_id = $2 AND produto_id = $3 AND estoque_id = $4`,
+				it.quantidade, it.pedidoID, produtoMantidoID, it.estoqueID,
+			); err != nil {
+				return ResultadoMesclagem{}, fmt.Errorf("falha ao consolidar pedido_itens colidido: %w", err)
+			}
+			if _, err := tx.Exec(
+				`DELETE FROM pedido_itens WHERE pedido_id = $1 AND produto_id = $2 AND estoque_id = $3`,
+				it.pedidoID, it.produtoID, it.estoqueID,
+			); err != nil {
+				return ResultadoMesclagem{}, fmt.Errorf("falha ao apagar pedido_itens consolidado: %w", err)
+			}
+		case errors.Is(errColisao, sql.ErrNoRows):
+			// Sem colisão: UPDATE simples do produto_id, snapshot intocado.
+			if _, err := tx.Exec(
+				`UPDATE pedido_itens SET produto_id = $1 WHERE pedido_id = $2 AND produto_id = $3 AND estoque_id = $4`,
+				produtoMantidoID, it.pedidoID, it.produtoID, it.estoqueID,
+			); err != nil {
+				return ResultadoMesclagem{}, fmt.Errorf("falha ao reescrever produto_id de pedido_itens: %w", err)
+			}
+		default:
+			return ResultadoMesclagem{}, fmt.Errorf("falha ao checar colisão de pedido_itens: %w", errColisao)
+		}
+	}
+
 	// --- soft-delete dos removidos -------------------------------------
 
 	if _, err := tx.Exec(`UPDATE produtos SET deleted_at = now() WHERE id = ANY($1)`, pq.Array(produtoRemovidoIDs)); err != nil {

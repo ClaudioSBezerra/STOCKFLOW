@@ -19,7 +19,7 @@ import (
 // `importacao_linhas.produto_id` referencia `produtos(id)` sem CASCADE.
 func limparEstoques(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("falha ao limpar estoques: %v", err)
 	}
 }
@@ -269,6 +269,88 @@ func TestExcluirEstoque_ComResiduo(t *testing.T) {
 	}
 	if nProdutoEstoque != 1 {
 		t.Errorf("linhas em produto_estoque = %d, want 1 (nada removido)", nProdutoEstoque)
+	}
+}
+
+// TestExcluirEstoque_ComPedidoPendente prova o segundo guard de exclusão de
+// Estoque (Story 7.2, spec-7-2, completando o que a Story 2.2 deixou
+// pendente): um Estoque referenciado por `pedido_itens` de um Pedido
+// `status='pendente'` -> *ErroEstoqueComPedidoPendente citando o nome do
+// Produto (do SNAPSHOT); nenhuma linha de `estoques` é removida. O saldo
+// residual em `produto_estoque` é zerado ANTES da tentativa de exclusão —
+// prova que este é um guard DISTINTO de ErroEstoqueComResiduo, não uma
+// consequência dele.
+func TestExcluirEstoque_ComPedidoPendente(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	produtoID, estoqueID, autorID := seedProdutoComSaldo(t, db, "Canteiro Pedido Pendente", 5)
+	usuarioID := semearConta(t, db, "Usuario Pedido Pendente Estoque", "pedido-pendente-estoque@empresa.com", PapelUsuario, 0)
+	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoID, estoqueID, 5); err != nil {
+		t.Fatalf("seed AdicionarItemCarrinho: %v", err)
+	}
+	if _, err := SubmeterPedido(db, usuarioID, "Fulano", "Obra X", ""); err != nil {
+		t.Fatalf("seed SubmeterPedido: %v", err)
+	}
+
+	// Zera o saldo residual (Baixa direta, simulando uma aprovação futura,
+	// Story 7.5) — o guard de resíduo (ErroEstoqueComResiduo) NÃO deveria
+	// disparar mais; só o guard de Pedido pendente.
+	if _, err := RegistrarBaixa(db, produtoID, estoqueID, autorID, 5); err != nil {
+		t.Fatalf("seed RegistrarBaixa: %v", err)
+	}
+
+	err := ExcluirEstoque(db, estoqueID)
+	var pedidoPendente *ErroEstoqueComPedidoPendente
+	if !errors.As(err, &pedidoPendente) {
+		t.Fatalf("erro = %v, want *ErroEstoqueComPedidoPendente", err)
+	}
+	if len(pedidoPendente.Produtos) != 1 || pedidoPendente.Produtos[0] != "Produto Canteiro Pedido Pendente" {
+		t.Errorf("Produtos = %v, want [%q]", pedidoPendente.Produtos, "Produto Canteiro Pedido Pendente")
+	}
+
+	var nEstoques int
+	if err := db.QueryRow(`SELECT count(*) FROM estoques WHERE id = $1`, estoqueID).Scan(&nEstoques); err != nil {
+		t.Fatalf("count estoques: %v", err)
+	}
+	if nEstoques != 1 {
+		t.Errorf("linhas em estoques = %d, want 1 (nada removido)", nEstoques)
+	}
+}
+
+// TestExcluirEstoque_PedidoDecididoNaoBloqueia prova que um Pedido já
+// decidido (`status != 'pendente'`) NÃO bloqueia a exclusão do Estoque — o
+// guard é escopado só a Pedidos pendentes.
+func TestExcluirEstoque_PedidoDecididoNaoBloqueia(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Canteiro Pedido Decidido", 5)
+	usuarioID := semearConta(t, db, "Usuario Pedido Decidido Estoque", "pedido-decidido-estoque@empresa.com", PapelUsuario, 0)
+	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoID, estoqueID, 5); err != nil {
+		t.Fatalf("seed AdicionarItemCarrinho: %v", err)
+	}
+	pedido, err := SubmeterPedido(db, usuarioID, "Fulano", "Obra X", "")
+	if err != nil {
+		t.Fatalf("seed SubmeterPedido: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE pedidos SET status = 'aprovado' WHERE id = $1`, pedido.ID); err != nil {
+		t.Fatalf("seed decisão do pedido: %v", err)
+	}
+	// Zera o saldo residual diretamente via SQL (em vez de RegistrarBaixa):
+	// uma Movimentação real deixaria uma linha em `movimentacoes` referenciando
+	// este Estoque, bloqueando o DELETE por uma FK não relacionada a este
+	// teste — irrelevante para o que esta prova verifica (o guard de Pedido
+	// pendente, escopado só a `status='pendente'`).
+	if _, err := db.Exec(`UPDATE produto_estoque SET quantidade = 0 WHERE produto_id = $1 AND estoque_id = $2`, produtoID, estoqueID); err != nil {
+		t.Fatalf("seed zerar saldo: %v", err)
+	}
+
+	if err := ExcluirEstoque(db, estoqueID); err != nil {
+		t.Fatalf("ExcluirEstoque erro inesperado: %v", err)
+	}
+	if n := contarEstoques(t, db); n != 0 {
+		t.Errorf("linhas em estoques = %d, want 0", n)
 	}
 }
 

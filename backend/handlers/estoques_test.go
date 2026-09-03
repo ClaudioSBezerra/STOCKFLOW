@@ -24,7 +24,7 @@ import (
 // é truncada: seed fixo da migração 000010.
 func limparEstoquesHandler(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("falha ao limpar estoques: %v", err)
 	}
 }
@@ -444,6 +444,55 @@ func TestExcluirEstoqueHandler_409ComResiduo(t *testing.T) {
 
 	var n int
 	if err := db.QueryRow(`SELECT count(*) FROM estoques WHERE id = $1`, e.ID).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("linhas em estoques com id = %d, want 1 (nada removido)", n)
+	}
+}
+
+// TestExcluirEstoqueHandler_409ComPedidoPendente prova o segundo guard de
+// exclusão de Estoque (Story 7.2, spec-7-2) na fronteira HTTP: um Estoque
+// referenciado por `pedido_itens` de um Pedido `pendente` -> 409 CONFLICT,
+// mensagem citando o nome do Produto (snapshot); o Estoque continua
+// existindo.
+func TestExcluirEstoqueHandler_409ComPedidoPendente(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Almox", "del-pedido-pendente-almox@empresa.com", "senha-123456", "almoxarife")
+	tokenAlmox := tokenDeLogin(t, db, "del-pedido-pendente-almox@empresa.com", "senha-123456")
+	_, tokenUsuario := seedContaComumECarrinho(t, db, "Usuario Del Pedido Pendente", "del-pedido-pendente-usuario@empresa.com")
+
+	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, "Canteiro Del Pedido Pendente", 5)
+
+	wCarrinho := postItemCarrinho(db, "Bearer "+tokenUsuario, `{"produtoId":"`+produtoID+`","estoqueId":"`+estoqueID+`","quantidade":5}`)
+	if wCarrinho.Code != http.StatusCreated {
+		t.Fatalf("seed carrinho: status = %d (body=%s)", wCarrinho.Code, wCarrinho.Body.String())
+	}
+	wPedido := postPedido(db, "Bearer "+tokenUsuario, `{"solicitante":"Fulano","obraCentroCusto":"Obra X"}`)
+	if wPedido.Code != http.StatusCreated {
+		t.Fatalf("seed pedido: status = %d (body=%s)", wPedido.Code, wPedido.Body.String())
+	}
+	// Zera o saldo residual diretamente via SQL — o guard de resíduo NÃO
+	// deveria disparar mais, só o guard de Pedido pendente.
+	if _, err := db.Exec(`UPDATE produto_estoque SET quantidade = 0 WHERE produto_id = $1 AND estoque_id = $2`, produtoID, estoqueID); err != nil {
+		t.Fatalf("seed zerar saldo: %v", err)
+	}
+
+	w := deleteEstoques(db, "Bearer "+tokenAlmox, estoqueID)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusConflict, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "CONFLICT" {
+		t.Errorf("code = %q, want CONFLICT", env.Error.Code)
+	}
+	if !strings.Contains(env.Error.Message, "Produto Canteiro Del Pedido Pendente") {
+		t.Errorf("message = %q, want conter o nome do produto", env.Error.Message)
+	}
+
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM estoques WHERE id = $1`, estoqueID).Scan(&n); err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	if n != 1 {

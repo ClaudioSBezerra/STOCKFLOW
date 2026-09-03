@@ -122,6 +122,22 @@ func (e *ErroEstoqueComResiduo) Error() string {
 	return fmt.Sprintf("estoque possui quantidade residual de: %s", strings.Join(e.Produtos, ", "))
 }
 
+// ErroEstoqueComPedidoPendente indica que o Estoque alvo de ExcluirEstoque
+// (estoques.go, mesmo pacote) é referenciado por `pedido_itens` de ao menos
+// um Pedido `status='pendente'` — a exclusão é barrada, nada é removido
+// (Story 7.2, spec-7-2, segundo guard de exclusão de Estoque, completando o
+// que a Story 2.2 deixou pendente até `pedidos` existir). `Produtos` lista
+// os nomes (do SNAPSHOT em `pedido_itens.produto_nome`, nunca um join ao
+// vivo com `produtos`) na mesma ordem do SELECT (alfabética), e `Error()` já
+// produz a mensagem citando-os. Mesmo molde de ErroEstoqueComResiduo.
+type ErroEstoqueComPedidoPendente struct {
+	Produtos []string
+}
+
+func (e *ErroEstoqueComPedidoPendente) Error() string {
+	return fmt.Sprintf("estoque possui pedido pendente referenciando: %s", strings.Join(e.Produtos, ", "))
+}
+
 // validarDimensao aplica a regra de par da AD-9 para uma dimensão nomeada
 // `campo` (usado na mensagem de erro): ausente por completo -> válido, NULL
 // nas duas colunas; só um dos dois preenchido -> ErroProdutoValidacao citando

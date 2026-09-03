@@ -1611,3 +1611,127 @@ func TestMesclarDuplicatas_FalhaDeBanco(t *testing.T) {
 		t.Fatalf("err = %v, want um erro genérico de banco (não *ErroMesclagemInvalida/*ErroProdutoValidacao)", err)
 	}
 }
+
+// --- MesclarDuplicatas: rewrite de pedido_itens.produto_id (Story 7.2, spec-7-2) ---
+
+// TestMesclarDuplicatas_PedidoItensRewriteSemColisao prova o rewrite básico:
+// uma linha de pedido_itens do produto REMOVIDO, SEM colisão de chave
+// composta com o produto MANTIDO no mesmo (pedido_id, estoque_id), tem seu
+// produto_id simplesmente reescrito para o mantido — o snapshot de
+// nome/quantidade permanece intocado (o Pedido continua mostrando
+// exatamente o que foi pedido no momento do envio).
+func TestMesclarDuplicatas_PedidoItensRewriteSemColisao(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Estoque Pedido Rewrite Sem Colisao")
+	if err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+	almoxarifeID := semearConta(t, db, "Almox Pedido Rewrite", "pedido-rewrite-almox@empresa.com", PapelAlmoxarife, 0)
+	usuarioID := semearConta(t, db, "Usuario Pedido Rewrite", "pedido-rewrite-usuario@empresa.com", PapelUsuario, 0)
+
+	produtoA := seedProdutoParaMesclagem(t, db, "Cimento CP II", estoque.ID, 5, CriarProdutoInput{})
+	produtoB := seedProdutoParaMesclagem(t, db, "Cimento CP II", estoque.ID, 3, CriarProdutoInput{})
+
+	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoB, estoque.ID, 2); err != nil {
+		t.Fatalf("seed AdicionarItemCarrinho: %v", err)
+	}
+	pedido, err := SubmeterPedido(db, usuarioID, "Fulano", "Obra X", "")
+	if err != nil {
+		t.Fatalf("seed SubmeterPedido: %v", err)
+	}
+	itensAntes := listarPedidoItens(t, db, pedido.ID)
+	if len(itensAntes) != 1 || itensAntes[0].ProdutoID != produtoB {
+		t.Fatalf("seed pedido_itens = %+v, want 1 linha do produto B", itensAntes)
+	}
+	nomeSnapshot := itensAntes[0].ProdutoNome
+
+	if _, err := MesclarDuplicatas(db, produtoA, []string{produtoB}, almoxarifeID); err != nil {
+		t.Fatalf("MesclarDuplicatas: %v", err)
+	}
+
+	itensDepois := listarPedidoItens(t, db, pedido.ID)
+	if len(itensDepois) != 1 {
+		t.Fatalf("len(itensDepois) = %d, want 1", len(itensDepois))
+	}
+	if itensDepois[0].ProdutoID != produtoA {
+		t.Errorf("ProdutoID = %q, want %q (reescrito para o mantido)", itensDepois[0].ProdutoID, produtoA)
+	}
+	if itensDepois[0].ProdutoNome != nomeSnapshot {
+		t.Errorf("ProdutoNome = %q, want %q (snapshot intocado)", itensDepois[0].ProdutoNome, nomeSnapshot)
+	}
+	if itensDepois[0].Quantidade != 2 {
+		t.Errorf("Quantidade = %v, want 2 (intocada)", itensDepois[0].Quantidade)
+	}
+}
+
+// TestMesclarDuplicatas_PedidoItensColisaoDeChaveComposta prova a correção
+// do achado de review documentado no Spec Change Log de spec-7-2: quando o
+// MESMO Pedido já tem uma linha do produto MANTIDO e uma linha do produto
+// REMOVIDO no mesmo (pedido_id, estoque_id) — cenário plausível, "pedir os
+// dois duplicados no mesmo Estoque" é exatamente o tipo de entrada que a
+// deduplicação existe para resolver — as duas linhas são consolidadas
+// (quantidade somada numa só) SEM violar a chave primária composta
+// `(pedido_id, produto_id, estoque_id)`; a mesclagem é bem-sucedida (nunca
+// um erro de chave duplicada). O snapshot da linha MANTIDA nunca é
+// reescrito.
+func TestMesclarDuplicatas_PedidoItensColisaoDeChaveComposta(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, "Estoque Pedido Colisao")
+	if err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+	almoxarifeID := semearConta(t, db, "Almox Pedido Colisao", "pedido-colisao-almox@empresa.com", PapelAlmoxarife, 0)
+	usuarioID := semearConta(t, db, "Usuario Pedido Colisao", "pedido-colisao-usuario@empresa.com", PapelUsuario, 0)
+
+	produtoA := seedProdutoParaMesclagem(t, db, "Tijolo Ceramico 6 Furos", estoque.ID, 10, CriarProdutoInput{})
+	produtoB := seedProdutoParaMesclagem(t, db, "Tijolo Ceramico 6 Furos", estoque.ID, 8, CriarProdutoInput{})
+
+	// O MESMO usuário pede os dois "duplicados" (A e B) no MESMO Estoque, no
+	// MESMO Pedido — cenário exato da colisão de chave composta.
+	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoA, estoque.ID, 2); err != nil {
+		t.Fatalf("seed AdicionarItemCarrinho A: %v", err)
+	}
+	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoB, estoque.ID, 4); err != nil {
+		t.Fatalf("seed AdicionarItemCarrinho B: %v", err)
+	}
+	pedido, err := SubmeterPedido(db, usuarioID, "Fulano", "Obra X", "")
+	if err != nil {
+		t.Fatalf("seed SubmeterPedido: %v", err)
+	}
+	itensAntes := listarPedidoItens(t, db, pedido.ID)
+	if len(itensAntes) != 2 {
+		t.Fatalf("seed pedido_itens = %+v, want 2 linhas (A e B)", itensAntes)
+	}
+	var nomeSnapshotA string
+	for _, it := range itensAntes {
+		if it.ProdutoID == produtoA {
+			nomeSnapshotA = it.ProdutoNome
+		}
+	}
+
+	resultado, err := MesclarDuplicatas(db, produtoA, []string{produtoB}, almoxarifeID)
+	if err != nil {
+		t.Fatalf("MesclarDuplicatas deveria suceder (soma-e-descarta), erro: %v", err)
+	}
+	if resultado.ProdutoMantidoID != produtoA {
+		t.Errorf("ProdutoMantidoID = %q, want %q", resultado.ProdutoMantidoID, produtoA)
+	}
+
+	itensDepois := listarPedidoItens(t, db, pedido.ID)
+	if len(itensDepois) != 1 {
+		t.Fatalf("len(itensDepois) = %d, want 1 (consolidado)", len(itensDepois))
+	}
+	if itensDepois[0].ProdutoID != produtoA {
+		t.Errorf("ProdutoID = %q, want %q", itensDepois[0].ProdutoID, produtoA)
+	}
+	if itensDepois[0].Quantidade != 6 {
+		t.Errorf("Quantidade = %v, want 6 (2+4)", itensDepois[0].Quantidade)
+	}
+	if itensDepois[0].ProdutoNome != nomeSnapshotA {
+		t.Errorf("ProdutoNome = %q, want %q (snapshot da linha MANTIDA nunca reescrito)", itensDepois[0].ProdutoNome, nomeSnapshotA)
+	}
+}

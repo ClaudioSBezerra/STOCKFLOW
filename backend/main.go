@@ -605,6 +605,14 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	mux.HandleFunc("DELETE /api/carrinho/itens/{produtoId}/{estoqueId}", middleware.RequireAuth(db, jwtSecret)(
 		handlers.RemoverItemCarrinhoHandler(db)))
 
+	// Envio de Pedido — Story 7.2 (Epic 7, Pedidos de Retirada). Atrás só de
+	// RequireAuth, SEM RequireRole: mesmo mínimo de papel do Carrinho — qualquer
+	// conta autenticada (`usuario`+) envia seu próprio Pedido. `usuarioID` vem
+	// sempre de middleware.UsuarioDaSessao dentro do handler, nunca de um campo
+	// do corpo (Always, spec-7-2). Publica no canal `pedidos` (AD-3) no sucesso.
+	mux.HandleFunc("POST /api/pedidos", middleware.RequireAuth(db, jwtSecret)(
+		handlers.SubmeterPedidoHandler(db, registro)))
+
 	// Infraestrutura de tempo real (AD-2/AD-3) — Story 4.4. POST
 	// /api/realtime/ticket leva só RequireAuth: qualquer conta autenticada
 	// pode abrir sua própria conexão SSE. GET /api/realtime/stream é o único

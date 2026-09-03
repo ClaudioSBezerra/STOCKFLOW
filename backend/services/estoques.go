@@ -181,6 +181,46 @@ func ExcluirEstoque(db *sql.DB, id string) error {
 		return &ErroEstoqueComResiduo{Produtos: produtos}
 	}
 
+	// Guard de Pedido pendente (Story 7.2, spec-7-2, completando o guard que
+	// a Story 2.2 deixou pendente até `pedidos` existir — ver o
+	// comentário-TODO original acima): mesma transação, mesmo lock da linha
+	// de estoques já adquirido acima. `pi.produto_nome` é o SNAPSHOT gravado
+	// no envio do Pedido (nunca um join ao vivo com `produtos` — o Produto
+	// pode até ter sido mesclado/removido depois, o nome exibido aqui é o do
+	// momento do envio). Qualquer linha -> a transação é desfeita (o DELETE
+	// abaixo nunca roda) e o erro devolvido é *ErroEstoqueComPedidoPendente.
+	const selectPedidoPendente = `
+		SELECT DISTINCT pi.produto_nome
+		FROM pedido_itens pi
+		JOIN pedidos pe ON pe.id = pi.pedido_id
+		WHERE pi.estoque_id = $1 AND pe.status = 'pendente'
+		ORDER BY pi.produto_nome`
+	rowsPedido, err := tx.Query(selectPedidoPendente, id)
+	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation {
+			return ErrEstoqueNaoEncontrado
+		}
+		return fmt.Errorf("falha ao verificar pedido pendente do estoque: %w", err)
+	}
+	produtosPedidoPendente := make([]string, 0)
+	for rowsPedido.Next() {
+		var nome string
+		if err := rowsPedido.Scan(&nome); err != nil {
+			rowsPedido.Close()
+			return fmt.Errorf("falha ao ler produto de pedido pendente: %w", err)
+		}
+		produtosPedidoPendente = append(produtosPedidoPendente, nome)
+	}
+	if err := rowsPedido.Err(); err != nil {
+		rowsPedido.Close()
+		return fmt.Errorf("falha ao iterar produtos de pedido pendente: %w", err)
+	}
+	rowsPedido.Close()
+	if len(produtosPedidoPendente) > 0 {
+		return &ErroEstoqueComPedidoPendente{Produtos: produtosPedidoPendente}
+	}
+
 	res, err := tx.Exec(`DELETE FROM estoques WHERE id = $1`, id)
 	if err != nil {
 		var pqErr *pq.Error

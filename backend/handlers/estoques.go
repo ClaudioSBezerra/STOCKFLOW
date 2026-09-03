@@ -113,6 +113,7 @@ func ExcluirEstoqueHandler(db *sql.DB) http.HandlerFunc {
 
 		err := services.ExcluirEstoque(db, r.PathValue("id"))
 		var residuo *services.ErroEstoqueComResiduo
+		var pedidoPendente *services.ErroEstoqueComPedidoPendente
 		switch {
 		case err == nil:
 			w.WriteHeader(http.StatusNoContent)
@@ -120,6 +121,8 @@ func ExcluirEstoqueHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "estoque não encontrado")
 		case errors.As(err, &residuo):
 			escreverErro(w, http.StatusConflict, "CONFLICT", residuo.Error())
+		case errors.As(err, &pedidoPendente):
+			escreverErro(w, http.StatusConflict, "CONFLICT", pedidoPendente.Error())
 		default:
 			slog.Error("falha ao excluir estoque", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao excluir estoque")
