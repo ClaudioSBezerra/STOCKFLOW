@@ -143,6 +143,23 @@ jobs:
           docker compose --project-directory /opt/apps/stockflow/cliente-aws logs api --tail 50
           exit 1
 
+      - name: Seed do primeiro administrador
+        working-directory: /opt/apps/stockflow/cliente-aws
+        run: |
+          set -a
+          source .env
+          set +a
+          if [ -z "$ADMIN_EMAIL" ] || [ -z "$ADMIN_SENHA" ]; then
+            echo "ADMIN_EMAIL/ADMIN_SENHA nao definidos no .env -- pulando seed do admin."
+            exit 0
+          fi
+          # cmd/seed-admin (ver backend/cmd/seed-admin/main.go) e idempotente:
+          # so cria a conta 'adm' se nenhuma existir ainda (indice unico
+          # idx_usuarios_unico_adm). Roda em toda execucao do pipeline de
+          # proposito -- e o mecanismo que garante que todo cliente novo ja
+          # nasce com um administrador, sem passo manual.
+          docker compose exec -T api ./seed-admin --nome "$ADMIN_NOME" --email "$ADMIN_EMAIL" --senha "$ADMIN_SENHA" || true
+
       - name: Notify result
         if: always()
         run: |
