@@ -12,10 +12,13 @@ vi.mock('sonner', () => ({ toast: { info: toastInfo, success: toastSuccess, erro
 const listarFilaPedidosMock = vi.hoisted(() => vi.fn());
 const buscarPedidoMock = vi.hoisted(() => vi.fn());
 const decidirPedidoMock = vi.hoisted(() => vi.fn());
+const buscarReciboPedidoBlobMock = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/pedidos', () => ({
   listarFilaPedidos: listarFilaPedidosMock,
   buscarPedido: buscarPedidoMock,
   decidirPedido: decidirPedidoMock,
+  buscarReciboPedidoBlob: buscarReciboPedidoBlobMock,
+  MENSAGEM_ERRO_RECIBO: 'Não foi possível baixar o recibo agora. Tente novamente em instantes.',
 }));
 
 // conectarRealtime mockado (molde de MeusPedidosSection.test.tsx): captura
@@ -656,5 +659,123 @@ describe('FilaPedidosSection', () => {
     expect(await screen.findByText(/Solicitado: 5/)).toBeInTheDocument();
     expect(screen.queryByText(/Aprovado:/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Pendente:/)).not.toBeInTheDocument();
+  });
+});
+
+describe('FilaPedidosSection — recibo (Story 7.6)', () => {
+  // jsdom não implementa URL.createObjectURL/revokeObjectURL (mesmo padrão
+  // de CatalogoListagem.test.tsx).
+  beforeEach(() => {
+    URL.createObjectURL = vi.fn(() => 'blob:recibo-teste');
+    URL.revokeObjectURL = vi.fn();
+  });
+
+  it('"Baixar recibo" aparece para um pedido decidido (aprovado), nunca para um pendente', async () => {
+    const user = userEvent.setup();
+    render(<FilaPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText('Obra Norte');
+
+    // Pendente (p-1, Ana Silva): sem botão.
+    await user.click(
+      screen.getByRole('button', { name: /^Ver itens do pedido de Ana Silva — Obra Norte/ }),
+    );
+    await screen.findByRole('dialog');
+    expect(screen.queryByRole('button', { name: 'Baixar recibo' })).not.toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+    // Aprovado (p-2, Bruno Costa): com botão.
+    await user.click(
+      screen.getByRole('button', { name: /^Ver itens do pedido de Bruno Costa — Obra Sul/ }),
+    );
+    expect(await screen.findByRole('button', { name: 'Baixar recibo' })).toBeInTheDocument();
+  });
+
+  it('"Baixar recibo" também aparece para um pedido parcialmente aprovado', async () => {
+    listarFilaPedidosMock.mockResolvedValue([{ ...PEDIDOS[1], status: 'parcialmente_aprovado' }]);
+    const user = userEvent.setup();
+    render(<FilaPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText('Obra Sul');
+
+    await user.click(
+      screen.getByRole('button', { name: /^Ver itens do pedido de Bruno Costa — Obra Sul/ }),
+    );
+    expect(await screen.findByRole('button', { name: 'Baixar recibo' })).toBeInTheDocument();
+  });
+
+  it('clicar em "Baixar recibo" baixa o PDF via buscarReciboPedidoBlob e cria/clica/remove o <a download>', async () => {
+    const blob = new Blob(['%PDF-fake'], { type: 'application/pdf' });
+    buscarReciboPedidoBlobMock.mockResolvedValue(blob);
+    const cliqueSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    render(<FilaPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText('Obra Norte');
+
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole('button', { name: /^Ver itens do pedido de Bruno Costa — Obra Sul/ }),
+    );
+    await user.click(await screen.findByRole('button', { name: 'Baixar recibo' }));
+
+    await waitFor(() => expect(buscarReciboPedidoBlobMock).toHaveBeenCalledWith('p-2'));
+    await waitFor(() => expect(cliqueSpy).toHaveBeenCalled());
+    expect(URL.createObjectURL).toHaveBeenCalledWith(blob);
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:recibo-teste');
+    expect(toastError).not.toHaveBeenCalled();
+
+    cliqueSpy.mockRestore();
+  });
+
+  it('falha de buscarReciboPedidoBlob mostra toast.error com a mensagem do servidor, sem baixar nada', async () => {
+    buscarReciboPedidoBlobMock.mockRejectedValue(new Error('pedido ainda não foi decidido'));
+    const cliqueSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    render(<FilaPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText('Obra Norte');
+
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole('button', { name: /^Ver itens do pedido de Bruno Costa — Obra Sul/ }),
+    );
+    await user.click(await screen.findByRole('button', { name: 'Baixar recibo' }));
+
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith('pedido ainda não foi decidido'));
+    expect(cliqueSpy).not.toHaveBeenCalled();
+
+    cliqueSpy.mockRestore();
+  });
+
+  it('cai na mensagem genérica de recibo quando a falha não é um Error', async () => {
+    buscarReciboPedidoBlobMock.mockRejectedValue('falha crua, sem Error');
+
+    render(<FilaPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText('Obra Norte');
+
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole('button', { name: /^Ver itens do pedido de Bruno Costa — Obra Sul/ }),
+    );
+    await user.click(await screen.findByRole('button', { name: 'Baixar recibo' }));
+
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith(
+        'Não foi possível baixar o recibo agora. Tente novamente em instantes.',
+      ),
+    );
   });
 });

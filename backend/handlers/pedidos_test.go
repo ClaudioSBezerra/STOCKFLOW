@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -1017,5 +1018,178 @@ func TestDecidirPedidoHandler_PublicaEventoNoSucesso(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("nenhum evento publicado em 1s após DecidirPedidoHandler bem-sucedido")
+	}
+}
+
+// --- BaixarReciboPedidoHandler — Story 7.6, spec-7-6 ------------------------
+//
+// GET /api/pedidos/{id}/recibo fica atrás SÓ de RequireAuth — SEM
+// RequireRole, mesma composição de getPedido acima (molde EXATO de
+// BuscarPedidoHandler).
+
+func getRecibo(db *sql.DB, authHeader, id string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/pedidos/{id}/recibo",
+		middleware.RequireAuth(db, testJWTSecret)(BaixarReciboPedidoHandler(db)))
+	r := httptest.NewRequest(http.MethodGet, "/api/pedidos/"+id+"/recibo", nil)
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+// decidirPedidoViaServico decide (aprova/rejeita) o Pedido `id` direto pela
+// camada de serviço — sem a dança HTTP de POST /decisao — para os testes
+// desta seção que só precisam de um Pedido JÁ decidido.
+func decidirPedidoViaServico(t *testing.T, db *sql.DB, pedidoID, almoxID string, aprovar bool) services.PedidoDetalhe {
+	t.Helper()
+	det, err := services.DecidirPedido(db, pedidoID, almoxID, services.PapelAlmoxarife, aprovar)
+	if err != nil {
+		t.Fatalf("seed DecidirPedido: %v", err)
+	}
+	return det
+}
+
+// TestBaixarReciboPedidoHandler_200Dono cobre "Pedido aprovado, dono" da I/O
+// Matrix: 200, `Content-Type: application/pdf`, `Content-Disposition` de
+// download com o id do Pedido, corpo inicia com `%PDF-`.
+func TestBaixarReciboPedidoHandler_200Dono(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	dono, tokenDono := seedContaComumECarrinho(t, db, "H76 Dono", "h-pedidos-76-dono@empresa.com")
+	almoxID := criarContaComPapel(t, db, "H76 Dono Almox", "h-pedidos-76-dono-almox@empresa.com", "senha-123456", "almoxarife")
+	pedido := seedPedidoViaServico(t, db, dono, "H76 Dono", 3)
+	decidirPedidoViaServico(t, db, pedido.ID, almoxID, true)
+
+	w := getRecibo(db, "Bearer "+tokenDono, pedido.ID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/pdf" {
+		t.Errorf("Content-Type = %q, want application/pdf", ct)
+	}
+	wantDisposition := `attachment; filename="recibo-pedido-` + pedido.ID + `.pdf"`
+	if cd := w.Header().Get("Content-Disposition"); cd != wantDisposition {
+		t.Errorf("Content-Disposition = %q, want %q", cd, wantDisposition)
+	}
+	if !bytes.HasPrefix(w.Body.Bytes(), []byte("%PDF-")) {
+		t.Errorf("corpo não começa com %%PDF-: %q", w.Body.Bytes()[:min(20, w.Body.Len())])
+	}
+}
+
+// TestBaixarReciboPedidoHandler_200AlmoxarifeAlheio cobre "Pedido
+// parcialmente aprovado, almoxarife alheio" da I/O Matrix: mesmo PDF (200)
+// para um `almoxarife`+ que não é o dono do Pedido (AD-8).
+func TestBaixarReciboPedidoHandler_200AlmoxarifeAlheio(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	dono, _ := seedContaComumECarrinho(t, db, "H76 Almox Dono", "h-pedidos-76-almox-dono@empresa.com")
+	almoxID := criarContaComPapel(t, db, "H76 Almox", "h-pedidos-76-almox@empresa.com", "senha-123456", "almoxarife")
+	tokenAlmox := tokenDeLogin(t, db, "h-pedidos-76-almox@empresa.com", "senha-123456")
+	pedido := seedPedidoViaServico(t, db, dono, "H76 Almox", 10)
+
+	var produtoID, estoqueID string
+	if err := db.QueryRow(`SELECT produto_id, estoque_id FROM pedido_itens WHERE pedido_id = $1`, pedido.ID).
+		Scan(&produtoID, &estoqueID); err != nil {
+		t.Fatalf("seed: buscar item do pedido: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE produto_estoque SET quantidade = 4 WHERE produto_id = $1 AND estoque_id = $2`, produtoID, estoqueID); err != nil {
+		t.Fatalf("seed: reduzir saldo real: %v", err)
+	}
+	decidirPedidoViaServico(t, db, pedido.ID, almoxID, true)
+
+	w := getRecibo(db, "Bearer "+tokenAlmox, pedido.ID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	if !bytes.HasPrefix(w.Body.Bytes(), []byte("%PDF-")) {
+		t.Errorf("corpo não começa com %%PDF-")
+	}
+}
+
+// TestBaixarReciboPedidoHandler_409Pendente cobre "Pedido pendente" da I/O
+// Matrix -> 409 CONFLICT, nenhum PDF gerado.
+func TestBaixarReciboPedidoHandler_409Pendente(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	dono, tokenDono := seedContaComumECarrinho(t, db, "H76 Pendente", "h-pedidos-76-pendente@empresa.com")
+	pedido := seedPedidoViaServico(t, db, dono, "H76 Pendente", 1)
+
+	w := getRecibo(db, "Bearer "+tokenDono, pedido.ID)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "CONFLICT" {
+		t.Errorf("code = %q, want CONFLICT", env.Error.Code)
+	}
+}
+
+// TestBaixarReciboPedidoHandler_409Rejeitado cobre "Pedido rejeitado" da I/O
+// Matrix -> 409 CONFLICT.
+func TestBaixarReciboPedidoHandler_409Rejeitado(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	dono, tokenDono := seedContaComumECarrinho(t, db, "H76 Rejeitado", "h-pedidos-76-rejeitado@empresa.com")
+	almoxID := criarContaComPapel(t, db, "H76 Rejeitado Almox", "h-pedidos-76-rejeitado-almox@empresa.com", "senha-123456", "almoxarife")
+	pedido := seedPedidoViaServico(t, db, dono, "H76 Rejeitado", 1)
+	decidirPedidoViaServico(t, db, pedido.ID, almoxID, false)
+
+	w := getRecibo(db, "Bearer "+tokenDono, pedido.ID)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "CONFLICT" {
+		t.Errorf("code = %q, want CONFLICT", env.Error.Code)
+	}
+}
+
+// TestBaixarReciboPedidoHandler_404PedidoAlheio cobre "Pedido alheio, papel
+// usuario" da I/O Matrix -> 404 NOT_FOUND, nunca revela a existência do
+// Pedido.
+func TestBaixarReciboPedidoHandler_404PedidoAlheio(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	dono, _ := seedContaComumECarrinho(t, db, "H76 Alheio Dono", "h-pedidos-76-alheio-dono@empresa.com")
+	outro, tokenOutro := seedContaComumECarrinho(t, db, "H76 Alheio Outro", "h-pedidos-76-alheio-outro@empresa.com")
+	_ = outro
+	almoxID := criarContaComPapel(t, db, "H76 Alheio Almox", "h-pedidos-76-alheio-almox@empresa.com", "senha-123456", "almoxarife")
+	pedido := seedPedidoViaServico(t, db, dono, "H76 Alheio", 1)
+	decidirPedidoViaServico(t, db, pedido.ID, almoxID, true)
+
+	w := getRecibo(db, "Bearer "+tokenOutro, pedido.ID)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "NOT_FOUND" {
+		t.Errorf("code = %q, want NOT_FOUND", env.Error.Code)
+	}
+}
+
+// TestBaixarReciboPedidoHandler_404IdInexistenteOuMalformado cobre "Id
+// malformado/inexistente" da I/O Matrix -> 404 NOT_FOUND para os dois casos
+// (mesmo colapso de BuscarPedidoHandler).
+func TestBaixarReciboPedidoHandler_404IdInexistenteOuMalformado(t *testing.T) {
+	db := testDB(t)
+	_, token := seedContaComumECarrinho(t, db, "H76 IdRuim", "h-pedidos-76-id-ruim@empresa.com")
+
+	w1 := getRecibo(db, "Bearer "+token, "nao-e-uuid")
+	if w1.Code != http.StatusNotFound {
+		t.Fatalf("id malformado: status = %d, want 404 (body=%s)", w1.Code, w1.Body.String())
+	}
+	w2 := getRecibo(db, "Bearer "+token, "00000000-0000-0000-0000-000000000000")
+	if w2.Code != http.StatusNotFound {
+		t.Fatalf("id inexistente: status = %d, want 404 (body=%s)", w2.Code, w2.Body.String())
+	}
+}
+
+// TestBaixarReciboPedidoHandler_401SemToken cobre a ausência de Authorization
+// -> 401, recusada antes do handler.
+func TestBaixarReciboPedidoHandler_401SemToken(t *testing.T) {
+	db := testDB(t)
+	w := getRecibo(db, "", "00000000-0000-0000-0000-000000000000")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
 	}
 }

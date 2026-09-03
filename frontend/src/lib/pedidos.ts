@@ -17,8 +17,12 @@ import { getAccessToken } from '@/lib/session';
  * `buscarPedido(id)` (cabeçalho + itens em SNAPSHOT — AD-17, nunca join ao
  * vivo). `POST /api/pedidos/{id}/decisao` -> `decidirPedido(id, aprovar)`
  * (Story 7.5, spec-7-5 — aprovação/rejeição com revalidação de estoque item
- * a item, só `almoxarife`+). Resposta não-ok propaga `body.error?.message`
- * do servidor (ou um fallback).
+ * a item, só `almoxarife`+). `GET /api/pedidos/{id}/recibo` ->
+ * `buscarReciboPedidoBlob(id)` (Story 7.6, spec-7-6 — o recibo em PDF de um
+ * Pedido já decidido, como `Blob`; SEM lógica de DOM — o componente chamador
+ * é quem cria/clica/remove o `<a download>`, molde de `aoExportar`,
+ * CatalogoListagem.tsx). Resposta não-ok propaga `body.error?.message` do
+ * servidor (ou um fallback).
  */
 
 export type StatusPedido = 'pendente' | 'aprovado' | 'parcialmente_aprovado' | 'rejeitado';
@@ -74,6 +78,8 @@ const MENSAGEM_ERRO_DETALHE =
   'Não foi possível carregar os itens do pedido agora. Tente novamente em instantes.';
 const MENSAGEM_ERRO_DECISAO =
   'Não foi possível registrar a decisão agora. Tente novamente em instantes.';
+export const MENSAGEM_ERRO_RECIBO =
+  'Não foi possível baixar o recibo agora. Tente novamente em instantes.';
 
 export async function listarPedidos(status?: StatusPedido): Promise<PedidoResumo[]> {
   const url = status ? `/api/pedidos?status=${encodeURIComponent(status)}` : '/api/pedidos';
@@ -130,4 +136,24 @@ export async function decidirPedido(id: string, aprovar: boolean): Promise<Pedid
   }
   const body = (await res.json()) as { pedido: PedidoDetalhe };
   return body.pedido;
+}
+
+/**
+ * Baixa o recibo em PDF de um Pedido já decidido (Story 7.6, spec-7-6) — só
+ * dono OU `almoxarife`+ (mesmo padrão AD-8 de `buscarPedido`, decidido
+ * inteiramente no servidor). Devolve o `Blob` puro; SEM lógica de DOM neste
+ * módulo — quem cria/clica/remove o `<a download>` é o componente chamador
+ * (molde de `aoExportar`, CatalogoListagem.tsx). Resposta não-ok (`404`
+ * Pedido alheio/inexistente, `409` Pedido ainda não decidido) propaga
+ * `body.error?.message` do servidor (ou `MENSAGEM_ERRO_RECIBO`).
+ */
+export async function buscarReciboPedidoBlob(id: string): Promise<Blob> {
+  const res = await fetch(`/api/pedidos/${encodeURIComponent(id)}/recibo`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+    throw new Error(body.error?.message ?? MENSAGEM_ERRO_RECIBO);
+  }
+  return res.blob();
 }

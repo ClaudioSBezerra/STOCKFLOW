@@ -625,6 +625,14 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	mux.HandleFunc("GET /api/pedidos/{id}", middleware.RequireAuth(db, jwtSecret)(
 		handlers.BuscarPedidoHandler(db)))
 
+	// Recibo do Pedido em PDF gerado pelo servidor — Story 7.6 (Epic 7,
+	// Pedidos de Retirada), spec-7-6. Molde EXATO de GET /api/pedidos/{id}
+	// acima: atrás SÓ de RequireAuth, SEM RequireRole — mesmo padrão de
+	// escopo AD-8 (dono OU `almoxarife`+). Pedido ainda não decidido
+	// (`pendente`/`rejeitado`) devolve 409 CONFLICT, sem gerar PDF nenhum.
+	mux.HandleFunc("GET /api/pedidos/{id}/recibo", middleware.RequireAuth(db, jwtSecret)(
+		handlers.BaixarReciboPedidoHandler(db)))
+
 	// Aprovação/rejeição com revalidação de estoque item a item — Story 7.5
 	// (Epic 7, Pedidos de Retirada), spec-7-5. Molde EXATO de POST
 	// /api/estoques (linha ~369): RequireAuth + RequireRole(almoxarife) —

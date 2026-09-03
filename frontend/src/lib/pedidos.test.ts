@@ -1,5 +1,11 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { buscarPedido, decidirPedido, listarFilaPedidos, listarPedidos } from './pedidos';
+import {
+  buscarPedido,
+  buscarReciboPedidoBlob,
+  decidirPedido,
+  listarFilaPedidos,
+  listarPedidos,
+} from './pedidos';
 
 vi.mock('@/lib/session', () => ({
   getAccessToken: () => 'token-de-teste',
@@ -194,6 +200,57 @@ describe('decidirPedido', () => {
 
     await expect(decidirPedido('p-1', true)).rejects.toThrow(
       'Não foi possível registrar a decisão agora. Tente novamente em instantes.',
+    );
+  });
+});
+
+describe('buscarReciboPedidoBlob', () => {
+  it('GET /api/pedidos/{id}/recibo com Authorization e devolve o Blob do corpo', async () => {
+    const blob = new Blob(['%PDF-fake'], { type: 'application/pdf' });
+    fetchMock.mockReturnValue(Promise.resolve({ ok: true, blob: async () => blob }));
+
+    const resultado = await buscarReciboPedidoBlob('p-1');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/pedidos/p-1/recibo');
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer token-de-teste' });
+    expect(resultado).toBe(blob);
+  });
+
+  it('propaga a mensagem de erro do servidor num 409 (pedido ainda não decidido)', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({
+        error: { code: 'CONFLICT', message: 'pedido ainda não foi decidido: nenhum recibo disponível' },
+      }),
+    });
+
+    await expect(buscarReciboPedidoBlob('p-1')).rejects.toThrow(
+      'pedido ainda não foi decidido: nenhum recibo disponível',
+    );
+  });
+
+  it('propaga a mensagem de erro do servidor num 404 (pedido alheio/inexistente)', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: async () => ({ error: { code: 'NOT_FOUND', message: 'pedido não encontrado' } }),
+    });
+
+    await expect(buscarReciboPedidoBlob('p-x')).rejects.toThrow('pedido não encontrado');
+  });
+
+  it('cai no fallback específico do recibo quando a resposta não-ok não traz error.message', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({}),
+    });
+
+    await expect(buscarReciboPedidoBlob('p-1')).rejects.toThrow(
+      'Não foi possível baixar o recibo agora. Tente novamente em instantes.',
     );
   });
 });

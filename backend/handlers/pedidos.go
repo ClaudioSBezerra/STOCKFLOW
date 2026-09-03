@@ -207,3 +207,42 @@ func BuscarPedidoHandler(db *sql.DB) http.HandlerFunc {
 		}
 	}
 }
+
+// BaixarReciboPedidoHandler expõe GET /api/pedidos/{id}/recibo (Story 7.6,
+// spec-7-6), registrado em newMux atrás SÓ de RequireAuth — SEM RequireRole,
+// molde EXATO de BuscarPedidoHandler: dono da sessão OU `almoxarife`+ baixa
+// (AD-8, resolvido inteiramente em services.MontarReciboPedidoConteudo, que
+// chama BuscarPedidoProprio). Pedido de outro usuário sem papel suficiente,
+// id inexistente ou malformado colapsam no MESMO `404 NOT_FOUND`; Pedido
+// ainda `pendente`/`rejeitado` -> `409 CONFLICT` (nenhuma retirada ocorreu,
+// nenhum PDF gerado). Sucesso -> `200`, `Content-Type: application/pdf`,
+// `Content-Disposition: attachment; filename="recibo-pedido-{id}.pdf"`, corpo
+// = bytes do PDF — molde EXATO de ExportarCatalogoHandler
+// (handlers/produtos.go).
+func BaixarReciboPedidoHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		usuario, ok := middleware.UsuarioDaSessao(r.Context())
+		if !ok {
+			slog.Error("BaixarReciboPedidoHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+
+		id := r.PathValue("id")
+		pdf, err := services.GerarReciboPedidoPDF(db, id, usuario.ID, usuario.Papel)
+		switch {
+		case err == nil:
+			w.Header().Set("Content-Type", "application/pdf")
+			w.Header().Set("Content-Disposition", `attachment; filename="recibo-pedido-`+id+`.pdf"`)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(pdf)
+		case errors.Is(err, services.ErrPedidoNaoEncontrado):
+			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "pedido não encontrado")
+		case errors.Is(err, services.ErrPedidoSemRecibo):
+			escreverErro(w, http.StatusConflict, "CONFLICT", services.ErrPedidoSemRecibo.Error())
+		default:
+			slog.Error("falha ao gerar recibo do pedido", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao gerar recibo do pedido")
+		}
+	}
+}

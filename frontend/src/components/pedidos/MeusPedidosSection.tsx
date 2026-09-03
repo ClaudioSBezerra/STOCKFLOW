@@ -21,7 +21,9 @@ import { formatarQuantidade } from '@/components/catalogo/formatacao';
 import { StatusPedidoBadge } from '@/components/pedidos/StatusPedidoBadge';
 import {
   buscarPedido,
+  buscarReciboPedidoBlob,
   listarPedidos,
+  MENSAGEM_ERRO_RECIBO,
   type PedidoItem,
   type PedidoResumo,
   type StatusPedido,
@@ -56,6 +58,12 @@ import {
  *
  * Nenhuma mudança de COMPORTAMENTO em relação à antiga `MeusPedidosPage` —
  * só o local/nome (Never de spec-7-4).
+ *
+ * "Baixar recibo" (Story 7.6, spec-7-6): botão PRÓPRIO deste Dialog "Ver
+ * itens", visível só quando o Pedido já foi decidido com sucesso
+ * (`aprovado`/`parcialmente_aprovado`) — baixa `GET
+ * /api/pedidos/{id}/recibo` direto, sem tela intermediária (molde de
+ * `aoExportar`, CatalogoListagem.tsx).
  */
 
 const MENSAGEM_ERRO_CARREGAR =
@@ -169,6 +177,35 @@ export function MeusPedidosSection() {
       if (seq === detalheSeqRef.current) {
         setCarregandoItens(false);
       }
+    }
+  }
+
+  // --- Recibo em PDF — Story 7.6, spec-7-6 ----------------------------------
+  //
+  // Guarda de duplo-clique LOCAL ao Dialog (molde de `exportando` em
+  // CatalogoListagem.tsx) — `aoBaixarRecibo` é o handler PRÓPRIO deste Dialog
+  // "Ver itens" (molde EXATO de `aoExportar`, CatalogoListagem.tsx:357-380):
+  // `Blob` -> `URL.createObjectURL` -> um `<a download>` criado, clicado e
+  // removido -> `URL.revokeObjectURL`. Sem tela intermediária, sem
+  // `ConfirmDialog` (ação não-destrutiva).
+  const [baixandoRecibo, setBaixandoRecibo] = useState(false);
+
+  async function aoBaixarRecibo(pedido: PedidoResumo) {
+    setBaixandoRecibo(true);
+    try {
+      const blob = await buscarReciboPedidoBlob(pedido.id);
+      const href = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = href;
+      link.download = `recibo-pedido-${pedido.id}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(href);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : MENSAGEM_ERRO_RECIBO);
+    } finally {
+      setBaixandoRecibo(false);
     }
   }
 
@@ -304,6 +341,19 @@ export function MeusPedidosSection() {
                 <li className="text-body text-muted-foreground">Este pedido não tem itens.</li>
               )}
             </ul>
+          )}
+
+          {(detalheDe?.status === 'aprovado' || detalheDe?.status === 'parcialmente_aprovado') && (
+            <div className="flex justify-end pt-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => detalheDe && void aoBaixarRecibo(detalheDe)}
+                disabled={baixandoRecibo}
+              >
+                Baixar recibo
+              </Button>
+            </div>
           )}
         </DialogContent>
       </Dialog>

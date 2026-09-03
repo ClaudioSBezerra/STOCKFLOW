@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"database/sql"
 	"errors"
 	"sync"
@@ -1338,5 +1339,258 @@ func TestDecidirPedido_OrdemLocksAscendenteSemDeadlock(t *testing.T) {
 				t.Fatalf("iteração %d, %s: erro inesperado (saldo sempre de sobra): %v", i, nome, err)
 			}
 		}
+	}
+}
+
+// --- Recibo do Pedido em PDF — Story 7.6, spec-7-6 -------------------------
+
+// TestMontarReciboPedidoConteudo_ConteudoCorreto cobre a AC "conteúdo do
+// recibo": um Pedido aprovado totalmente (via DecidirPedido) tem, no
+// conteúdo montado, os itens (nome/categoria/estoque/quantidade
+// retirada) e o cabeçalho (solicitante, aprovador via join, data da
+// decisão == pedidos.decidido_em).
+func TestMontarReciboPedidoConteudo_ConteudoCorreto(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Recibo Conteudo", "recibo-conteudo@empresa.com", PapelUsuario, 0)
+	almoxID := semearConta(t, db, "Recibo Conteudo Almox", "recibo-conteudo-almox@empresa.com", PapelAlmoxarife, 0)
+	pedido, pares := seedPedidoComItens(t, db, usuarioID, []itemPedidoSeedSpec{
+		{NomeBase: "Recibo Conteudo A", SaldoInicial: 10, QtdSolicitada: 4},
+	})
+	_ = pares
+
+	det, err := DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, true)
+	if err != nil {
+		t.Fatalf("seed DecidirPedido: %v", err)
+	}
+
+	var nomeAprovador string
+	if err := db.QueryRow(`SELECT nome FROM usuarios WHERE id = $1`, almoxID).Scan(&nomeAprovador); err != nil {
+		t.Fatalf("seed: buscar nome do aprovador: %v", err)
+	}
+
+	conteudo, err := MontarReciboPedidoConteudo(db, pedido.ID, usuarioID, PapelUsuario)
+	if err != nil {
+		t.Fatalf("MontarReciboPedidoConteudo erro inesperado: %v", err)
+	}
+	if conteudo.Solicitante != "Solicitante Decisao" {
+		t.Errorf("Solicitante = %q, want %q", conteudo.Solicitante, "Solicitante Decisao")
+	}
+	if conteudo.ObraCentroCusto != "Obra Decisao" {
+		t.Errorf("ObraCentroCusto = %q, want %q", conteudo.ObraCentroCusto, "Obra Decisao")
+	}
+	if conteudo.Status != "aprovado" {
+		t.Errorf("Status = %q, want aprovado", conteudo.Status)
+	}
+	if conteudo.Aprovador != nomeAprovador {
+		t.Errorf("Aprovador = %q, want %q (nome de usuarios via join)", conteudo.Aprovador, nomeAprovador)
+	}
+	if det.DecididoEm == nil || !conteudo.DecididoEm.Equal(*det.DecididoEm) {
+		t.Errorf("DecididoEm = %v, want %v (pedidos.decidido_em)", conteudo.DecididoEm, det.DecididoEm)
+	}
+	if len(conteudo.Itens) != 1 {
+		t.Fatalf("len(Itens) = %d, want 1", len(conteudo.Itens))
+	}
+	item := conteudo.Itens[0]
+	if item.ProdutoNome != "Produto Recibo Conteudo A" || item.EstoqueNome != "Recibo Conteudo A" {
+		t.Errorf("item = %+v", item)
+	}
+	if item.Quantidade != 4 || item.QuantidadeAprovada != 4 {
+		t.Errorf("Quantidade/QuantidadeAprovada = %v/%v, want 4/4", item.Quantidade, item.QuantidadeAprovada)
+	}
+}
+
+// TestMontarReciboPedidoConteudo_ItemDivergente cobre um item com
+// `quantidadeAprovada != quantidade` (aprovação parcial) — as duas
+// quantidades chegam lado a lado no conteúdo montado, nunca uma escondendo a
+// outra.
+func TestMontarReciboPedidoConteudo_ItemDivergente(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Recibo Divergente", "recibo-divergente@empresa.com", PapelUsuario, 0)
+	almoxID := semearConta(t, db, "Recibo Divergente Almox", "recibo-divergente-almox@empresa.com", PapelAlmoxarife, 0)
+	pedido, pares := seedPedidoComItens(t, db, usuarioID, []itemPedidoSeedSpec{
+		{NomeBase: "Recibo Divergente A", SaldoInicial: 10, QtdSolicitada: 10},
+	})
+	// Saldo real cai abaixo do solicitado ENTRE o envio e a decisão (mesmo
+	// molde de TestDecidirPedidoHandler_200AprovacaoParcial) — DecidirPedido
+	// revalida no momento exato da decisão, nunca confia no snapshot do
+	// envio.
+	if _, err := db.Exec(`UPDATE produto_estoque SET quantidade = 4 WHERE produto_id = $1 AND estoque_id = $2`, pares[0].ProdutoID, pares[0].EstoqueID); err != nil {
+		t.Fatalf("seed: reduzir saldo real: %v", err)
+	}
+	if _, err := DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, true); err != nil {
+		t.Fatalf("seed DecidirPedido: %v", err)
+	}
+
+	conteudo, err := MontarReciboPedidoConteudo(db, pedido.ID, usuarioID, PapelUsuario)
+	if err != nil {
+		t.Fatalf("MontarReciboPedidoConteudo erro inesperado: %v", err)
+	}
+	if conteudo.Status != "parcialmente_aprovado" {
+		t.Errorf("Status = %q, want parcialmente_aprovado", conteudo.Status)
+	}
+	if len(conteudo.Itens) != 1 {
+		t.Fatalf("len(Itens) = %d, want 1", len(conteudo.Itens))
+	}
+	if item := conteudo.Itens[0]; item.Quantidade != 10 || item.QuantidadeAprovada != 4 {
+		t.Errorf("item = %+v, want Quantidade=10 QuantidadeAprovada=4", item)
+	}
+}
+
+// TestMontarReciboPedidoConteudo_GatePendente cobre a linha "Pedido pendente"
+// da I/O Matrix: nenhum PDF é gerado, ErrPedidoSemRecibo devolvido ANTES de
+// resolver o aprovador.
+func TestMontarReciboPedidoConteudo_GatePendente(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Recibo Pendente", "recibo-pendente@empresa.com", PapelUsuario, 0)
+	pedido, _ := seedPedidoComItens(t, db, usuarioID, []itemPedidoSeedSpec{
+		{NomeBase: "Recibo Pendente A", SaldoInicial: 10, QtdSolicitada: 1},
+	})
+
+	_, err := MontarReciboPedidoConteudo(db, pedido.ID, usuarioID, PapelUsuario)
+	if !errors.Is(err, ErrPedidoSemRecibo) {
+		t.Fatalf("erro = %v, want ErrPedidoSemRecibo", err)
+	}
+}
+
+// TestMontarReciboPedidoConteudo_GateRejeitado cobre a linha "Pedido
+// rejeitado" da I/O Matrix.
+func TestMontarReciboPedidoConteudo_GateRejeitado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Recibo Rejeitado", "recibo-rejeitado@empresa.com", PapelUsuario, 0)
+	almoxID := semearConta(t, db, "Recibo Rejeitado Almox", "recibo-rejeitado-almox@empresa.com", PapelAlmoxarife, 0)
+	pedido, _ := seedPedidoComItens(t, db, usuarioID, []itemPedidoSeedSpec{
+		{NomeBase: "Recibo Rejeitado A", SaldoInicial: 10, QtdSolicitada: 1},
+	})
+	if _, err := DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, false); err != nil {
+		t.Fatalf("seed DecidirPedido (rejeitar): %v", err)
+	}
+
+	_, err := MontarReciboPedidoConteudo(db, pedido.ID, usuarioID, PapelUsuario)
+	if !errors.Is(err, ErrPedidoSemRecibo) {
+		t.Fatalf("erro = %v, want ErrPedidoSemRecibo", err)
+	}
+}
+
+// TestMontarReciboPedidoConteudo_PedidoAlheio prova que MontarReciboPedidoConteudo
+// reaproveita o MESMO colapso de ErrPedidoNaoEncontrado de BuscarPedidoProprio
+// (Pedido de outro usuário sem papel almoxarife+).
+func TestMontarReciboPedidoConteudo_PedidoAlheio(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	dono := semearConta(t, db, "Recibo Alheio Dono", "recibo-alheio-dono@empresa.com", PapelUsuario, 0)
+	outro := semearConta(t, db, "Recibo Alheio Outro", "recibo-alheio-outro@empresa.com", PapelUsuario, 0)
+	almoxID := semearConta(t, db, "Recibo Alheio Almox", "recibo-alheio-almox@empresa.com", PapelAlmoxarife, 0)
+	pedido, _ := seedPedidoComItens(t, db, dono, []itemPedidoSeedSpec{
+		{NomeBase: "Recibo Alheio A", SaldoInicial: 10, QtdSolicitada: 1},
+	})
+	if _, err := DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, true); err != nil {
+		t.Fatalf("seed DecidirPedido: %v", err)
+	}
+
+	_, err := MontarReciboPedidoConteudo(db, pedido.ID, outro, PapelUsuario)
+	if !errors.Is(err, ErrPedidoNaoEncontrado) {
+		t.Fatalf("erro = %v, want ErrPedidoNaoEncontrado", err)
+	}
+}
+
+// TestRenderizarReciboPedidoPDF_BytesValidosEDeterministico cobre "bytes
+// começam com %PDF-" e o determinismo em si — a MESMA entrada
+// (ReciboPedidoConteudo) produz SEMPRE os MESMOS bytes.
+func TestRenderizarReciboPedidoPDF_BytesValidosEDeterministico(t *testing.T) {
+	quantidadeAprovada := 4.0
+	conteudo := ReciboPedidoConteudo{
+		PedidoID:        "id-fake",
+		Solicitante:     "Fulano de Tal",
+		ObraCentroCusto: "Obra Ção",
+		Status:          "parcialmente_aprovado",
+		Aprovador:       "Aprovador Ñ",
+		DecididoEm:      time.Date(2026, 9, 3, 14, 30, 0, 0, time.UTC),
+		Itens: []ReciboPedidoItem{
+			{ProdutoNome: "Parafuso", CategoriaNome: "Fixação", EstoqueNome: "Canteiro A", Quantidade: 10, QuantidadeAprovada: quantidadeAprovada},
+		},
+	}
+
+	b1, err := RenderizarReciboPedidoPDF(conteudo)
+	if err != nil {
+		t.Fatalf("RenderizarReciboPedidoPDF erro inesperado (1ª chamada): %v", err)
+	}
+	if !bytes.HasPrefix(b1, []byte("%PDF-")) {
+		t.Fatalf("PDF não começa com %%PDF-: %q", b1[:min(20, len(b1))])
+	}
+
+	b2, err := RenderizarReciboPedidoPDF(conteudo)
+	if err != nil {
+		t.Fatalf("RenderizarReciboPedidoPDF erro inesperado (2ª chamada): %v", err)
+	}
+	if !bytes.Equal(b1, b2) {
+		t.Fatalf("PDFs diferem entre duas chamadas com o MESMO conteúdo (len1=%d, len2=%d)", len(b1), len(b2))
+	}
+}
+
+// TestGerarReciboPedidoPDF_DeterministicoAposEdicaoDoProduto cobre a AC
+// central da story: dois downloads do MESMO Pedido decidido, com o Produto
+// referenciado EDITADO entre eles, produzem bytes byte-a-byte IDÊNTICOS — o
+// recibo nunca faz join ao vivo com `produtos` (AD-17), lê sempre o snapshot
+// de pedido_itens.
+func TestGerarReciboPedidoPDF_DeterministicoAposEdicaoDoProduto(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Recibo Determinismo", "recibo-determinismo@empresa.com", PapelUsuario, 0)
+	almoxID := semearConta(t, db, "Recibo Determinismo Almox", "recibo-determinismo-almox@empresa.com", PapelAlmoxarife, 0)
+	pedido, pares := seedPedidoComItens(t, db, usuarioID, []itemPedidoSeedSpec{
+		{NomeBase: "Recibo Determinismo A", SaldoInicial: 10, QtdSolicitada: 4},
+	})
+	if _, err := DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, true); err != nil {
+		t.Fatalf("seed DecidirPedido: %v", err)
+	}
+
+	b1, err := GerarReciboPedidoPDF(db, pedido.ID, usuarioID, PapelUsuario)
+	if err != nil {
+		t.Fatalf("GerarReciboPedidoPDF erro inesperado (1º download): %v", err)
+	}
+	if !bytes.HasPrefix(b1, []byte("%PDF-")) {
+		t.Fatalf("PDF não começa com %%PDF-: %q", b1[:min(20, len(b1))])
+	}
+
+	// Produto editado entre os dois downloads — o recibo não deve refletir a
+	// mudança, porque nunca faz join ao vivo com `produtos`.
+	if _, err := db.Exec(`UPDATE produtos SET nome = 'Nome Totalmente Diferente' WHERE id = $1`, pares[0].ProdutoID); err != nil {
+		t.Fatalf("seed: editar produto entre downloads: %v", err)
+	}
+
+	b2, err := GerarReciboPedidoPDF(db, pedido.ID, usuarioID, PapelUsuario)
+	if err != nil {
+		t.Fatalf("GerarReciboPedidoPDF erro inesperado (2º download): %v", err)
+	}
+	if !bytes.Equal(b1, b2) {
+		t.Fatalf("PDFs diferem entre dois downloads do MESMO pedido após edição do produto (len1=%d, len2=%d)", len(b1), len(b2))
+	}
+}
+
+// TestGerarReciboPedidoPDF_GatePendente prova que GerarReciboPedidoPDF
+// propaga ErrPedidoSemRecibo (via MontarReciboPedidoConteudo) sem chegar a
+// renderizar nada.
+func TestGerarReciboPedidoPDF_GatePendente(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Recibo Gerar Pendente", "recibo-gerar-pendente@empresa.com", PapelUsuario, 0)
+	pedido, _ := seedPedidoComItens(t, db, usuarioID, []itemPedidoSeedSpec{
+		{NomeBase: "Recibo Gerar Pendente A", SaldoInicial: 10, QtdSolicitada: 1},
+	})
+
+	_, err := GerarReciboPedidoPDF(db, pedido.ID, usuarioID, PapelUsuario)
+	if !errors.Is(err, ErrPedidoSemRecibo) {
+		t.Fatalf("erro = %v, want ErrPedidoSemRecibo", err)
 	}
 }

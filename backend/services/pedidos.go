@@ -9,10 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/lib/pq"
+	"github.com/signintech/gopdf"
+	"golang.org/x/image/font/gofont/goregular"
 )
 
 // Pedido é a projeção devolvida por SubmeterPedido — o cabeçalho do Pedido
@@ -706,4 +709,237 @@ func DecidirPedido(db *sql.DB, pedidoID, decisorID, papelDecisor string, aprovar
 	det.Itens = itensResposta
 
 	return det, nil
+}
+
+// --- Recibo do Pedido em PDF — Story 7.6 (Epic 7, Pedidos de Retirada), ----
+// --- spec-7-6 ---------------------------------------------------------------
+//
+// Três funções deliberadamente separadas (Design Notes de spec-7-6):
+// MontarReciboPedidoConteudo (busca+gate+formata, sem gopdf, testável com
+// asserções Go simples) / RenderizarReciboPedidoPDF (só desenha a partir do
+// struct já pronto, pura e determinística) / GerarReciboPedidoPDF (as duas em
+// sequência — é o que BaixarReciboPedidoHandler chama).
+
+// ErrPedidoSemRecibo indica que o Pedido `pedidoID` ainda não foi decidido
+// (`status` fora de {aprovado, parcialmente_aprovado}) — `pendente` ainda não
+// teve nenhuma retirada, `rejeitado` não teve retirada nenhuma. Mapeado para
+// 409 CONFLICT.
+var ErrPedidoSemRecibo = errors.New("pedido ainda não foi decidido: nenhum recibo disponível")
+
+// ReciboPedidoItem é uma linha do recibo em PDF: Produto/Categoria/Estoque
+// vêm do MESMO snapshot de PedidoItem (AD-17, nunca um join ao vivo com
+// `produtos`) e as quantidades solicitada/retirada. `QuantidadeAprovada` é
+// sempre um valor concreto (nunca ponteiro) porque MontarReciboPedidoConteudo
+// só chega aqui depois do gate de status — `quantidade_aprovada` nunca é
+// NULL para um item de Pedido já decidido (DecidirPedido, Story 7.5, sempre
+// grava um valor, mesmo 0).
+type ReciboPedidoItem struct {
+	ProdutoNome        string
+	CategoriaNome      string
+	EstoqueNome        string
+	Quantidade         float64
+	QuantidadeAprovada float64
+}
+
+// ReciboPedidoConteudo é o conteúdo já resolvido/formatado do recibo — um
+// struct de dados simples, SEM nenhuma dependência de gopdf (Design Notes de
+// spec-7-6): RenderizarReciboPedidoPDF só desenha a partir daqui, o que torna
+// MontarReciboPedidoConteudo testável sem precisar ler bytes de PDF de volta.
+type ReciboPedidoConteudo struct {
+	PedidoID        string
+	Solicitante     string
+	ObraCentroCusto string
+	Status          string
+	Aprovador       string
+	DecididoEm      time.Time
+	Itens           []ReciboPedidoItem
+}
+
+// MontarReciboPedidoConteudo busca e monta o conteúdo do recibo do Pedido
+// `pedidoID` (Story 7.6, spec-7-6) para GET /api/pedidos/{id}/recibo.
+//
+// Chama BuscarPedidoProprio PRIMEIRO — reaproveita inteiramente a mesma
+// autorização (dono OU `almoxarife`+, AD-8) e o MESMO colapso de
+// ErrPedidoNaoEncontrado (id malformado/inexistente, Pedido alheio sem papel
+// suficiente, tudo no mesmo erro -> 404 NOT_FOUND na fronteira HTTP).
+//
+// Só então checa `det.Status`: fora de {aprovado, parcialmente_aprovado} ->
+// ErrPedidoSemRecibo (409 CONFLICT) ANTES de resolver o aprovador ou montar
+// qualquer coisa.
+//
+// O nome do aprovador vem de uma query dedicada
+// (`SELECT u.nome FROM pedidos p JOIN usuarios u ON u.id = p.decidido_por
+// WHERE p.id = $1`) — NUNCA estende o SELECT de BuscarPedidoProprio/o JSON de
+// GET /api/pedidos*, que continuam sem decididoPor/decididoEm (Never,
+// spec-7-5). Resolver o nome atual de `usuarios` no momento do download não
+// viola AD-17: essa invariante fixa só a imutabilidade do snapshot de
+// PEDIDO_ITENS contra PRODUTOS, não um join com `usuarios` (Design Notes de
+// spec-7-6).
+func MontarReciboPedidoConteudo(db *sql.DB, pedidoID, usuarioID, papel string) (ReciboPedidoConteudo, error) {
+	det, err := BuscarPedidoProprio(db, pedidoID, usuarioID, papel)
+	if err != nil {
+		return ReciboPedidoConteudo{}, err
+	}
+	if det.Status != "aprovado" && det.Status != "parcialmente_aprovado" {
+		return ReciboPedidoConteudo{}, ErrPedidoSemRecibo
+	}
+
+	// Aprovador + data da decisão vêm da MESMA query dedicada — nunca do
+	// SELECT de BuscarPedidoProprio (que nunca lê decidido_por/decidido_em de
+	// volta, Never de spec-7-5) nem de PedidoDetalhe.DecididoEm (que
+	// BuscarPedidoProprio deixa sempre nil).
+	var aprovador string
+	var decididoEm time.Time
+	const selectAprovadorEData = `SELECT u.nome, p.decidido_em FROM pedidos p JOIN usuarios u ON u.id = p.decidido_por WHERE p.id = $1`
+	if err := db.QueryRow(selectAprovadorEData, pedidoID).Scan(&aprovador, &decididoEm); err != nil {
+		return ReciboPedidoConteudo{}, fmt.Errorf("falha ao resolver aprovador/data da decisão do recibo: %w", err)
+	}
+
+	itens := make([]ReciboPedidoItem, 0, len(det.Itens))
+	for _, it := range det.Itens {
+		var aprovada float64
+		if it.QuantidadeAprovada != nil {
+			aprovada = *it.QuantidadeAprovada
+		}
+		itens = append(itens, ReciboPedidoItem{
+			ProdutoNome:        it.ProdutoNome,
+			CategoriaNome:      it.CategoriaNome,
+			EstoqueNome:        it.EstoqueNome,
+			Quantidade:         it.Quantidade,
+			QuantidadeAprovada: aprovada,
+		})
+	}
+
+	return ReciboPedidoConteudo{
+		PedidoID:        det.ID,
+		Solicitante:     det.Solicitante,
+		ObraCentroCusto: det.ObraCentroCusto,
+		Status:          det.Status,
+		Aprovador:       aprovador,
+		DecididoEm:      decididoEm,
+		Itens:           itens,
+	}, nil
+}
+
+// formatarQuantidadeRecibo formata uma quantidade do recibo sem notação
+// científica e sem zeros à direita — mesmo molde de `strconv.FormatFloat(v,
+// 'f', -1, 64)` já usado por `ExportarMovimentacoesXLSX`
+// (movimentacoes.go:148).
+func formatarQuantidadeRecibo(v float64) string {
+	return strconv.FormatFloat(v, 'f', -1, 64)
+}
+
+// alturaPaginaReciboPT / margemReciboPT fecham as dimensões usadas pelo
+// controle de quebra de página manual de RenderizarReciboPedidoPDF — mesmos
+// valores de gopdf.PageSizeA4 (595x842pt) e da margem passada a
+// pdf.SetMargins abaixo.
+const (
+	alturaPaginaReciboPT = 842.0
+	margemReciboPT       = 40.0
+	larguraUtilReciboPT  = 595.0 - 2*margemReciboPT
+)
+
+// RenderizarReciboPedidoPDF desenha o recibo em PDF (Story 7.6, spec-7-6) a
+// partir de um ReciboPedidoConteudo JÁ MONTADO — função pura e
+// determinística: a MESMA entrada produz SEMPRE os MESMOS bytes (Always,
+// spec-7-6: nenhuma metadata dinâmica é embutida — `pdf.SetInfo` nunca é
+// chamado, nenhum `time.Now()` em lugar nenhum — para o PDF continuar
+// byte-idêntico entre dois downloads do MESMO Pedido mesmo que o Produto
+// referenciado seja editado entre eles).
+//
+// Fonte: `pdf.AddTTFFontData("gofont", goregular.TTF)` de
+// `golang.org/x/image/font/gofont/goregular` — dependência já pinada em
+// go.mod, cobre acentuação PT-BR sem exigir um `.ttf` novo no repositório
+// (Design Notes de spec-7-6).
+//
+// Cada item mostra "Retirado" (quantidadeAprovada) sempre; quando
+// `QuantidadeAprovada != Quantidade`, também mostra "Solicitado" e
+// "Pendente" — mesma regra condicional de `FilaPedidosSection` (Story 7.5),
+// nunca escondida quando diverge.
+func RenderizarReciboPedidoPDF(conteudo ReciboPedidoConteudo) ([]byte, error) {
+	pdf := &gopdf.GoPdf{}
+	pdf.Start(gopdf.Config{PageSize: *gopdf.PageSizeA4})
+	pdf.SetMargins(margemReciboPT, margemReciboPT, margemReciboPT, margemReciboPT)
+	pdf.AddPage()
+
+	if err := pdf.AddTTFFontData("gofont", goregular.TTF); err != nil {
+		return nil, fmt.Errorf("falha ao carregar fonte do recibo: %w", err)
+	}
+
+	escreverLinha := func(texto string, tamanho float64) error {
+		if err := pdf.SetFont("gofont", "", tamanho); err != nil {
+			return fmt.Errorf("falha ao selecionar fonte do recibo: %w", err)
+		}
+		altura := tamanho + 6
+		if pdf.GetY()+altura > alturaPaginaReciboPT-margemReciboPT {
+			pdf.AddPage()
+		}
+		if err := pdf.Cell(&gopdf.Rect{W: larguraUtilReciboPT, H: altura}, texto); err != nil {
+			return fmt.Errorf("falha ao escrever linha do recibo: %w", err)
+		}
+		pdf.Br(altura)
+		return nil
+	}
+
+	if err := escreverLinha("Recibo do Pedido", 18); err != nil {
+		return nil, err
+	}
+	pdf.Br(6)
+
+	if err := escreverLinha("Solicitante: "+conteudo.Solicitante, 11); err != nil {
+		return nil, err
+	}
+	if err := escreverLinha("Obra/Centro de Custo: "+conteudo.ObraCentroCusto, 11); err != nil {
+		return nil, err
+	}
+	if err := escreverLinha("Aprovador: "+conteudo.Aprovador, 11); err != nil {
+		return nil, err
+	}
+	if err := escreverLinha("Data da decisão: "+conteudo.DecididoEm.Format("02/01/2006 15:04"), 11); err != nil {
+		return nil, err
+	}
+	pdf.Br(10)
+
+	if err := escreverLinha("Itens retirados", 13); err != nil {
+		return nil, err
+	}
+	pdf.Br(4)
+
+	for _, item := range conteudo.Itens {
+		linha := fmt.Sprintf("%s — %s · %s", item.ProdutoNome, item.CategoriaNome, item.EstoqueNome)
+		if err := escreverLinha(linha, 10); err != nil {
+			return nil, err
+		}
+
+		quantidades := "Retirado: " + formatarQuantidadeRecibo(item.QuantidadeAprovada)
+		if item.QuantidadeAprovada != item.Quantidade {
+			quantidades += "   Solicitado: " + formatarQuantidadeRecibo(item.Quantidade) +
+				"   Pendente: " + formatarQuantidadeRecibo(item.Quantidade-item.QuantidadeAprovada)
+		}
+		if err := escreverLinha(quantidades, 10); err != nil {
+			return nil, err
+		}
+		pdf.Br(4)
+	}
+
+	bytes, err := pdf.GetBytesPdfReturnErr()
+	if err != nil {
+		return nil, fmt.Errorf("falha ao gerar bytes do PDF do recibo: %w", err)
+	}
+	return bytes, nil
+}
+
+// GerarReciboPedidoPDF compõe MontarReciboPedidoConteudo +
+// RenderizarReciboPedidoPDF em sequência — é a função que
+// BaixarReciboPedidoHandler chama (Story 7.6, spec-7-6). Qualquer erro de
+// autorização/gate de status vem de MontarReciboPedidoConteudo
+// (ErrPedidoNaoEncontrado / ErrPedidoSemRecibo); RenderizarReciboPedidoPDF só
+// pode falhar por erro de biblioteca (fonte/renderização), mapeado para 500
+// INTERNAL_ERROR pelo handler.
+func GerarReciboPedidoPDF(db *sql.DB, pedidoID, usuarioID, papel string) ([]byte, error) {
+	conteudo, err := MontarReciboPedidoConteudo(db, pedidoID, usuarioID, papel)
+	if err != nil {
+		return nil, err
+	}
+	return RenderizarReciboPedidoPDF(conteudo)
 }
