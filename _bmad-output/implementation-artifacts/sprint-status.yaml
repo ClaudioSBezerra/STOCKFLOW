@@ -101,5 +101,5 @@ development_status:
 
   epic-8: backlog
   8-1-exportação-dos-próprios-dados-pessoais: done
-  8-2-exclusão-e-anonimização-de-dados-pessoais-por-adm: backlog
+  8-2-exclusão-e-anonimização-de-dados-pessoais-por-adm: done
   epic-8-retrospective: optional
