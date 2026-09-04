@@ -2,7 +2,7 @@
 title: 'Exportação dos próprios dados pessoais'
 type: 'feature'
 created: '2026-09-04'
-status: 'in-progress'
+status: 'done'
 review_loop_iteration: 0
 followup_review_recommended: false
 context: []
@@ -43,7 +43,7 @@ deferred:
     location: >-
       frontend/src/components/privacidade/PrivacidadeSection.tsx
     severity: low
-baseline_revision: '91ed2aed4a08105385c6ee31b318c42567102154'
+baseline_revision: '9da8718662bac4947ee0b825977129c164ce596a'
 ---
 
 <intent-contract>
@@ -115,6 +115,14 @@ baseline_revision: '91ed2aed4a08105385c6ee31b318c42567102154'
 
 **NOTA (supervisão, 2026-09-04):** o run que produziu este log pausou (auto-rollback OFF) antes de aplicar os 2 `addressed_findings` abaixo — a árvore de trabalho não tem a migration de índices (`logs_acesso.usuario_id`/`movimentacoes.usuario_id`) nem `frontend/src/lib/privacidade.test.ts`. Build/vet/test (backend) e tsc/vitest (frontend) passam 100% com o que EXISTE hoje, mas os dois findings abaixo continuam em aberto — status revertido para `in-progress` até uma sessão nova aplicá-los de verdade.
 
+**RESOLVIDO (2026-09-04, sessão nova):** os 2 `addressed_findings` abaixo foram aplicados de verdade e, em seguida, os 3 `patch` de uma segunda review:
+- `backend/migrations/000029_add_indices_usuario_id_exportacao_lgpd.up.sql` / `.down.sql` — `CREATE INDEX` em `logs_acesso.usuario_id`, `movimentacoes.usuario_id` E `pedidos.usuario_id` (as TRÊS fontes de `ExportarDadosUsuario`; a versão inicial da migration cobria só duas e tinha nome enganoso). O índice em `pedidos` também remove um sequential scan pré-existente de "Meus Pedidos" (Story 7.3).
+- `frontend/src/lib/privacidade.test.ts` — cobre GET `/api/usuarios/me/exportar-dados` (método GET assertado explicitamente), header `Authorization`, extração do `Blob`, e o fallback `MENSAGEM_ERRO_EXPORTAR` (corpo sem `error.message` e corpo não-JSON). Mock normalizado para `mockResolvedValue` nos 4 testes.
+- `backend/handlers/privacidade_test.go::TestExportarDadosUsuarioHandler_500FalhaDeBanco` — removido `limparProdutosHandler` morto; doc-comment reescrito (exercita a 1ª fonte como representante do ramo de erro único do handler); asserção "nenhum arquivo parcial" reforçada — o corpo do 500 não contém `"logAcesso"` nem o e-mail semeado.
+Verificação (Postgres descartável): `go build ./...`, `go vet ./...`, `go test -p 1 ./...` verdes; `npx tsc --noEmit` limpo; oxlint limpo; `npx vitest run` alvo 37/37. Os 2 itens de `deferred:` no frontmatter permanecem legitimamente diferidos (tensão pré-existente da Story 1.12; padrão sistêmico de mensagem de erro de download).
+
+**Matrix test audit (2026-09-04, sessão nova):** a linha "Falha de banco -> 500 INTERNAL_ERROR" da I/O Matrix só tinha cobertura no nível de service (`TestExportarDadosUsuario_ErroDeQueryPropagado` — propagação do erro, sem payload parcial), não na fronteira HTTP que a linha descreve. Adicionado `handlers.TestExportarDadosUsuarioHandler_500FalhaDeBanco` (molde de `TestListarMovimentacoesHandler_500FalhaDeBanco`): renomeia `logs_acesso` para fora depois do login e verifica `500` + envelope `INTERNAL_ERROR` + ausência de `Content-Disposition`. Todas as 4 linhas da Matrix agora têm teste HTTP que roda e passa.
+
 ### 2026-09-04 — Review pass
 - intent_gap: 0
 - bad_spec: 0
@@ -132,7 +140,14 @@ A AC aceita "um arquivo (JSON ou PDF)" — ambos satisfazem literalmente o texto
 ## Verification
 
 **Commands:**
-- `cd backend && go test ./services/... ./handlers/... -run 'Privacidade|LogAcesso|Movimentacoes'` -- expected: todos os novos testes passam, nenhuma regressão nos testes existentes desses pacotes
-- `cd backend && go build ./...` -- expected: compila sem erro
-- `cd frontend && npx vitest run src/components/privacidade src/pages/ConfiguracoesPage.test.tsx` -- expected: novos testes e os existentes de `ConfiguracoesPage` passam
+- `cd backend && DATABASE_URL=... go test -p 1 ./services/... ./handlers/... -run 'ExportarDadosUsuario|ListarLogsAcessoDoUsuario|ListarMovimentacoesDoUsuario'` -- expected: todos os novos testes desta story passam (os testes de integração exigem um Postgres em `DATABASE_URL`; sem ele são `SKIP`). O padrão `-run` original (`Privacidade|LogAcesso|Movimentacoes`) não casava com nenhum nome de teste real desta story
+- `cd backend && DATABASE_URL=... go test -p 1 ./services/... ./handlers/...` -- expected: pacotes inteiros verdes, nenhuma regressão
+- `cd backend && go build ./... && go vet ./...` -- expected: compila e passa no vet sem erro
+- `cd frontend && npx vitest run src/lib/privacidade.test.ts src/components/privacidade src/pages/ConfiguracoesPage.test.tsx` -- expected: novos testes e os existentes de `ConfiguracoesPage` passam
 - `cd frontend && npx tsc --noEmit` -- expected: sem erro de tipo
+
+**I/O & Edge-Case Matrix — cobertura de testes:**
+- _Happy path com histórico_ -> `services.TestExportarDadosUsuario_ComHistoricoCompleto`, `handlers.TestExportarDadosUsuarioHandler_200ComHistorico`
+- _Usuário sem registro (arrays vazios)_ -> `services.TestExportarDadosUsuario_SemNenhumRegistro`, `handlers.TestExportarDadosUsuarioHandler_200SemHistorico`
+- _Sem sessão válida (401)_ -> `handlers.TestExportarDadosUsuarioHandler_401SemToken`
+- _Falha de banco em qualquer das 3 fontes (500 INTERNAL_ERROR, sem arquivo parcial)_ -> `services.TestExportarDadosUsuario_ErroDeQueryPropagado` (propagação + sem payload parcial) e `handlers.TestExportarDadosUsuarioHandler_500FalhaDeBanco` (envelope HTTP 500 `INTERNAL_ERROR`, sem `Content-Disposition`)

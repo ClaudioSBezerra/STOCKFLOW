@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"stockflow/backend/middleware"
@@ -111,5 +112,50 @@ func TestExportarDadosUsuarioHandler_401SemToken(t *testing.T) {
 	w := getExportarDados(db, "")
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", w.Code)
+	}
+}
+
+// TestExportarDadosUsuarioHandler_500FalhaDeBanco cobre "Falha ao consultar
+// o banco" da I/O Matrix na fronteira HTTP. Exercita a PRIMEIRA fonte
+// (`logs_acesso`) como representante do único ramo de erro compartilhado do
+// handler: services.ExportarDadosUsuario faz short-circuit no primeiro erro,
+// e o handler mapeia qualquer erro do service para o mesmo
+// escreverErro(500, "INTERNAL_ERROR"). A propagação a partir de QUALQUER uma
+// das três fontes já está coberta no nível do service por
+// services.TestExportarDadosUsuario_ErroDeQueryPropagado. Com `logs_acesso`
+// indisponível, um Usuário autenticado recebe 500 INTERNAL_ERROR no
+// envelope padrão e nenhum dado pessoal no corpo. A tabela é renomeada para
+// fora só DEPOIS do login (que grava sua própria linha em logs_acesso) e
+// restaurada por t.Cleanup — mesmo molde de
+// TestListarMovimentacoesHandler_500FalhaDeBanco (execução serial, sem
+// t.Parallel).
+func TestExportarDadosUsuarioHandler_500FalhaDeBanco(t *testing.T) {
+	db := testDB(t)
+	_, token := seedContaComumECarrinho(t, db, "H81 Erro", "h-privacidade-81-erro@empresa.com")
+
+	if _, err := db.Exec(`ALTER TABLE logs_acesso RENAME TO logs_acesso_indisponivel`); err != nil {
+		t.Fatalf("renomear logs_acesso: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := db.Exec(`ALTER TABLE logs_acesso_indisponivel RENAME TO logs_acesso`); err != nil {
+			t.Fatalf("restaurar logs_acesso: %v", err)
+		}
+	})
+
+	w := getExportarDados(db, "Bearer "+token)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "INTERNAL_ERROR" {
+		t.Errorf("code = %q, want INTERNAL_ERROR", env.Error.Code)
+	}
+	if cd := w.Header().Get("Content-Disposition"); cd != "" {
+		t.Errorf("Content-Disposition = %q, want vazio (nenhum arquivo parcial)", cd)
+	}
+	// Nenhum arquivo parcial: o corpo é o envelope de erro puro, sem nenhuma
+	// chave de dados pessoais nem o e-mail semeado da conta.
+	if body := w.Body.String(); strings.Contains(body, `"logAcesso"`) ||
+		strings.Contains(body, "h-privacidade-81-erro@empresa.com") {
+		t.Errorf("corpo do 500 vazou dados pessoais: %s", body)
 	}
 }
