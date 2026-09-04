@@ -2,13 +2,77 @@
 title: 'Story 7.7 — Migração de Pedidos e vínculo com Histórico'
 type: 'feature'
 created: '2026-09-03'
-status: 'in-progress'
+status: 'awaiting-operator'
 review_loop_iteration: 0
 followup_review_recommended: false
-baseline_revision: '8eec4f67dbbdf8bbdc1155bedbab1da6c86e6307'
+baseline_revision: 'f1777e0f176394ac3246d31039df03bf20542d07'
 context: ['{project-root}/_bmad-output/implementation-artifacts/epic-7-context.md']
 warnings: ['oversized']
-deferred: []
+operator_actions:
+  - >-
+    Reverificar o schema assumido de `legado.pedidos` (addendum §F: colunas
+    `id, solicitante, obra, obs, email, uid, itens jsonb, status, criado_em,
+    atualizado_em`; itens de `{prodId, nome, unidade, estoque, qtd, categoria}`)
+    contra o espelho PostgreSQL real do protótipo Firestore ANTES do corte;
+    ajustar o SELECT e os nomes de campo em `migrarPedidos` se divergirem.
+  - >-
+    Confirmar o nome real do campo de referência ao Pedido em
+    `legado.historico` — esta story assume uma coluna chamada `pedido`. Se o
+    protótipo usou outro nome, ajustar a query de vínculo em `migrarPedidos`;
+    se o protótipo nunca guardou essa referência, aceitar que o vínculo
+    Movimentação↔Pedido anterior ao corte não pode ser reconstruído.
+  - >-
+    Aplicar todas as migrations (até a `000028` inclusive) no banco alvo antes
+    do corte, incluindo o seed do usuário "Migração do sistema legado"
+    (migration `000022`).
+  - >-
+    Rodar o dry-run (`go run ./cmd/migrate-legado` sem `--executar`) contra o
+    espelho real, revisar o relatório `PendentesRevisao` / `AvisosData` e
+    resolver ou aceitar cada Pedido pendente.
+  - >-
+    Executar o corte big-bang real (`migrate-legado --executar`) contra o
+    banco de produção, disparado por uma pessoa, coordenado com os cortes das
+    Stories 2.3 / 3.7 / 5.4 na mesma execução e ordem.
+  - >-
+    Após o corte, conferir por amostragem os Pedidos migrados (status, itens,
+    `criado_em`, `decidido_em`, vínculo `movimentacoes.pedido_id`) e o recibo
+    em PDF (Story 7.6) de um Pedido aprovado migrado.
+deferred:
+  - summary: >-
+      A CI (deploy-cliente-aws.yml) não provisiona Postgres nem DATABASE_URL, então todos os
+      testes de integração de cmd/migrate-legado — os desta story e os das Stories 2.3/3.7/5.4 —
+      dão t.Skip no pipeline; regressões no código do corte e na migration 000028 não são pegas pela CI.
+    evidence: |-
+      testDB (backend/cmd/migrate-legado/main_test.go) faz t.Skip quando DATABASE_URL não está
+      definido; o job `test` de .github/workflows/deploy-cliente-aws.yml roda `go test ./...` sem
+      serviço de banco. A migration 000028 só é aplicada dentro de testDB via migrate.Up(),
+      então a CI também nunca a executa.
+    location: >-
+      .github/workflows/deploy-cliente-aws.yml (job test)
+    severity: medium
+  - summary: >-
+      Uma segunda execução de migrate-legado não preenche movimentacoes.pedido_id para
+      Movimentações migradas (por um re-run da 5.4) DEPOIS da 1ª passada do Pedido — a spec
+      aceita isso ("pula ... inclusive o UPDATE de vínculo, já feito na 1ª passada"), mas é uma
+      limitação real de re-execução.
+    evidence: |-
+      Em migrarPedidos, um Pedido já em migracao_id_map cai em JaMigrados++ e continue, pulando
+      o UPDATE movimentacoes SET pedido_id. movIDNovoPorLegado é recarregado a cada execução,
+      mas o branch nunca é reavaliado para esse Pedido.
+    location: >-
+      backend/cmd/migrate-legado/pedidos.go (loop de corte, branch JaMigrados)
+    severity: medium
+  - summary: >-
+      Nenhum teste end-to-end confirma que um Pedido decidido migrado gera um recibo válido
+      (Story 7.6) e lista corretamente. Verificado seguro por inspeção — o JOIN do aprovador em
+      MontarReciboPedidoConteudo não filtra u.ativo, então o usuário sintético inativo resolve.
+    evidence: |-
+      selectAprovadorEData em backend/services/pedidos.go é `SELECT u.nome, p.decidido_em FROM
+      pedidos p JOIN usuarios u ON u.id = p.decidido_por WHERE p.id = $1` — INNER JOIN sem
+      filtro de ativo. Os testes de services/handlers passam, mas nenhum usa um Pedido migrado.
+    location: >-
+      backend/services/pedidos.go MontarReciboPedidoConteudo
+    severity: low
 ---
 
 <intent-contract>
@@ -113,6 +177,18 @@ _Vazio — nenhum loopback de `bad_spec`._
 
 ## Review Triage Log
 
+### 2026-09-03 — Review pass
+- intent_gap: 0
+- bad_spec: 0
+- patch: 4: (high 0, medium 0, low 4)
+- defer: 3: (high 0, medium 2, low 1)
+- reject: 15
+- addressed_findings:
+  - `[low]` `[patch]` Colisão de itens no mesmo par produto/estoque cuja SOMA excede `NUMERIC(10,3)` (9999999.999) faria o INSERT falhar e abortar o lote inteiro — em vez de virar pendência do Pedido. Adicionada revalidação da quantidade somada com a mesma guarda endurecida em `resolverPedido`; soma fora da faixa → `PendentesRevisao` com motivo `"quantidade somada fora da faixa: '<v>'"`, lote não aborta. Teste `TestMigrarPedidos_QuantidadeSomadaForaDaFaixa`.
+  - `[low]` `[patch]` `main.go`: o ramo de erro genérico da migração de Pedidos afirmava "transação de Pedidos revertida" mesmo para falhas anteriores a `alvo.Begin()` (seed, carga de mapas, leitura de `legado.pedidos`). Reescrito para `"erro na migração de Pedidos: %v (nada foi escrito)"`.
+  - `[low]` `[patch]` As classes de pendência `"pedido sem itens"` e `"itens ilegível"` existiam no código mas não tinham teste (e o campo `pedidoLegadoInput.ItensRaw` estava sem uso). Adicionados `TestMigrarPedidos_PedidoSemItens` e `TestMigrarPedidos_ItensIlegivel`.
+  - `[low]` `[patch]` `textoQuantidade` tinha um ramo dedicado a `qtd` string sem teste positivo (só casos inválidos). Adicionado `TestMigrarPedidos_QuantidadeComoString` (`qtd` = `"3"` → `quantidade == 3`).
+
 ## Design Notes
 
 - **`awaiting-operator`, não `done`.** Igual a 2.3/3.7/5.4: o corte real contra o espelho da empresa é humano-disparado (AD-15, PRD §9). Código, migration e testes ficam prontos e verificados contra Postgres real; o resto está em `operator_actions`. O run finaliza a frontmatter para `status: awaiting-operator`.
@@ -135,3 +211,90 @@ _Vazio — nenhum loopback de `bad_spec`._
 **Manual checks (if no CLI):**
 - Inspecionar `backend/migrations/000028_add_pedido_to_movimentacoes.up.sql`: `ADD COLUMN pedido_id UUID REFERENCES pedidos(id)` sem `ON DELETE CASCADE` + `CREATE INDEX idx_movimentacoes_pedido_id`.
 - `go run ./cmd/migrate-legado` (dry-run, sem `--executar`) contra um Postgres local com `legado.pedidos` de teste → o relatório de estimativa não escreve nada (`SELECT count(*) FROM pedidos` igual antes/depois; nenhum `pedido_id` alterado).
+
+## Auto Run Result
+
+Status: awaiting-operator
+
+### Resumo da mudança implementada
+
+`migrarPedidos(alvo, legado *sql.DB, executar bool)` novo em `backend/cmd/migrate-legado`,
+encadeado em `main()` **depois** de `migrarMovimentacoes`. Lê `legado.pedidos`, recria cada
+Pedido legado em `pedidos` + `pedido_itens` resolvendo `produto_id` (via `migracao_id_map`
+`entidade='produto'`) e `estoque_id` (via `estoques.nome_normalizado`, normalização
+Postgres-side com `normExpr`), preservando `status`, `criado_em` e — para Pedidos decididos —
+`decidido_por` (usuário sintético de migração) e `decidido_em`. `quantidade_aprovada` por
+status: `aprovado`→`quantidade`, `rejeitado`→`0`, `pendente`→`NULL`. Nova migration `000028`
+acrescenta `movimentacoes.pedido_id` (UUID, anulável, FK sem CASCADE) + `idx_movimentacoes_pedido_id`;
+depois de recriar um Pedido, `migrarPedidos` faz `UPDATE movimentacoes SET pedido_id` nas
+Movimentações já migradas (5.4) cujas linhas de `legado.historico` referenciam aquele Pedido
+legado (campo `pedido`). Idempotência pelo PK `(entidade, id_legado)` de `migracao_id_map`
+(`entidade='pedido'`). Falha de resolução é **por Pedido** (item irresolúvel ou `status`
+inválido → Pedido inteiro em `PendentesRevisao`, lote não aborta); transação única do lote;
+dry-run só conta. Corte real de produção = `operator_action`.
+
+### Arquivos alterados
+
+- `backend/migrations/000028_add_pedido_to_movimentacoes.up.sql` / `.down.sql` — **novo**: coluna
+  `movimentacoes.pedido_id` (anulável, FK sem CASCADE) + índice; `down` remove índice e coluna.
+- `backend/cmd/migrate-legado/pedidos.go` — **novo**: `migrarPedidos`, `resolverPedido`
+  (resolução por Pedido, todas as classes de pendência, revalidação da quantidade somada),
+  helpers de vínculo/aviso/pendência, `carregarMapaMigracao`, `textoQuantidade`, structs de
+  relatório (`ResultadoMigracaoPedidos`, `PendenteRevisaoPedido`).
+- `backend/cmd/migrate-legado/main.go` — `migrarPedidos` encadeada após `migrarMovimentacoes`;
+  ramos de stderr (seed ausente com `errors.Is`; erro genérico; impressão de
+  `PendentesRevisao`/`AvisosData`); `os.Exit(1)` nos caminhos de erro; doc do pacote.
+- `backend/cmd/migrate-legado/main_test.go` — fixture `legado.pedidos` + coluna
+  `legado.historico.pedido` em `testDB`; limpeza de `legado.pedidos`/`pedido_itens`/`pedidos`
+  em `limparTabelas` na ordem de FK (nunca `usuarios`); subteste `TestMain_Processo`
+  "pedidos: pendência no stderr sem abortar".
+- `backend/cmd/migrate-legado/pedidos_test.go` — **novo**: `TestMigrarPedidos_*` cobrindo toda
+  a I/O & Edge-Case Matrix + os patches da revisão (quantidade somada fora da faixa, `qtd`
+  string, pedido sem itens, itens ilegível).
+- `_bmad-output/implementation-artifacts/spec-7-7-...md` — frontmatter finalizada
+  (`awaiting-operator` + `operator_actions` + `deferred`), Review Triage Log, Auto Run Result.
+
+### Achados da revisão
+
+- **Patches aplicados (4, todos low):** revalidação da quantidade somada em colisão de itens
+  (evita abortar o lote inteiro por overflow de `NUMERIC(10,3)`); correção da mensagem de erro
+  de `main.go` que afirmava rollback antes de haver transação; testes para `"pedido sem itens"`
+  / `"itens ilegível"`; teste positivo de `qtd` como string.
+- **Itens deferidos (3):** CI sem Postgres pula todos os testes de integração de
+  `cmd/migrate-legado` (medium); re-execução de `migrate-legado` não preenche
+  `movimentacoes.pedido_id` de Movimentações migradas depois da 1ª passada do Pedido — a spec
+  aceita (medium); falta teste end-to-end de recibo (7.6) para Pedido decidido migrado —
+  verificado seguro por inspeção (low).
+- **Itens rejeitados (15):** ruído ou comportamento já ditado pela spec (ex.: `COALESCE` de
+  `solicitante`/`obra` para `''` sem CHECK que aborte; `aprovado`→`quantidade` /
+  `rejeitado`→`0`; FK sem CASCADE por decisão de trilha de auditoria; estilo das
+  down-migrations; lookups por linha num script one-off de N pequeno).
+
+### Recomendação de re-revisão
+
+`false`. Findings desta passada triados como `patch`: high 0, medium 0, low 4.
+Score = `3 × 0 + 1 × 4` = 4 (< 5).
+
+### Verificação executada
+
+- `cd backend && gofmt -l . && go build ./... && go vet ./...` — sem saída de `gofmt`;
+  build e vet limpos.
+- `DATABASE_URL=postgres://stockflow:stockflow@127.0.0.1:5432/stockflow?sslmode=disable go test -p 1 -count=1 ./cmd/migrate-legado/`
+  — `ok` (todos os `TestMigrarPedidos_*` + `TestMain_Processo` + sem regressão em
+  `TestMigrarEstoques/Produtos/Movimentacoes_*`).
+- `DATABASE_URL=... go test -p 1 -count=1 -timeout 600s ./services/... ./handlers/...` — `ok`
+  para ambos os pacotes; `movimentacoes.pedido_id` anulável não perturba `ListarMovimentacoes`
+  (5.3), `GET /api/pedidos*` (7.3/7.4) nem o recibo (7.6).
+- Frontend não executado — nenhuma mudança de frontend nesta story.
+- Matrix Test Audit: cada linha da I/O & Edge-Case Matrix tem ≥ 1 teste que rodou e passou
+  na saída de verificação.
+
+### Riscos residuais
+
+- O schema de `legado.pedidos` e o campo de referência ao Pedido em `legado.historico` são
+  **assumidos** (addendum §F, marcado "precisa de nova verificação"). Os testes exercitam
+  apenas o schema fabricado por `testDB`. A reverificação contra o espelho real e o corte de
+  produção estão em `operator_actions`.
+- Um `legado.historico` sem a coluna `pedido` faz `migrarPedidos` abortar (erro propagado,
+  `os.Exit(1)`) em vez de degradar para "sem vínculo" — aceitável porque o operador confirma
+  o schema antes do corte (`operator_actions`), mas registrado aqui.

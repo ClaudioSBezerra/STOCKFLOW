@@ -798,4 +798,36 @@ func TestMain_Processo(t *testing.T) {
 			t.Errorf("count(movimentacoes) = %d, want 0", n)
 		}
 	})
+
+	// Story 7.7: main() chama migrarPedidos após migrarMovimentacoes. Um
+	// Pedido legado irresolúvel vira pendência no stderr e NÃO aborta o corte
+	// (exit 0) — mesmo contrato de falha branda das movimentações.
+	t.Run("pedidos: pendência no stderr sem abortar", func(t *testing.T) {
+		alvo, _ := testDB(t)
+		dsn := os.Getenv("DATABASE_URL")
+		if _, err := alvo.Exec(`
+			INSERT INTO legado.pedidos (id, solicitante, obra, status, itens)
+			VALUES ('pp1', 'Zé', 'Obra 9', 'pendente',
+			        '[{"prodId":"sem-mapa","nome":"X","estoque":"Y","qtd":"1","categoria":"C"}]'::jsonb)`); err != nil {
+			t.Fatalf("falha ao inserir legado.pedidos: %v", err)
+		}
+
+		out, code := runChild(t, map[string]string{
+			"DATABASE_URL":        dsn,
+			"LEGADO_DATABASE_URL": comSearchPath(dsn, "legado"),
+			"SUBPROC_ARGS":        "--executar",
+		})
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0; saída=%s", code, out)
+		}
+		if !strings.Contains(out, "corte aplicado (pedidos): Migrados=0") {
+			t.Errorf("saída sem a linha de sucesso de pedidos: %q", out)
+		}
+		if !strings.Contains(out, "item com produto não migrado") || !strings.Contains(out, "pp1") {
+			t.Errorf("saída não lista a pendência de pedido: %q", out)
+		}
+		if n := contar(t, alvo, `SELECT count(*) FROM pedidos`); n != 0 {
+			t.Errorf("count(pedidos) = %d, want 0", n)
+		}
+	})
 }

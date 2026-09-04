@@ -315,7 +315,11 @@ func main() {
 		if errors.Is(err, errSeedUsuarioMigracaoAusente) {
 			fmt.Fprintln(os.Stderr, "erro: seed do usuário de migração ausente — a migration 000022 (usuário \"Migração do sistema legado\") não foi aplicada no banco alvo. Aplique todas as migrations antes do corte. Nada foi escrito.")
 		} else {
-			fmt.Fprintf(os.Stderr, "erro: %v (transação de Pedidos revertida, nada foi escrito)\n", err)
+			// A checagem de seed, a carga dos mapas e a leitura de
+			// legado.pedidos acontecem ANTES de alvo.Begin(): para essas
+			// falhas nenhuma transação chega a ser aberta. Não afirmamos um
+			// rollback que pode não ter ocorrido — só que nada foi escrito.
+			fmt.Fprintf(os.Stderr, "erro na migração de Pedidos: %v (nada foi escrito)\n", err)
 		}
 		os.Exit(1)
 	}

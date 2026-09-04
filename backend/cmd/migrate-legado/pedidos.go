@@ -410,6 +410,15 @@ func migrarPedidos(alvo, legado *sql.DB, executar bool) (ResultadoMigracaoPedido
 		}
 		for _, k := range ordem {
 			item := acc[k]
+			// A quantidade SOMADA na colisão do par (produto_id, estoque_id)
+			// tem de respeitar a MESMA guarda endurecida de cada item: sem
+			// isto, dois itens válidos cuja soma estoura NUMERIC(10,3)
+			// CHECK (quantidade > 0) fariam o INSERT falhar e abortar o LOTE
+			// inteiro — mas o contrato é "só erros inesperados abortam";
+			// dado legado ruim vira pendência do Pedido.
+			if s := item.quantidade; math.IsNaN(s) || math.IsInf(s, 0) || s < 0.001 || s > 9999999.999 {
+				return r, fmt.Sprintf("quantidade somada fora da faixa: '%s'", strconv.FormatFloat(s, 'f', -1, 64))
+			}
 			switch r.status {
 			case "aprovado":
 				item.quantidadeAprovada = sql.NullFloat64{Float64: item.quantidade, Valid: true}
