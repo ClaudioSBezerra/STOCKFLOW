@@ -44,10 +44,16 @@ import {
  * catalogo/formatacao`).
  *
  * A busca inicial E o refetch pós-reconexão são o MESMO caminho de código:
- * `carregarDetalhe` só é chamado a partir de `aoMudarStatus('conectado')`
+ * `carregarDetalhe` é chamado a partir de `aoMudarStatus('conectado')`
  * (dispara também na primeira conexão) — nunca de um `useEffect` de mount
  * separado (AD-3: "sempre GET completo ao reconectar", unificar os dois
- * evita dois caminhos divergentes para a mesma responsabilidade). A tela
+ * evita dois caminhos divergentes para a mesma responsabilidade). Único
+ * segundo gatilho: um fallback de `LIMIAR_FALLBACK_SEM_SSE_MS` (4s) que
+ * chama a MESMA `carregarDetalhe` caso o EventSource nunca chegue a
+ * 'conectado' (incidente real, 2026-09-04 — proxy em produção que nunca
+ * completa o handshake SSE, sem erro visível; tela ficava presa em
+ * "Carregando produto..." para sempre). Cancelado assim que 'conectado'
+ * chega primeiro; `seqRef` descarta qualquer chamada duplicada. A tela
  * assina o canal `produtos` via `conectarRealtime`; um evento sobre o
  * MESMO Produto (`resource==='produtos' && id===<id da rota>`) dispara um
  * refetch completo (mesma `carregarDetalhe`) + `toast.info('Catálogo
@@ -166,6 +172,10 @@ const MENSAGEM_ERRO_TRANSFERENCIA =
   'Não foi possível registrar a transferência agora. Tente novamente em instantes.';
 const MENSAGEM_ERRO_LISTAR_ESTOQUES =
   'Não foi possível carregar a lista de estoques. Feche e tente novamente.';
+
+// Ver comentário no useEffect da SSE: fallback de escape para quando o
+// EventSource nunca completa o handshake (incidente real, 2026-09-04).
+const LIMIAR_FALLBACK_SEM_SSE_MS = 4000;
 
 interface EstoqueOpcao {
   id: string;
@@ -476,6 +486,21 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
   }
 
   useEffect(() => {
+    // Fallback de escape (incidente real, 2026-09-04): em produção, atrás de
+    // certas cadeias de proxy reverso, o EventSource pode nunca completar o
+    // handshake (nem 'open' nem 'error' — a conexão simplesmente não
+    // resolve) — sem isto, a tela ficava presa em "Carregando produto..."
+    // para sempre, sem nenhum erro visível. Não é dado migrado nem bug de
+    // renderização: CatalogoListagem busca por um `useEffect` de mount
+    // próprio e nunca trava; só ProdutoDetalhePage dependia 100% de
+    // 'conectado'. Continua sendo a MESMA `carregarDetalhe` (nenhum caminho
+    // divergente) — só um segundo gatilho, cancelado assim que 'conectado'
+    // chega primeiro. `seqRef` dentro de `carregarDetalhe` já descarta uma
+    // chamada duplicada caso as duas disparem quase juntas.
+    const timerFallback = setTimeout(() => {
+      void carregarDetalhe();
+    }, LIMIAR_FALLBACK_SEM_SSE_MS);
+
     const desconectar = conectarRealtime(
       (evento) => {
         if (evento.resource === 'produtos' && evento.id === id) {
@@ -486,11 +511,13 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
       (status) => {
         setStatusConexao(status);
         if (status === 'conectado') {
+          clearTimeout(timerFallback);
           void carregarDetalhe();
         }
       },
     );
     return () => {
+      clearTimeout(timerFallback);
       desconectar();
     };
   }, [id, carregarDetalhe]);

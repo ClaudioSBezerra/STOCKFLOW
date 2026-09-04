@@ -219,6 +219,54 @@ describe('ProdutoDetalhePage', () => {
     expect(screen.getByText('Disponível')).toBeInTheDocument();
   });
 
+  it('fallback: busca o detalhe mesmo sem SSE conectar, após o timer de escape (incidente real 2026-09-04)', async () => {
+    vi.useFakeTimers();
+    try {
+      stubPadrao();
+      renderPagina();
+
+      // Nunca dispara aoMudarStatus('conectado') neste teste — simula o
+      // EventSource nunca completando o handshake (ex.: proxy em produção
+      // que nunca fecha a conexão nem emite erro).
+      expect(screen.queryByText('Cabo Flexível 4mm')).not.toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4000);
+      });
+
+      expect(screen.getByText('Cabo Flexível 4mm')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('fallback: não refaz a busca se "conectado" já chegou antes do timer de escape', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = stubPadrao();
+      renderPagina();
+
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByText('Cabo Flexível 4mm')).toBeInTheDocument();
+
+      const chamadasAntes = fetchMock.mock.calls.length;
+
+      // O timer de escape venceria aqui se não tivesse sido cancelado por
+      // 'conectado' já ter chegado — não deve gerar nenhuma chamada extra.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4000);
+      });
+      expect(fetchMock.mock.calls.length).toBe(chamadasAntes);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('produto sem porEstoque mostra o aviso "Sem quantidade registrada por estoque."', async () => {
     stubPadrao({ produto: { ...PRODUTO_DETALHE, porEstoque: [], quantidadeTotal: 0, disponivel: false } });
     renderPagina();
