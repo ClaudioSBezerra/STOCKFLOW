@@ -119,6 +119,66 @@ func ListarMovimentacoes(db *sql.DB) ([]MovimentacaoHistorico, error) {
 	return movimentacoes, nil
 }
 
+// ListarMovimentacoesDoUsuario devolve TODAS as Movimentações cujo
+// `usuario_id` é `usuarioID`, do mais recente ao mais antigo — insumo de
+// ExportarDadosUsuario (Story 8.1, spec-8-1: exportação dos próprios dados
+// pessoais, LGPD). Molde de ListarMovimentacoes, mas escopada por usuário e
+// deliberadamente SEM `LIMIT`/maxMovimentacoesPorConsulta: aquele teto
+// existe para a consulta administrativa (`almoxarife`+, toda a
+// organização); aqui o conjunto já está limitado a um único usuário e a
+// LGPD pede o histórico completo, não uma amostra. Mesmos JOINs e mesmo
+// `ORDER BY m.criado_em DESC, m.id DESC` (desempate determinístico). Lista
+// vazia não é erro.
+func ListarMovimentacoesDoUsuario(db *sql.DB, usuarioID string) ([]MovimentacaoHistorico, error) {
+	const q = `
+		SELECT m.id, m.produto_id, p.nome, m.tipo,
+		       m.estoque_origem_id, eo.nome, m.estoque_destino_id, ed.nome,
+		       m.quantidade, m.usuario_id, u.nome, m.criado_em
+		FROM movimentacoes m
+		JOIN produtos p ON p.id = m.produto_id
+		JOIN usuarios u ON u.id = m.usuario_id
+		LEFT JOIN estoques eo ON eo.id = m.estoque_origem_id
+		LEFT JOIN estoques ed ON ed.id = m.estoque_destino_id
+		WHERE m.usuario_id = $1
+		ORDER BY m.criado_em DESC, m.id DESC`
+
+	rows, err := db.Query(q, usuarioID)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao listar movimentações do usuário: %w", err)
+	}
+	defer rows.Close()
+
+	movimentacoes := make([]MovimentacaoHistorico, 0)
+	for rows.Next() {
+		var m MovimentacaoHistorico
+		var origemID, origemNome, destinoID, destinoNome sql.NullString
+		if err := rows.Scan(
+			&m.ID, &m.ProdutoID, &m.ProdutoNome, &m.Tipo,
+			&origemID, &origemNome, &destinoID, &destinoNome,
+			&m.Quantidade, &m.UsuarioID, &m.UsuarioNome, &m.CriadoEm,
+		); err != nil {
+			return nil, fmt.Errorf("falha ao ler linha de movimentação do usuário: %w", err)
+		}
+		if origemID.Valid {
+			m.EstoqueOrigemID = &origemID.String
+		}
+		if origemNome.Valid {
+			m.EstoqueOrigemNome = &origemNome.String
+		}
+		if destinoID.Valid {
+			m.EstoqueDestinoID = &destinoID.String
+		}
+		if destinoNome.Valid {
+			m.EstoqueDestinoNome = &destinoNome.String
+		}
+		movimentacoes = append(movimentacoes, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("falha ao iterar movimentações do usuário: %w", err)
+	}
+	return movimentacoes, nil
+}
+
 // ErroMovimentacaoValidacao é o erro de validação devolvido por
 // RegistrarBaixa quando `quantidade` é zero, negativa, ou maior que
 // limiteNumeric103 — sempre verificado ANTES de abrir a transação, nenhuma

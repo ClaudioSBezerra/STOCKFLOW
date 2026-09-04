@@ -205,3 +205,55 @@ func TestListarLogsAcesso_ListaVaziaNaoErro(t *testing.T) {
 		t.Fatalf("len = %d, want 0", len(logs))
 	}
 }
+
+// --- ListarLogsAcessoDoUsuario — Story 8.1, spec-8-1 ------------------------
+
+// TestListarLogsAcessoDoUsuario_EscopadoAoUsuarioSemLimite prova o Always da
+// spec-8-1: só as linhas do usuário pedido voltam (nunca as de outra
+// conta nem as sem conta), em ORDER BY criado_em DESC, e SEM o teto de
+// maxLogsAcessoPorConsulta que ListarLogsAcesso aplica.
+func TestListarLogsAcessoDoUsuario_EscopadoAoUsuarioSemLimite(t *testing.T) {
+	db := testDB(t)
+	id := criarUsuarioParaLogin(t, db, "export-log@empresa.com", "senha-123456", true, true)
+	outroID := criarUsuarioParaLogin(t, db, "export-log-outro@empresa.com", "senha-123456", true, true)
+
+	base := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	inserirLogAcessoDireto(t, db, &id, "export-log@empresa.com", "senha", true, "1.1.1.1", base)
+	inserirLogAcessoDireto(t, db, &id, "export-log@empresa.com", "sso", true, "2.2.2.2", base.AddDate(0, 0, 1))
+	inserirLogAcessoDireto(t, db, &outroID, "export-log-outro@empresa.com", "senha", true, "3.3.3.3", base)
+	inserirLogAcessoDireto(t, db, nil, "fantasma@empresa.com", "senha", false, "4.4.4.4", base)
+
+	logs, err := ListarLogsAcessoDoUsuario(db, id)
+	if err != nil {
+		t.Fatalf("ListarLogsAcessoDoUsuario: %v", err)
+	}
+	if len(logs) != 2 {
+		t.Fatalf("len = %d, want 2 (só as do usuário pedido)", len(logs))
+	}
+	for _, l := range logs {
+		if l.UsuarioID == nil || *l.UsuarioID != id {
+			t.Errorf("linha vazando de outro usuário: UsuarioID = %v, want %q", l.UsuarioID, id)
+		}
+	}
+	if !logs[0].CriadoEm.After(logs[1].CriadoEm) {
+		t.Errorf("ordem não é criado_em DESC: %v", []time.Time{logs[0].CriadoEm, logs[1].CriadoEm})
+	}
+}
+
+// TestListarLogsAcessoDoUsuario_SemLogNaoEErro prova a linha "Usuário sem
+// log próprio" da I/O Matrix de spec-8-1: slice vazio, não-nil, sem erro.
+func TestListarLogsAcessoDoUsuario_SemLogNaoEErro(t *testing.T) {
+	db := testDB(t)
+	id := criarUsuarioParaLogin(t, db, "export-log-vazio@empresa.com", "senha-123456", true, true)
+
+	logs, err := ListarLogsAcessoDoUsuario(db, id)
+	if err != nil {
+		t.Fatalf("ListarLogsAcessoDoUsuario: %v", err)
+	}
+	if logs == nil {
+		t.Fatal("logs = nil, want slice vazio não-nil")
+	}
+	if len(logs) != 0 {
+		t.Fatalf("len = %d, want 0", len(logs))
+	}
+}

@@ -136,3 +136,47 @@ func ListarLogsAcesso(db *sql.DB, inicio, fim *time.Time) ([]LogAcesso, error) {
 	}
 	return logs, nil
 }
+
+// ListarLogsAcessoDoUsuario devolve TODAS as linhas de `logs_acesso` cujo
+// `usuario_id` é `usuarioID`, do mais recente ao mais antigo — insumo de
+// ExportarDadosUsuario (Story 8.1, spec-8-1: exportação dos próprios dados
+// pessoais, LGPD). Molde de ListarLogsAcesso, mas escopada por usuário e
+// deliberadamente SEM `LIMIT`/maxLogsAcessoPorConsulta: aquele teto existe
+// para a consulta administrativa (`adm`, toda a organização); aqui o
+// conjunto já está limitado a um único usuário e a LGPD pede o histórico
+// completo, não uma amostra. Mesmo `ORDER BY l.criado_em DESC, l.id DESC`
+// (desempate determinístico). Lista vazia não é erro.
+func ListarLogsAcessoDoUsuario(db *sql.DB, usuarioID string) ([]LogAcesso, error) {
+	const q = `
+		SELECT l.id, l.usuario_id, u.nome, l.email_informado, l.metodo, l.sucesso, l.ip, l.criado_em
+		FROM logs_acesso l
+		LEFT JOIN usuarios u ON u.id = l.usuario_id
+		WHERE l.usuario_id = $1
+		ORDER BY l.criado_em DESC, l.id DESC`
+
+	rows, err := db.Query(q, usuarioID)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao listar logs de acesso do usuário: %w", err)
+	}
+	defer rows.Close()
+
+	logs := make([]LogAcesso, 0)
+	for rows.Next() {
+		var l LogAcesso
+		var usuarioIDCol, usuarioNome sql.NullString
+		if err := rows.Scan(&l.ID, &usuarioIDCol, &usuarioNome, &l.EmailInformado, &l.Metodo, &l.Sucesso, &l.IP, &l.CriadoEm); err != nil {
+			return nil, fmt.Errorf("falha ao ler linha de log de acesso do usuário: %w", err)
+		}
+		if usuarioIDCol.Valid {
+			l.UsuarioID = &usuarioIDCol.String
+		}
+		if usuarioNome.Valid {
+			l.UsuarioNome = &usuarioNome.String
+		}
+		logs = append(logs, l)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("falha ao iterar logs de acesso do usuário: %w", err)
+	}
+	return logs, nil
+}

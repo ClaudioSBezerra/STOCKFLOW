@@ -477,6 +477,68 @@ func TestListarMovimentacoes_DesempatePorIDQuandoCriadoEmIgual(t *testing.T) {
 	}
 }
 
+// --- ListarMovimentacoesDoUsuario — Story 8.1, spec-8-1 ---------------------
+
+// TestListarMovimentacoesDoUsuario_EscopadoAoUsuarioSemLimite prova o Always
+// da spec-8-1: só as Movimentações do usuário pedido voltam (nunca as de
+// outra conta), em ORDER BY criado_em DESC, e SEM o teto de
+// maxMovimentacoesPorConsulta que ListarMovimentacoes aplica.
+func TestListarMovimentacoesDoUsuario_EscopadoAoUsuarioSemLimite(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	produtoID, estoqueID, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Export Mov", 50)
+	_, _, outroUsuarioID := seedProdutoComSaldo(t, db, "Canteiro Export Mov Outro", 50)
+
+	if _, err := RegistrarBaixa(db, produtoID, estoqueID, usuarioID, 2); err != nil {
+		t.Fatalf("RegistrarBaixa (usuário): %v", err)
+	}
+	if _, err := RegistrarBaixa(db, produtoID, estoqueID, usuarioID, 3); err != nil {
+		t.Fatalf("RegistrarBaixa (usuário) 2: %v", err)
+	}
+	produtoOutro, estoqueOutro, _ := seedProdutoComSaldo(t, db, "Canteiro Export Mov Outro Prod", 50)
+	if _, err := RegistrarBaixa(db, produtoOutro, estoqueOutro, outroUsuarioID, 1); err != nil {
+		t.Fatalf("RegistrarBaixa (outro usuário): %v", err)
+	}
+
+	lista, err := ListarMovimentacoesDoUsuario(db, usuarioID)
+	if err != nil {
+		t.Fatalf("ListarMovimentacoesDoUsuario: %v", err)
+	}
+	if len(lista) != 2 {
+		t.Fatalf("len(lista) = %d, want 2 (só as do usuário pedido)", len(lista))
+	}
+	for _, m := range lista {
+		if m.UsuarioID != usuarioID {
+			t.Errorf("Movimentação vazando de outro usuário: UsuarioID = %q, want %q", m.UsuarioID, usuarioID)
+		}
+	}
+	if lista[0].CriadoEm.Before(lista[1].CriadoEm) {
+		t.Errorf("lista fora de ordem criado_em DESC: [0]=%v [1]=%v", lista[0].CriadoEm, lista[1].CriadoEm)
+	}
+}
+
+// TestListarMovimentacoesDoUsuario_SemMovimentacaoNaoEErro prova a linha
+// "Usuário sem Movimentação própria" da I/O Matrix de spec-8-1: slice vazio,
+// não-nil, sem erro.
+func TestListarMovimentacoesDoUsuario_SemMovimentacaoNaoEErro(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	_, _, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Export Mov Vazio", 10)
+
+	lista, err := ListarMovimentacoesDoUsuario(db, usuarioID)
+	if err != nil {
+		t.Fatalf("ListarMovimentacoesDoUsuario: %v", err)
+	}
+	if lista == nil {
+		t.Fatal("lista = nil, want slice vazio não-nil")
+	}
+	if len(lista) != 0 {
+		t.Fatalf("len(lista) = %d, want 0", len(lista))
+	}
+}
+
 // --- RegistrarTransferencia (Story 5.2, spec-5-2) --------------------------
 
 // TestRegistrarTransferencia_Sucesso prova a AC1: transferência válida entre

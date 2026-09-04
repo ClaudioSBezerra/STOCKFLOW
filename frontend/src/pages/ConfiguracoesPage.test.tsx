@@ -666,3 +666,40 @@ describe('ConfiguracoesPage — Log de Acesso (Story 1.12)', () => {
     expect(screen.queryByRole('heading', { name: 'Log de Acesso' })).not.toBeInTheDocument();
   });
 });
+
+describe('ConfiguracoesPage — Privacidade (Story 8.1)', () => {
+  it.each(['usuario', 'almoxarife', 'gestor', 'adm'])(
+    'papel %s vê a seção "Privacidade" com o botão "Baixar meus dados", sem gate de papel',
+    async (papel) => {
+      authState.papel = papel;
+      stubFetch((url) => {
+        if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
+        if (url === '/api/promocoes') return jsonOk({ solicitacoes: [] });
+        if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+        if (url.startsWith('/api/logs-acesso')) return jsonOk({ logs: [] });
+        throw new Error(`URL inesperada: ${url}`);
+      });
+
+      render(<ConfiguracoesPage />);
+
+      expect(await screen.findByRole('heading', { name: 'Privacidade' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Baixar meus dados' })).toBeInTheDocument();
+    },
+  );
+
+  it('montar a seção NÃO chama fetch nenhum (só o clique no botão baixa os dados)', async () => {
+    authState.papel = 'usuario';
+    const fetchMock = stubFetch((url) => {
+      if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    render(<ConfiguracoesPage />);
+
+    await screen.findByRole('button', { name: 'Baixar meus dados' });
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('/api/usuarios/me/exportar-dados'),
+      expect.anything(),
+    );
+  });
+});

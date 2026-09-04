@@ -643,6 +643,14 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.DecidirPedidoHandler(db, registro))))
 
+	// Exportação dos próprios dados pessoais — Story 8.1 (Epic 8,
+	// Privacidade/LGPD), spec-8-1. Atrás SÓ de RequireAuth — SEM
+	// RequireRole: qualquer papel autenticado exporta os PRÓPRIOS dados,
+	// nunca os de terceiros (isso é a Story 8.2, anonimização, fora de
+	// escopo aqui).
+	mux.HandleFunc("GET /api/usuarios/me/exportar-dados", middleware.RequireAuth(db, jwtSecret)(
+		handlers.ExportarDadosUsuarioHandler(db)))
+
 	// Infraestrutura de tempo real (AD-2/AD-3) — Story 4.4. POST
 	// /api/realtime/ticket leva só RequireAuth: qualquer conta autenticada
 	// pode abrir sua própria conexão SSE. GET /api/realtime/stream é o único

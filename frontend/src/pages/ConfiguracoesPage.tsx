@@ -11,6 +11,7 @@ import { rankPapel } from '@/components/shell/nav-items';
 import { proximoPapel, rotuloPapel } from '@/lib/promocao';
 import { GestaoUsuariosSection } from '@/components/usuarios/GestaoUsuariosSection';
 import { LogAcessoSection } from '@/components/logs/LogAcessoSection';
+import { PrivacidadeSection } from '@/components/privacidade/PrivacidadeSection';
 
 /**
  * Página "Meu Perfil" (`/configuracoes`, Story 1.7, spec-1-7). Renderizada
@@ -33,6 +34,12 @@ import { LogAcessoSection } from '@/components/logs/LogAcessoSection';
  *    Tabela somente-leitura de `GET /api/logs-acesso` (toda tentativa de login
  *    por senha ou SSO, sucesso ou falha), filtrável por período. Nenhuma ação
  *    de edição/exclusão — a trilha é append-only.
+ *  - "Privacidade" (`PrivacidadeSection`, Story 8.1): montada para QUALQUER
+ *    papel autenticado, sem gate de `rankPapel` — a LGPD exige que todo
+ *    Usuário consiga baixar os próprios dados. Botão "Baixar meus dados" ->
+ *    `GET /api/usuarios/me/exportar-dados` -> download de `meus-dados.json`
+ *    (identidade + log de acesso + Movimentações + Pedidos do próprio
+ *    usuário).
  *  - "Segurança" (`SegurancaCard`, Story 1.11): visível a TODOS os papéis —
  *    "obrigatório para o seu papel" quando `origem==='senha'` e o papel
  *    alcança `gestor` sem MFA habilitado; "opcional" para os demais casos
@@ -452,6 +459,8 @@ export function ConfiguracoesPage() {
           </div>
         </CardContent>
       </Card>
+
+      <PrivacidadeSection />
 
       {podeDecidir && (
         <Card>
