@@ -20,3 +20,7 @@ frontend/node_modules/
 frontend/dist/
 frontend/*.env
 __pycache__/
+
+# Dados reais de migração do sistema legado (Ricardo) — nunca código-fonte,
+# nunca deve ir pro repositório (fotos e export completo do Firestore).
+migracao/
