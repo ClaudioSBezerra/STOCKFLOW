@@ -85,8 +85,9 @@ export function PrivacidadeSection() {
         <div className="flex flex-col gap-2 border-t border-border pt-4">
           <p className="text-body text-muted-foreground">
             A exclusão da conta é feita por um administrador: sua solicitação entra numa fila e a
-            conta é anonimizada — seu histórico de Movimentações e Pedidos é preservado sem
-            identificação.
+            conta é anonimizada. O vínculo com seu histórico de Movimentações e Pedidos é mantido
+            para preservar a integridade do registro — texto que você já tiver digitado (como o
+            solicitante de um pedido) não é reescrito.
           </p>
           <Button
             type="button"
@@ -112,7 +113,7 @@ export function PrivacidadeSection() {
           void aoSolicitarExclusao();
         }}
         title="Solicitar exclusão da sua conta?"
-        description="Um administrador vai revisar a solicitação e anonimizar sua conta: nome e e-mail são substituídos por valores anônimos e você perde o acesso. Movimentações e Pedidos que você gerou continuam no histórico, sem identificação."
+        description="Um administrador vai revisar a solicitação e anonimizar sua conta: nome e e-mail são substituídos por valores anônimos e você perde o acesso. O vínculo com seu histórico de Movimentações e Pedidos é mantido para preservar a integridade do registro, mas texto que você já tiver digitado (como o solicitante de um pedido) não é reescrito."
         confirmLabel="Solicitar exclusão"
         confirmVariant="destructive"
       />

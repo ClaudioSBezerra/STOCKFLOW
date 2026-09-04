@@ -22,10 +22,13 @@ import {
  * antes de `POST /api/solicitacoes-exclusao/{id}/processamento`.
  *
  * A anonimização é irreversível: reescreve nome/e-mail e zera as credenciais
- * da conta alvo; o histórico de Movimentações/Pedidos/log de acesso é
- * preservado sem identificação. Falha de carga e falha de ação (inclui o
- * 409 do guard do último administrador, cuja mensagem vem do servidor) viram
- * `<p role="alert">` inline. Toda ação — sucesso OU falha — refaz a lista.
+ * da conta alvo. O vínculo com o histórico de Movimentações/Pedidos/log de
+ * acesso é preservado por `usuario_id` para manter a integridade do
+ * registro/auditoria — texto livre pré-existente (como `pedidos.solicitante`
+ * ou o `logs_acesso.email_informado` original) NÃO é reescrito. Falha de
+ * carga e falha de ação (inclui o 409 do guard do último administrador, cuja
+ * mensagem vem do servidor) viram `<p role="alert">` inline. Toda ação —
+ * sucesso OU falha — refaz a lista.
  */
 export function SolicitacoesExclusaoSection() {
   const { usuario } = useAuth();
@@ -149,7 +152,7 @@ export function SolicitacoesExclusaoSection() {
         }}
         onConfirm={confirmarAcao}
         title={`Anonimizar a conta de ${alvo?.nome ?? ''}?`}
-        description="Esta ação é irreversível: o nome e o e-mail da conta são substituídos por valores anônimos, as credenciais são zeradas e as sessões encerradas. As Movimentações e Pedidos que a conta gerou continuam no histórico, sem identificação."
+        description="Esta ação é irreversível: o nome e o e-mail da conta são substituídos por valores anônimos, as credenciais são zeradas e as sessões encerradas. O vínculo com o histórico de Movimentações e Pedidos é mantido para preservar a integridade do registro, mas texto que a conta já tiver gerado (como o solicitante de um pedido) não é reescrito."
         confirmLabel="Anonimizar"
         confirmVariant="destructive"
       />

@@ -535,7 +535,10 @@ export function ConfiguracoesPage() {
 
       {rankPapel(papel) >= rankPapel('adm') && <LogAcessoSection />}
 
-      {rankPapel(papel) >= rankPapel('adm') && <SolicitacoesExclusaoSection />}
+      {/* SolicitacoesExclusaoSection já se auto-gateia por rankPapel('adm')
+          internamente (molde de PrivacidadeSection) — montada incondicionalmente
+          aqui para não duplicar o gate em dois lugares. */}
+      <SolicitacoesExclusaoSection />
     </div>
   );
 }

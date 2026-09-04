@@ -2,12 +2,26 @@
 title: 'Exclusão e anonimização de dados pessoais por Adm'
 type: 'feature'
 created: '2026-09-04'
-status: 'in-progress'
+status: 'done'
 review_loop_iteration: 0
-followup_review_recommended: false
+followup_review_recommended: true
 context: []
 warnings: [oversized]
-deferred: []
+deferred:
+  - summary: >-
+      O backstop de violação de unicidade (`23505`) em `SolicitarExclusaoConta`
+      para a corrida entre o `SELECT EXISTS` prévio e o `INSERT` não tem teste
+      que exercite concorrência real (duas goroutines/transações).
+    evidence: |-
+      `TestSolicitarExclusaoConta_Duplicata` só chama a função duas vezes em
+      sequência, nunca em paralelo, então o branch de tratamento de `23505`
+      nunca é de fato exercitado por um teste. O mesmo padrão (mesma lacuna) já
+      existe no molde `SolicitarPromocao`/`promocao_test.go`, que também nunca
+      testou esse branch com concorrência real — não é uma regressão desta
+      história, é uma lacuna herdada do padrão que ela replicou fielmente.
+    location: >-
+      backend/services/exclusao_conta.go
+    severity: low
 baseline_revision: 'b3e23f3c445a758653eb61984e9951d10bf7a75c'
 ---
 
@@ -140,6 +154,19 @@ export da Story 8.1.
 
 **NOTA (supervisão, 2026-09-04):** o run pausou (auto-rollback OFF, dev-verify) com o frontmatter já em `status: 'in-review'`, mas esta seção está vazia — nenhum "### Review pass" foi de fato registrado, ou seja, a revisão adversarial não rodou. `go build/vet/test` (backend) e `tsc`/`vitest` (frontend, 569/569) passam 100% com o que existe hoje, mas isso cobre só a implementação do dev, não uma revisão crítica. Status revertido para `in-progress` até uma sessão nova rodar a revisão de verdade.
 
+### 2026-09-04 — Review pass
+- intent_gap: 0
+- bad_spec: 0
+- patch: 9 (high 1, medium 0, low 8)
+- defer: 1 (low 1)
+- reject: 9
+- addressed_findings:
+  - `[high]` `[patch]` Texto da UI (`PrivacidadeSection.tsx`, `SolicitacoesExclusaoSection.tsx`) e comentário JSDoc afirmavam que Movimentações/Pedidos/log de acesso ficam "sem identificação" após a anonimização — falso, já que `pedidos.solicitante` (texto livre) e `logs_acesso.email_informado` preservam o nome/e-mail originais e nunca são tocados (a spec proíbe alterar essas tabelas). Texto corrigido para descrever fielmente a garantia real (vínculo por `usuario_id` preservado, texto livre pré-existente não reescrito).
+  - `[low]` `[patch]` Faltava teste 401-sem-token para `ProcessarExclusaoContaHandler` — adicionado.
+  - `[low]` `[patch]` Gate de papel `adm` duplicado (`SolicitacoesExclusaoSection.tsx` internamente + `ConfiguracoesPage.tsx` externamente) — removida a checagem externa, mantido só o gate interno do componente.
+  - `[low]` `[patch]` Linhas da I/O Matrix descritas na fronteira HTTP (login com e-mail antigo, SSO com e-mail antigo, falha de banco → 500, solicitação já processada, mensagem exata do guard do último `adm`, lista vazia/fora-de-ordem) só tinham teste no nível de service — adicionados testes de handler via rota real para cada uma, incluindo assert da mensagem exata do último `adm`.
+- Achados rejeitados (fora de escopo pela própria intenção, ou já cobertos/consistentes com padrão existente no código): corrida teórica no guard do último `adm` (inalcançável hoje, só 1 conta `adm` pode existir por índice único — já discutido em Design Notes); alcançabilidade questionável do branch `RowsAffected()==0`; ausência de paginação na listagem (consistente com `ListarUsuarios`/logs, nenhum endpoint do projeto pagina); ausência de estado de carregamento na `SolicitacoesExclusaoSection` (o molde `GestaoUsuariosSection` também não tem); `CHECK` não amarrar `processado_por` a `pendente` (sem impacto funcional, os dois campos sempre são escritos juntos); falta de teste para impedir nova solicitação após anonimização (depende do middleware AD-6 já testado em história anterior); ausência de notificação ao usuário após processamento (fora de escopo — a intenção proíbe explicitamente criar SLA/fluxo de resposta LGPD); ausência de log de auditoria adicional além de `processado_por`/`processado_em` (a própria intenção especifica esses dois campos como o mecanismo de auditoria); inconsistência de status do frontmatter apontada na nota de supervisão acima (já resolvida por este próprio run).
+
 ## Design Notes
 
 **Uma só conta `adm` no sistema.** `idx_usuarios_unico_adm` (migração 000001) é
@@ -178,3 +205,39 @@ existente muda de comportamento.
 - `cd backend && migrate ... up && migrate ... down 1` (ou o runner do projeto) -- expected: `000030` sobe e desce limpa
 - `cd frontend && npx vitest run src/lib/privacidade.test.ts src/components/privacidade src/components/usuarios/SolicitacoesExclusaoSection.test.tsx src/components/ConfirmDialog.test.tsx src/pages/ConfiguracoesPage.test.tsx` -- expected: novos e existentes verdes
 - `cd frontend && npx tsc --noEmit && npx oxlint` -- expected: sem erro
+
+## Auto Run Result
+
+Status: done
+
+**Resumo da mudança implementada:** Story 8.2 — exclusão/anonimização de dados pessoais mediada por `adm` (LGPD). Nova tabela `solicitacoes_exclusao_conta` (migração 000030); qualquer usuário autenticado registra uma solicitação `pendente` da própria conta (`POST /api/usuarios/me/solicitacao-exclusao`); só um `adm` lista (`GET /api/solicitacoes-exclusao`) e processa (`POST /api/solicitacoes-exclusao/{id}/processamento`) — processar anonimiza `usuarios.nome`/`email`, zera credenciais/MFA, revoga sessões e tokens de ação, tudo numa transação, sem tocar `movimentacoes`/`pedidos`/`logs_acesso`; guarda contra deixar zero `adm` ativo. UI: botão "Solicitar exclusão de conta" em `PrivacidadeSection` (qualquer papel) + nova `SolicitacoesExclusaoSection` só para `adm`. Todo o backend/frontend já havia sido implementado e testado num checkpoint anterior (commit `382e048`); esta invocação confirmou a implementação contra a spec linha a linha (sem código faltando) e então rodou a revisão adversarial que ainda não tinha sido feita.
+
+**Arquivos alterados nesta passagem (revisão):**
+- `frontend/src/components/privacidade/PrivacidadeSection.tsx` — texto do card/`ConfirmDialog` corrigido para não afirmar que Movimentações/Pedidos ficam "sem identificação" (falso: `pedidos.solicitante` é texto livre com o nome real, nunca tocado).
+- `frontend/src/components/usuarios/SolicitacoesExclusaoSection.tsx` — mesmo ajuste de texto (comentário JSDoc + `ConfirmDialog`, incluindo a menção indevida a `logs_acesso`); removida a duplicação do gate de papel `adm` (mantido só o gate interno do componente).
+- `frontend/src/pages/ConfiguracoesPage.tsx` — removida a checagem `rankPapel` redundante ao montar `<SolicitacoesExclusaoSection />` (molde de `PrivacidadeSection`, que já monta incondicionalmente).
+- `backend/handlers/exclusao_conta_test.go` — adicionados testes de fronteira HTTP que faltavam para linhas da I/O Matrix descritas nesse nível: 401 sem token no processamento; login e SSO com e-mail antigo falhando via rota real após anonimização; falha de banco → `500 INTERNAL_ERROR` via handler; solicitação já processada → `409` batendo a rota duas vezes; mensagem exata do guard do último `adm`; lista vazia e lista com múltiplos itens fora de ordem via rota real.
+- `_bmad-output/implementation-artifacts/spec-8-2-exclusao-e-anonimizacao-de-dados-pessoais-por-adm.md` — frontmatter (`status: done`, `followup_review_recommended: true`, `deferred`), nova entrada no `## Review Triage Log` e este `## Auto Run Result`.
+
+Nenhuma mudança de schema/serviço/rota (comportamento de backend) foi feita nesta passagem — só texto de UI/comentário, remoção de gate duplicado e testes novos.
+
+**Achados de revisão (esta passagem):** patch 9 (high 1, low 8, todos aplicados), defer 1 (low 1), reject 9. Detalhe completo em `## Review Triage Log`.
+- `[high]` `[patch]` UI/comentário prometiam anonimização de Pedidos/Movimentações/log de acesso que não acontece de fato (`pedidos.solicitante`, `logs_acesso.email_informado`) — texto corrigido.
+- `[low]` `[patch]` x8 — teste 401 faltando no handler de processamento; gate de papel duplicado; 6 linhas da I/O Matrix com garantia descrita na fronteira HTTP mas só testadas no nível de service (login/SSO pós-anonimização, falha de banco → 500, solicitação já processada, mensagem exata do último `adm`, lista vazia/fora-de-ordem) — todas agora com teste de rota real.
+- `defer` 1: backstop de corrida (`23505`) em `SolicitarExclusaoConta` sem teste de concorrência real — lacuna herdada do próprio molde (`SolicitarPromocao`), não uma regressão desta história.
+- `reject` 9: em sua maioria decisões já cobertas pela própria intenção (proibição explícita de tocar `movimentacoes`/`pedidos`/`logs_acesso`; ausência de SLA/notificação como escopo vetado; `processado_por`/`processado_em` já é o mecanismo de auditoria especificado) ou consistência com padrões já existentes no código (sem paginação em nenhuma listagem do projeto; sem estado de carregamento no molde `GestaoUsuariosSection`; corrida no guard do último `adm` inalcançável hoje por haver só uma conta `adm` possível).
+
+**Recomendação de review de acompanhamento:** `true`. Achados `patch` nesta passagem: high 1, medium 0, low 8. Regra: qualquer `patch` `high` já implica `true` (score de referência 3×0 + 1×8 = 8, também ≥ 5).
+
+**Verificação executada (após os 9 patches):**
+- `cd backend && go build ./... && go vet ./...` — limpo.
+- `cd backend && DATABASE_URL=postgres://stockflow:stockflow@127.0.0.1:5432/stockflow?sslmode=disable go test -p 1 ./services/... ./handlers/...` — `PASS` nos dois pacotes, incluindo todos os testes novos desta passagem; nenhuma regressão.
+- Ciclo de migração `000030` (`Steps(-1)` / `Up()` via `golang-migrate`) — sobe e desce limpo, schema pós-reup idêntico ao `up.sql` (verificado antes da passagem de revisão, sem mudança de schema nesta passagem).
+- `cd frontend && npx vitest run src/lib/privacidade.test.ts src/components/privacidade src/components/usuarios/SolicitacoesExclusaoSection.test.tsx src/components/ConfirmDialog.test.tsx src/pages/ConfiguracoesPage.test.tsx` — 5 arquivos, 67 testes, tudo verde.
+- `cd frontend && npx tsc --noEmit && npx oxlint` — limpo.
+- Suíte completa (antes desta passagem, na implementação original): backend `./services/... ./handlers/...` inteiros verdes; frontend 569/569 testes.
+
+**Riscos residuais:**
+- A anonimização nunca torna Pedidos/Movimentações/log de acesso não-identificáveis por completo — `pedidos.solicitante` (texto livre) e `logs_acesso.email_informado` preservam o nome/e-mail originais indefinidamente. Isso é uma decisão deliberada do intent (integridade histórica/auditoria dos épicos anteriores tem prioridade sobre apagamento total), agora refletida corretamente no texto da UI, mas é um risco de LGPD que uma pessoa da área jurídica/compliance pode querer revisitar no futuro (ex.: um pedido de exclusão mais agressivo que também expurgue esses campos de texto livre, quebrando a rastreabilidade do histórico).
+- O backstop de corrida (`23505`) para duplicar solicitação de exclusão nunca foi provado sob concorrência real, nem aqui nem no molde que ele copia (`SolicitarPromocao`) — registrado em `deferred`.
+- `docker compose up --build` (smoke E2E) não foi executado nesta passagem; toda a superfície nova tem cobertura equivalente via testes de integração contra Postgres real (service + handler) e testes de componente no frontend.

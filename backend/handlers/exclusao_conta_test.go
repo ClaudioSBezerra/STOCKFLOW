@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 
 	"stockflow/backend/middleware"
@@ -42,11 +44,20 @@ func getSolicitacoesExclusao(db *sql.DB, authHeader string) *httptest.ResponseRe
 // rota de newMux para exercitar a extração de `r.PathValue("id")` além da
 // composição RequireAuth -> RequireRole(adm) -> handler.
 func postProcessamentoExclusao(db *sql.DB, id, authHeader string) *httptest.ResponseRecorder {
+	return postProcessamentoExclusaoComHandlerDB(db, db, id, authHeader)
+}
+
+// postProcessamentoExclusaoComHandlerDB é a variante de postProcessamentoExclusao
+// que permite usar uma conexão DIFERENTE para o handler de processamento
+// (`dbHandler`) da usada para resolver a sessão em RequireAuth (`dbAuth`) —
+// necessária para simular uma falha de banco isolada no passo de
+// processamento sem impedir a autenticação/autorização de resolver primeiro.
+func postProcessamentoExclusaoComHandlerDB(dbAuth, dbHandler *sql.DB, id, authHeader string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/solicitacoes-exclusao/{id}/processamento",
-		middleware.RequireAuth(db, testJWTSecret)(
+		middleware.RequireAuth(dbAuth, testJWTSecret)(
 			middleware.RequireRole(services.PapelAdm)(
-				ProcessarExclusaoContaHandler(db))))
+				ProcessarExclusaoContaHandler(dbHandler))))
 	r := httptest.NewRequest(http.MethodPost, "/api/solicitacoes-exclusao/"+id+"/processamento", nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
@@ -157,6 +168,93 @@ func TestListarSolicitacoesExclusaoHandler_200Adm(t *testing.T) {
 	}
 }
 
+// TestListarSolicitacoesExclusaoHandler_200Vazia cobre "lista vazia => []" da
+// I/O Matrix na fronteira HTTP: nenhuma solicitação pendente devolve um array
+// vazio (nunca `null`), via a rota real.
+func TestListarSolicitacoesExclusaoHandler_200Vazia(t *testing.T) {
+	db := testDB(t)
+	criarContaComPapel(t, db, "Adm Vazia HTTP", "excl-h-vazia-adm@empresa.com", "senha-123456", "adm")
+	admToken := tokenDeLogin(t, db, "excl-h-vazia-adm@empresa.com", "senha-123456")
+
+	w := getSolicitacoesExclusao(db, "Bearer "+admToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"solicitacoes":[]`) {
+		t.Fatalf("body = %s, want solicitacoes:[] (array vazio, não null)", w.Body.String())
+	}
+	var b listaExclusaoBody
+	if err := json.Unmarshal(w.Body.Bytes(), &b); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if len(b.Solicitacoes) != 0 {
+		t.Errorf("len(solicitacoes) = %d, want 0", len(b.Solicitacoes))
+	}
+}
+
+// setCriadoEmExclusao força criado_em de uma solicitação de exclusão via SQL
+// direto (offset em segundos a partir de agora), para tornar o ORDER BY
+// determinístico em teste — mesma técnica de
+// services.inserirSolicitacaoExclusao, usada aqui só para controlar a ORDEM
+// de linhas já criadas pela rota HTTP real.
+func setCriadoEmExclusao(t *testing.T, db *sql.DB, id string, offsetSegundos int) {
+	t.Helper()
+	if _, err := db.Exec(
+		`UPDATE solicitacoes_exclusao_conta SET criado_em = now() + ($2 || ' seconds')::interval WHERE id = $1`,
+		id, offsetSegundos,
+	); err != nil {
+		t.Fatalf("forçar criado_em da solicitação de exclusão: %v", err)
+	}
+}
+
+// TestListarSolicitacoesExclusaoHandler_200MultiplosForaDeOrdem cobre "Adm
+// lista solicitações" com MÚLTIPLOS itens inseridos fora de ordem de criação,
+// batendo na rota real (o service já tem cobertura equivalente em
+// TestListarSolicitacoesExclusao_PendentesOrdenadas) — prova que a ordenação
+// por criado_em,id também se sustenta na fronteira HTTP.
+func TestListarSolicitacoesExclusaoHandler_200MultiplosForaDeOrdem(t *testing.T) {
+	db := testDB(t)
+
+	criarContaComPapel(t, db, "Carla Ordem", "excl-h-ordem-c@empresa.com", "senha-123456", "usuario")
+	tokenC := tokenDeLogin(t, db, "excl-h-ordem-c@empresa.com", "senha-123456")
+	idC := criarPendenteExclusao(t, db, tokenC)
+
+	criarContaComPapel(t, db, "Ana Ordem", "excl-h-ordem-a@empresa.com", "senha-123456", "usuario")
+	tokenA := tokenDeLogin(t, db, "excl-h-ordem-a@empresa.com", "senha-123456")
+	idA := criarPendenteExclusao(t, db, tokenA)
+
+	criarContaComPapel(t, db, "Bruno Ordem", "excl-h-ordem-b@empresa.com", "senha-123456", "usuario")
+	tokenB := tokenDeLogin(t, db, "excl-h-ordem-b@empresa.com", "senha-123456")
+	idB := criarPendenteExclusao(t, db, tokenB)
+
+	// Força a ORDEM cronológica: Ana(10) < Bruno(20) < Carla(30), mesmo tendo
+	// sido criada primeiro na chamada acima.
+	setCriadoEmExclusao(t, db, idC, 30)
+	setCriadoEmExclusao(t, db, idA, 10)
+	setCriadoEmExclusao(t, db, idB, 20)
+
+	criarContaComPapel(t, db, "Adm Ordem HTTP", "excl-h-ordem-adm@empresa.com", "senha-123456", "adm")
+	admToken := tokenDeLogin(t, db, "excl-h-ordem-adm@empresa.com", "senha-123456")
+
+	w := getSolicitacoesExclusao(db, "Bearer "+admToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var b listaExclusaoBody
+	if err := json.Unmarshal(w.Body.Bytes(), &b); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if len(b.Solicitacoes) != 3 {
+		t.Fatalf("len(solicitacoes) = %d, want 3 (%+v)", len(b.Solicitacoes), b.Solicitacoes)
+	}
+	wantNomes := []string{"Ana Ordem", "Bruno Ordem", "Carla Ordem"}
+	for i, want := range wantNomes {
+		if b.Solicitacoes[i].Nome != want {
+			t.Errorf("solicitacoes[%d].Nome = %q, want %q (ordenação por criado_em)", i, b.Solicitacoes[i].Nome, want)
+		}
+	}
+}
+
 func TestListarSolicitacoesExclusaoHandler_401SemToken(t *testing.T) {
 	db := testDB(t)
 	if w := getSolicitacoesExclusao(db, ""); w.Code != http.StatusUnauthorized {
@@ -226,8 +324,11 @@ func TestProcessarExclusaoContaHandler_409UltimoAdm(t *testing.T) {
 	if env.Error.Code != "CONFLICT" {
 		t.Errorf("code = %q, want CONFLICT", env.Error.Code)
 	}
-	if env.Error.Message == "" {
-		t.Error("mensagem vazia, want explicação do invariante do último administrador")
+	// Assert o texto EXATO (não só "não vazio"): garante que a mensagem do
+	// invariante do último `adm` (services.ErrUltimoAdmAtivo) realmente chega
+	// até a resposta HTTP, e não uma mensagem genérica qualquer.
+	if want := services.ErrUltimoAdmAtivo.Error(); env.Error.Message != want {
+		t.Errorf("message = %q, want %q", env.Error.Message, want)
 	}
 }
 
@@ -253,5 +354,133 @@ func TestProcessarExclusaoContaHandler_403Gestor(t *testing.T) {
 	w := postProcessamentoExclusao(db, "00000000-0000-0000-0000-000000000000", "Bearer "+token)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403 (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestProcessarExclusaoContaHandler_401SemToken(t *testing.T) {
+	db := testDB(t)
+	w := postProcessamentoExclusao(db, "00000000-0000-0000-0000-000000000000", "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+}
+
+// TestProcessarExclusaoContaHandler_LoginAntigoFalha cobre, na fronteira HTTP
+// real (POST /api/auth/login via LoginHandler — não Login(...) direto), a
+// linha "Login por e-mail antigo após anonimização" da I/O Matrix: depois do
+// processamento pela rota real, autenticar com o e-mail original continua
+// falhando exatamente como conta inexistente.
+func TestProcessarExclusaoContaHandler_LoginAntigoFalha(t *testing.T) {
+	db := testDB(t)
+	const emailOriginal = "excl-h-login-antigo@empresa.com"
+	criarContaComPapel(t, db, "Login Antigo HTTP", emailOriginal, "senha-123456", "usuario")
+	alvoToken := tokenDeLogin(t, db, emailOriginal, "senha-123456")
+	solID := criarPendenteExclusao(t, db, alvoToken)
+
+	criarContaComPapel(t, db, "Adm Login HTTP", "excl-h-adm-login@empresa.com", "senha-123456", "adm")
+	admToken := tokenDeLogin(t, db, "excl-h-adm-login@empresa.com", "senha-123456")
+
+	if w := postProcessamentoExclusao(db, solID, "Bearer "+admToken); w.Code != http.StatusOK {
+		t.Fatalf("pré-condição processamento: status = %d (body=%s)", w.Code, w.Body.String())
+	}
+
+	w := postLogin(db, `{"email":"`+emailOriginal+`","senha":"senha-123456"}`)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (body=%s)", w.Code, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "INVALID_CREDENTIALS" {
+		t.Errorf("code = %q, want INVALID_CREDENTIALS", env.Error.Code)
+	}
+}
+
+// TestProcessarExclusaoContaHandler_SSOAntigoFalha cobre, na fronteira HTTP
+// real (POST /api/auth/sso/keycloak via KeycloakSSOHandler — não
+// BuscarUsuarioPorEmailSSO(...) direto), a linha "SSO com o e-mail antigo
+// após anonimização": o callback responde 401 SSO_SEM_CONTA porque
+// BuscarUsuarioPorEmailSSO não acha mais nenhuma linha com o e-mail original.
+func TestProcessarExclusaoContaHandler_SSOAntigoFalha(t *testing.T) {
+	db := testDB(t)
+	priv := ssoGerarChave(t)
+	const emailOriginal = "excl-h-sso-antigo@empresa.com"
+	criarContaComPapel(t, db, "SSO Antigo HTTP", emailOriginal, "senha-123456", "usuario")
+	alvoToken := tokenDeLogin(t, db, emailOriginal, "senha-123456")
+	solID := criarPendenteExclusao(t, db, alvoToken)
+
+	criarContaComPapel(t, db, "Adm SSO HTTP", "excl-h-adm-sso@empresa.com", "senha-123456", "adm")
+	admToken := tokenDeLogin(t, db, "excl-h-adm-sso@empresa.com", "senha-123456")
+
+	if w := postProcessamentoExclusao(db, solID, "Bearer "+admToken); w.Code != http.StatusOK {
+		t.Fatalf("pré-condição processamento: status = %d (body=%s)", w.Code, w.Body.String())
+	}
+
+	h := ssoHandler(t, db, priv, "")
+	c := ssoClaims()
+	c["email"] = emailOriginal
+	w := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, c))
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (body=%s)", w.Code, w.Body.String())
+	}
+	if got := decodeErro(t, w.Body.Bytes()).Error.Code; got != "SSO_SEM_CONTA" {
+		t.Fatalf("code = %q, want SSO_SEM_CONTA", got)
+	}
+}
+
+// TestProcessarExclusaoContaHandler_500FalhaDeBanco cobre "Falha de banco em
+// qualquer passo" através do HANDLER real (ProcessarExclusaoContaHandler),
+// não só de ProcessarExclusaoConta(db2,...) no nível de service: a conexão
+// usada pelo HANDLER está fechada (RequireAuth ainda resolve a sessão pela
+// conexão boa), então o processamento falha e a resposta é 500 INTERNAL_ERROR
+// no envelope AD-14.
+func TestProcessarExclusaoContaHandler_500FalhaDeBanco(t *testing.T) {
+	db := testDB(t)
+	criarContaComPapel(t, db, "Erro Banco HTTP", "excl-h-erro-banco@empresa.com", "senha-123456", "usuario")
+	alvoToken := tokenDeLogin(t, db, "excl-h-erro-banco@empresa.com", "senha-123456")
+	solID := criarPendenteExclusao(t, db, alvoToken)
+
+	criarContaComPapel(t, db, "Adm Erro HTTP", "excl-h-adm-erro@empresa.com", "senha-123456", "adm")
+	admToken := tokenDeLogin(t, db, "excl-h-adm-erro@empresa.com", "senha-123456")
+
+	dbFechado, err := sql.Open("postgres", os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatalf("abrir conexão auxiliar: %v", err)
+	}
+	dbFechado.Close()
+
+	w := postProcessamentoExclusaoComHandlerDB(db, dbFechado, solID, "Bearer "+admToken)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (body=%s)", w.Code, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "INTERNAL_ERROR" {
+		t.Errorf("code = %q, want INTERNAL_ERROR", env.Error.Code)
+	}
+}
+
+// TestProcessarExclusaoContaHandler_409JaProcessada cobre "Solicitação já
+// processada (reuso/corrida)" no nível de HANDLER — batendo duas vezes na
+// rota real de processamento — complementando
+// services.TestProcessarExclusaoConta_JaProcessada (só no nível de service).
+func TestProcessarExclusaoContaHandler_409JaProcessada(t *testing.T) {
+	db := testDB(t)
+	alvoToken := (func() string {
+		criarContaComPapel(t, db, "Duas Vezes HTTP", "excl-h-2x@empresa.com", "senha-123456", "usuario")
+		return tokenDeLogin(t, db, "excl-h-2x@empresa.com", "senha-123456")
+	})()
+	solID := criarPendenteExclusao(t, db, alvoToken)
+
+	criarContaComPapel(t, db, "Adm 2x HTTP", "excl-h-adm-2x@empresa.com", "senha-123456", "adm")
+	admToken := tokenDeLogin(t, db, "excl-h-adm-2x@empresa.com", "senha-123456")
+
+	if w := postProcessamentoExclusao(db, solID, "Bearer "+admToken); w.Code != http.StatusOK {
+		t.Fatalf("primeiro processamento: status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+
+	w := postProcessamentoExclusao(db, solID, "Bearer "+admToken)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("segundo processamento: status = %d, want 409 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "CONFLICT" {
+		t.Errorf("code = %q, want CONFLICT", env.Error.Code)
 	}
 }
