@@ -96,7 +96,7 @@ development_status:
   7-4-consulta-de-todos-os-pedidos-fila-almoxarife: done
   7-5-aprovação-rejeição-com-revalidação-de-estoque-item-a-item: done
   7-6-recibo-do-pedido-em-pdf-gerado-pelo-servidor: done
-  7-7-migração-de-pedidos-e-vínculo-com-histórico: backlog
+  7-7-migração-de-pedidos-e-vínculo-com-histórico: awaiting-operator
   epic-7-retrospective: optional
 
   epic-8: backlog
