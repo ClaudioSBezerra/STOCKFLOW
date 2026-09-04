@@ -50,23 +50,23 @@ development_status:
   1-12-log-de-acesso-e-auditoria: done
   epic-1-retrospective: optional
 
-  epic-2: backlog
+  epic-2: done
   2-1-criar-e-listar-locais-de-estoque: done
   2-2-exclusão-de-estoque-trata-resíduos-e-pedidos-pendentes: done
-  2-3-migração-dos-estoques-legados: awaiting-operator
+  2-3-migração-dos-estoques-legados: done
   epic-2-retrospective: optional
 
-  epic-3: backlog
+  epic-3: done
   3-1-cadastro-manual-de-produto-com-dimensões-estruturadas: done
   3-2-nomenclatura-guiada-por-subtipo: done
   3-3-importação-em-massa-via-planilha-padronizada: done
   3-4-importação-atualiza-por-código-não-só-cria: done
   3-5-upload-e-armazenamento-de-foto-do-produto: done
   3-6-galeria-e-visualização-ampliada-de-fotos-lightbox: done
-  3-7-migração-de-produtos-categorias-e-fotos-legadas: awaiting-operator
+  3-7-migração-de-produtos-categorias-e-fotos-legadas: done
   epic-3-retrospective: optional
 
-  epic-4: backlog
+  epic-4: done
   4-1-busca-por-nome-código-categoria-com-sugestões: done
   4-2-filtros-por-categoria-estoque-e-disponibilidade: done
   4-3-visualização-em-grade-e-tabela-agrupada: done
@@ -75,31 +75,31 @@ development_status:
   4-6-exportação-da-tabela-do-catálogo-para-excel: done
   epic-4-retrospective: optional
 
-  epic-5: backlog
+  epic-5: done
   5-1-registrar-baixa-consumo: done
   5-2-registrar-transferência-entre-estoques: done
   5-3-histórico-de-movimentações-consultável: done
-  5-4-migração-do-histórico-de-movimentações-legado: awaiting-operator
+  5-4-migração-do-histórico-de-movimentações-legado: done
   epic-5-retrospective: optional
 
-  epic-6: backlog
+  epic-6: done
   6-1-detecção-de-inconsistências-dimensionais: done
   6-2-aplicação-seletiva-de-correções: done
   6-3-detecção-de-duplicatas: done
   6-4-mesclagem-de-duplicatas-com-trilha-de-auditoria: done
   epic-6-retrospective: optional
 
-  epic-7: backlog
+  epic-7: done
   7-1-carrinho-de-reserva: done
   7-2-envio-de-pedido: done
   7-3-consulta-de-pedidos-próprios: done
   7-4-consulta-de-todos-os-pedidos-fila-almoxarife: done
   7-5-aprovação-rejeição-com-revalidação-de-estoque-item-a-item: done
   7-6-recibo-do-pedido-em-pdf-gerado-pelo-servidor: done
-  7-7-migração-de-pedidos-e-vínculo-com-histórico: awaiting-operator
+  7-7-migração-de-pedidos-e-vínculo-com-histórico: done
   epic-7-retrospective: optional
 
-  epic-8: backlog
+  epic-8: done
   8-1-exportação-dos-próprios-dados-pessoais: done
   8-2-exclusão-e-anonimização-de-dados-pessoais-por-adm: done
   epic-8-retrospective: optional

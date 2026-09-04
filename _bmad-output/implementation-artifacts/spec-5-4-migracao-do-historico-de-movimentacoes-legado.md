@@ -2,7 +2,7 @@
 title: 'Story 5.4 — Migração do Histórico de Movimentações legado'
 type: 'feature'
 created: '2026-09-01'
-status: 'awaiting-operator'
+status: 'done'
 review_loop_iteration: 0
 followup_review_recommended: true
 baseline_revision: '138b5cc96f5a81ea304be5dd2844a581b3ef7940'

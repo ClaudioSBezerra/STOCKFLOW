@@ -2,7 +2,7 @@
 title: 'Story 7.7 — Migração de Pedidos e vínculo com Histórico'
 type: 'feature'
 created: '2026-09-03'
-status: 'awaiting-operator'
+status: 'done'
 review_loop_iteration: 0
 followup_review_recommended: false
 baseline_revision: 'f1777e0f176394ac3246d31039df03bf20542d07'

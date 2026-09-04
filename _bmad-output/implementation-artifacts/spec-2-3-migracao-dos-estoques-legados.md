@@ -2,7 +2,7 @@
 title: 'Story 2.3 — Migração dos Estoques legados'
 type: 'feature'
 created: '2026-08-30'
-status: 'awaiting-operator'
+status: 'done'
 review_loop_iteration: 0
 followup_review_recommended: true
 baseline_revision: '9332770ba054f6d535b6b146e33b7bd9f46e73c0'

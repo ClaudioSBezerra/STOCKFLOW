@@ -2,7 +2,7 @@
 title: 'Story 3.7 — Migração de Produtos, Categorias e fotos legadas'
 type: 'feature'
 created: '2026-08-31'
-status: 'awaiting-operator'
+status: 'done'
 review_loop_iteration: 0
 followup_review_recommended: true
 baseline_revision: '5b5606bcc4c2ae1014412e279f3353889a99f8fa'
