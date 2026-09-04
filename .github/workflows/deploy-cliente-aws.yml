@@ -146,9 +146,15 @@ jobs:
       - name: Seed do primeiro administrador
         working-directory: /opt/apps/stockflow/cliente-aws
         run: |
-          set -a
-          source .env
-          set +a
+          # Le so as 3 linhas que interessam em vez de `source .env`: outros
+          # valores do .env (ex. SMTP_FROM="Nome <email>") tem caracteres como
+          # `<`/`>` que sao validos num arquivo KEY=VALUE mas quebram a sintaxe
+          # se o arquivo inteiro for executado como script bash (incidente
+          # real 2026-09-03: os dois deploys anteriores falharam aqui, com o
+          # app ja no ar e saudavel -- so este passo quebrava depois).
+          ADMIN_NOME=$(grep '^ADMIN_NOME=' .env | tail -1 | cut -d= -f2-)
+          ADMIN_EMAIL=$(grep '^ADMIN_EMAIL=' .env | tail -1 | cut -d= -f2-)
+          ADMIN_SENHA=$(grep '^ADMIN_SENHA=' .env | tail -1 | cut -d= -f2-)
           if [ -z "$ADMIN_EMAIL" ] || [ -z "$ADMIN_SENHA" ]; then
             echo "ADMIN_EMAIL/ADMIN_SENHA nao definidos no .env -- pulando seed do admin."
             exit 0
