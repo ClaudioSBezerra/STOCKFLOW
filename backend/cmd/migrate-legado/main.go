@@ -2,7 +2,9 @@
 // do sistema legado (protótipo Firestore, hoje espelhado num PostgreSQL local
 // mantido pela empresa — addendum §F) para o schema novo do stockflow. Na
 // mesma execução migra também, nessa ordem, os Produtos/Categorias/fotos
-// (Story 3.7) e o Histórico de Movimentações legado (Story 5.4).
+// (Story 3.7), o Histórico de Movimentações legado (Story 5.4) e, por fim,
+// os Pedidos de Retirada legados — restabelecendo o vínculo de cada
+// Movimentação migrada com o Pedido legado que a originou (Story 7.7).
 //
 // Isto é deliberadamente um binário standalone one-off — nunca uma rota HTTP,
 // nunca um handler registrado no servidor da API, nunca um cron nem uma chamada
@@ -301,6 +303,37 @@ func main() {
 		for _, p := range resMov.PendentesRevisao {
 			fmt.Fprintf(os.Stderr, "    id_legado=%s  produto=%q  tipo=%q  origem=%q  destino=%q  qtd=%q  timestamp=%q  motivo: %s\n",
 				p.IDLegado, p.Produto, p.Tipo, p.Origem, p.Destino, p.Qtd, p.Timestamp, p.Motivo)
+		}
+	}
+
+	// migrarPedidos roda SEMPRE depois de migrarMovimentacoes na mesma
+	// execução (Story 7.7, spec-7-7): o vínculo Movimentação↔Pedido precisa
+	// das Movimentações já em migracao_id_map. Um erro anterior já saiu com
+	// os.Exit(1) antes de chegar aqui.
+	resPed, err := migrarPedidos(alvo, legado, *executar)
+	if err != nil {
+		if errors.Is(err, errSeedUsuarioMigracaoAusente) {
+			fmt.Fprintln(os.Stderr, "erro: seed do usuário de migração ausente — a migration 000022 (usuário \"Migração do sistema legado\") não foi aplicada no banco alvo. Aplique todas as migrations antes do corte. Nada foi escrito.")
+		} else {
+			fmt.Fprintf(os.Stderr, "erro: %v (transação de Pedidos revertida, nada foi escrito)\n", err)
+		}
+		os.Exit(1)
+	}
+
+	if *executar {
+		fmt.Fprintf(os.Stdout, "corte aplicado (pedidos): Migrados=%d, JaMigrados=%d\n", resPed.Migrados, resPed.JaMigrados)
+	} else {
+		fmt.Fprintf(os.Stdout, "dry-run (nada escrito, pedidos): migraria %d, já migrados %d, pendências %d\n",
+			resPed.Migrados, resPed.JaMigrados, len(resPed.PendentesRevisao))
+	}
+	for _, aviso := range resPed.AvisosData {
+		fmt.Fprintf(os.Stdout, "aviso (pedidos): %s\n", aviso)
+	}
+	if len(resPed.PendentesRevisao) > 0 {
+		fmt.Fprintf(os.Stderr, "atenção: %d pedido(s) legado(s) não migrado(s) — revisão manual necessária (lista recomputada a cada execução):\n", len(resPed.PendentesRevisao))
+		for _, p := range resPed.PendentesRevisao {
+			fmt.Fprintf(os.Stderr, "    id_legado=%s  solicitante=%q  status=%q  qtd_itens=%d  motivo: %s\n",
+				p.IDLegado, p.Solicitante, p.Status, p.QtdItens, p.Motivo)
 		}
 	}
 }

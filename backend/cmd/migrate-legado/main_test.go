@@ -135,6 +135,34 @@ func testDB(t *testing.T) (alvo, legado *sql.DB) {
 		t.Fatalf("falha ao criar legado.historico: %v", err)
 	}
 
+	// legado.pedidos — Story 7.7 (spec-7-7). Fixture com as colunas
+	// documentadas no addendum §F, coleção `pedidos`: `id` textual (doc id do
+	// Firestore), `solicitante`/`obra`/`obs` (texto livre), `email`/`uid`
+	// (referência ao usuário — só `email` é resolvido contra `usuarios`),
+	// `itens` (array jsonb de `{prodId, nome, unidade, estoque, qtd,
+	// categoria}`), `status` (pendente|aprovado|rejeitado), `criado_em`/
+	// `atualizado_em`.
+	if _, err := alvo.Exec(`CREATE TABLE IF NOT EXISTS legado.pedidos (
+		id text primary key,
+		solicitante text,
+		obra text,
+		obs text,
+		email text,
+		uid text,
+		itens jsonb,
+		status text,
+		criado_em timestamptz,
+		atualizado_em timestamptz
+	)`); err != nil {
+		t.Fatalf("falha ao criar legado.pedidos: %v", err)
+	}
+	// O vínculo Movimentação↔Pedido é lido do campo `pedido` de
+	// legado.historico (Design Notes de spec-7-7 — a confirmação do nome real
+	// no espelho é operator_action). Idempotente: no-op se a coluna já existe.
+	if _, err := alvo.Exec(`ALTER TABLE legado.historico ADD COLUMN IF NOT EXISTS pedido text`); err != nil {
+		t.Fatalf("falha ao adicionar legado.historico.pedido: %v", err)
+	}
+
 	// Garante o usuário sintético "Migração do sistema legado" (seed da
 	// migration 000022) — autor NOT NULL de toda Movimentação migrada. Outras
 	// suítes (services/handlers/middleware) fazem `TRUNCATE usuarios CASCADE`,
@@ -175,13 +203,21 @@ func limparTabelas(t *testing.T, alvo *sql.DB) {
 		// Boundaries). O usuário sintético "Migração do sistema legado" é seed
 		// da migration 000022.
 		//
-		// movimentacoes ANTES de produtos/estoques: FK sem ON DELETE CASCADE
-		// (migration 000021). legado.historico junto das demais tabelas
-		// legadas.
+		// movimentacoes ANTES de produtos/estoques/pedidos: FK sem ON DELETE
+		// CASCADE (migrations 000021/000028). legado.historico/legado.pedidos
+		// junto das demais tabelas legadas.
+		//
+		// Story 7.7: pedido_itens (FK produto_id -> produtos sem cascade) e
+		// movimentacoes (FK pedido_id -> pedidos sem cascade) ANTES de
+		// pedidos/produtos; pedidos depois de movimentacoes. usuarios NUNCA é
+		// limpa (seed do usuário sintético + seed compartilhado).
+		`DELETE FROM legado.pedidos`,
 		`DELETE FROM legado.produtos`,
 		`DELETE FROM legado.estoques`,
 		`DELETE FROM legado.historico`,
 		`DELETE FROM movimentacoes`,
+		`DELETE FROM pedido_itens`,
+		`DELETE FROM pedidos`,
 		`DELETE FROM produto_estoque`,
 		`DELETE FROM migracao_id_map`,
 		`DELETE FROM produtos`,
