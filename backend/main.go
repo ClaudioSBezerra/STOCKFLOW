@@ -651,6 +651,26 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	mux.HandleFunc("GET /api/usuarios/me/exportar-dados", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ExportarDadosUsuarioHandler(db)))
 
+	// Exclusão e anonimização de dados pessoais por Adm — Story 8.2 (Epic 8,
+	// Privacidade/LGPD), spec-8-2. Exclusão baseada em solicitação, nunca
+	// self-service: POST /api/usuarios/me/solicitacao-exclusao fica atrás SÓ
+	// de RequireAuth — qualquer papel autenticado REGISTRA a solicitação da
+	// PRÓPRIA conta (a rota `me` só registra, nunca anonimiza). GET
+	// /api/solicitacoes-exclusao e POST
+	// /api/solicitacoes-exclusao/{id}/processamento ficam atrás de
+	// RequireAuth + RequireRole(adm) — mesmo gate de GET /api/logs-acesso: só
+	// um `adm` lista a fila e anonimiza. A anonimização reescreve apenas
+	// nome/email/credenciais na linha de `usuarios`; nenhuma linha de
+	// `movimentacoes`/`pedidos`/`logs_acesso` é tocada.
+	mux.HandleFunc("POST /api/usuarios/me/solicitacao-exclusao", middleware.RequireAuth(db, jwtSecret)(
+		handlers.SolicitarExclusaoContaHandler(db)))
+	mux.HandleFunc("GET /api/solicitacoes-exclusao", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAdm)(
+			handlers.ListarSolicitacoesExclusaoHandler(db))))
+	mux.HandleFunc("POST /api/solicitacoes-exclusao/{id}/processamento", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAdm)(
+			handlers.ProcessarExclusaoContaHandler(db))))
+
 	// Infraestrutura de tempo real (AD-2/AD-3) — Story 4.4. POST
 	// /api/realtime/ticket leva só RequireAuth: qualquer conta autenticada
 	// pode abrir sua própria conexão SSE. GET /api/realtime/stream é o único

@@ -10,6 +10,7 @@ import { getAccessToken } from '@/lib/session';
 import { rankPapel } from '@/components/shell/nav-items';
 import { proximoPapel, rotuloPapel } from '@/lib/promocao';
 import { GestaoUsuariosSection } from '@/components/usuarios/GestaoUsuariosSection';
+import { SolicitacoesExclusaoSection } from '@/components/usuarios/SolicitacoesExclusaoSection';
 import { LogAcessoSection } from '@/components/logs/LogAcessoSection';
 import { PrivacidadeSection } from '@/components/privacidade/PrivacidadeSection';
 
@@ -533,6 +534,8 @@ export function ConfiguracoesPage() {
       {podeDecidir && <GestaoUsuariosSection />}
 
       {rankPapel(papel) >= rankPapel('adm') && <LogAcessoSection />}
+
+      {rankPapel(papel) >= rankPapel('adm') && <SolicitacoesExclusaoSection />}
     </div>
   );
 }

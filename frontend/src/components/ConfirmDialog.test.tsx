@@ -139,4 +139,27 @@ describe('ConfirmDialog', () => {
     expect(await screen.findByText('Excluir item')).toBeInTheDocument();
     expect(screen.getByText('Essa ação não pode ser desfeita.')).toBeInTheDocument();
   });
+
+  it('confirmVariant="destructive" aplica o token destrutivo ao botão de confirmar', async () => {
+    render(
+      <ConfirmDialog
+        open
+        onOpenChange={vi.fn()}
+        onConfirm={vi.fn()}
+        title="Anonimizar conta"
+        confirmLabel="Anonimizar"
+        confirmVariant="destructive"
+      />,
+    );
+    const confirmButton = await screen.findByRole('button', { name: 'Anonimizar' });
+    expect(confirmButton.getAttribute('data-variant')).toBe('destructive');
+    expect(confirmButton.className).toContain('bg-destructive');
+  });
+
+  it('omitir confirmVariant mantém o visual padrão (não-destrutivo) do botão de confirmar', async () => {
+    render(<Wrapper onConfirm={vi.fn()} />);
+    const confirmButton = await screen.findByRole('button', { name: 'Confirmar' });
+    expect(confirmButton.className).not.toContain('bg-destructive');
+    expect(confirmButton.className).toContain('bg-primary');
+  });
 });

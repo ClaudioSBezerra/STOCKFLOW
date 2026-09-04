@@ -4,14 +4,17 @@ import userEvent from '@testing-library/user-event';
 import { PrivacidadeSection } from './PrivacidadeSection';
 
 const toastError = vi.hoisted(() => vi.fn());
-vi.mock('sonner', () => ({ toast: { error: toastError } }));
+const toastSuccess = vi.hoisted(() => vi.fn());
+vi.mock('sonner', () => ({ toast: { error: toastError, success: toastSuccess } }));
 
 const baixarMeusDadosBlobMock = vi.hoisted(() => vi.fn());
+const solicitarExclusaoContaMock = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/privacidade', async () => {
   const actual = await vi.importActual<typeof import('@/lib/privacidade')>('@/lib/privacidade');
   return {
     ...actual,
     baixarMeusDadosBlob: baixarMeusDadosBlobMock,
+    solicitarExclusaoConta: solicitarExclusaoContaMock,
   };
 });
 
@@ -27,7 +30,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('PrivacidadeSection', () => {
+describe('PrivacidadeSection — Baixar meus dados', () => {
   it('renderiza o título e o botão "Baixar meus dados"', () => {
     render(<PrivacidadeSection />);
 
@@ -82,5 +85,52 @@ describe('PrivacidadeSection', () => {
         'Não foi possível baixar seus dados agora. Tente novamente em instantes.',
       ),
     );
+  });
+});
+
+describe('PrivacidadeSection — Solicitar exclusão de conta (Story 8.2)', () => {
+  it('mostra o botão "Solicitar exclusão de conta" (sem gate de papel)', () => {
+    render(<PrivacidadeSection />);
+    expect(
+      screen.getByRole('button', { name: 'Solicitar exclusão de conta' }),
+    ).toBeInTheDocument();
+  });
+
+  it('clicar no botão abre o ConfirmDialog e só então chama solicitarExclusaoConta ao confirmar', async () => {
+    solicitarExclusaoContaMock.mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    render(<PrivacidadeSection />);
+
+    await user.click(screen.getByRole('button', { name: 'Solicitar exclusão de conta' }));
+
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog).toBeInTheDocument();
+    expect(solicitarExclusaoContaMock).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Solicitar exclusão' }));
+
+    await waitFor(() => expect(solicitarExclusaoContaMock).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(toastSuccess).toHaveBeenCalledWith(expect.stringContaining('Solicitação registrada')),
+    );
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it('409 mostra toast.error com a mensagem do servidor', async () => {
+    solicitarExclusaoContaMock.mockRejectedValue(
+      new Error('já existe uma solicitação de exclusão pendente para a sua conta'),
+    );
+    const user = userEvent.setup();
+    render(<PrivacidadeSection />);
+
+    await user.click(screen.getByRole('button', { name: 'Solicitar exclusão de conta' }));
+    await user.click(await screen.findByRole('button', { name: 'Solicitar exclusão' }));
+
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith(
+        'já existe uma solicitação de exclusão pendente para a sua conta',
+      ),
+    );
+    expect(toastSuccess).not.toHaveBeenCalled();
   });
 });

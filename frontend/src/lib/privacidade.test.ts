@@ -1,5 +1,14 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { baixarMeusDadosBlob, MENSAGEM_ERRO_EXPORTAR } from './privacidade';
+import {
+  baixarMeusDadosBlob,
+  listarSolicitacoesExclusao,
+  MENSAGEM_ERRO_EXPORTAR,
+  MENSAGEM_ERRO_LISTAR_EXCLUSAO,
+  MENSAGEM_ERRO_PROCESSAR_EXCLUSAO,
+  MENSAGEM_ERRO_SOLICITAR_EXCLUSAO,
+  processarExclusaoConta,
+  solicitarExclusaoConta,
+} from './privacidade';
 
 vi.mock('@/lib/session', () => ({
   getAccessToken: () => 'token-de-teste',
@@ -66,5 +75,108 @@ describe('baixarMeusDadosBlob', () => {
     });
 
     await expect(baixarMeusDadosBlob()).rejects.toThrow(MENSAGEM_ERRO_EXPORTAR);
+  });
+});
+
+describe('solicitarExclusaoConta', () => {
+  it('POST /api/usuarios/me/solicitacao-exclusao com Authorization, sem corpo', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({}) });
+
+    await solicitarExclusaoConta();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/usuarios/me/solicitacao-exclusao');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer token-de-teste' });
+    expect(init.body).toBeUndefined();
+  });
+
+  it('propaga a mensagem do servidor num 409', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({
+        error: { code: 'CONFLICT', message: 'já existe uma solicitação de exclusão pendente para a sua conta' },
+      }),
+    });
+
+    await expect(solicitarExclusaoConta()).rejects.toThrow(
+      'já existe uma solicitação de exclusão pendente para a sua conta',
+    );
+  });
+
+  it('cai no fallback MENSAGEM_ERRO_SOLICITAR_EXCLUSAO quando o não-ok não traz error.message', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
+
+    await expect(solicitarExclusaoConta()).rejects.toThrow(MENSAGEM_ERRO_SOLICITAR_EXCLUSAO);
+  });
+});
+
+describe('listarSolicitacoesExclusao', () => {
+  it('GET /api/solicitacoes-exclusao com Authorization e devolve o array de solicitacoes', async () => {
+    const solicitacoes = [
+      { id: 's1', nome: 'Ana', email: 'ana@empresa.com', papel: 'usuario', criadoEm: '2026-09-04T10:00:00Z' },
+    ];
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ solicitacoes }) });
+
+    const resultado = await listarSolicitacoesExclusao();
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/solicitacoes-exclusao');
+    expect(init?.method ?? 'GET').toBe('GET');
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer token-de-teste' });
+    expect(resultado).toEqual(solicitacoes);
+  });
+
+  it('devolve [] quando o corpo não traz solicitacoes', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({}) });
+    await expect(listarSolicitacoesExclusao()).resolves.toEqual([]);
+  });
+
+  it('propaga a mensagem do servidor / cai no fallback numa resposta não-ok', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 403,
+      json: async () => ({ error: { message: 'papel insuficiente' } }),
+    });
+    await expect(listarSolicitacoesExclusao()).rejects.toThrow('papel insuficiente');
+
+    fetchMock.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
+    await expect(listarSolicitacoesExclusao()).rejects.toThrow(MENSAGEM_ERRO_LISTAR_EXCLUSAO);
+  });
+});
+
+describe('processarExclusaoConta', () => {
+  it('POST /api/solicitacoes-exclusao/{id}/processamento com Authorization, sem corpo', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({}) });
+
+    await processarExclusaoConta('sol-123');
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/solicitacoes-exclusao/sol-123/processamento');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer token-de-teste' });
+    expect(init.body).toBeUndefined();
+  });
+
+  it('propaga a mensagem do servidor no 409 do guard do último administrador', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({
+        error: { code: 'CONFLICT', message: 'ao menos um administrador ativo deve sempre existir' },
+      }),
+    });
+
+    await expect(processarExclusaoConta('sol-1')).rejects.toThrow(
+      'ao menos um administrador ativo deve sempre existir',
+    );
+  });
+
+  it('cai no fallback MENSAGEM_ERRO_PROCESSAR_EXCLUSAO quando o não-ok não traz error.message', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
+
+    await expect(processarExclusaoConta('sol-1')).rejects.toThrow(MENSAGEM_ERRO_PROCESSAR_EXCLUSAO);
   });
 });

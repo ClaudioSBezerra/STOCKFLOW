@@ -28,6 +28,12 @@ export interface ConfirmDialogProps {
   description?: string;
   confirmLabel?: string;
   cancelLabel?: string;
+  /**
+   * Variante visual do botão de confirmar. `'destructive'` para ações
+   * irreversíveis/destrutivas (anonimização, exclusão). Default `'default'`
+   * — retrocompatível: nenhum caller existente muda de comportamento.
+   */
+  confirmVariant?: 'default' | 'destructive';
 }
 
 /**
@@ -44,6 +50,7 @@ export function ConfirmDialog({
   description,
   confirmLabel = 'Confirmar',
   cancelLabel = 'Cancelar',
+  confirmVariant = 'default',
 }: ConfirmDialogProps) {
   // `AlertDialogAction` é um `DialogPrimitive.Close` por baixo — clicar em
   // "Confirmar" também dispara `onOpenChange(false)` no `AlertDialog`. Sem
@@ -86,6 +93,7 @@ export function ConfirmDialog({
             {cancelLabel}
           </AlertDialogCancel>
           <AlertDialogAction
+            variant={confirmVariant}
             className="min-h-touch-target-min min-w-touch-target-min"
             onClick={() => {
               // Guarda contra duplo clique disparando `onConfirm` mais de
