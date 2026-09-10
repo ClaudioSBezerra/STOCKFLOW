@@ -57,6 +57,11 @@ FR36: Bloqueio temporário de conta após tentativas de login malsucedidas conse
 FR37: MFA (segundo fator TOTP) obrigatório para contas `gestor`/`adm` autenticadas por senha antes de liberar ações restritas a esses papéis; login via SSO herda o MFA já imposto pelo realm Keycloak corporativo.
 FR38: Log de acesso e auditoria (todo login, sucesso ou falha, com usuário quando identificável, timestamp, IP, método), append-only, consultável por `adm`.
 FR39: Exportação dos próprios dados pessoais por qualquer Usuário; `adm` pode processar exclusão/anonimização de dados pessoais de uma conta, preservando o vínculo de Histórico/Pedidos já registrado.
+FR40: Empresa como unidade de isolamento total de dados — todo Produto, Estoque, Movimentação, Pedido, Categoria, Log de Acesso e conta de Usuário pertence a exatamente uma Empresa; nenhuma consulta, filtro ou exportação de nenhuma área (Catálogo, Estoques, Movimentações, Pedidos, Log de Acesso, Normalização/Duplicatas, Gestão de Contas/Promoção) cruza Empresas, para nenhum papel. `adm` passa a ser único por Empresa, não mais global.
+FR41: Papel "Dono da Plataforma" (ortogonal à hierarquia `usuario`–`adm` intra-Empresa) cria Empresas via tela própria e provisiona o primeiro `adm` de cada uma; cadastro de Empresa inclui CNPJ (único, validado), Razão Social, Nome Fantasia e endereço completo. MFA obrigatório para esse papel. Identidade nunca é a mesma conta/credencial de um `adm` de Empresa.
+FR42: Vínculo de Usuário a uma Empresa via convite nominal (vinculado a um e-mail específico, uso único, com expiração) — nunca por domínio de e-mail nem link genérico reutilizável; papel da conta criada é sempre `usuario`. Login resolve a Empresa automaticamente pelo contexto de acesso, sem seletor manual.
+FR43: Ambiente de Treinamento auto-provisionado junto com toda Empresa criada — Empresa-irmã isolada até da Empresa real que a originou, com dados de exemplo próprios e a mesma hierarquia de papéis, para prática sem risco de afetar dado real.
+FR44: Migração da Ferreira Costa (dados/contas já em produção) para a primeira Empresa real do novo modelo, sem perda de histórico — migração aditiva/resumível, sem downtime obrigatório, com plano de rollback (diferente da migração legada anterior, que rodava contra um espelho dormente).
 
 ### NonFunctional Requirements
 
@@ -69,6 +74,7 @@ NFR6: Confiabilidade — operações em lote não travam a UI nem deixam o catá
 NFR7: Concorrência — toda escrita dependente de estado lido previamente é atômica no servidor (saldo de estoque, unicidade de código/e-mail/nome de estoque, aprovação concorrente de Pedido).
 NFR8: Desempenho — busca/listagem do catálogo ≤300ms p95 sob carga típica (até 8.000 produtos, 30 Estoques).
 NFR9: Usabilidade em campo — interface responsiva funcional em viewport a partir de 360px de largura, testada em navegadores móveis padrão (Chrome Android, Safari iOS); não é opcional, é requisito central dado o uso predominante em campo pelas personas primárias.
+NFR10: Isolamento multi-Empresa — toda consulta a dado operacional (Catálogo, Estoques, Movimentações, Pedidos, Log de Acesso, Normalização/Duplicatas, Gestão de Contas/Promoção) é automaticamente restrita à Empresa do ator autenticado, em toda camada onde o dado é lido ou escrito; nenhum papel, incluindo Dono da Plataforma, cruza Empresas para conteúdo operacional (FR40, FR41).
 
 ### Additional Requirements
 
@@ -92,6 +98,11 @@ NFR9: Usabilidade em campo — interface responsiva funcional em viewport a part
 - `TOKENS_ACAO` (verificação de e-mail FR3, redefinição de senha FR32) tipado por coluna `tipo` (enum) e de uso único — validação sempre filtra por token+usuario_id+tipo+não expirado+não usado (Architecture AD-18).
 - Stack pinado nesta rodada (Architecture): Go 1.27, PostgreSQL 15, React 19.2.x, TypeScript 7.0.x, Vite 8.0.x, React Router 6.x, TanStack Query 5.x, shadcn/ui + Tailwind CSS, `golang-jwt/jwt` v5, `signintech/gopdf` (FR26), `qax-os/excelize` v2.11.0 (FR30) — Go/React/Vite/TypeScript atualizados deliberadamente além das versões do `FB_APU02` por estarem sem suporte de segurança ou muitas majors atrás.
 - Biblioteca TOTP para MFA (FR37) e endereço/DNS de deploy em Ferreira Costa permanecem em aberto (Architecture Deferred) — a resolver durante a implementação das stories correspondentes, não bloqueiam a criação dos épicos/stories.
+- Empresa resolvida no middleware por slug de URL (path prefix, ex. `/e/ferreira-costa/...`), injetada no contexto da requisição junto com o papel, nunca re-derivada em service nem aceita de body/query — divergência deliberada de subdomínio (evita DNS/TLS wildcard novo) (Architecture AD-19).
+- Isolamento por `empresa_id` (UUID, FK) em toda tabela de domínio; toda query de service filtra por ele. Migração da Ferreira Costa é aditiva em duas fases (coluna nullable + backfill em lote resumível, só depois `NOT NULL`) — nunca `ALTER` direto sobre produção viva; `adm` único por `empresa_id`, não mais global (Architecture AD-20).
+- "Dono da Plataforma" em tabela própria (`donos_plataforma`), disjunta de `usuarios` — nunca a mesma credencial de um `adm` de Empresa; rota de login própria; bootstrap do primeiro registro por CLI, mesmo padrão de AD-12; reaproveita o formato de token de AD-6 (Architecture AD-21).
+- Convite de acesso em tabela própria (`convites_empresa`) — nominal (e-mail específico), uso único, expira; mesmo espírito de AD-18 mas tabela separada por não haver `usuario_id` ainda no momento da criação (Architecture AD-22).
+- Ambiente de Treinamento é uma Empresa comum com `empresa_origem_id` nullable — reusa inteiramente o isolamento de AD-20, sem nenhuma condicional `if eh_treinamento` em service (Architecture AD-23).
 
 ### UX Design Requirements
 
@@ -160,6 +171,11 @@ FR36: Epic 1 - Bloqueio de conta e política de senha
 FR37: Epic 1 - MFA obrigatório para papéis administrativos
 FR38: Epic 1 - Log de acesso e auditoria
 FR39: Epic 8 - Exportação e exclusão de dados pessoais (LGPD)
+FR40: Epic 9 - Empresa como unidade de isolamento total de dados
+FR41: Epic 9 - Papel "Dono da Plataforma" cria e gerencia Empresas
+FR42: Epic 9 - Vínculo de Usuário a uma Empresa via convite nominal
+FR43: Epic 9 - Ambiente de Treinamento automático por Empresa
+FR44: Epic 9 - Migração da Ferreira Costa para o modelo multi-Empresa
 
 ## Epic List
 
@@ -194,6 +210,10 @@ Usuário solicita, almoxarife aprova com estoque real, recibo em PDF — ciclo c
 ### Epic 8: Privacidade e Conformidade (LGPD)
 Usuário exporta os próprios dados pessoais; Adm processa solicitações de exclusão/anonimização — cobrindo identidade, log de acesso, Movimentações e Pedidos já existentes nos épicos anteriores.
 **FRs covered:** FR39
+
+### Epic 9: Multi-Empresa e Plataforma
+O stockflow deixa de ser uma instalação única (Ferreira Costa) para ser uma plataforma multi-cliente com isolamento total de dados entre Empresas; Dono da Plataforma cria Empresas (com Ambiente de Treinamento automático); Usuário se vincula a uma Empresa via convite nominal; a Ferreira Costa migra para a primeira Empresa real do novo modelo.
+**FRs covered:** FR40, FR41, FR42, FR43, FR44
 
 ## Epic 1: Autenticação e Gestão de Acesso
 
@@ -1256,3 +1276,119 @@ So that o stockflow atenda ao direito de exclusão da LGPD sem quebrar a integri
 **Given** o `adm` que processaria a exclusão é o único `adm` ativo do sistema
 **When** ele tenta anonimizar a própria conta ou a de outro `adm`
 **Then** o sistema bloqueia com mensagem explicando que ao menos um `adm` ativo deve sempre existir
+
+## Epic 9: Multi-Empresa e Plataforma
+
+O stockflow deixa de ser uma instalação única (Ferreira Costa) para ser uma plataforma multi-cliente com isolamento total de dados entre Empresas (Architecture AD-19, AD-20). Dono da Plataforma cria Empresas com Ambiente de Treinamento automático; Usuário se vincula a uma Empresa via convite nominal; a Ferreira Costa migra para a primeira Empresa real do novo modelo.
+
+### Story 9.1: Fundação Multi-Empresa — schema e isolamento por Empresa
+
+As a arquiteto do sistema,
+I want toda tabela de domínio escopada por Empresa e a Empresa resolvida de forma única e consistente em cada requisição,
+So that nenhum dado de uma Empresa jamais vaze para outra, em nenhuma área do sistema, desde a primeira linha de código que depende disso.
+
+**Acceptance Criteria:**
+
+**Given** o schema hoje sem conceito de Empresa
+**When** esta story é aplicada
+**Then** existe uma tabela `empresas` (id, nome_fantasia, razao_social, cnpj, endereço completo, slug, status ativo/inativo, `empresa_origem_id` nullable) e toda tabela de domínio (`produtos`, `estoques`, `movimentacoes`, `pedidos`, `pedido_itens`, `categorias`, `logs_acesso`, `solicitacoes_promocao`, `mesclagens_duplicatas`, `mesclagem_produtos_removidos`, `importacoes`, `nomenclatura_templates`, `usuarios`) ganha uma coluna `empresa_id`
+
+**Given** uma requisição autenticada chegando sob o prefixo `/e/{slug}/...`
+**When** o middleware processa a requisição
+**Then** ele resolve `empresa_id` a partir do slug **uma única vez** e o injeta no contexto da requisição junto com o papel já resolvido (mesmo padrão de AD-8) — nenhum `service` re-deriva ou aceita `empresa_id` vindo de body/query
+
+**Given** qualquer `service` que lê ou escreve Catálogo, Estoques, Movimentações, Pedidos, Log de Acesso, Normalização/Duplicatas ou Gestão de Contas/Promoção
+**When** a query é executada
+**Then** ela sempre filtra por `empresa_id` do contexto da requisição — verificável por teste automatizado que cria dados em duas Empresas e confirma que uma nunca aparece na consulta da outra (SM-7)
+
+**Given** a mesclagem de Duplicatas (Story 6.4) especificamente
+**When** o agrupamento por nome/dimensão é calculado
+**Then** ele nunca considera Produto de outra Empresa — mesclar através de Empresas diferentes é impossível, não apenas desencorajado
+
+**Given** o índice único que hoje garante um só `adm` ativo no sistema inteiro
+**When** esta story é aplicada
+**Then** o índice passa a ser único **por `empresa_id`** — cada Empresa tem exatamente um `adm` ativo por vez, e duas Empresas diferentes podem cada uma ter o seu
+
+### Story 9.2: Dono da Plataforma cria Empresas com Ambiente de Treinamento automático
+
+As a Dono da Plataforma,
+I want criar uma Empresa nova pela interface, com seu Ambiente de Treinamento já provisionado junto,
+So that eu consiga colocar um cliente novo no ar rapidamente, e o time dele já nasça com um lugar seguro pra praticar.
+
+**Acceptance Criteria:**
+
+**Given** que esta é a primeira vez que o sistema roda (nenhum Dono da Plataforma existe ainda)
+**When** um operador roda o comando CLI dedicado (mesmo padrão de Story 1.1/`cmd/seed-admin`)
+**Then** o primeiro registro em `donos_plataforma` é criado — nunca por uma rota HTTP
+
+**Given** um Dono da Plataforma autenticado (MFA já configurado — obrigatório para este papel, sem exceção)
+**When** ele acessa a área "Empresas" e preenche Nome Fantasia, Razão Social, CNPJ e endereço completo, mais nome/e-mail do primeiro `adm`
+**Then** uma nova Empresa é criada com esses dados, o primeiro `adm` dela é provisionado, e uma segunda Empresa-irmã "{Nome Fantasia} - Treinamento" é criada automaticamente na mesma ação, com `empresa_origem_id` apontando para a Empresa real e um pequeno conjunto de Produtos/Estoques de exemplo (nunca copiados da Empresa real)
+
+**Given** um CNPJ que já existe em outra Empresa
+**When** o Dono da Plataforma tenta cadastrar
+**Then** o sistema recusa com 409 — CNPJ é único em toda a plataforma
+
+**Given** o Dono da Plataforma gerenciando a lista de Empresas
+**When** ele visualiza a tela
+**Then** vê apenas metadado (Nome Fantasia, Razão Social, CNPJ, endereço, status, `adm` responsável, data de criação) — nenhum Catálogo, Estoque, Pedido ou Log de Acesso de nenhuma Empresa é acessível a partir dessa tela
+
+**Given** uma Empresa que o Dono da Plataforma desativa
+**When** qualquer conta vinculada a ela tenta entrar
+**Then** o login é recusado, sem nenhum dado ser apagado
+
+**Given** a identidade "Dono da Plataforma" e a de um `adm` de qualquer Empresa (inclusive Ferreira Costa)
+**When** o sistema é usado no dia a dia
+**Then** nunca são a mesma conta/credencial — login do Dono da Plataforma é uma rota própria, fora do prefixo `/e/{slug}` das Empresas
+
+### Story 9.3: Convite nominal de acesso a uma Empresa
+
+As a `adm`/`gestor` de uma Empresa,
+I want convidar uma pessoa específica por e-mail para entrar na minha Empresa,
+So that só quem eu de fato convidei consiga criar conta vinculada aos meus dados — nunca um link genérico que vaza pra qualquer um.
+
+**Acceptance Criteria:**
+
+**Given** um `adm`/`gestor` autenticado numa Empresa
+**When** ele gera um convite informando um e-mail específico
+**Then** um registro é criado em `convites_empresa` (empresa_id, e-mail, token, expiração), e um link é produzido para ser compartilhado com essa pessoa
+
+**Given** um convite válido e não usado
+**When** alguém acessa o link e preenche o autocadastro (Story 1.3) com o e-mail exatamente igual ao do convite
+**Then** a conta nasce vinculada a essa Empresa, sempre com papel `usuario`, e o convite é marcado como usado atomicamente
+
+**Given** o mesmo convite
+**When** alguém tenta se cadastrar com um e-mail diferente do informado no convite
+**Then** o cadastro é recusado, mesmo com o token correto
+
+**Given** um convite expirado, já usado, ou revogado pelo emissor antes do uso
+**When** alguém tenta usá-lo
+**Then** o cadastro é recusado com uma mensagem clara do motivo
+
+**Given** o login de uma conta já vinculada a uma Empresa
+**When** o Usuário informa e-mail e senha
+**Then** a Empresa é resolvida automaticamente pelo contexto de acesso (Story 9.1) — nunca por um seletor manual na tela de login, mesmo que o mesmo e-mail exista em outra Empresa
+
+### Story 9.4: Migração da Ferreira Costa para o modelo multi-Empresa
+
+As a operador do sistema (Claudio),
+I want migrar os dados e contas já reais da Ferreira Costa para o novo modelo multi-Empresa,
+So that o sistema em produção passe a operar sob o mesmo isolamento de qualquer outro cliente, sem perder nenhum histórico já registrado.
+
+**Acceptance Criteria:**
+
+**Given** o banco de produção com Produtos, Estoques, Movimentações, Pedidos, Categorias e contas de Usuário já existentes, sistema em uso ativo
+**When** a migração é aplicada
+**Then** ela roda em duas fases aditivas — `empresa_id` nasce nullable, backfill em lote atribui o id da Empresa "Ferreira Costa" a toda linha existente, só depois a coluna vira `NOT NULL` — sem exigir parada do sistema entre as duas fases
+
+**Given** a migração interrompida no meio do backfill
+**When** ela é executada novamente
+**Then** retoma de onde parou sem duplicar nem perder vínculo de nenhuma linha (mesmo rigor de resumabilidade já exigido da importação de planilha, Story 3.3)
+
+**Given** que a Empresa "Ferreira Costa" ainda não existe como linha em `empresas` antes desta migração
+**When** o operador fornece CNPJ, Razão Social e endereço completo da Ferreira Costa
+**Then** a linha é criada com esses dados, a conta `adm` hoje única e global passa a ser o `adm` dessa Empresa especificamente, e uma Empresa "Ferreira Costa - Treinamento" é criada como parte desta mesma migração (reaproveitando o mecanismo de Story 9.2) — não fica pendente de ação manual futura
+
+**Given** a regra já estabelecida para qualquer corte de dados em produção (Architecture AD-15, PRD §9)
+**When** esta migração é executada
+**Then** ela é sempre disparada manualmente por uma pessoa — nunca de forma autônoma por um agente de IA, mesmo que o código da migração tenha sido escrito sob o processo de agentes do `bmad-loop`
