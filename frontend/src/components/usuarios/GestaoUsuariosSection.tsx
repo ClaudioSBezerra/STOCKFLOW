@@ -3,9 +3,9 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/card';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { useAuth } from '@/lib/auth';
-import { getAccessToken } from '@/lib/session';
 import { rankPapel } from '@/components/shell/nav-items';
 import { papelAbaixo, rotuloPapel } from '@/lib/promocao';
+import { apiUrl, authHeaders } from '@/lib/api';
 
 /**
  * Seção "Gestão de Usuários" (`/configuracoes`, Story 1.8, spec-1-8). Terceiro
@@ -44,11 +44,6 @@ interface AcaoPendente {
   alvoRotulo?: string;
 }
 
-function authHeaders(): Record<string, string> {
-  const token = getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
 const MENSAGEM_ERRO_CARREGAR =
   'Não foi possível carregar a lista de contas. Recarregue a página.';
 const MENSAGEM_ERRO_ACAO = 'Não foi possível concluir a ação na conta.';
@@ -66,7 +61,7 @@ export function GestaoUsuariosSection() {
 
   const carregar = useCallback(async () => {
     try {
-      const res = await fetch('/api/usuarios', { headers: authHeaders() });
+      const res = await fetch(apiUrl('/api/usuarios'), { headers: authHeaders() });
       if (!res.ok) {
         setErroCarregar(MENSAGEM_ERRO_CARREGAR);
         return;
@@ -106,7 +101,7 @@ export function GestaoUsuariosSection() {
               headers: { 'Content-Type': 'application/json', ...authHeaders() },
               body: JSON.stringify({ ativo: tipo === 'reativar' }),
             };
-      const res = await fetch(url, init);
+      const res = await fetch(apiUrl(url), init);
       if (!res.ok) {
         setErroAcao(MENSAGEM_ERRO_ACAO);
       }

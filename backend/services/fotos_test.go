@@ -14,12 +14,12 @@ import (
 // conteúdo do Produto em si é irrelevante para esta suíte.
 func criarProdutoParaFoto(t *testing.T, db *sql.DB, nome string) Produto {
 	t.Helper()
-	estoque, err := CriarEstoque(db, "Canteiro Foto "+nome)
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Foto "+nome)
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
-	p, err := CriarProduto(db, CriarProdutoInput{
+	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              nome,
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -42,7 +42,7 @@ func TestSalvarFotoProduto_Sucesso(t *testing.T) {
 	produto := criarProdutoParaFoto(t, db, "Produto Com Foto")
 	jpegBytes := []byte("bytes-jpeg-fake-para-teste")
 
-	foto, err := SalvarFotoProduto(db, fotosDir, produto.ID, jpegBytes)
+	foto, err := SalvarFotoProduto(db, empresaTeste, fotosDir, produto.ID, jpegBytes)
 	if err != nil {
 		t.Fatalf("SalvarFotoProduto erro inesperado: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestSalvarFotoProduto_ProdutoInexistente(t *testing.T) {
 	limparProdutos(t, db)
 	fotosDir := t.TempDir()
 
-	_, err := SalvarFotoProduto(db, fotosDir, "00000000-0000-0000-0000-000000000000", []byte("x"))
+	_, err := SalvarFotoProduto(db, empresaTeste, fotosDir, "00000000-0000-0000-0000-000000000000", []byte("x"))
 	if err != ErrProdutoNaoEncontrado {
 		t.Fatalf("err = %v, want ErrProdutoNaoEncontrado", err)
 	}
@@ -93,7 +93,7 @@ func TestSalvarFotoProduto_IDMalformado(t *testing.T) {
 	limparProdutos(t, db)
 	fotosDir := t.TempDir()
 
-	_, err := SalvarFotoProduto(db, fotosDir, "id-nao-e-uuid", []byte("x"))
+	_, err := SalvarFotoProduto(db, empresaTeste, fotosDir, "id-nao-e-uuid", []byte("x"))
 	if err != ErrProdutoNaoEncontrado {
 		t.Fatalf("err = %v, want ErrProdutoNaoEncontrado", err)
 	}
@@ -110,11 +110,11 @@ func TestSalvarFotoProduto_SegundoUploadNaoSobrescreve(t *testing.T) {
 
 	produto := criarProdutoParaFoto(t, db, "Produto Reenvio")
 
-	primeira, err := SalvarFotoProduto(db, fotosDir, produto.ID, []byte("conteudo-1"))
+	primeira, err := SalvarFotoProduto(db, empresaTeste, fotosDir, produto.ID, []byte("conteudo-1"))
 	if err != nil {
 		t.Fatalf("primeiro SalvarFotoProduto: %v", err)
 	}
-	segunda, err := SalvarFotoProduto(db, fotosDir, produto.ID, []byte("conteudo-2"))
+	segunda, err := SalvarFotoProduto(db, empresaTeste, fotosDir, produto.ID, []byte("conteudo-2"))
 	if err != nil {
 		t.Fatalf("segundo SalvarFotoProduto: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestSalvarFotoProduto_ColisaoDeNomeIncrementaTimestamp(t *testing.T) {
 		t.Fatalf("falha ao pré-ocupar nome de arquivo: %v", err)
 	}
 
-	foto, err := SalvarFotoProduto(db, fotosDir, produto.ID, []byte("conteudo-novo"))
+	foto, err := SalvarFotoProduto(db, empresaTeste, fotosDir, produto.ID, []byte("conteudo-novo"))
 	if err != nil {
 		t.Fatalf("SalvarFotoProduto erro inesperado: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestListarFotosProduto_ListaOrdenadaPorNome(t *testing.T) {
 		nomesEsperados = append(nomesEsperados, nome)
 	}
 
-	fotos, err := ListarFotosProduto(db, fotosDir, produto.ID)
+	fotos, err := ListarFotosProduto(db, empresaTeste, fotosDir, produto.ID)
 	if err != nil {
 		t.Fatalf("ListarFotosProduto erro inesperado: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestListarFotosProduto_ListaVaziaSemFoto(t *testing.T) {
 
 	produto := criarProdutoParaFoto(t, db, "Produto Sem Foto")
 
-	fotos, err := ListarFotosProduto(db, fotosDir, produto.ID)
+	fotos, err := ListarFotosProduto(db, empresaTeste, fotosDir, produto.ID)
 	if err != nil {
 		t.Fatalf("ListarFotosProduto erro inesperado: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestListarFotosProduto_ProdutoInexistenteOuMalformado(t *testing.T) {
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
-			_, err := ListarFotosProduto(db, fotosDir, c.produtoID)
+			_, err := ListarFotosProduto(db, empresaTeste, fotosDir, c.produtoID)
 			if err != ErrProdutoNaoEncontrado {
 				t.Fatalf("err = %v, want ErrProdutoNaoEncontrado", err)
 			}

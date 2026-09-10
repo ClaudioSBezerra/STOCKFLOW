@@ -129,6 +129,12 @@ func (p parDimensao) paraDimensao() *DimensaoValor {
 // chamador (handler) — aqui só é usado, nunca revalidado. `ComEstoque == nil`
 // significa "sem filtro"; `*ComEstoque` distingue `true`/`false`.
 type FiltrosCatalogo struct {
+	// EmpresaID é a Empresa resolvida do slug da URL pelo middleware (Story
+	// 9.1, AD-19/AD-20). Diferente dos 4 filtros opcionais abaixo, NÃO é um
+	// filtro de tela: é a fronteira de isolamento, sempre presente, e
+	// montarFiltrosCatalogo a emite incondicionalmente — um zero-value aqui
+	// produz `p.empresa_id = ''`, que não casa nenhuma linha (falha fechada).
+	EmpresaID   string
 	Q           string
 	CategoriaID string
 	EstoqueID   string
@@ -171,6 +177,16 @@ func montarFiltrosCatalogo(f FiltrosCatalogo, primeiroPlaceholder int) (string, 
 	condicoes := []string{"p.deleted_at IS NULL"}
 	var args []any
 	n := primeiroPlaceholder
+
+	// Fronteira de Empresa (Story 9.1, AD-20): SEMPRE emitida, antes de
+	// qualquer filtro de tela, em TODA query que passa por aqui — grade
+	// (ListarCatalogoGrade), contagens, tabela agrupada
+	// (ListarCatalogoAgrupado) e exportação XLSX (ListarTodosGruposCatalogo,
+	// a única não paginada). É por isso que este é o choke point escolhido:
+	// nenhuma das quatro pode esquecer o filtro.
+	condicoes = append(condicoes, fmt.Sprintf("p.empresa_id = $%d", n))
+	args = append(args, f.EmpresaID)
+	n++
 
 	if f.Q != "" {
 		condicoes = append(condicoes, fmt.Sprintf(
@@ -400,7 +416,7 @@ const catalogoPorEstoqueQuery = `
 	SELECT pe.produto_id, e.id, e.nome, pe.quantidade
 	FROM produto_estoque pe
 	JOIN estoques e ON e.id = pe.estoque_id
-	WHERE pe.produto_id = ANY($1)`
+	WHERE pe.produto_id = ANY($1) AND e.empresa_id = $2`
 
 // ListarCatalogoAgrupado devolve a página `pagina` da tabela agrupada do
 // Catálogo e o bloco de paginação (contagem sobre GRUPOS, já com os
@@ -484,7 +500,7 @@ func ListarCatalogoAgrupado(db *sql.DB, pagina int, filtros FiltrosCatalogo) ([]
 	}
 
 	if len(todosIDs) > 0 {
-		if err := preencherPorEstoque(db, grupos, produtoParaGrupo, todosIDs); err != nil {
+		if err := preencherPorEstoque(db, filtros.EmpresaID, grupos, produtoParaGrupo, todosIDs); err != nil {
 			return nil, Paginacao{}, err
 		}
 	}
@@ -560,7 +576,7 @@ func ListarTodosGruposCatalogo(db *sql.DB, filtros FiltrosCatalogo) ([]CatalogoG
 	}
 
 	if len(todosIDs) > 0 {
-		if err := preencherPorEstoque(db, grupos, produtoParaGrupo, todosIDs); err != nil {
+		if err := preencherPorEstoque(db, filtros.EmpresaID, grupos, produtoParaGrupo, todosIDs); err != nil {
 			return nil, err
 		}
 	}
@@ -571,8 +587,8 @@ func ListarTodosGruposCatalogo(db *sql.DB, filtros FiltrosCatalogo) ([]CatalogoG
 // única query (`WHERE pe.produto_id = ANY(...)`), somando por Estoque os
 // Produtos que caem no mesmo grupo e ordenando cada lista por `estoqueNome
 // ASC` (desempate por `estoqueId` para determinismo).
-func preencherPorEstoque(db *sql.DB, grupos []CatalogoGrupo, produtoParaGrupo map[string]int, todosIDs []string) error {
-	rows, err := db.Query(catalogoPorEstoqueQuery, pq.Array(todosIDs))
+func preencherPorEstoque(db *sql.DB, empresaID string, grupos []CatalogoGrupo, produtoParaGrupo map[string]int, todosIDs []string) error {
+	rows, err := db.Query(catalogoPorEstoqueQuery, pq.Array(todosIDs), empresaID)
 	if err != nil {
 		return fmt.Errorf("falha ao listar quantidade por estoque do catálogo: %w", err)
 	}
@@ -663,7 +679,7 @@ const produtoDetalheQuery = `
 		FROM produto_estoque
 		GROUP BY produto_id
 	) pe ON pe.produto_id = p.id
-	WHERE p.id = $1 AND p.deleted_at IS NULL`
+	WHERE p.id = $1 AND p.deleted_at IS NULL AND p.empresa_id = $2`
 
 // ObterProdutoDetalhe devolve o detalhe de um único Produto por `id`
 // (Story 4.4, spec-4-4): a mesma quantidade total/disponibilidade da grade
@@ -673,16 +689,18 @@ const produtoDetalheQuery = `
 // `produto_estoque` de um único Produto é, por definição, um Estoque
 // distinto — a PK composta (produto_id, estoque_id) garante isso).
 //
-// `id` inexistente OU malformado (não-UUID, `pq` SQLSTATE 22P02) ->
-// ErrProdutoNaoEncontrado — mesmo colapso de AtualizarNomeProduto.
-func ObterProdutoDetalhe(db *sql.DB, id string) (ProdutoDetalhe, error) {
+// `id` inexistente, malformado (não-UUID, `pq` SQLSTATE 22P02) OU de OUTRA
+// Empresa -> ErrProdutoNaoEncontrado — o mesmo sentinela nos três casos
+// (Story 9.1: "pertence a outra Empresa" nunca é 403 e nunca revela
+// existência), mesmo colapso de AtualizarNomeProduto.
+func ObterProdutoDetalhe(db *sql.DB, empresaID string, id string) (ProdutoDetalhe, error) {
 	var (
 		det                        ProdutoDetalhe
 		codigo                     sql.NullString
 		comp, larg, diam, alt, esp parDimensao
 		quantidade                 float64
 	)
-	err := db.QueryRow(produtoDetalheQuery, id).Scan(
+	err := db.QueryRow(produtoDetalheQuery, id, empresaID).Scan(
 		&det.ID, &det.Nome, &codigo,
 		&det.Categoria.ID, &det.Categoria.Codigo, &det.Categoria.Nome,
 		&comp.valor, &comp.unidade,
@@ -713,7 +731,7 @@ func ObterProdutoDetalhe(db *sql.DB, id string) (ProdutoDetalhe, error) {
 	det.QuantidadeTotal = quantidade
 	det.Disponivel = quantidade > 0
 
-	rows, err := db.Query(catalogoPorEstoqueQuery, pq.Array([]string{id}))
+	rows, err := db.Query(catalogoPorEstoqueQuery, pq.Array([]string{id}), empresaID)
 	if err != nil {
 		return ProdutoDetalhe{}, fmt.Errorf("falha ao listar quantidade por estoque do produto: %w", err)
 	}

@@ -52,8 +52,12 @@ func SolicitarExclusaoContaHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
-		s, err := services.SolicitarExclusaoConta(db, usuario.ID)
+		s, err := services.SolicitarExclusaoConta(db, empresa.ID, usuario.ID)
 		switch {
 		case err == nil:
 			escreverJSON(w, http.StatusCreated, solicitacaoExclusaoResumo{
@@ -76,7 +80,12 @@ func SolicitarExclusaoContaHandler(db *sql.DB) http.HandlerFunc {
 // vazio nunca `null`.
 func ListarSolicitacoesExclusaoHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		pendentes, err := services.ListarSolicitacoesExclusao(db)
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
+		pendentes, err := services.ListarSolicitacoesExclusao(db, empresa.ID)
 		if err != nil {
 			slog.Error("falha ao listar solicitações de exclusão", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao listar solicitações de exclusão")
@@ -110,8 +119,12 @@ func ProcessarExclusaoContaHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
-		p, err := services.ProcessarExclusaoConta(db, r.PathValue("id"), usuario.ID)
+		p, err := services.ProcessarExclusaoConta(db, empresa.ID, r.PathValue("id"), usuario.ID)
 		switch {
 		case err == nil:
 			escreverJSON(w, http.StatusOK, solicitacaoExclusaoPendenteResposta{

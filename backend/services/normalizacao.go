@@ -214,12 +214,12 @@ func extrairValorDoNome(nome string, jaEstruturados []valorUnidade) (valor float
 // gerou sugestão para ele, tenta a origem "nome" via extrairValorDoNome —
 // zero ou 2+ campos vazios nunca geram sugestão de origem "nome" (ambíguo
 // demais: não há como saber qual campo o nome preencheria).
-func AnalisarInconsistencias(db *sql.DB) ([]Sugestao, error) {
+func AnalisarInconsistencias(db *sql.DB, empresaID string) ([]Sugestao, error) {
 	// Story 6.2: carrega normalizacao_ignoradas INTEIRA antes de varrer
 	// produtos (Code Map, spec-6-2) — o filtro final compara cada Sugestao
 	// candidata contra este mapa por chave textual (chaveIgnorada), nunca por
 	// igualdade de float64 (Design Notes de spec-6-2).
-	ignoradas, err := carregarIgnoradas(db)
+	ignoradas, err := carregarIgnoradas(db, empresaID)
 	if err != nil {
 		return nil, err
 	}
@@ -233,10 +233,10 @@ func AnalisarInconsistencias(db *sql.DB) ([]Sugestao, error) {
 		       espessura_valor, espessura_unidade,
 		       dimensoes_pendentes_revisao
 		FROM produtos
-		WHERE deleted_at IS NULL
+		WHERE deleted_at IS NULL AND empresa_id = $1
 		ORDER BY nome, id`
 
-	rows, err := db.Query(q)
+	rows, err := db.Query(q, empresaID)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao consultar produtos para análise de inconsistências: %w", err)
 	}
@@ -372,8 +372,14 @@ func chaveIgnorada(produtoID, campo string, valor float64, unidade string) strin
 // AnalisarInconsistencias (Story 6.2, spec-6-2) para excluir da lista final
 // qualquer sugestão já ignorada. Mapa vazio (nunca nil) quando a tabela está
 // vazia — nenhuma sugestão é filtrada.
-func carregarIgnoradas(db *sql.DB) (map[string]bool, error) {
-	rows, err := db.Query(`SELECT produto_id, campo, valor, unidade FROM normalizacao_ignoradas`)
+func carregarIgnoradas(db *sql.DB, empresaID string) (map[string]bool, error) {
+	// `normalizacao_ignoradas` é tabela FILHA (não ganhou `empresa_id` na
+	// migração 000032): a posse dela é a do Produto. O JOIN é o guard de
+	// Empresa (Story 9.1, AD-20).
+	rows, err := db.Query(`
+		SELECT ni.produto_id, ni.campo, ni.valor, ni.unidade
+		FROM normalizacao_ignoradas ni
+		JOIN produtos p ON p.id = ni.produto_id AND p.empresa_id = $1`, empresaID)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao carregar sugestões ignoradas: %w", err)
 	}
@@ -468,7 +474,7 @@ type CorrecaoAplicada struct {
 // para isolar o dano. `campo` já passou pelo conjunto fechado
 // camposDimensaoValidos acima, então interpolá-lo no texto do UPDATE é
 // seguro (nunca vem direto do cliente sem essa validação).
-func AplicarCorrecoes(db *sql.DB, correcoes []CorrecaoInput) ([]CorrecaoAplicada, error) {
+func AplicarCorrecoes(db *sql.DB, empresaID string, correcoes []CorrecaoInput) ([]CorrecaoAplicada, error) {
 	if len(correcoes) == 0 {
 		return nil, &ErroProdutoValidacao{Mensagem: "correções: informe ao menos uma correção"}
 	}
@@ -503,10 +509,10 @@ func AplicarCorrecoes(db *sql.DB, correcoes []CorrecaoInput) ([]CorrecaoAplicada
 
 		query := fmt.Sprintf(
 			`UPDATE produtos SET %s_valor = $1, %s_unidade = $2
-			 WHERE id = $3 AND %s_valor IS NULL AND %s_unidade IS NULL`,
+			 WHERE id = $3 AND %s_valor IS NULL AND %s_unidade IS NULL AND empresa_id = $4`,
 			c.Campo, c.Campo, c.Campo, c.Campo,
 		)
-		res, err := tx.Exec(query, c.Valor, c.Unidade, c.ProdutoID)
+		res, err := tx.Exec(query, c.Valor, c.Unidade, c.ProdutoID, empresaID)
 		if err != nil {
 			// `produtoId` malformado colapsa no MESMO tratamento de "item
 			// obsoleto" — mesma classe de erro que IgnorarSugestao mapeia
@@ -551,16 +557,20 @@ func AplicarCorrecoes(db *sql.DB, correcoes []CorrecaoInput) ([]CorrecaoAplicada
 // `produtoID` inexistente ou malformado (não-UUID) colapsa em
 // ErrProdutoNaoEncontrado — mesmo padrão de CriarProduto/AtualizarNomeProduto
 // (produtos.go) para violação de FK/UUID inválido.
-func IgnorarSugestao(db *sql.DB, produtoID, campo string, valor float64, unidade string) error {
+func IgnorarSugestao(db *sql.DB, empresaID string, produtoID, campo string, valor float64, unidade string) error {
 	if err := validarCorrecao(campo, valor, unidade); err != nil {
 		return err
 	}
 
-	_, err := db.Exec(
+	// O `SELECT` no lugar de `VALUES` é o guard de Empresa (Story 9.1,
+	// AD-20): um `produtoID` de outra Empresa não produz linha de entrada, e
+	// o `RowsAffected() == 0` resultante colapsa no MESMO
+	// ErrProdutoNaoEncontrado de um id inexistente/malformado.
+	res, err := db.Exec(
 		`INSERT INTO normalizacao_ignoradas (produto_id, campo, valor, unidade)
-		 VALUES ($1, $2, $3, $4)
+		 SELECT p.id, $2, $3, $4 FROM produtos p WHERE p.id = $1 AND p.empresa_id = $5
 		 ON CONFLICT (produto_id, campo, valor, unidade) DO NOTHING`,
-		produtoID, campo, valor, unidade,
+		produtoID, campo, valor, unidade, empresaID,
 	)
 	if err != nil {
 		var pqErr *pq.Error
@@ -568,6 +578,26 @@ func IgnorarSugestao(db *sql.DB, produtoID, campo string, valor float64, unidade
 			return ErrProdutoNaoEncontrado
 		}
 		return fmt.Errorf("falha ao gravar sugestão ignorada: %w", err)
+	}
+	// `ON CONFLICT DO NOTHING` também devolve 0 linhas quando a tupla JÁ
+	// estava ignorada — idempotência preservada: só é "não encontrado"
+	// quando o Produto de fato não existe nesta Empresa.
+	if linhas, errLinhas := res.RowsAffected(); errLinhas == nil && linhas == 0 {
+		var existe bool
+		errExiste := db.QueryRow(
+			`SELECT EXISTS (SELECT 1 FROM produtos p WHERE p.id = $1 AND p.empresa_id = $2)`,
+			produtoID, empresaID,
+		).Scan(&existe)
+		if errExiste != nil {
+			var pqErr *pq.Error
+			if errors.As(errExiste, &pqErr) && pqErr.Code == pqInvalidTextRepresentation {
+				return ErrProdutoNaoEncontrado
+			}
+			return fmt.Errorf("falha ao verificar produto da sugestão ignorada: %w", errExiste)
+		}
+		if !existe {
+			return ErrProdutoNaoEncontrado
+		}
 	}
 	return nil
 }
@@ -725,8 +755,11 @@ type executorSQL interface {
 // mesclagem. Um Produto sem nenhuma linha em `produto_estoque` simplesmente
 // não aparece como chave (equivalente a um conjunto vazio para quem consulta
 // o mapa).
-func carregarLocaisProduto(db executorSQL) (map[string]map[string]bool, error) {
-	rows, err := db.Query(`SELECT produto_id, estoque_id FROM produto_estoque`)
+func carregarLocaisProduto(db executorSQL, empresaID string) (map[string]map[string]bool, error) {
+	rows, err := db.Query(`
+		SELECT pe.produto_id, pe.estoque_id
+		FROM produto_estoque pe
+		JOIN produtos p ON p.id = pe.produto_id AND p.empresa_id = $1`, empresaID)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao consultar locais de produto: %w", err)
 	}
@@ -846,7 +879,7 @@ func (u *duplicatasUnionFind) unir(a, b string) {
 // componente vira um GrupoDuplicata (Design Notes, spec-6-3). Grupos
 // devolvidos ordenados por (nome, id) do primeiro membro; membros de cada
 // grupo também ordenados por (nome, id).
-func DetectarDuplicatas(db *sql.DB) ([]GrupoDuplicata, error) {
+func DetectarDuplicatas(db *sql.DB, empresaID string) ([]GrupoDuplicata, error) {
 	const q = `
 		SELECT id, nome,
 		       comprimento_valor, comprimento_unidade,
@@ -855,10 +888,10 @@ func DetectarDuplicatas(db *sql.DB) ([]GrupoDuplicata, error) {
 		       altura_valor, altura_unidade,
 		       espessura_valor, espessura_unidade
 		FROM produtos
-		WHERE deleted_at IS NULL
+		WHERE deleted_at IS NULL AND empresa_id = $1
 		ORDER BY nome, id`
 
-	rows, err := db.Query(q)
+	rows, err := db.Query(q, empresaID)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao consultar produtos para detecção de duplicatas: %w", err)
 	}
@@ -893,14 +926,20 @@ func DetectarDuplicatas(db *sql.DB) ([]GrupoDuplicata, error) {
 		return nil, fmt.Errorf("falha ao iterar produtos: %w", err)
 	}
 
-	locais, err := carregarLocaisProduto(db)
+	locais, err := carregarLocaisProduto(db, empresaID)
 	if err != nil {
 		return nil, err
 	}
 
+	// O balde é qualificado por Empresa (Story 9.1, AC 4): mesmo com a query
+	// acima já recortada a uma Empresa, a chave carrega o `empresaID` para
+	// que nenhum grupo possa MISTURAR Empresas caso este agrupamento passe a
+	// receber candidatos de mais de uma no futuro. Grupo que cruza Empresas
+	// deixa de ser possível, não apenas improvável.
 	baldes := make(map[string][]int)
 	for i, c := range candidatos {
-		baldes[c.nomeNormalizado] = append(baldes[c.nomeNormalizado], i)
+		chave := empresaID + "\x1f" + c.nomeNormalizado
+		baldes[chave] = append(baldes[chave], i)
 	}
 
 	uf := novoDuplicatasUnionFind()
@@ -1065,7 +1104,7 @@ type parProdutoEstoqueMesclagem struct {
 // `produto_estoque` dos removidos, reescreve `produto_id` das Movimentações
 // dos removidos para o mantido, soft-deleta os removidos e grava a
 // auditoria — commit único.
-func MesclarDuplicatas(db *sql.DB, produtoMantidoID string, produtoRemovidoIDs []string, usuarioID string) (ResultadoMesclagem, error) {
+func MesclarDuplicatas(db *sql.DB, empresaID string, produtoMantidoID string, produtoRemovidoIDs []string, usuarioID string) (ResultadoMesclagem, error) {
 	if err := validarFormaMesclagem(produtoMantidoID, produtoRemovidoIDs); err != nil {
 		return ResultadoMesclagem{}, err
 	}
@@ -1089,11 +1128,11 @@ func MesclarDuplicatas(db *sql.DB, produtoMantidoID string, produtoRemovidoIDs [
 		       altura_valor, altura_unidade,
 		       espessura_valor, espessura_unidade
 		FROM produtos
-		WHERE id = ANY($1)
+		WHERE id = ANY($1) AND empresa_id = $2
 		ORDER BY id
 		FOR UPDATE`
 
-	rows, err := tx.Query(qLockProdutos, pq.Array(todosIDsOrdenados))
+	rows, err := tx.Query(qLockProdutos, pq.Array(todosIDsOrdenados), empresaID)
 	if err != nil {
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation {
@@ -1164,7 +1203,7 @@ func MesclarDuplicatas(db *sql.DB, produtoMantidoID string, produtoRemovidoIDs [
 		}
 	}
 
-	locais, err := carregarLocaisProduto(tx)
+	locais, err := carregarLocaisProduto(tx, empresaID)
 	if err != nil {
 		return ResultadoMesclagem{}, err
 	}
@@ -1175,8 +1214,10 @@ func MesclarDuplicatas(db *sql.DB, produtoMantidoID string, produtoRemovidoIDs [
 	// --- consolida produto_estoque: trava todos os pares tocados em ordem --
 
 	paresRemovidosRows, err := tx.Query(
-		`SELECT produto_id, estoque_id FROM produto_estoque WHERE produto_id = ANY($1)`,
-		pq.Array(produtoRemovidoIDs),
+		`SELECT pe.produto_id, pe.estoque_id FROM produto_estoque pe
+		 JOIN produtos p ON p.id = pe.produto_id AND p.empresa_id = $2
+		 WHERE pe.produto_id = ANY($1)`,
+		pq.Array(produtoRemovidoIDs), empresaID,
 	)
 	if err != nil {
 		return ResultadoMesclagem{}, fmt.Errorf("falha ao consultar locais dos produtos removidos: %w", err)
@@ -1210,7 +1251,7 @@ func MesclarDuplicatas(db *sql.DB, produtoMantidoID string, produtoRemovidoIDs [
 
 	quantidadeTravada := make(map[string]map[string]float64, len(pares))
 	for _, p := range pares {
-		q, err := travarLinhaProdutoEstoque(tx, p.produtoID, p.estoqueID)
+		q, err := travarLinhaProdutoEstoque(tx, empresaID, p.produtoID, p.estoqueID)
 		if err != nil {
 			return ResultadoMesclagem{}, fmt.Errorf("falha ao travar produto_estoque (%s,%s) na mesclagem: %w", p.produtoID, p.estoqueID, err)
 		}
@@ -1235,8 +1276,10 @@ func MesclarDuplicatas(db *sql.DB, produtoMantidoID string, produtoRemovidoIDs [
 
 	for estoqueID, soma := range somaPorEstoque {
 		if _, err := tx.Exec(
-			`UPDATE produto_estoque SET quantidade = quantidade + $1 WHERE produto_id = $2 AND estoque_id = $3`,
-			soma, produtoMantidoID, estoqueID,
+			`UPDATE produto_estoque SET quantidade = quantidade + $1
+			 WHERE produto_id = $2 AND estoque_id = $3
+			   AND EXISTS (SELECT 1 FROM produtos p WHERE p.id = produto_estoque.produto_id AND p.empresa_id = $4)`,
+			soma, produtoMantidoID, estoqueID, empresaID,
 		); err != nil {
 			return ResultadoMesclagem{}, fmt.Errorf("falha ao consolidar quantidade no produto mantido: %w", err)
 		}
@@ -1244,15 +1287,20 @@ func MesclarDuplicatas(db *sql.DB, produtoMantidoID string, produtoRemovidoIDs [
 
 	// --- deleta produto_estoque dos removidos (só depois de somado) --------
 
-	if _, err := tx.Exec(`DELETE FROM produto_estoque WHERE produto_id = ANY($1)`, pq.Array(produtoRemovidoIDs)); err != nil {
+	if _, err := tx.Exec(
+		`DELETE FROM produto_estoque
+		 WHERE produto_id = ANY($1)
+		   AND EXISTS (SELECT 1 FROM produtos p WHERE p.id = produto_estoque.produto_id AND p.empresa_id = $2)`,
+		pq.Array(produtoRemovidoIDs), empresaID,
+	); err != nil {
 		return ResultadoMesclagem{}, fmt.Errorf("falha ao remover produto_estoque dos produtos removidos: %w", err)
 	}
 
 	// --- reescreve movimentacoes ANTES do soft-delete (preserva a invariante)
 
 	if _, err := tx.Exec(
-		`UPDATE movimentacoes SET produto_id = $1 WHERE produto_id = ANY($2)`,
-		produtoMantidoID, pq.Array(produtoRemovidoIDs),
+		`UPDATE movimentacoes SET produto_id = $1 WHERE produto_id = ANY($2) AND empresa_id = $3`,
+		produtoMantidoID, pq.Array(produtoRemovidoIDs), empresaID,
 	); err != nil {
 		return ResultadoMesclagem{}, fmt.Errorf("falha ao reescrever produto_id das movimentações: %w", err)
 	}
@@ -1275,8 +1323,9 @@ func MesclarDuplicatas(db *sql.DB, produtoMantidoID string, produtoRemovidoIDs [
 	// é reescrito — representa o que foi pedido no momento do envio, mesma
 	// imutabilidade do futuro recibo (Story 7.6).
 	pedidoItensRemovidosRows, err := tx.Query(
-		`SELECT pedido_id, produto_id, estoque_id, quantidade FROM pedido_itens WHERE produto_id = ANY($1)`,
-		pq.Array(produtoRemovidoIDs),
+		`SELECT pedido_id, produto_id, estoque_id, quantidade FROM pedido_itens
+		 WHERE produto_id = ANY($1) AND empresa_id = $2`,
+		pq.Array(produtoRemovidoIDs), empresaID,
 	)
 	if err != nil {
 		return ResultadoMesclagem{}, fmt.Errorf("falha ao consultar pedido_itens dos produtos removidos: %w", err)
@@ -1309,8 +1358,9 @@ func MesclarDuplicatas(db *sql.DB, produtoMantidoID string, produtoRemovidoIDs [
 	for _, it := range pedidoItensRemovidos {
 		var quantidadeExistenteNoMantido float64
 		errColisao := tx.QueryRow(
-			`SELECT quantidade FROM pedido_itens WHERE pedido_id = $1 AND produto_id = $2 AND estoque_id = $3`,
-			it.pedidoID, produtoMantidoID, it.estoqueID,
+			`SELECT quantidade FROM pedido_itens
+			 WHERE pedido_id = $1 AND produto_id = $2 AND estoque_id = $3 AND empresa_id = $4`,
+			it.pedidoID, produtoMantidoID, it.estoqueID, empresaID,
 		).Scan(&quantidadeExistenteNoMantido)
 		switch {
 		case errColisao == nil:
@@ -1318,22 +1368,25 @@ func MesclarDuplicatas(db *sql.DB, produtoMantidoID string, produtoRemovidoIDs [
 			// absorve a quantidade da removida, a linha do removido é
 			// apagada. Snapshot da linha mantida intocado.
 			if _, err := tx.Exec(
-				`UPDATE pedido_itens SET quantidade = quantidade + $1 WHERE pedido_id = $2 AND produto_id = $3 AND estoque_id = $4`,
-				it.quantidade, it.pedidoID, produtoMantidoID, it.estoqueID,
+				`UPDATE pedido_itens SET quantidade = quantidade + $1
+				 WHERE pedido_id = $2 AND produto_id = $3 AND estoque_id = $4 AND empresa_id = $5`,
+				it.quantidade, it.pedidoID, produtoMantidoID, it.estoqueID, empresaID,
 			); err != nil {
 				return ResultadoMesclagem{}, fmt.Errorf("falha ao consolidar pedido_itens colidido: %w", err)
 			}
 			if _, err := tx.Exec(
-				`DELETE FROM pedido_itens WHERE pedido_id = $1 AND produto_id = $2 AND estoque_id = $3`,
-				it.pedidoID, it.produtoID, it.estoqueID,
+				`DELETE FROM pedido_itens
+				 WHERE pedido_id = $1 AND produto_id = $2 AND estoque_id = $3 AND empresa_id = $4`,
+				it.pedidoID, it.produtoID, it.estoqueID, empresaID,
 			); err != nil {
 				return ResultadoMesclagem{}, fmt.Errorf("falha ao apagar pedido_itens consolidado: %w", err)
 			}
 		case errors.Is(errColisao, sql.ErrNoRows):
 			// Sem colisão: UPDATE simples do produto_id, snapshot intocado.
 			if _, err := tx.Exec(
-				`UPDATE pedido_itens SET produto_id = $1 WHERE pedido_id = $2 AND produto_id = $3 AND estoque_id = $4`,
-				produtoMantidoID, it.pedidoID, it.produtoID, it.estoqueID,
+				`UPDATE pedido_itens SET produto_id = $1
+				 WHERE pedido_id = $2 AND produto_id = $3 AND estoque_id = $4 AND empresa_id = $5`,
+				produtoMantidoID, it.pedidoID, it.produtoID, it.estoqueID, empresaID,
 			); err != nil {
 				return ResultadoMesclagem{}, fmt.Errorf("falha ao reescrever produto_id de pedido_itens: %w", err)
 			}
@@ -1344,7 +1397,10 @@ func MesclarDuplicatas(db *sql.DB, produtoMantidoID string, produtoRemovidoIDs [
 
 	// --- soft-delete dos removidos -------------------------------------
 
-	if _, err := tx.Exec(`UPDATE produtos SET deleted_at = now() WHERE id = ANY($1)`, pq.Array(produtoRemovidoIDs)); err != nil {
+	if _, err := tx.Exec(
+		`UPDATE produtos SET deleted_at = now() WHERE id = ANY($1) AND empresa_id = $2`,
+		pq.Array(produtoRemovidoIDs), empresaID,
+	); err != nil {
 		return ResultadoMesclagem{}, fmt.Errorf("falha ao soft-deletar produtos removidos: %w", err)
 	}
 
@@ -1352,15 +1408,15 @@ func MesclarDuplicatas(db *sql.DB, produtoMantidoID string, produtoRemovidoIDs [
 
 	var mesclagemID string
 	if err := tx.QueryRow(
-		`INSERT INTO mesclagens_duplicatas (produto_mantido_id, usuario_id) VALUES ($1, $2) RETURNING id`,
-		produtoMantidoID, usuarioID,
+		`INSERT INTO mesclagens_duplicatas (produto_mantido_id, usuario_id, empresa_id) VALUES ($1, $2, $3) RETURNING id`,
+		produtoMantidoID, usuarioID, empresaID,
 	).Scan(&mesclagemID); err != nil {
 		return ResultadoMesclagem{}, fmt.Errorf("falha ao gravar auditoria de mesclagem: %w", err)
 	}
 	for _, removidoID := range produtoRemovidoIDs {
 		if _, err := tx.Exec(
-			`INSERT INTO mesclagem_produtos_removidos (mesclagem_id, produto_removido_id, quantidade_consolidada) VALUES ($1, $2, $3)`,
-			mesclagemID, removidoID, quantidadePorRemovido[removidoID],
+			`INSERT INTO mesclagem_produtos_removidos (mesclagem_id, produto_removido_id, quantidade_consolidada, empresa_id) VALUES ($1, $2, $3, $4)`,
+			mesclagemID, removidoID, quantidadePorRemovido[removidoID], empresaID,
 		); err != nil {
 			return ResultadoMesclagem{}, fmt.Errorf("falha ao gravar produto removido na auditoria de mesclagem: %w", err)
 		}

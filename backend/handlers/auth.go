@@ -41,6 +41,25 @@ func escreverJSON(w http.ResponseWriter, status int, body any) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
+// empresaDaRequisicao extrai a Empresa que middleware.RequireEmpresa
+// resolveu do slug da rota (Story 9.1, spec-9-1) — o guard-clause
+// padronizado que TODO handler de negócio executa antes de chamar qualquer
+// service. A Empresa NUNCA vem de corpo, query string ou header: só do
+// contexto, e o contexto só é preenchido pelo middleware.
+//
+// Contexto sem Empresa significa handler registrado fora de RequireEmpresa —
+// erro de composição, não de requisição: 500 INTERNAL_ERROR + slog.Error,
+// mesmo tratamento de UsuarioDaSessao ausente (MeHandler/RequireRole).
+func empresaDaRequisicao(w http.ResponseWriter, r *http.Request) (services.Empresa, bool) {
+	empresa, ok := middleware.EmpresaDaRequisicao(r.Context())
+	if !ok {
+		slog.Error("handler chamado sem Empresa no contexto — RequireEmpresa não foi aplicado", "rota", r.URL.Path)
+		escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver empresa da requisição")
+		return services.Empresa{}, false
+	}
+	return empresa, true
+}
+
 // cadastroRequestMaxBytes limita o corpo aceito por POST /api/auth/cadastro
 // — rota pública e não autenticada, então json.Decode nunca deve ler um
 // corpo arbitrariamente grande antes de rejeitá-lo.
@@ -64,6 +83,11 @@ type cadastroRequest struct {
 // criar nenhuma linha.
 func CadastroHandler(db *sql.DB, emailCfg services.EmailConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
 		r.Body = http.MaxBytesReader(w, r.Body, cadastroRequestMaxBytes)
 
 		var req cadastroRequest
@@ -75,7 +99,7 @@ func CadastroHandler(db *sql.DB, emailCfg services.EmailConfig) http.HandlerFunc
 		// req.Papel é lido acima apenas para existir no struct de decodificação
 		// — deliberadamente nunca repassado a services.Cadastrar, que não tem
 		// sequer um parâmetro de papel.
-		_, err := services.Cadastrar(db, emailCfg, req.Nome, req.Email, req.Senha)
+		_, err := services.Cadastrar(db, emailCfg, empresa.ID, empresa.Slug, req.Nome, req.Email, req.Senha)
 		switch {
 		case err == nil:
 			escreverJSON(w, http.StatusCreated, map[string]string{
@@ -99,9 +123,14 @@ func CadastroHandler(db *sql.DB, emailCfg services.EmailConfig) http.HandlerFunc
 // da I/O Matrix.
 func VerificarEmailHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
 		token := r.URL.Query().Get("token")
 
-		err := services.VerificarEmail(db, token)
+		err := services.VerificarEmail(db, empresa.ID, token)
 		switch {
 		case err == nil:
 			escreverJSON(w, http.StatusOK, map[string]string{
@@ -128,8 +157,28 @@ const authRequestMaxBytes = 64 * 1024
 // anexa esse cookie nas próprias rotas de sessão, nunca em toda a API.
 const (
 	refreshTokenCookieName = "refresh_token"
-	refreshTokenCookiePath = "/api/auth"
+	// refreshTokenCookiePathBase é o Path do cookie SEM prefixo de Empresa —
+	// usado só quando a requisição não traz slug (nenhuma rota de produto
+	// hoje: toda rota de sessão vive sob `/e/{slug}/api/auth`).
+	refreshTokenCookiePathBase = "/api/auth"
 )
+
+// refreshTokenCookiePath devolve o Path do cookie de refresh ESCOPADO À
+// EMPRESA da requisição (Story 9.1, spec-9-1):
+// `/e/{slug}/api/auth`. Sem esse recorte o navegador anexaria o mesmo
+// cookie de refresh às rotas de sessão de QUALQUER Empresa — a sessão
+// vazaria de slug para slug, e um POST de refresh sob outro slug devolveria
+// dado da conta original.
+//
+// O slug vem de `r.PathValue("slug")` (o mesmo que RequireEmpresa resolveu),
+// nunca do corpo ou de um header.
+func refreshTokenCookiePath(r *http.Request) string {
+	slug := r.PathValue("slug")
+	if slug == "" {
+		return refreshTokenCookiePathBase
+	}
+	return "/e/" + slug + refreshTokenCookiePathBase
+}
 
 // usuarioResposta é o formato de usuário devolvido em POST /api/auth/login,
 // POST /api/auth/mfa/verificar, POST /api/auth/sso/keycloak e
@@ -177,7 +226,7 @@ func setRefreshCookie(w http.ResponseWriter, r *http.Request, token string, expi
 	http.SetCookie(w, &http.Cookie{
 		Name:     refreshTokenCookieName,
 		Value:    token,
-		Path:     refreshTokenCookiePath,
+		Path:     refreshTokenCookiePath(r),
 		HttpOnly: true,
 		Secure:   cookieEhSeguro(r),
 		SameSite: http.SameSiteLaxMode,
@@ -215,7 +264,7 @@ func clearRefreshCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     refreshTokenCookieName,
 		Value:    "",
-		Path:     refreshTokenCookiePath,
+		Path:     refreshTokenCookiePath(r),
 		HttpOnly: true,
 		Secure:   cookieEhSeguro(r),
 		SameSite: http.SameSiteLaxMode,
@@ -258,6 +307,11 @@ type loginRequest struct {
 // resposta ao solicitante (é um único INSERT indexado, não-fatal).
 func LoginHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
 		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
 
 		var req loginRequest
@@ -266,7 +320,7 @@ func LoginHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 			return
 		}
 
-		usuarioID, err := services.Login(db, req.Email, req.Senha)
+		usuarioID, err := services.Login(db, empresa.ID, req.Email, req.Senha)
 		switch {
 		case err == nil:
 			// segue abaixo
@@ -274,11 +328,11 @@ func LoginHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "e-mail e senha são obrigatórios")
 			return
 		case errors.Is(err, services.ErrCredenciaisInvalidas):
-			registrarTentativaLogin(r, db, "senha", req.Email, nil, false)
+			registrarTentativaLogin(r, db, empresa.ID, "senha", req.Email, nil, false)
 			escreverErro(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "E-mail ou senha inválidos.")
 			return
 		case errors.Is(err, services.ErrContaBloqueada):
-			registrarTentativaLogin(r, db, "senha", req.Email, nil, false)
+			registrarTentativaLogin(r, db, empresa.ID, "senha", req.Email, nil, false)
 			escreverErro(w, http.StatusTooManyRequests, "ACCOUNT_LOCKED", "Muitas tentativas de login sem sucesso. Por segurança, novas tentativas ficam bloqueadas temporariamente. Tente novamente mais tarde.")
 			return
 		default:
@@ -298,7 +352,7 @@ func LoginHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 		// sucesso UMA vez, antes da bifurcação de MFA. `sucesso` reflete o fator
 		// senha, não a emissão de sessão: um login que ainda vai exigir o
 		// segundo fator continua sendo `sucesso=true` aqui.
-		registrarTentativaLogin(r, db, "senha", req.Email, &usuarioID, true)
+		registrarTentativaLogin(r, db, empresa.ID, "senha", req.Email, &usuarioID, true)
 
 		if usuario.MFAHabilitado {
 			mfaToken, err := services.IniciarLoginMFA(db, usuario.ID)
@@ -325,6 +379,11 @@ func LoginHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 // precisa logar novamente.
 func RefreshHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
 		cookie, err := r.Cookie(refreshTokenCookieName)
 		if err != nil {
 			clearRefreshCookie(w, r)
@@ -332,7 +391,7 @@ func RefreshHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 			return
 		}
 
-		novoAccess, novoRefresh, expiraRefresh, err := services.RenovarSessao(db, jwtSecret, cookie.Value)
+		novoAccess, novoRefresh, expiraRefresh, err := services.RenovarSessao(db, jwtSecret, empresa.ID, cookie.Value)
 		switch {
 		case err == nil:
 			// segue abaixo
@@ -375,6 +434,11 @@ type esqueciSenhaRequest struct {
 // Story 1.10 mantém a redefinição intocada mesmo para uma conta já bloqueada.
 func EsqueciSenhaHandler(db *sql.DB, emailCfg services.EmailConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
 		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
 
 		var req esqueciSenhaRequest
@@ -383,7 +447,7 @@ func EsqueciSenhaHandler(db *sql.DB, emailCfg services.EmailConfig) http.Handler
 			return
 		}
 
-		if err := services.SolicitarRedefinicaoSenha(db, emailCfg, req.Email); err != nil {
+		if err := services.SolicitarRedefinicaoSenha(db, emailCfg, empresa.ID, empresa.Slug, req.Email); err != nil {
 			slog.Error("falha ao processar solicitação de redefinição de senha", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao processar solicitação")
 			return
@@ -400,9 +464,14 @@ func EsqueciSenhaHandler(db *sql.DB, emailCfg services.EmailConfig) http.Handler
 // TOKEN_EXPIRED.
 func ValidarRedefinicaoSenhaHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
 		token := r.URL.Query().Get("token")
 
-		err := services.ValidarTokenRedefinicao(db, token)
+		err := services.ValidarTokenRedefinicao(db, empresa.ID, token)
 		switch {
 		case err == nil:
 			escreverJSON(w, http.StatusOK, map[string]bool{"valido": true})
@@ -431,6 +500,11 @@ type redefinirSenhaRequest struct {
 // POST" e o reuso do mesmo link) -> 400 TOKEN_EXPIRED.
 func RedefinirSenhaHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
 		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
 
 		var req redefinirSenhaRequest
@@ -439,7 +513,7 @@ func RedefinirSenhaHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		err := services.RedefinirSenha(db, req.Token, req.Senha)
+		err := services.RedefinirSenha(db, empresa.ID, req.Token, req.Senha)
 		switch {
 		case err == nil:
 			escreverJSON(w, http.StatusOK, map[string]string{

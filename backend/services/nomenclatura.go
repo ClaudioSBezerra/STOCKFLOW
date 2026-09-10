@@ -76,12 +76,17 @@ func nomeValidoParaTemplate(templateTexto, nome string) bool {
 	return true
 }
 
-// ListarNomenclaturaTemplates devolve os 28 templates fixos de Nomenclatura
-// Guiada (addendum §G), ordenados por `subtipo` ascendente — a lista da qual
-// o formulário de cadastro seleciona (opcional), molde direto de
-// ListarCategorias (produtos.go).
-func ListarNomenclaturaTemplates(db *sql.DB) ([]NomenclaturaTemplate, error) {
-	rows, err := db.Query(`SELECT id, subtipo, template FROM nomenclatura_templates ORDER BY subtipo ASC`)
+// ListarNomenclaturaTemplates devolve os 28 templates de Nomenclatura Guiada
+// (addendum §G) DA EMPRESA `empresaID`, ordenados por `subtipo` ascendente —
+// a lista da qual o formulário de cadastro seleciona (opcional), molde direto
+// de ListarCategorias (produtos.go). Cada Empresa recebe a própria cópia da
+// lista padrão em services.ProvisionarEmpresa (Story 9.1); as linhas semeadas
+// pela migração 000013 (`empresa_id IS NULL`) são só o molde e nunca aparecem
+// aqui.
+func ListarNomenclaturaTemplates(db *sql.DB, empresaID string) ([]NomenclaturaTemplate, error) {
+	rows, err := db.Query(
+		`SELECT id, subtipo, template FROM nomenclatura_templates
+		 WHERE empresa_id = $1 ORDER BY subtipo ASC`, empresaID)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao listar templates de nomenclatura: %w", err)
 	}

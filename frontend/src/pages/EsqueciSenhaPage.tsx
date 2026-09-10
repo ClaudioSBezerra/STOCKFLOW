@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { apiUrl } from '@/lib/api';
 
 /**
  * Tela pública "Esqueci minha senha" (Story 1.6, spec-1-6). Rota irmã de
@@ -32,7 +33,7 @@ export function EsqueciSenhaPage() {
     setEnviando(true);
 
     try {
-      const res = await fetch('/api/auth/esqueci-senha', {
+      const res = await fetch(apiUrl('/api/auth/esqueci-senha'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),

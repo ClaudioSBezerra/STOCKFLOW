@@ -59,8 +59,9 @@ type MovimentacaoHistorico struct {
 	CriadoEm           time.Time `json:"criadoEm"`
 }
 
-// ListarMovimentacoes devolve a trilha de Movimentações (Baixas da Story
-// 5.1, Transferências da Story 5.2) do mais recente ao mais antigo,
+// ListarMovimentacoes devolve a trilha de Movimentações DA EMPRESA
+// `empresaID` (Story 9.1, AD-20) — Baixas da Story 5.1, Transferências da
+// Story 5.2 — do mais recente ao mais antigo,
 // limitada a maxMovimentacoesPorConsulta. Lista vazia não é erro. Molde de
 // ListarLogsAcesso (logs_acesso.go): `JOIN` simples para as colunas NOT
 // NULL (`produto_id`, `usuario_id`), `LEFT JOIN` + `sql.NullString` para as
@@ -69,7 +70,7 @@ type MovimentacaoHistorico struct {
 // duas Movimentações no mesmo instante compartilham `criado_em` e sem o
 // `id` a fronteira do LIMIT ordenaria de forma não-determinística), sem
 // parâmetro runtime nem filtro. SQL explícito, sem ORM.
-func ListarMovimentacoes(db *sql.DB) ([]MovimentacaoHistorico, error) {
+func ListarMovimentacoes(db *sql.DB, empresaID string) ([]MovimentacaoHistorico, error) {
 	q := fmt.Sprintf(`
 		SELECT m.id, m.produto_id, p.nome, m.tipo,
 		       m.estoque_origem_id, eo.nome, m.estoque_destino_id, ed.nome,
@@ -79,10 +80,11 @@ func ListarMovimentacoes(db *sql.DB) ([]MovimentacaoHistorico, error) {
 		JOIN usuarios u ON u.id = m.usuario_id
 		LEFT JOIN estoques eo ON eo.id = m.estoque_origem_id
 		LEFT JOIN estoques ed ON ed.id = m.estoque_destino_id
+		WHERE m.empresa_id = $1
 		ORDER BY m.criado_em DESC, m.id DESC
 		LIMIT %d`, maxMovimentacoesPorConsulta)
 
-	rows, err := db.Query(q)
+	rows, err := db.Query(q, empresaID)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao listar movimentações: %w", err)
 	}
@@ -129,7 +131,7 @@ func ListarMovimentacoes(db *sql.DB) ([]MovimentacaoHistorico, error) {
 // LGPD pede o histórico completo, não uma amostra. Mesmos JOINs e mesmo
 // `ORDER BY m.criado_em DESC, m.id DESC` (desempate determinístico). Lista
 // vazia não é erro.
-func ListarMovimentacoesDoUsuario(db *sql.DB, usuarioID string) ([]MovimentacaoHistorico, error) {
+func ListarMovimentacoesDoUsuario(db *sql.DB, empresaID string, usuarioID string) ([]MovimentacaoHistorico, error) {
 	const q = `
 		SELECT m.id, m.produto_id, p.nome, m.tipo,
 		       m.estoque_origem_id, eo.nome, m.estoque_destino_id, ed.nome,
@@ -139,10 +141,10 @@ func ListarMovimentacoesDoUsuario(db *sql.DB, usuarioID string) ([]MovimentacaoH
 		JOIN usuarios u ON u.id = m.usuario_id
 		LEFT JOIN estoques eo ON eo.id = m.estoque_origem_id
 		LEFT JOIN estoques ed ON ed.id = m.estoque_destino_id
-		WHERE m.usuario_id = $1
+		WHERE m.usuario_id = $1 AND m.empresa_id = $2
 		ORDER BY m.criado_em DESC, m.id DESC`
 
-	rows, err := db.Query(q, usuarioID)
+	rows, err := db.Query(q, usuarioID, empresaID)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao listar movimentações do usuário: %w", err)
 	}
@@ -229,7 +231,7 @@ func (e *ErroQuantidadeIndisponivel) Error() string {
 //
 // Caso contrário, debita a linha e insere a Movimentação na mesma transação,
 // commit único.
-func RegistrarBaixa(db *sql.DB, produtoID, estoqueID, usuarioID string, quantidade float64) (Movimentacao, error) {
+func RegistrarBaixa(db *sql.DB, empresaID string, produtoID, estoqueID, usuarioID string, quantidade float64) (Movimentacao, error) {
 	if quantidade <= 0 {
 		return Movimentacao{}, &ErroMovimentacaoValidacao{Mensagem: "quantidade deve ser maior que zero"}
 	}
@@ -245,12 +247,20 @@ func RegistrarBaixa(db *sql.DB, produtoID, estoqueID, usuarioID string, quantida
 	}
 	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
 
+	// Os dois JOINs escopam a linha travada à Empresa da requisição (Story
+	// 9.1, AD-20): um Produto OU um Estoque de outra Empresa não produz linha
+	// e cai no MESMO `sql.ErrNoRows` de um par sem saldo — colapsando em
+	// `Disponivel: 0`, sem revelar que o recurso existe. `FOR UPDATE OF pe`
+	// trava só `produto_estoque`; `produtos`/`estoques` entram apenas como
+	// filtro de posse e não devem ser travados.
 	var disponivel float64
 	const selectDisponivel = `
-		SELECT quantidade FROM produto_estoque
-		WHERE produto_id = $1 AND estoque_id = $2
-		FOR UPDATE`
-	if err := tx.QueryRow(selectDisponivel, produtoID, estoqueID).Scan(&disponivel); err != nil {
+		SELECT pe.quantidade FROM produto_estoque pe
+		JOIN produtos p ON p.id = pe.produto_id AND p.empresa_id = $3
+		JOIN estoques e ON e.id = pe.estoque_id AND e.empresa_id = $3
+		WHERE pe.produto_id = $1 AND pe.estoque_id = $2
+		FOR UPDATE OF pe`
+	if err := tx.QueryRow(selectDisponivel, produtoID, estoqueID, empresaID).Scan(&disponivel); err != nil {
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation {
 			return Movimentacao{}, &ErroQuantidadeIndisponivel{Disponivel: 0}
@@ -274,10 +284,10 @@ func RegistrarBaixa(db *sql.DB, produtoID, estoqueID, usuarioID string, quantida
 
 	var mov Movimentacao
 	const insert = `
-		INSERT INTO movimentacoes (produto_id, tipo, estoque_origem_id, quantidade, usuario_id)
-		VALUES ($1, 'baixa', $2, $3, $4)
+		INSERT INTO movimentacoes (produto_id, tipo, estoque_origem_id, quantidade, usuario_id, empresa_id)
+		VALUES ($1, 'baixa', $2, $3, $4, $5)
 		RETURNING id, produto_id, tipo, estoque_origem_id, quantidade, usuario_id, criado_em`
-	if err := tx.QueryRow(insert, produtoID, estoqueID, quantidade, usuarioID).Scan(
+	if err := tx.QueryRow(insert, produtoID, estoqueID, quantidade, usuarioID, empresaID).Scan(
 		&mov.ID, &mov.ProdutoID, &mov.Tipo, &mov.EstoqueOrigemID, &mov.Quantidade, &mov.UsuarioID, &mov.CriadoEm,
 	); err != nil {
 		return Movimentacao{}, fmt.Errorf("falha ao inserir movimentação de baixa: %w", err)
@@ -308,14 +318,22 @@ func RegistrarBaixa(db *sql.DB, produtoID, estoqueID, usuarioID string, quantida
 // ou produtoID um Produto inexistente) é devolvido tal qual para o
 // chamador traduzir em &ErroQuantidadeIndisponivel{Disponivel: 0} — mesmo
 // colapso "malformado/inexistente -> 0 disponível" da Story 5.1.
-func travarLinhaProdutoEstoque(tx *sql.Tx, produtoID, estoqueID string) (float64, error) {
+func travarLinhaProdutoEstoque(tx *sql.Tx, empresaID string, produtoID, estoqueID string) (float64, error) {
 	var quantidade float64
+	// O `SELECT` no lugar de `VALUES` é o guard de Empresa (Story 9.1,
+	// AD-20): a linha só nasce quando o Produto E o Estoque são os dois da
+	// Empresa da requisição. Um lado de outra Empresa produz zero linhas de
+	// entrada, o `RETURNING` não devolve nada e o chamador recebe
+	// `sql.ErrNoRows` — traduzido por erroTravarProdutoEstoque no MESMO
+	// `Disponivel: 0` de um id malformado ou inexistente.
 	const upsertLock = `
 		INSERT INTO produto_estoque (produto_id, estoque_id, quantidade)
-		VALUES ($1, $2, 0)
+		SELECT p.id, e.id, 0
+		FROM produtos p, estoques e
+		WHERE p.id = $1 AND e.id = $2 AND p.empresa_id = $3 AND e.empresa_id = $3
 		ON CONFLICT (produto_id, estoque_id) DO UPDATE SET quantidade = produto_estoque.quantidade
 		RETURNING quantidade`
-	if err := tx.QueryRow(upsertLock, produtoID, estoqueID).Scan(&quantidade); err != nil {
+	if err := tx.QueryRow(upsertLock, produtoID, estoqueID, empresaID).Scan(&quantidade); err != nil {
 		return 0, err
 	}
 	return quantidade, nil
@@ -328,6 +346,12 @@ func travarLinhaProdutoEstoque(tx *sql.Tx, produtoID, estoqueID string) (float64
 // inválido). Qualquer outro erro é devolvido envolto, sem colapsar.
 func erroTravarProdutoEstoque(err error) error {
 	var pqErr *pq.Error
+	if errors.Is(err, sql.ErrNoRows) {
+		// Produto e/ou Estoque de OUTRA Empresa (ou inexistente): o
+		// `INSERT ... SELECT` de travarLinhaProdutoEstoque não achou linha de
+		// entrada. Mesmo colapso dos ids malformados — nunca revela existência.
+		return &ErroQuantidadeIndisponivel{Disponivel: 0}
+	}
 	if errors.As(err, &pqErr) && (pqErr.Code == pqInvalidTextRepresentation || pqErr.Code == pqForeignKeyViolation) {
 		return &ErroQuantidadeIndisponivel{Disponivel: 0}
 	}
@@ -363,7 +387,7 @@ func erroTravarProdutoEstoque(err error) error {
 // debitar nem creditar nada (o `defer tx.Rollback()` desfaz qualquer linha
 // de destino criada pelo upsert-lock). Senão, debita a origem, credita o
 // destino e insere a Movimentação na mesma transação, commit único.
-func RegistrarTransferencia(db *sql.DB, produtoID, estoqueOrigemID, estoqueDestinoID, usuarioID string, quantidade float64) (Movimentacao, error) {
+func RegistrarTransferencia(db *sql.DB, empresaID string, produtoID, estoqueOrigemID, estoqueDestinoID, usuarioID string, quantidade float64) (Movimentacao, error) {
 	if quantidade <= 0 {
 		return Movimentacao{}, &ErroMovimentacaoValidacao{Mensagem: "quantidade deve ser maior que zero"}
 	}
@@ -386,11 +410,11 @@ func RegistrarTransferencia(db *sql.DB, produtoID, estoqueOrigemID, estoqueDesti
 	if segundo < primeiro {
 		primeiro, segundo = segundo, primeiro
 	}
-	saldoPrimeiro, err := travarLinhaProdutoEstoque(tx, produtoID, primeiro)
+	saldoPrimeiro, err := travarLinhaProdutoEstoque(tx, empresaID, produtoID, primeiro)
 	if err != nil {
 		return Movimentacao{}, erroTravarProdutoEstoque(err)
 	}
-	saldoSegundo, err := travarLinhaProdutoEstoque(tx, produtoID, segundo)
+	saldoSegundo, err := travarLinhaProdutoEstoque(tx, empresaID, produtoID, segundo)
 	if err != nil {
 		return Movimentacao{}, erroTravarProdutoEstoque(err)
 	}
@@ -420,10 +444,10 @@ func RegistrarTransferencia(db *sql.DB, produtoID, estoqueOrigemID, estoqueDesti
 
 	var mov Movimentacao
 	const insert = `
-		INSERT INTO movimentacoes (produto_id, tipo, estoque_origem_id, estoque_destino_id, quantidade, usuario_id)
-		VALUES ($1, 'transferencia', $2, $3, $4, $5)
+		INSERT INTO movimentacoes (produto_id, tipo, estoque_origem_id, estoque_destino_id, quantidade, usuario_id, empresa_id)
+		VALUES ($1, 'transferencia', $2, $3, $4, $5, $6)
 		RETURNING id, produto_id, tipo, estoque_origem_id, estoque_destino_id, quantidade, usuario_id, criado_em`
-	if err := tx.QueryRow(insert, produtoID, estoqueOrigemID, estoqueDestinoID, quantidade, usuarioID).Scan(
+	if err := tx.QueryRow(insert, produtoID, estoqueOrigemID, estoqueDestinoID, quantidade, usuarioID, empresaID).Scan(
 		&mov.ID, &mov.ProdutoID, &mov.Tipo, &mov.EstoqueOrigemID, &mov.EstoqueDestinoID, &mov.Quantidade, &mov.UsuarioID, &mov.CriadoEm,
 	); err != nil {
 		return Movimentacao{}, fmt.Errorf("falha ao inserir movimentação de transferência: %w", err)

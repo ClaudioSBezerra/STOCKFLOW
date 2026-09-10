@@ -44,7 +44,7 @@ func limparProdutosHandler(t *testing.T, db *sql.DB) {
 func categoriaIDPorCodigoHandler(t *testing.T, db *sql.DB, codigo string) string {
 	t.Helper()
 	var id string
-	if err := db.QueryRow(`SELECT id FROM categorias WHERE codigo = $1`, codigo).Scan(&id); err != nil {
+	if err := db.QueryRow(`SELECT id FROM categorias WHERE codigo = $1 AND empresa_id = $2`, codigo, empresaTeste).Scan(&id); err != nil {
 		t.Fatalf("falha ao buscar categoria %q: %v", codigo, err)
 	}
 	return id
@@ -52,16 +52,17 @@ func categoriaIDPorCodigoHandler(t *testing.T, db *sql.DB, codigo string) string
 
 func postProdutos(db *sql.DB, authHeader, body string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/produtos",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelAlmoxarife)(
-				CriarProdutoHandler(db, realtime.NewRegistry()))))
+	mux.HandleFunc("POST /e/{slug}/api/produtos",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					CriarProdutoHandler(db, realtime.NewRegistry())))))
 	var r *http.Request
 	if body != "" {
-		r = httptest.NewRequest(http.MethodPost, "/api/produtos", strings.NewReader(body))
+		r = httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/produtos", strings.NewReader(body))
 		r.Header.Set("Content-Type", "application/json")
 	} else {
-		r = httptest.NewRequest(http.MethodPost, "/api/produtos", nil)
+		r = httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/produtos", nil)
 	}
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
@@ -73,10 +74,11 @@ func postProdutos(db *sql.DB, authHeader, body string) *httptest.ResponseRecorde
 
 func getCategorias(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/categorias",
-		middleware.RequireAuth(db, testJWTSecret)(
-			ListarCategoriasHandler(db)))
-	r := httptest.NewRequest(http.MethodGet, "/api/categorias", nil)
+	mux.HandleFunc("GET /e/{slug}/api/categorias",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				ListarCategoriasHandler(db))))
+	r := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/categorias", nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
 	}
@@ -89,10 +91,11 @@ func getCategorias(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
 // MESMA composição de newMux (RequireAuth apenas — Story 3.2).
 func getNomenclaturaTemplates(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/nomenclatura-templates",
-		middleware.RequireAuth(db, testJWTSecret)(
-			ListarNomenclaturaTemplatesHandler(db)))
-	r := httptest.NewRequest(http.MethodGet, "/api/nomenclatura-templates", nil)
+	mux.HandleFunc("GET /e/{slug}/api/nomenclatura-templates",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				ListarNomenclaturaTemplatesHandler(db))))
+	r := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/nomenclatura-templates", nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
 	}
@@ -106,16 +109,17 @@ func getNomenclaturaTemplates(db *sql.DB, authHeader string) *httptest.ResponseR
 // AtualizarNomeProdutoHandler — Story 3.2).
 func postRenomear(db *sql.DB, authHeader, id, body string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/produtos/{id}/renomear",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelAlmoxarife)(
-				AtualizarNomeProdutoHandler(db, realtime.NewRegistry()))))
+	mux.HandleFunc("POST /e/{slug}/api/produtos/{id}/renomear",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					AtualizarNomeProdutoHandler(db, realtime.NewRegistry())))))
 	var r *http.Request
 	if body != "" {
-		r = httptest.NewRequest(http.MethodPost, "/api/produtos/"+id+"/renomear", strings.NewReader(body))
+		r = httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/produtos/"+id+"/renomear", strings.NewReader(body))
 		r.Header.Set("Content-Type", "application/json")
 	} else {
-		r = httptest.NewRequest(http.MethodPost, "/api/produtos/"+id+"/renomear", nil)
+		r = httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/produtos/"+id+"/renomear", nil)
 	}
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
@@ -130,7 +134,7 @@ func postRenomear(db *sql.DB, authHeader, id, body string) *httptest.ResponseRec
 func templateIDPorSubtipoHandler(t *testing.T, db *sql.DB, subtipo string) string {
 	t.Helper()
 	var id string
-	if err := db.QueryRow(`SELECT id FROM nomenclatura_templates WHERE subtipo = $1`, subtipo).Scan(&id); err != nil {
+	if err := db.QueryRow(`SELECT id FROM nomenclatura_templates WHERE subtipo = $1 AND empresa_id = $2`, subtipo, empresaTeste).Scan(&id); err != nil {
 		t.Fatalf("falha ao buscar template %q: %v", subtipo, err)
 	}
 	return id
@@ -154,7 +158,7 @@ func TestCriarProdutoHandler_201ParaAlmoxarifeGestorAdm(t *testing.T) {
 			criarContaComPapel(t, db, "Conta "+c.papel, c.email, "senha-123456", c.papel)
 			token := tokenDeLogin(t, db, c.email, "senha-123456")
 
-			estoque, err := services.CriarEstoque(db, "Canteiro "+c.papel)
+			estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro "+c.papel)
 			if err != nil {
 				t.Fatalf("seed CriarEstoque: %v", err)
 			}
@@ -199,7 +203,7 @@ func TestCriarProdutoHandler_201SemDimensoes(t *testing.T) {
 	criarContaComPapel(t, db, "Almox", "prod-semdim-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "prod-semdim-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Canteiro Sem Dimensão")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Sem Dimensão")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -221,7 +225,7 @@ func TestCriarProdutoHandler_400DimensaoIncompleta(t *testing.T) {
 	criarContaComPapel(t, db, "Almox", "prod-dim-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "prod-dim-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Canteiro Dimensão Incompleta")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Dimensão Incompleta")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -289,7 +293,7 @@ func TestCriarProdutoHandler_400CategoriaOuEstoqueInexistente(t *testing.T) {
 	criarContaComPapel(t, db, "Almox", "prod-fk-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "prod-fk-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Canteiro FK")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro FK")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -320,7 +324,7 @@ func TestCriarProdutoHandler_403ParaUsuario(t *testing.T) {
 	criarContaComPapel(t, db, "Usuária", "prod-forb-usuario@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "prod-forb-usuario@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Canteiro Proibido Produto")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Proibido Produto")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -409,7 +413,7 @@ func TestCriarProdutoHandler_201ComTemplateValido(t *testing.T) {
 	criarContaComPapel(t, db, "Almox", "prod-tpl-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "prod-tpl-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Canteiro Template Válido")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Template Válido")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -438,7 +442,7 @@ func TestCriarProdutoHandler_400TemplateNaoCorrespondeAoNome(t *testing.T) {
 	criarContaComPapel(t, db, "Almox", "prod-tpl-invalido-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "prod-tpl-invalido-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Canteiro Template Inválido")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Template Inválido")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -481,7 +485,7 @@ func TestCriarProdutoHandler_400TemplateInexistente(t *testing.T) {
 	criarContaComPapel(t, db, "Almox", "prod-tpl-inexistente-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "prod-tpl-inexistente-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Canteiro Template Inexistente")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Template Inexistente")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -578,11 +582,11 @@ func TestAtualizarNomeProdutoHandler_200AlmoxarifeSucesso(t *testing.T) {
 	criarContaComPapel(t, db, "Almox", "renomear-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "renomear-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Canteiro Renomear Handler")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Renomear Handler")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	produto, err := services.CriarProduto(db, services.CriarProdutoInput{
+	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
 		Nome:              "Nome Original",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -618,11 +622,11 @@ func TestAtualizarNomeProdutoHandler_400NomeIncompativelComTemplate(t *testing.T
 	criarContaComPapel(t, db, "Almox", "renomear-tpl-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "renomear-tpl-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Canteiro Renomear Template Handler")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Renomear Template Handler")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	produto, err := services.CriarProduto(db, services.CriarProdutoInput{
+	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
 		Nome:              "TUBO PEAD PN80 DN50",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -678,11 +682,11 @@ func TestAtualizarNomeProdutoHandler_400PayloadInvalido(t *testing.T) {
 	criarContaComPapel(t, db, "Almox", "renomear-payload-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "renomear-payload-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Canteiro Renomear Payload Inválido")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Renomear Payload Inválido")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	produto, err := services.CriarProduto(db, services.CriarProdutoInput{
+	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
 		Nome:              "Nome Original",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -720,11 +724,11 @@ func TestAtualizarNomeProdutoHandler_403ParaUsuario(t *testing.T) {
 	criarContaComPapel(t, db, "Usuária", "renomear-forb-usuario@empresa.com", "senha-123456", "usuario")
 	tokenUsuario := tokenDeLogin(t, db, "renomear-forb-usuario@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Canteiro Renomear Proibido")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Renomear Proibido")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	produto, err := services.CriarProduto(db, services.CriarProdutoInput{
+	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
 		Nome:              "Nome Original",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -758,10 +762,11 @@ func TestAtualizarNomeProdutoHandler_403ParaUsuario(t *testing.T) {
 // composição de newMux (RequireAuth apenas, SEM RequireRole — Story 4.1).
 func getProdutosBusca(db *sql.DB, authHeader, termo string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/produtos/busca",
-		middleware.RequireAuth(db, testJWTSecret)(
-			BuscarProdutosHandler(db)))
-	r := httptest.NewRequest(http.MethodGet, "/api/produtos/busca?q="+url.QueryEscape(termo), nil)
+	mux.HandleFunc("GET /e/{slug}/api/produtos/busca",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				BuscarProdutosHandler(db))))
+	r := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/produtos/busca?q="+url.QueryEscape(termo), nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
 	}
@@ -780,11 +785,11 @@ func TestBuscarProdutosHandler_200ComResultados(t *testing.T) {
 	criarContaComPapel(t, db, "Buscadora", "busca-200@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "busca-200@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Canteiro Busca Handler")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Busca Handler")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	produto, err := services.CriarProduto(db, services.CriarProdutoInput{
+	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
 		Nome:              "Parafuso Sextavado M8",
 		Codigo:            "PAR-BUSCA-1",
 		CategoriaID:       categoriaID,
@@ -923,10 +928,11 @@ func TestBuscarProdutosHandler_200ParaUsuario(t *testing.T) {
 // `query` é a query string já montada (sem o `?`), ex. "agrupar=true&pagina=2".
 func getProdutosCatalogo(db *sql.DB, authHeader, query string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/produtos/catalogo",
-		middleware.RequireAuth(db, testJWTSecret)(
-			ListarCatalogoHandler(db)))
-	alvo := "/api/produtos/catalogo"
+	mux.HandleFunc("GET /e/{slug}/api/produtos/catalogo",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				ListarCatalogoHandler(db))))
+	alvo := prefixoEmpresaTeste + "/api/produtos/catalogo"
 	if query != "" {
 		alvo += "?" + query
 	}
@@ -943,7 +949,7 @@ func getProdutosCatalogo(db *sql.DB, authHeader, query string) *httptest.Respons
 // ListarCatalogoHandler.
 func seedProdutoCatalogoHandler(t *testing.T, db *sql.DB, estoqueID, nome, categoriaID string, qtd float64) string {
 	t.Helper()
-	p, err := services.CriarProduto(db, services.CriarProdutoInput{
+	p, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
 		Nome:              nome,
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoqueID,
@@ -964,7 +970,7 @@ func TestListarCatalogoHandler_200Grade(t *testing.T) {
 	criarContaComPapel(t, db, "Catalogo Grade", "catalogo-grade@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "catalogo-grade@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Canteiro Catalogo Handler Grade")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Catalogo Handler Grade")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1023,11 +1029,11 @@ func TestListarCatalogoHandler_200AgrupadoComPorEstoque(t *testing.T) {
 	criarContaComPapel(t, db, "Catalogo Tabela", "catalogo-tabela@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "catalogo-tabela@empresa.com", "senha-123456")
 
-	estA, err := services.CriarEstoque(db, "Estoque Handler A")
+	estA, err := services.CriarEstoque(db, empresaTeste, "Estoque Handler A")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	estB, err := services.CriarEstoque(db, "Estoque Handler B")
+	estB, err := services.CriarEstoque(db, empresaTeste, "Estoque Handler B")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1189,7 +1195,7 @@ func TestListarCatalogoHandler_FiltroCategoriaIsolado(t *testing.T) {
 	criarContaComPapel(t, db, "Catalogo FiltroCat", "catalogo-filtrocat@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "catalogo-filtrocat@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Canteiro Handler FiltroCat")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Handler FiltroCat")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1215,11 +1221,11 @@ func TestListarCatalogoHandler_FiltroEstoqueIsolado(t *testing.T) {
 	criarContaComPapel(t, db, "Catalogo FiltroEst", "catalogo-filtroest@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "catalogo-filtroest@empresa.com", "senha-123456")
 
-	estA, err := services.CriarEstoque(db, "Estoque Handler FiltroEst A")
+	estA, err := services.CriarEstoque(db, empresaTeste, "Estoque Handler FiltroEst A")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque A: %v", err)
 	}
-	estB, err := services.CriarEstoque(db, "Estoque Handler FiltroEst B")
+	estB, err := services.CriarEstoque(db, empresaTeste, "Estoque Handler FiltroEst B")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque B: %v", err)
 	}
@@ -1245,7 +1251,7 @@ func TestListarCatalogoHandler_FiltroComEstoqueIsolado(t *testing.T) {
 	criarContaComPapel(t, db, "Catalogo FiltroDisp", "catalogo-filtrodisp@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "catalogo-filtrodisp@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Canteiro Handler FiltroDisp")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Handler FiltroDisp")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1272,11 +1278,11 @@ func TestListarCatalogoHandler_TodosFiltrosCombinados(t *testing.T) {
 	criarContaComPapel(t, db, "Catalogo FiltroTodos", "catalogo-filtrotodos@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "catalogo-filtrotodos@empresa.com", "senha-123456")
 
-	estAlvo, err := services.CriarEstoque(db, "Estoque Handler Alvo Todos")
+	estAlvo, err := services.CriarEstoque(db, empresaTeste, "Estoque Handler Alvo Todos")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque alvo: %v", err)
 	}
-	estOutro, err := services.CriarEstoque(db, "Estoque Handler Outro Todos")
+	estOutro, err := services.CriarEstoque(db, empresaTeste, "Estoque Handler Outro Todos")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque outro: %v", err)
 	}
@@ -1346,7 +1352,7 @@ func TestListarCatalogoHandler_200VazioParaIDMalformado(t *testing.T) {
 	criarContaComPapel(t, db, "Catalogo IDMalformado", "catalogo-idmalformado@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "catalogo-idmalformado@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Canteiro Handler IDMalformado")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Handler IDMalformado")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1377,7 +1383,7 @@ func TestListarCatalogoHandler_FiltroComAgrupar(t *testing.T) {
 	criarContaComPapel(t, db, "Catalogo FiltroAgrupar", "catalogo-filtroagrupar@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "catalogo-filtroagrupar@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Canteiro Handler FiltroAgrupar")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Handler FiltroAgrupar")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1411,11 +1417,12 @@ func TestListarCatalogoHandler_FiltroComAgrupar(t *testing.T) {
 // Story 4.6). `query` é a query string já montada (sem o `?`).
 func getProdutosCatalogoExportar(db *sql.DB, authHeader, query string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/produtos/catalogo/exportar",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelAlmoxarife)(
-				ExportarCatalogoHandler(db))))
-	alvo := "/api/produtos/catalogo/exportar"
+	mux.HandleFunc("GET /e/{slug}/api/produtos/catalogo/exportar",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					ExportarCatalogoHandler(db)))))
+	alvo := prefixoEmpresaTeste + "/api/produtos/catalogo/exportar"
 	if query != "" {
 		alvo += "?" + query
 	}
@@ -1439,7 +1446,7 @@ func TestExportarCatalogoHandler_200ComHeadersEXLSXValido(t *testing.T) {
 	criarContaComPapel(t, db, "Exportar Almox", "exportar-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "exportar-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Canteiro Exportar Handler")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Exportar Handler")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1541,7 +1548,7 @@ func TestExportarCatalogoHandler_FiltrosRepassadosAoService(t *testing.T) {
 	criarContaComPapel(t, db, "Exportar Filtro", "exportar-filtro@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "exportar-filtro@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Canteiro Exportar Filtro Handler")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Exportar Filtro Handler")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1573,10 +1580,11 @@ func TestExportarCatalogoHandler_FiltrosRepassadosAoService(t *testing.T) {
 // newMux (RequireAuth apenas, SEM RequireRole — Story 4.4).
 func getProdutoDetalhe(db *sql.DB, authHeader, id string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/produtos/{id}",
-		middleware.RequireAuth(db, testJWTSecret)(
-			ObterProdutoHandler(db)))
-	r := httptest.NewRequest(http.MethodGet, "/api/produtos/"+id, nil)
+	mux.HandleFunc("GET /e/{slug}/api/produtos/{id}",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				ObterProdutoHandler(db))))
+	r := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/produtos/"+id, nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
 	}
@@ -1595,7 +1603,7 @@ func TestObterProdutoHandler_200ComPorEstoque(t *testing.T) {
 	criarContaComPapel(t, db, "Detalhe Handler", "detalhe-handler@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "detalhe-handler@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Canteiro Detalhe Handler")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Detalhe Handler")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1672,7 +1680,7 @@ func TestObterProdutoHandler_200ParaUsuario(t *testing.T) {
 	criarContaComPapel(t, db, "Detalhe Papel Usuario", "detalhe-papel-usuario@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "detalhe-papel-usuario@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Canteiro Detalhe Papel Usuario")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Detalhe Papel Usuario")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1692,7 +1700,7 @@ func TestCriarProdutoHandler_PublicaEventoNoSucesso(t *testing.T) {
 	db := testDB(t)
 	limparProdutosHandler(t, db)
 	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
-	estoque, err := services.CriarEstoque(db, "Canteiro Evento Criar")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Evento Criar")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1700,17 +1708,18 @@ func TestCriarProdutoHandler_PublicaEventoNoSucesso(t *testing.T) {
 	token := tokenDeLogin(t, db, "evento-criar@empresa.com", "senha-123456")
 
 	registro := realtime.NewRegistry()
-	eventos, cancelar := registro.Subscribe()
+	eventos, cancelar := registro.Subscribe(empresaTeste)
 	defer cancelar()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/produtos",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelAlmoxarife)(
-				CriarProdutoHandler(db, registro))))
+	mux.HandleFunc("POST /e/{slug}/api/produtos",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					CriarProdutoHandler(db, registro)))))
 
 	body := `{"nome":"Produto Evento","categoria_id":"` + categoriaID + `","estoque_id":"` + estoque.ID + `","quantidade_inicial":1}`
-	r := httptest.NewRequest(http.MethodPost, "/api/produtos", strings.NewReader(body))
+	r := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/produtos", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
@@ -1745,11 +1754,11 @@ func TestAtualizarNomeProdutoHandler_PublicaEventoNoSucesso(t *testing.T) {
 	db := testDB(t)
 	limparProdutosHandler(t, db)
 	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
-	estoque, err := services.CriarEstoque(db, "Canteiro Evento Renomear")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Evento Renomear")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	produto, err := services.CriarProduto(db, services.CriarProdutoInput{
+	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
 		Nome: "Nome Original Evento", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	})
 	if err != nil {
@@ -1759,17 +1768,18 @@ func TestAtualizarNomeProdutoHandler_PublicaEventoNoSucesso(t *testing.T) {
 	token := tokenDeLogin(t, db, "evento-renomear@empresa.com", "senha-123456")
 
 	registro := realtime.NewRegistry()
-	eventos, cancelar := registro.Subscribe()
+	eventos, cancelar := registro.Subscribe(empresaTeste)
 	defer cancelar()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/produtos/{id}/renomear",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelAlmoxarife)(
-				AtualizarNomeProdutoHandler(db, registro))))
+	mux.HandleFunc("POST /e/{slug}/api/produtos/{id}/renomear",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					AtualizarNomeProdutoHandler(db, registro)))))
 
 	body := `{"nome":"Nome Novo Evento"}`
-	r := httptest.NewRequest(http.MethodPost, "/api/produtos/"+produto.ID+"/renomear", strings.NewReader(body))
+	r := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/produtos/"+produto.ID+"/renomear", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
@@ -1795,10 +1805,11 @@ func TestAtualizarNomeProdutoHandler_PublicaEventoNoSucesso(t *testing.T) {
 // Story 4.5).
 func getProdutoPorCodigo(db *sql.DB, authHeader, codigo string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/produtos/por-codigo",
-		middleware.RequireAuth(db, testJWTSecret)(
-			BuscarProdutoPorCodigoHandler(db)))
-	r := httptest.NewRequest(http.MethodGet, "/api/produtos/por-codigo?codigo="+url.QueryEscape(codigo), nil)
+	mux.HandleFunc("GET /e/{slug}/api/produtos/por-codigo",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				BuscarProdutoPorCodigoHandler(db))))
+	r := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/produtos/por-codigo?codigo="+url.QueryEscape(codigo), nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
 	}
@@ -1818,11 +1829,11 @@ func TestBuscarProdutoPorCodigoHandler_200ComProduto(t *testing.T) {
 	criarContaComPapel(t, db, "PorCodigo 200", "porcodigo-200@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "porcodigo-200@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Canteiro PorCodigo Handler")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro PorCodigo Handler")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	produto, err := services.CriarProduto(db, services.CriarProdutoInput{
+	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
 		Nome:              "Cabo Flexível 4mm",
 		Codigo:            "CAB-004",
 		CategoriaID:       categoriaID,
@@ -1942,11 +1953,11 @@ func TestBuscarProdutoPorCodigoHandler_200ParaUsuario(t *testing.T) {
 	criarContaComPapel(t, db, "PorCodigo Papel Usuario", "porcodigo-papel-usuario@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "porcodigo-papel-usuario@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Canteiro PorCodigo Papel Usuario")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro PorCodigo Papel Usuario")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	if _, err := services.CriarProduto(db, services.CriarProdutoInput{
+	if _, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
 		Nome: "Produto Papel Usuario", Codigo: "PU-001", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	}); err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)

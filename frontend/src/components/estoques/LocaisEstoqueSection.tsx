@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { getAccessToken } from '@/lib/session';
+import { apiUrl, authHeaders } from '@/lib/api';
 
 /**
  * Seção "Locais" da página `/estoques` (Stories 2.1 e 2.2, spec-2-1 /
@@ -45,11 +45,6 @@ interface Estoque {
   nome: string;
 }
 
-function authHeaders(): Record<string, string> {
-  const token = getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
 const MENSAGEM_ERRO_CARREGAR =
   'Não foi possível carregar a lista de estoques. Recarregue a página.';
 const MENSAGEM_ERRO_CADASTRO =
@@ -71,7 +66,7 @@ export function LocaisEstoqueSection() {
 
   const carregar = useCallback(async () => {
     try {
-      const res = await fetch('/api/estoques', { headers: authHeaders() });
+      const res = await fetch(apiUrl('/api/estoques'), { headers: authHeaders() });
       if (!res.ok) {
         setErroCarregar(MENSAGEM_ERRO_CARREGAR);
         return;
@@ -100,7 +95,7 @@ export function LocaisEstoqueSection() {
     setErro(null);
     setEnviando(true);
     try {
-      const res = await fetch('/api/estoques', {
+      const res = await fetch(apiUrl('/api/estoques'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ nome }),
@@ -131,7 +126,7 @@ export function LocaisEstoqueSection() {
     setErro(null);
     setExcluindo(true);
     try {
-      const res = await fetch(`/api/estoques/${id}`, {
+      const res = await fetch(apiUrl(`/api/estoques/${id}`), {
         method: 'DELETE',
         headers: authHeaders(),
       });

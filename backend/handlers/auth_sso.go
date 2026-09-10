@@ -62,6 +62,11 @@ func SSOConfigHandler(cfg iam.Config) http.HandlerFunc {
 // registram. O registro é não-fatal e nunca altera a resposta ao solicitante.
 func KeycloakSSOHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
 		email := iam.EmailDaSessaoSSO(r.Context())
 		if email == "" {
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "o token do SSO não trouxe e-mail")
@@ -69,16 +74,16 @@ func KeycloakSSOHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 		}
 
 		if !iam.EmailVerificadoSSO(r.Context()) {
-			registrarTentativaLogin(r, db, "sso", email, nil, false)
+			registrarTentativaLogin(r, db, empresa.ID, "sso", email, nil, false)
 			escreverErro(w, http.StatusUnauthorized, "EMAIL_NOT_VERIFIED",
 				"Confirme o e-mail da sua conta corporativa no Ferreira Costa antes de entrar.")
 			return
 		}
 
-		usuario, err := services.BuscarUsuarioPorEmailSSO(db, email)
+		usuario, err := services.BuscarUsuarioPorEmailSSO(db, empresa.ID, email)
 		if err != nil {
 			if errors.Is(err, services.ErrContaSSONaoEncontrada) {
-				registrarTentativaLogin(r, db, "sso", email, nil, false)
+				registrarTentativaLogin(r, db, empresa.ID, "sso", email, nil, false)
 				escreverErro(w, http.StatusUnauthorized, "SSO_SEM_CONTA",
 					"Não encontramos uma conta do stockflow para este e-mail. Cadastre-se primeiro.")
 				return
@@ -92,7 +97,7 @@ func KeycloakSSOHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 			// Conta desativada não autentica por SSO — coerente com a Story 1.8 e
 			// o epic-context. Mesmo código do login por senha, sem mensagem
 			// distinta.
-			registrarTentativaLogin(r, db, "sso", email, &usuario.ID, false)
+			registrarTentativaLogin(r, db, empresa.ID, "sso", email, &usuario.ID, false)
 			escreverErro(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "E-mail ou senha inválidos.")
 			return
 		}
@@ -101,7 +106,7 @@ func KeycloakSSOHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 		// gestor/adm — esta sessão NUNCA passa pelo gate de MFA local
 		// (middleware.RequireRole), então emitirSessaoEResponder nunca é chamado
 		// com "sso" fora daqui.
-		registrarTentativaLogin(r, db, "sso", email, &usuario.ID, true)
+		registrarTentativaLogin(r, db, empresa.ID, "sso", email, &usuario.ID, true)
 		emitirSessaoEResponder(w, r, db, jwtSecret, usuario, "sso")
 	}
 }
@@ -113,8 +118,13 @@ func KeycloakSSOHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 // cliente.
 func LogoutHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
 		if cookie, err := r.Cookie(refreshTokenCookieName); err == nil {
-			if err := services.RevogarSessaoPorRefreshToken(db, cookie.Value); err != nil {
+			if err := services.RevogarSessaoPorRefreshToken(db, empresa.ID, cookie.Value); err != nil {
 				slog.Error("falha ao revogar sessão no logout", "error", err)
 				// Segue mesmo assim: o cliente já considerou a sessão encerrada e o
 				// cookie precisa ser limpo de qualquer forma.

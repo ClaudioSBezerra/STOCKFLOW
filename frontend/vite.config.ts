@@ -21,6 +21,21 @@ export default defineConfig({
         target: 'http://localhost:8080',
         changeOrigin: true,
       },
+      // Story 9.1 (Multi-Empresa): toda rota de negócio vive sob
+      // `/e/{slug}/api/...`. Sem esta chave o `npm run dev` serviria o
+      // index.html do SPA no lugar da resposta da API.
+      //
+      // O prefixo `/e` também casa os deep-links do próprio SPA
+      // (`/e/{slug}/pedidos`), que precisam continuar recebendo o index.html
+      // — por isso o `bypass`: só o que casa `^/e/{slug}/api/` vai para o
+      // backend; qualquer outro caminho sob `/e/` é devolvido ao dev server.
+      // Em produção o nginx faz a mesma separação por regex
+      // (frontend/nginx.conf).
+      '/e': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+        bypass: (req) => (/^\/e\/[^/]+\/api\//.test(req.url ?? '') ? undefined : '/index.html'),
+      },
     },
   },
   test: {

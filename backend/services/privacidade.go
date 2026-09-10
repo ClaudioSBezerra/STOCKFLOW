@@ -31,22 +31,22 @@ type DadosPessoaisExportados struct {
 // (ListarPedidosProprios com `filtroStatus=""` — reaproveitada sem
 // alteração, já sem teto e já-escopada ao usuário, Story 7.3). `nome`/
 // `email` são só compostos no payload de saída, nunca usados para
-// consultar nada (o escopo das três fontes é inteiramente por
-// `usuarioID`). O primeiro erro não-nil de qualquer uma das três consultas
+// consultar nada (o escopo das três fontes é por `usuarioID` E pela Empresa
+// `empresaID` resolvida do slug da URL — Story 9.1, AD-20). O primeiro erro não-nil de qualquer uma das três consultas
 // interrompe e propaga — nenhum payload parcial é devolvido (I/O Matrix,
 // spec-8-1).
-func ExportarDadosUsuario(db *sql.DB, usuarioID, nome, email string) (DadosPessoaisExportados, error) {
-	logAcesso, err := ListarLogsAcessoDoUsuario(db, usuarioID)
+func ExportarDadosUsuario(db *sql.DB, empresaID, usuarioID, nome, email string) (DadosPessoaisExportados, error) {
+	logAcesso, err := ListarLogsAcessoDoUsuario(db, empresaID, usuarioID)
 	if err != nil {
 		return DadosPessoaisExportados{}, err
 	}
 
-	movimentacoes, err := ListarMovimentacoesDoUsuario(db, usuarioID)
+	movimentacoes, err := ListarMovimentacoesDoUsuario(db, empresaID, usuarioID)
 	if err != nil {
 		return DadosPessoaisExportados{}, err
 	}
 
-	pedidos, err := ListarPedidosProprios(db, usuarioID, "")
+	pedidos, err := ListarPedidosProprios(db, empresaID, usuarioID, "")
 	if err != nil {
 		return DadosPessoaisExportados{}, err
 	}

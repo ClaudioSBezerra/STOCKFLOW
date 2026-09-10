@@ -19,24 +19,24 @@ import (
 )
 
 func postSolicitacaoExclusao(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/api/usuarios/me/solicitacao-exclusao", nil)
+	req := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/usuarios/me/solicitacao-exclusao", nil)
 	if authHeader != "" {
 		req.Header.Set("Authorization", authHeader)
 	}
 	w := httptest.NewRecorder()
-	middleware.RequireAuth(db, testJWTSecret)(SolicitarExclusaoContaHandler(db))(w, req)
+	comEmpresa(db, middleware.RequireAuth(db, testJWTSecret)(SolicitarExclusaoContaHandler(db)))(w, req)
 	return w
 }
 
 func getSolicitacoesExclusao(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodGet, "/api/solicitacoes-exclusao", nil)
+	req := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/solicitacoes-exclusao", nil)
 	if authHeader != "" {
 		req.Header.Set("Authorization", authHeader)
 	}
 	w := httptest.NewRecorder()
-	middleware.RequireAuth(db, testJWTSecret)(
+	comEmpresa(db, middleware.RequireAuth(db, testJWTSecret)(
 		middleware.RequireRole(services.PapelAdm)(
-			ListarSolicitacoesExclusaoHandler(db)))(w, req)
+			ListarSolicitacoesExclusaoHandler(db))))(w, req)
 	return w
 }
 
@@ -54,11 +54,12 @@ func postProcessamentoExclusao(db *sql.DB, id, authHeader string) *httptest.Resp
 // processamento sem impedir a autenticação/autorização de resolver primeiro.
 func postProcessamentoExclusaoComHandlerDB(dbAuth, dbHandler *sql.DB, id, authHeader string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/solicitacoes-exclusao/{id}/processamento",
-		middleware.RequireAuth(dbAuth, testJWTSecret)(
-			middleware.RequireRole(services.PapelAdm)(
-				ProcessarExclusaoContaHandler(dbHandler))))
-	r := httptest.NewRequest(http.MethodPost, "/api/solicitacoes-exclusao/"+id+"/processamento", nil)
+	mux.HandleFunc("POST /e/{slug}/api/solicitacoes-exclusao/{id}/processamento",
+		comEmpresa(dbAuth,
+			middleware.RequireAuth(dbAuth, testJWTSecret)(
+				middleware.RequireRole(services.PapelAdm)(
+					ProcessarExclusaoContaHandler(dbHandler)))))
+	r := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/solicitacoes-exclusao/"+id+"/processamento", nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
 	}
@@ -417,7 +418,7 @@ func TestProcessarExclusaoContaHandler_SSOAntigoFalha(t *testing.T) {
 	h := ssoHandler(t, db, priv, "")
 	c := ssoClaims()
 	c["email"] = emailOriginal
-	w := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, c))
+	w := postSSOKeycloak(db, h, ssoAssinar(t, priv, ssoKid, c))
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401 (body=%s)", w.Code, w.Body.String())
 	}

@@ -33,8 +33,12 @@ func ExportarDadosUsuarioHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
-		dados, err := services.ExportarDadosUsuario(db, usuario.ID, usuario.Nome, usuario.Email)
+		dados, err := services.ExportarDadosUsuario(db, empresa.ID, usuario.ID, usuario.Nome, usuario.Email)
 		if err != nil {
 			slog.Error("falha ao exportar dados pessoais do usuário", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao exportar dados pessoais")

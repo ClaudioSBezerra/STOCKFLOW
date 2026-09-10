@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { senhaAtendePolitica } from '@/lib/senha';
+import { apiUrl } from '@/lib/api';
 
 /**
  * Envelope de erro fixo (AD-14): {"error":{"code","message"}}. Só o código é
@@ -86,7 +87,7 @@ export function CadastroPage() {
     setEnviando(true);
 
     try {
-      const res = await fetch('/api/auth/cadastro', {
+      const res = await fetch(apiUrl('/api/auth/cadastro'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ nome, email, senha }),

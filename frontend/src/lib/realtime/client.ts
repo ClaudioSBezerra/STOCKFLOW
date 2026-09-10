@@ -1,4 +1,4 @@
-import { getAccessToken } from '@/lib/session';
+import { apiUrl, authHeaders } from '@/lib/api';
 
 /**
  * Cliente da infraestrutura de tempo real (Story 4.4, spec-4-4, AD-3):
@@ -53,11 +53,6 @@ function calcularDelayRetry(tentativas: number): number {
   const base = Math.min(INTERVALO_RETRY_MAX_MS, exponencial);
   const jitter = Math.random() * JITTER_RETRY_MAX_MS;
   return base + jitter;
-}
-
-function authHeaders(): Record<string, string> {
-  const token = getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 export function conectarRealtime(
@@ -124,7 +119,7 @@ export function conectarRealtime(
 
     let ticket: string;
     try {
-      const res = await fetch('/api/realtime/ticket', {
+      const res = await fetch(apiUrl('/api/realtime/ticket'), {
         method: 'POST',
         headers: authHeaders(),
       });
@@ -147,7 +142,7 @@ export function conectarRealtime(
       return;
     }
 
-    const es = new EventSource(`/api/realtime/stream?ticket=${encodeURIComponent(ticket)}`);
+    const es = new EventSource(apiUrl(`/api/realtime/stream?ticket=${encodeURIComponent(ticket)}`));
     eventSourceAtual = es;
 
     es.addEventListener('open', () => {

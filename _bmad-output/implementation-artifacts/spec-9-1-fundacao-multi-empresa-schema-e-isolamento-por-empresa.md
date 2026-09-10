@@ -2,8 +2,8 @@
 title: 'Story 9.1: Fundação Multi-Empresa — schema e isolamento por Empresa'
 type: 'feature'
 created: '2026-09-10'
-status: 'blocked'
-baseline_revision: '9e33b2e0938d7ca657d667e669b4b6076872506e'
+status: 'done'
+baseline_revision: '8b1599876d8bfa17584b46695ddc104d66a1ccbd'
 review_loop_iteration: 0
 followup_review_recommended: false
 context: []
@@ -174,6 +174,17 @@ deferred: []
 
 ## Spec Change Log
 
+- **2026-09-10 — `empresas` NÃO entra no TRUNCATE dos testes.** A task de testes
+  pedia "estender o TRUNCATE para `empresas`". Feito o contrário, de propósito:
+  `empresas` é referenciada por `categorias`/`nomenclatura_templates` (e por
+  toda tabela de domínio), então um `TRUNCATE TABLE ... empresas CASCADE`
+  leva embora o seed das migrations 000010/000013 — que nenhuma migration
+  recria, porque já estão aplicadas. Como as suítes compartilham um único
+  banco (`go test -p 1 ./...`), isso quebrava todos os pacotes seguintes. No
+  lugar: cada suíte provisiona a sua Empresa uma vez, de forma idempotente
+  (`garantirEmpresaTeste`/`garantirEmpresaSeed`, SELECT por slug antes de
+  criar), e nenhuma delas trunca `empresas`.
+
 ## Review Triage Log
 
 ## Design Notes
@@ -186,27 +197,86 @@ deferred: []
 
 **Fotos em disco.** `fotosDir` é plano, com nomes `<produtoID>-<unix>.jpg`, e `produtoID` é UUID. Com a checagem de posse do Produto no banco (em `SalvarFotoProduto`, `ListarFotosProduto` e no handler que serve o arquivo), não há leitura cruzada pela API e não é preciso particionar o diretório.
 
-**Handoffs registrados.** (a) `cmd/migrate-legado` continua gravando `empresa_id` NULL — a Story 9.4 precisa passar a Empresa nos seus ~15 INSERTs antes do `SET NOT NULL`. (b) Acessar o app sem slug (`/`) não tem tela própria nesta story; a 9.2, que passa a conhecer os slugs, é o lugar natural para a página de entrada. (c) `IAM_REDIRECT_URI` do Keycloak passa a precisar do prefixo de slug da Ferreira Costa quando a 9.4 definir o slug dela.
+**Handoffs registrados.** (a) `cmd/migrate-legado` continua gravando `empresa_id` NULL — a Story 9.4 precisa passar a Empresa nos seus ~15 INSERTs antes do `SET NOT NULL`. (b) Acessar o app sem slug (`/`) não tem tela própria nesta story; a 9.2, que passa a conhecer os slugs, é o lugar natural para a página de entrada. (c) `IAM_REDIRECT_URI` do Keycloak passa a precisar do prefixo de slug da Ferreira Costa quando a 9.4 definir o slug dela. (d) `cmd/migrate-legado` carrega o mapa
+`lower(categorias.nome) -> id` sem filtro de Empresa (`produtos.go:344`) e
+checa o seed com `count(*) FROM categorias` (`:229`): com as cópias por
+Empresa criadas por `ProvisionarEmpresa`, o mesmo nome passa a existir N+1
+vezes e o mapa fica ambíguo. Inofensivo nesta story (em produção não existe
+Empresa nenhuma até a 9.4, então só as linhas padrão existem) e deliberadamente
+não tocado (Never), mas a Story 9.4 precisa recortar as duas consultas pela
+Empresa "Ferreira Costa" junto do resto do corte.
 
 ## Auto Run Result
 
-Status: blocked
-Blocking condition: no subagents — o subagente de implementação foi encerrado pela API com HTTP 429 (`rate_limit`, "You've hit your session limit", modelo `claude-opus-5`, request `req_011CeurA3bL2N7YbxFXgEGNF`). O limite só é liberado às 14:40 (America/Sao_Paulo) e a tentativa aconteceu às 10:47 — quase 4h de espera, incompatível com um run não assistido. A etapa de implementação exige subagente; sem ele o workflow não pode avançar.
+Status: done (retomada manual)
 
-O que foi feito nesta passagem (nenhum código commitado — ver o parcial preservado abaixo):
-- Roteamento retomou esta spec já existente (`status: in-progress`), como previsto pelo commit `9e33b2e`.
-- Árvore de trabalho limpa e metadados do Git graváveis; branch `main`, coerente com o épico.
-- `baseline_revision` atualizado de `6e2ce21a41f168c9a7a36a1ebdb792e22e3d3a7e` para `9e33b2e0938d7ca657d667e669b4b6076872506e` (HEAD no início desta passagem).
-- Postgres local confirmado em `127.0.0.1:5432` (`pg_isready`: accepting connections), então a verificação de banco poderá rodar com `DATABASE_URL=postgres://stockflow:stockflow@127.0.0.1:5432/stockflow?sslmode=disable`, o mesmo DSN usado nas stories 7.5, 8.1 e 8.2.
+A passagem anterior parou em `blocked` (HTTP 429, limite de sessão da API às
+10:47) com a implementação de produção escrita e a árvore SUJA — 94 arquivos
+modificados e 8 novos, todos não commitados. Esta passagem foi a retomada
+manual: nada foi descartado, o que faltava foi terminado e a story fechada.
 
-Trabalho parcial desta passagem, preservado em stash (a árvore ficou limpa):
-- Antes de morrer, o subagente escreveu 18 arquivos: as migrations `000031_create_empresas.{up,down}.sql` e `000032_add_empresa_id_dominio.{up,down}.sql`, o novo `backend/services/empresas.go` e 13 services já com `empresaID` (`auth`, `auth_sso`, `carrinho`, `catalogo`, `email`, `estoques`, `fotos`, `logs_acesso`, `movimentacoes`, `nomenclatura`, `produtos`, `relatorios`, `usuarios`).
-- Está **incompleto e não compila** — `go build ./...` acusa 4 call sites com a assinatura antiga: `services/normalizacao.go:1213` (`travarLinhaProdutoEstoque`), `services/pedidos.go:177` (`ListarCarrinho`), `services/privacidade.go:39` (`ListarLogsAcessoDoUsuario`) e `services/privacidade.go:44` (`ListarMovimentacoesDoUsuario`). Faltam ainda `middleware/empresa.go`, o reroteamento de `main.go`, handlers, realtime, CLI, todo o frontend e todos os testes.
-- Preservado como `stash@{0}` — "9.1 tentativa 2 (subagente morreu no 429; nao compila) - preservado", com só os arquivos desta tentativa enumerados. Nada foi commitado.
+Estado herdado (verificado, não assumido): `go build ./...` limpo, as
+migrations 000031/000032, `services/empresas.go`, `middleware/empresa.go`, o
+reroteamento de `main.go` para `/e/{slug}/api/...`, os 63 registros sob
+`RequireEmpresa`, os services com `empresaID` explícito, o realtime
+particionado, `cmd/seed-admin --empresa-slug` e todo o frontend
+(`lib/api.ts`, os 25 arquivos com `fetch`, `basename` do router, nginx, vite)
+já estavam prontos. Faltavam **os testes** — nenhum arquivo `*_test.go` de
+`backend/`, `handlers/` ou `middleware/` havia sido ajustado, e os três
+arquivos de teste novos exigidos pela spec não existiam.
 
-Para a próxima passagem:
-- Reexecutar depois das 14:40; a spec volta a rotear para a etapa de implementação assim que o `status` for devolvido a `in-progress` (ou `ready-for-dev`) por quem retomar o run.
-- Há agora **dois** stashes da 9.1: `stash@{0}` é o desta passagem (acima) e `stash@{1}` é o da sessão anterior ("9.1 interrompido (não compila) - preservado por segurança", 19 arquivos de `backend/services/` + `middleware/auth.go`). Nenhum dos dois foi aplicado: ambos não compilam e a spec é a fonte de verdade. Aplicá-los ou descartá-los é decisão do operador — uma implementação nova a partir da spec tende a ser mais barata do que reconciliar as duas tentativas.
+Feito nesta passagem:
+- **`services/`**: removida a duplicação `empresaTeste, empresaTeste` de 38
+  chamadas; `empresa_id` nos 20 INSERTs de seed direto (usuarios, logs_acesso,
+  importacoes, solicitacoes_promocao, movimentacoes); `EmpresaID` nos literais
+  de `FiltrosCatalogo`/`RegistroTentativaLogin`; buscas de
+  `categorias`/`nomenclatura_templates` recortadas pela Empresa (as cópias por
+  Empresa tornaram a busca por `codigo`/`subtipo` ambígua); links de e-mail
+  esperados agora com o prefixo `/e/{slug}`.
+- **`handlers/`**: novo `empresa_teste_test.go` (Empresa padrão idempotente +
+  `comEmpresa`, que compõe `RequireEmpresa` por fora como `newMux`); os 46
+  padrões de rota dos muxes locais e todos os caminhos literais migrados para
+  `/e/{slug}/api/...`; as 26 chamadas diretas de handler despachadas sob
+  `RequireEmpresa`; assinaturas de service e `Subscribe(empresaID)` ajustadas.
+- **`backend/` (pacote main)**: novo `empresa_teste_test.go`; 90 caminhos
+  literais prefixados (menos `GET /api/health`, que segue sem prefixo);
+  `seedContaMux` e os seeds diretos gravando na Empresa.
+- **Testes novos exigidos pela spec**: `services/empresas_test.go` (CNPJ,
+  slug, resolução por slug, cópia das listas padrão, unicidade de CNPJ/slug na
+  plataforma), `services/isolamento_test.go` (o teste-critério do AC 3: as 12
+  áreas na leitura + 6 escritas por id alheio) e `middleware/empresa_test.go`
+  (injeção pelo slug, o colapso de todas as falhas em 404, e o 401
+  SESSION_REVOKED de token de outra Empresa e de conta legada). O teste
+  cross-Empresa do `realtime/registry_test.go` já vinha pronto.
+- **Frontend**: novo `src/lib/api.test.ts` (9 casos) — `lib/api.ts` era o
+  único arquivo novo da story sem teste.
+- **Dois vazamentos de teste corrigidos** (não estavam na spec, mas quebravam
+  a suíte inteira num banco compartilhado): `cmd/seed-admin` truncava
+  `usuarios, empresas CASCADE`, o que apagava o seed de
+  `categorias`/`nomenclatura_templates`; e o snapshot de `categorias` do
+  `cmd/migrate-legado` (`TestMigrarProdutos_SeedAusente`) restaurava as linhas
+  sem `empresa_id`, apagando as cópias das outras suítes. Também os quatro
+  `ON CONFLICT (lower(email))` dos testes do migrate-legado, que deixaram de
+  casar o índice depois de ele virar `(empresa_id, lower(email))` (42P10).
+
+Duas causas de falha que atravessavam pacotes (o banco de testes é único,
+`go test -p 1 ./...`), ambas em código de teste e ambas corrigidas:
+
+1. `services/exclusao_conta_test.go` derruba `idx_usuarios_unico_adm` de
+   propósito num teste (para provar "adm com outro adm ativo prossegue") e,
+   no cleanup, recriava o índice na forma ANTIGA e global (`(papel)`) —
+   desfazendo a migration 000032 no banco compartilhado. O efeito só
+   aparecia depois: na execução seguinte, `cmd/seed-admin` e o teste de
+   isolamento eram recusados ao criar o segundo `adm` de outra Empresa
+   (justamente o AC 5). O cleanup agora recria a forma vigente,
+   `(empresa_id, papel) NULLS NOT DISTINCT WHERE papel = 'adm'`. O arquivo
+   de migration sempre estava correto.
+2. `services/empresas_test.go` criava Empresas com CNPJ/slug fixos, e
+   `empresas` não é truncada entre testes nem entre execuções — o segundo
+   `go test` esbarrava em "já existe uma empresa com este CNPJ". Cada caso
+   passou a partir de um estado conhecido via `removerEmpresaDeTeste`, que
+   apaga a Empresa e apenas as linhas que existem por causa dela (as cópias
+   de `categorias`/`nomenclatura_templates`), nunca as linhas padrão.
 
 ## Verification
 

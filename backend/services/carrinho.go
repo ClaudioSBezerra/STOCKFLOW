@@ -141,7 +141,7 @@ var ErrCarrinhoItemNaoEncontrado = errors.New("item não encontrado no carrinho"
 // `quantidade_já_no_carrinho_para_o_par + quantidade` > disponível ->
 // &ErroCarrinhoIndisponivel{Restante: disponivel - jaNoCarrinho}, carrinho
 // inalterado. Caso contrário, upsert incrementando e commit único.
-func AdicionarItemCarrinho(db *sql.DB, usuarioID, produtoID, estoqueID string, quantidade float64) (ItemCarrinho, error) {
+func AdicionarItemCarrinho(db *sql.DB, empresaID string, usuarioID, produtoID, estoqueID string, quantidade float64) (ItemCarrinho, error) {
 	if quantidade <= 0 {
 		return ItemCarrinho{}, &ErroCarrinhoValidacao{Mensagem: "quantidade deve ser maior que zero"}
 	}
@@ -158,8 +158,8 @@ func AdicionarItemCarrinho(db *sql.DB, usuarioID, produtoID, estoqueID string, q
 	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
 
 	var produtoNome string
-	const selectProduto = `SELECT nome FROM produtos WHERE id = $1 AND deleted_at IS NULL`
-	if err := tx.QueryRow(selectProduto, produtoID).Scan(&produtoNome); err != nil {
+	const selectProduto = `SELECT nome FROM produtos WHERE id = $1 AND deleted_at IS NULL AND empresa_id = $2`
+	if err := tx.QueryRow(selectProduto, produtoID, empresaID).Scan(&produtoNome); err != nil {
 		var pqErr *pq.Error
 		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
 			return ItemCarrinho{}, ErrCarrinhoProdutoNaoEncontrado
@@ -176,7 +176,9 @@ func AdicionarItemCarrinho(db *sql.DB, usuarioID, produtoID, estoqueID string, q
 	// estoqueID malformado (não-UUID) colapsa no mesmo 404, mesmo padrão de
 	// ErrCarrinhoProdutoNaoEncontrado acima.
 	var estoqueExiste bool
-	if err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM estoques WHERE id = $1)`, estoqueID).Scan(&estoqueExiste); err != nil {
+	if err := tx.QueryRow(
+		`SELECT EXISTS (SELECT 1 FROM estoques WHERE id = $1 AND empresa_id = $2)`, estoqueID, empresaID,
+	).Scan(&estoqueExiste); err != nil {
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation {
 			return ItemCarrinho{}, ErrCarrinhoEstoqueNaoEncontrado
@@ -219,7 +221,9 @@ func AdicionarItemCarrinho(db *sql.DB, usuarioID, produtoID, estoqueID string, q
 	// FK `ON DELETE CASCADE` para estoques(id) (estoques.go) — se chegamos
 	// até aqui, a linha de estoques correspondente existe garantidamente.
 	var estoqueNome string
-	if err := tx.QueryRow(`SELECT nome FROM estoques WHERE id = $1`, estoqueID).Scan(&estoqueNome); err != nil {
+	if err := tx.QueryRow(
+		`SELECT nome FROM estoques WHERE id = $1 AND empresa_id = $2`, estoqueID, empresaID,
+	).Scan(&estoqueNome); err != nil {
 		return ItemCarrinho{}, fmt.Errorf("falha ao resolver nome do estoque: %w", err)
 	}
 
@@ -270,7 +274,7 @@ type linhaCarrinhoBruta struct {
 // Esta função NUNCA modifica MesclarDuplicatas (Story 6.4) nem a exclusão
 // de Estoque (Story 2.2, Never de spec-7-1) — é só leitura-e-limpeza do lado
 // do carrinho, na direção oposta.
-func ListarCarrinho(db *sql.DB, usuarioID string) ([]ItemCarrinho, []ItemCarrinhoRemovido, error) {
+func ListarCarrinho(db *sql.DB, empresaID string, usuarioID string) ([]ItemCarrinho, []ItemCarrinhoRemovido, error) {
 	itens := make([]ItemCarrinho, 0)
 	removidos := make([]ItemCarrinhoRemovido, 0)
 
@@ -283,11 +287,11 @@ func ListarCarrinho(db *sql.DB, usuarioID string) ([]ItemCarrinho, []ItemCarrinh
 	const q = `
 		SELECT ci.produto_id, p.nome, p.deleted_at, ci.estoque_id, e.nome, ci.quantidade
 		FROM carrinho_itens ci
-		JOIN produtos p ON p.id = ci.produto_id
-		LEFT JOIN estoques e ON e.id = ci.estoque_id
+		JOIN produtos p ON p.id = ci.produto_id AND p.empresa_id = $2
+		LEFT JOIN estoques e ON e.id = ci.estoque_id AND e.empresa_id = $2
 		WHERE ci.usuario_id = $1
 		ORDER BY ci.criado_em ASC`
-	rows, err := tx.Query(q, usuarioID)
+	rows, err := tx.Query(q, usuarioID, empresaID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("falha ao listar carrinho: %w", err)
 	}
@@ -355,10 +359,17 @@ func ListarCarrinho(db *sql.DB, usuarioID string) ([]ItemCarrinho, []ItemCarrinh
 // carrinho do Usuário `usuarioID` (Story 7.1, spec-7-1). Par sem linha (ou
 // id malformado, pq 22P02) -> ErrCarrinhoItemNaoEncontrado, mesmo colapso de
 // ErrEstoqueNaoEncontrado (estoques.go).
-func RemoverItemCarrinho(db *sql.DB, usuarioID, produtoID, estoqueID string) error {
+func RemoverItemCarrinho(db *sql.DB, empresaID string, usuarioID, produtoID, estoqueID string) error {
+	// `carrinho_itens` é tabela FILHA e não ganhou `empresa_id` (migração
+	// 000032): a posse dela é a do Usuário e a do Produto. O `EXISTS` sobre
+	// `produtos` é o guard de Empresa (Story 9.1, AD-20) — defesa em
+	// profundidade, já que `usuarioID` vem sempre da sessão, que o middleware
+	// já provou ser da Empresa da URL.
 	res, err := db.Exec(
-		`DELETE FROM carrinho_itens WHERE usuario_id = $1 AND produto_id = $2 AND estoque_id = $3`,
-		usuarioID, produtoID, estoqueID,
+		`DELETE FROM carrinho_itens
+		 WHERE usuario_id = $1 AND produto_id = $2 AND estoque_id = $3
+		   AND EXISTS (SELECT 1 FROM produtos p WHERE p.id = carrinho_itens.produto_id AND p.empresa_id = $4)`,
+		usuarioID, produtoID, estoqueID, empresaID,
 	)
 	if err != nil {
 		var pqErr *pq.Error

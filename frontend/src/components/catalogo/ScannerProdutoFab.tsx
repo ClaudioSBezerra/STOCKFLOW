@@ -3,8 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { ScanLine } from 'lucide-react';
 import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
-import { getAccessToken } from '@/lib/session';
 import { criarLeitorCodigo, type LeituraAtiva } from '@/lib/scanner/leitor';
+import { apiUrl, authHeaders } from '@/lib/api';
 
 /**
  * `fab-scanner` (Story 4.5, spec-4-5, FR-35, UX-DR4) — botão flutuante do
@@ -51,11 +51,6 @@ const MSG_CAMERA_GENERICA = 'Não foi possível abrir a câmera. Use a busca por
 const MSG_CODIGO_NAO_RECONHECIDO =
   'Código não reconhecido: nenhum produto com esse código. Use a busca por texto.';
 const MSG_ABRIR_PRODUTO_FALHOU = 'Não foi possível abrir o produto agora. Tente novamente.';
-
-function authHeaders(): Record<string, string> {
-  const token = getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
 
 function nomeDoErro(err: unknown): string {
   if (err instanceof DOMException) return err.name;
@@ -125,7 +120,7 @@ export function ScannerProdutoFab({ aoFalharLeitura }: ScannerProdutoFabProps) {
       setCameraAberta(false);
       try {
         const res = await fetch(
-          `/api/produtos/por-codigo?codigo=${encodeURIComponent(texto.trim())}`,
+          apiUrl(`/api/produtos/por-codigo?codigo=${encodeURIComponent(texto.trim())}`),
           { headers: authHeaders() },
         );
         if (res.ok) {

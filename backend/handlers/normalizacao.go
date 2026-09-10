@@ -53,8 +53,12 @@ func AnalisarInconsistenciasHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
-		sugestoes, err := services.AnalisarInconsistencias(db)
+		sugestoes, err := services.AnalisarInconsistencias(db, empresa.ID)
 		if err != nil {
 			slog.Error("falha ao analisar inconsistências", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao analisar inconsistências")
@@ -121,6 +125,10 @@ func AplicarCorrecoesHandler(db *sql.DB, registro *realtime.Registry) http.Handl
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		r.Body = http.MaxBytesReader(w, r.Body, normalizacaoCorrecoesRequestMaxBytes)
 		var req aplicarCorrecoesRequest
@@ -139,7 +147,7 @@ func AplicarCorrecoesHandler(db *sql.DB, registro *realtime.Registry) http.Handl
 			})
 		}
 
-		aplicadas, err := services.AplicarCorrecoes(db, correcoes)
+		aplicadas, err := services.AplicarCorrecoes(db, empresa.ID, correcoes)
 		var erroValidacao *services.ErroProdutoValidacao
 		switch {
 		case err == nil:
@@ -152,7 +160,7 @@ func AplicarCorrecoesHandler(db *sql.DB, registro *realtime.Registry) http.Handl
 					continue
 				}
 				tocados[a.ProdutoID] = true
-				registro.Publish("produtos", realtime.Evento{ID: a.ProdutoID, Change: "updated"})
+				registro.Publish(empresa.ID, "produtos", realtime.Evento{ID: a.ProdutoID, Change: "updated"})
 			}
 			escreverJSON(w, http.StatusOK, map[string]any{"aplicadas": aplicadas})
 		case errors.As(err, &erroValidacao):
@@ -181,6 +189,10 @@ func IgnorarSugestaoHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
 		// Corpo é um item só, mas o shape é idêntico a correcaoRequest — reusa
@@ -191,7 +203,7 @@ func IgnorarSugestaoHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		err := services.IgnorarSugestao(db, req.ProdutoID, req.Campo, req.ValorSugerido.Valor, req.ValorSugerido.Unidade)
+		err := services.IgnorarSugestao(db, empresa.ID, req.ProdutoID, req.Campo, req.ValorSugerido.Valor, req.ValorSugerido.Unidade)
 		var erroValidacao *services.ErroProdutoValidacao
 		switch {
 		case err == nil:
@@ -219,8 +231,12 @@ func DetectarDuplicatasHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
-		grupos, err := services.DetectarDuplicatas(db)
+		grupos, err := services.DetectarDuplicatas(db, empresa.ID)
 		if err != nil {
 			slog.Error("falha ao detectar duplicatas", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao detectar duplicatas")
@@ -267,6 +283,10 @@ func MesclarDuplicatasHandler(db *sql.DB, registro *realtime.Registry) http.Hand
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
 		var req mesclarDuplicatasRequest
@@ -275,16 +295,16 @@ func MesclarDuplicatasHandler(db *sql.DB, registro *realtime.Registry) http.Hand
 			return
 		}
 
-		resultado, err := services.MesclarDuplicatas(db, req.ProdutoMantidoID, req.ProdutoRemovidoIDs, usuario.ID)
+		resultado, err := services.MesclarDuplicatas(db, empresa.ID, req.ProdutoMantidoID, req.ProdutoRemovidoIDs, usuario.ID)
 		var erroValidacao *services.ErroProdutoValidacao
 		var erroInvalida *services.ErroMesclagemInvalida
 		switch {
 		case err == nil:
-			registro.Publish("produtos", realtime.Evento{ID: resultado.ProdutoMantidoID, Change: "updated"})
+			registro.Publish(empresa.ID, "produtos", realtime.Evento{ID: resultado.ProdutoMantidoID, Change: "updated"})
 			for _, removidoID := range resultado.ProdutosRemovidosIDs {
-				registro.Publish("produtos", realtime.Evento{ID: removidoID, Change: "deleted"})
+				registro.Publish(empresa.ID, "produtos", realtime.Evento{ID: removidoID, Change: "deleted"})
 			}
-			registro.Publish("movimentacoes", realtime.Evento{Change: "updated"})
+			registro.Publish(empresa.ID, "movimentacoes", realtime.Evento{Change: "updated"})
 			escreverJSON(w, http.StatusOK, resultado)
 		case errors.As(err, &erroValidacao):
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)

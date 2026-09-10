@@ -53,7 +53,7 @@ func TestSolicitarExclusaoConta_Happy(t *testing.T) {
 	db := testDB(t)
 	id := semearConta(t, db, "Solicitante", "excl-solicita@empresa.com", PapelUsuario, 0)
 
-	s, err := SolicitarExclusaoConta(db, id)
+	s, err := SolicitarExclusaoConta(db, empresaTeste, id)
 	if err != nil {
 		t.Fatalf("SolicitarExclusaoConta erro inesperado: %v", err)
 	}
@@ -84,10 +84,10 @@ func TestSolicitarExclusaoConta_Duplicata(t *testing.T) {
 	db := testDB(t)
 	id := semearConta(t, db, "Repetido", "excl-repete@empresa.com", PapelUsuario, 0)
 
-	if _, err := SolicitarExclusaoConta(db, id); err != nil {
+	if _, err := SolicitarExclusaoConta(db, empresaTeste, id); err != nil {
 		t.Fatalf("primeira SolicitarExclusaoConta falhou: %v", err)
 	}
-	_, err := SolicitarExclusaoConta(db, id)
+	_, err := SolicitarExclusaoConta(db, empresaTeste, id)
 	if !errors.Is(err, ErrExclusaoPendenteExiste) {
 		t.Fatalf("erro = %v, want ErrExclusaoPendenteExiste", err)
 	}
@@ -109,7 +109,7 @@ func TestSolicitarExclusaoConta_AposProcessada(t *testing.T) {
 	adm := semearConta(t, db, "Adm", "excl-adm-reincide@empresa.com", PapelAdm, 1)
 	inserirSolicitacaoExclusao(t, db, solicitante, "processada", adm, 0)
 
-	s, err := SolicitarExclusaoConta(db, solicitante)
+	s, err := SolicitarExclusaoConta(db, empresaTeste, solicitante)
 	if err != nil {
 		t.Fatalf("SolicitarExclusaoConta após processada: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestListarSolicitacoesExclusao_PendentesOrdenadas(t *testing.T) {
 	// Ruído: uma já processada nunca aparece.
 	inserirSolicitacaoExclusao(t, db, adm, "processada", adm, 5)
 
-	lista, err := ListarSolicitacoesExclusao(db)
+	lista, err := ListarSolicitacoesExclusao(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("ListarSolicitacoesExclusao erro: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestListarSolicitacoesExclusao_PendentesOrdenadas(t *testing.T) {
 // slice vazio não-nil, nunca nil/erro.
 func TestListarSolicitacoesExclusao_Vazia(t *testing.T) {
 	db := testDB(t)
-	lista, err := ListarSolicitacoesExclusao(db)
+	lista, err := ListarSolicitacoesExclusao(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestProcessarExclusaoConta_AnonimizaESemMexerNoHistorico(t *testing.T) {
 	// Histórico do alvo em cada uma das três tabelas protegidas.
 	inserirLogAcessoDireto(t, db, &alvo, "excl-alvo@empresa.com", "senha", true, "10.0.0.9", time.Now())
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Estoque Excl 82", 50)
-	if _, err := RegistrarBaixa(db, produtoID, estoqueID, alvo, 3); err != nil {
+	if _, err := RegistrarBaixa(db, empresaTeste, produtoID, estoqueID, alvo, 3); err != nil {
 		t.Fatalf("seed RegistrarBaixa: %v", err)
 	}
 	seedPedidoComItem(t, db, alvo, "Excl 82", 2)
@@ -214,7 +214,7 @@ func TestProcessarExclusaoConta_AnonimizaESemMexerNoHistorico(t *testing.T) {
 
 	solID := inserirSolicitacaoExclusao(t, db, alvo, "pendente", "", 0)
 
-	p, err := ProcessarExclusaoConta(db, solID, adm)
+	p, err := ProcessarExclusaoConta(db, empresaTeste, solID, adm)
 	if err != nil {
 		t.Fatalf("ProcessarExclusaoConta erro inesperado: %v", err)
 	}
@@ -307,14 +307,14 @@ func TestProcessarExclusaoConta_LoginPorEmailAntigoFalha(t *testing.T) {
 	adm := semearConta(t, db, "Adm login", "excl-adm-login@empresa.com", PapelAdm, 1)
 	solID := inserirSolicitacaoExclusao(t, db, alvo, "pendente", "", 0)
 
-	if _, err := ProcessarExclusaoConta(db, solID, adm); err != nil {
+	if _, err := ProcessarExclusaoConta(db, empresaTeste, solID, adm); err != nil {
 		t.Fatalf("ProcessarExclusaoConta: %v", err)
 	}
 
-	if _, err := Login(db, emailOriginal, "qualquer-senha"); !errors.Is(err, ErrCredenciaisInvalidas) {
+	if _, err := Login(db, empresaTeste, emailOriginal, "qualquer-senha"); !errors.Is(err, ErrCredenciaisInvalidas) {
 		t.Errorf("Login(e-mail antigo) erro = %v, want ErrCredenciaisInvalidas", err)
 	}
-	if _, err := BuscarUsuarioPorEmailSSO(db, emailOriginal); !errors.Is(err, ErrContaSSONaoEncontrada) {
+	if _, err := BuscarUsuarioPorEmailSSO(db, empresaTeste, emailOriginal); !errors.Is(err, ErrContaSSONaoEncontrada) {
 		t.Errorf("BuscarUsuarioPorEmailSSO(e-mail antigo) erro = %v, want ErrContaSSONaoEncontrada", err)
 	}
 }
@@ -326,10 +326,10 @@ func TestProcessarExclusaoConta_Inexistente(t *testing.T) {
 	db := testDB(t)
 	adm := semearConta(t, db, "Adm 404", "excl-adm-404@empresa.com", PapelAdm, 0)
 
-	if _, err := ProcessarExclusaoConta(db, "00000000-0000-0000-0000-000000000000", adm); !errors.Is(err, ErrSolicitacaoExclusaoNaoEncontrada) {
+	if _, err := ProcessarExclusaoConta(db, empresaTeste, "00000000-0000-0000-0000-000000000000", adm); !errors.Is(err, ErrSolicitacaoExclusaoNaoEncontrada) {
 		t.Errorf("uuid sem match: erro = %v, want ErrSolicitacaoExclusaoNaoEncontrada", err)
 	}
-	if _, err := ProcessarExclusaoConta(db, "nao-e-uuid", adm); !errors.Is(err, ErrSolicitacaoExclusaoNaoEncontrada) {
+	if _, err := ProcessarExclusaoConta(db, empresaTeste, "nao-e-uuid", adm); !errors.Is(err, ErrSolicitacaoExclusaoNaoEncontrada) {
 		t.Errorf("id malformado: erro = %v, want ErrSolicitacaoExclusaoNaoEncontrada", err)
 	}
 }
@@ -343,10 +343,10 @@ func TestProcessarExclusaoConta_JaProcessada(t *testing.T) {
 	adm := semearConta(t, db, "Adm 2x", "excl-adm-2x@empresa.com", PapelAdm, 1)
 	solID := inserirSolicitacaoExclusao(t, db, alvo, "pendente", "", 0)
 
-	if _, err := ProcessarExclusaoConta(db, solID, adm); err != nil {
+	if _, err := ProcessarExclusaoConta(db, empresaTeste, solID, adm); err != nil {
 		t.Fatalf("primeiro processamento falhou: %v", err)
 	}
-	if _, err := ProcessarExclusaoConta(db, solID, adm); !errors.Is(err, ErrSolicitacaoExclusaoNaoPendente) {
+	if _, err := ProcessarExclusaoConta(db, empresaTeste, solID, adm); !errors.Is(err, ErrSolicitacaoExclusaoNaoPendente) {
 		t.Fatalf("segundo processamento: erro = %v, want ErrSolicitacaoExclusaoNaoPendente", err)
 	}
 }
@@ -359,7 +359,7 @@ func TestProcessarExclusaoConta_UltimoAdmBloqueado(t *testing.T) {
 	adm := semearConta(t, db, "Único Adm", "excl-unico-adm@empresa.com", PapelAdm, 0)
 	solID := inserirSolicitacaoExclusao(t, db, adm, "pendente", "", 0)
 
-	_, err := ProcessarExclusaoConta(db, solID, adm)
+	_, err := ProcessarExclusaoConta(db, empresaTeste, solID, adm)
 	if !errors.Is(err, ErrUltimoAdmAtivo) {
 		t.Fatalf("erro = %v, want ErrUltimoAdmAtivo", err)
 	}
@@ -398,8 +398,15 @@ func TestProcessarExclusaoConta_AdmComOutroAdmAtivoProssegue(t *testing.T) {
 		if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 			t.Fatalf("cleanup TRUNCATE usuarios: %v", err)
 		}
+		// Story 9.1: o índice recriado tem de ser o ATUAL — `(empresa_id,
+		// papel) NULLS NOT DISTINCT` (migration 000032), não o global de
+		// antes. Recriá-lo na forma antiga regredia o schema do banco
+		// compartilhado por todas as suítes e passava a recusar o segundo
+		// `adm` de outra Empresa (AC 5), com a falha aparecendo em OUTRO
+		// pacote na execução seguinte.
 		if _, err := db.Exec(
-			`CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_unico_adm ON usuarios (papel) WHERE papel = 'adm'`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_unico_adm
+			   ON usuarios (empresa_id, papel) NULLS NOT DISTINCT WHERE papel = 'adm'`,
 		); err != nil {
 			t.Fatalf("cleanup recriar idx_usuarios_unico_adm: %v", err)
 		}
@@ -409,7 +416,7 @@ func TestProcessarExclusaoConta_AdmComOutroAdmAtivoProssegue(t *testing.T) {
 	outro := semearConta(t, db, "Adm Sobrevivente", "excl-adm-sobrevive@empresa.com", PapelAdm, 1)
 	solID := inserirSolicitacaoExclusao(t, db, alvo, "pendente", "", 0)
 
-	if _, err := ProcessarExclusaoConta(db, solID, outro); err != nil {
+	if _, err := ProcessarExclusaoConta(db, empresaTeste, solID, outro); err != nil {
 		t.Fatalf("ProcessarExclusaoConta erro inesperado: %v", err)
 	}
 
@@ -438,7 +445,7 @@ func TestProcessarExclusaoConta_ErroDeBancoNaoAnonimizaParcial(t *testing.T) {
 	}
 	db2.Close()
 
-	if _, err := ProcessarExclusaoConta(db2, solID, adm); err == nil {
+	if _, err := ProcessarExclusaoConta(db2, empresaTeste, solID, adm); err == nil {
 		t.Fatal("erro esperado com a conexão fechada")
 	}
 

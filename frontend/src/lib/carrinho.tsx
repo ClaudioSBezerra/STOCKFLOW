@@ -9,8 +9,8 @@ import {
   type ReactNode,
 } from 'react';
 import { toast } from 'sonner';
-import { getAccessToken } from '@/lib/session';
 import { useAuth } from '@/lib/auth';
+import { apiUrl, authHeaders } from '@/lib/api';
 
 /**
  * Carrinho de reserva (Story 7.1, spec-7-1). `CarrinhoProvider` envolve
@@ -96,11 +96,6 @@ interface CarrinhoContextValue {
 
 const CarrinhoContext = createContext<CarrinhoContextValue | null>(null);
 
-function authHeaders(): Record<string, string> {
-  const token = getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
 const MENSAGEM_ERRO_ADICIONAR =
   'Não foi possível adicionar o item ao carrinho agora. Tente novamente em instantes.';
 const MENSAGEM_ERRO_REMOVER =
@@ -148,7 +143,7 @@ export function CarrinhoProvider({ children }: { children: ReactNode }) {
     const minhaGeracao = ++geracaoRef.current;
     setCarregando(true);
     try {
-      const res = await fetch('/api/carrinho', { headers: authHeaders() });
+      const res = await fetch(apiUrl('/api/carrinho'), { headers: authHeaders() });
       if (!res.ok) {
         if (minhaGeracao === geracaoRef.current) {
           setErro(true);
@@ -204,7 +199,7 @@ export function CarrinhoProvider({ children }: { children: ReactNode }) {
   const adicionarItem = useCallback(
     async (produtoId: string, estoqueId: string, quantidade: number): Promise<ResultadoOperacaoCarrinho> => {
       try {
-        const res = await fetch('/api/carrinho/itens', {
+        const res = await fetch(apiUrl('/api/carrinho/itens'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
           body: JSON.stringify({ produtoId, estoqueId, quantidade }),
@@ -226,7 +221,7 @@ export function CarrinhoProvider({ children }: { children: ReactNode }) {
     async (produtoId: string, estoqueId: string): Promise<ResultadoOperacaoCarrinho> => {
       try {
         const res = await fetch(
-          `/api/carrinho/itens/${produtoId}/${estoqueId}`,
+          apiUrl(`/api/carrinho/itens/${produtoId}/${estoqueId}`),
           { method: 'DELETE', headers: authHeaders() },
         );
         if (!(res.status === 204 || res.ok)) {
@@ -249,7 +244,7 @@ export function CarrinhoProvider({ children }: { children: ReactNode }) {
       observacao: string,
     ): Promise<ResultadoOperacaoCarrinho> => {
       try {
-        const res = await fetch('/api/pedidos', {
+        const res = await fetch(apiUrl('/api/pedidos'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
           body: JSON.stringify({ solicitante, obraCentroCusto, observacao }),

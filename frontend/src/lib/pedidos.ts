@@ -1,4 +1,4 @@
-import { getAccessToken } from '@/lib/session';
+import { apiUrl, authHeaders } from '@/lib/api';
 
 /**
  * Cliente HTTP puro (sem Context) da API de leitura de Pedidos — Story 7.3
@@ -65,11 +65,6 @@ export interface PedidoDetalhe extends PedidoCabecalho {
   itens: PedidoItem[];
 }
 
-function authHeaders(): Record<string, string> {
-  const token = getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
 const MENSAGEM_ERRO_LISTAR =
   'Não foi possível carregar seus pedidos agora. Tente novamente em instantes.';
 const MENSAGEM_ERRO_LISTAR_FILA =
@@ -83,7 +78,7 @@ export const MENSAGEM_ERRO_RECIBO =
 
 export async function listarPedidos(status?: StatusPedido): Promise<PedidoResumo[]> {
   const url = status ? `/api/pedidos?status=${encodeURIComponent(status)}` : '/api/pedidos';
-  const res = await fetch(url, { headers: authHeaders() });
+  const res = await fetch(apiUrl(url), { headers: authHeaders() });
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
     throw new Error(body.error?.message ?? MENSAGEM_ERRO_LISTAR);
@@ -96,7 +91,7 @@ export async function listarFilaPedidos(status?: StatusPedido): Promise<PedidoRe
   const url = status
     ? `/api/pedidos?escopo=todos&status=${encodeURIComponent(status)}`
     : '/api/pedidos?escopo=todos';
-  const res = await fetch(url, { headers: authHeaders() });
+  const res = await fetch(apiUrl(url), { headers: authHeaders() });
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
     throw new Error(body.error?.message ?? MENSAGEM_ERRO_LISTAR_FILA);
@@ -106,7 +101,7 @@ export async function listarFilaPedidos(status?: StatusPedido): Promise<PedidoRe
 }
 
 export async function buscarPedido(id: string): Promise<PedidoDetalhe> {
-  const res = await fetch(`/api/pedidos/${encodeURIComponent(id)}`, { headers: authHeaders() });
+  const res = await fetch(apiUrl(`/api/pedidos/${encodeURIComponent(id)}`), { headers: authHeaders() });
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
     throw new Error(body.error?.message ?? MENSAGEM_ERRO_DETALHE);
@@ -125,7 +120,7 @@ export async function buscarPedido(id: string): Promise<PedidoDetalhe> {
  * resposta deste POST.
  */
 export async function decidirPedido(id: string, aprovar: boolean): Promise<PedidoDetalhe> {
-  const res = await fetch(`/api/pedidos/${encodeURIComponent(id)}/decisao`, {
+  const res = await fetch(apiUrl(`/api/pedidos/${encodeURIComponent(id)}/decisao`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ aprovar }),
@@ -148,7 +143,7 @@ export async function decidirPedido(id: string, aprovar: boolean): Promise<Pedid
  * `body.error?.message` do servidor (ou `MENSAGEM_ERRO_RECIBO`).
  */
 export async function buscarReciboPedidoBlob(id: string): Promise<Blob> {
-  const res = await fetch(`/api/pedidos/${encodeURIComponent(id)}/recibo`, {
+  const res = await fetch(apiUrl(`/api/pedidos/${encodeURIComponent(id)}/recibo`), {
     headers: authHeaders(),
   });
   if (!res.ok) {

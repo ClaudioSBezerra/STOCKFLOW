@@ -31,16 +31,17 @@ func limparEstoquesHandler(t *testing.T, db *sql.DB) {
 
 func postEstoques(db *sql.DB, authHeader, body string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/estoques",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelAlmoxarife)(
-				CriarEstoqueHandler(db))))
+	mux.HandleFunc("POST /e/{slug}/api/estoques",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					CriarEstoqueHandler(db)))))
 	var r *http.Request
 	if body != "" {
-		r = httptest.NewRequest(http.MethodPost, "/api/estoques", strings.NewReader(body))
+		r = httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/estoques", strings.NewReader(body))
 		r.Header.Set("Content-Type", "application/json")
 	} else {
-		r = httptest.NewRequest(http.MethodPost, "/api/estoques", nil)
+		r = httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/estoques", nil)
 	}
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
@@ -52,10 +53,11 @@ func postEstoques(db *sql.DB, authHeader, body string) *httptest.ResponseRecorde
 
 func getEstoques(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/estoques",
-		middleware.RequireAuth(db, testJWTSecret)(
-			ListarEstoquesHandler(db)))
-	r := httptest.NewRequest(http.MethodGet, "/api/estoques", nil)
+	mux.HandleFunc("GET /e/{slug}/api/estoques",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				ListarEstoquesHandler(db))))
+	r := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/estoques", nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
 	}
@@ -68,11 +70,12 @@ func getEstoques(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
 // newMux (RequireAuth -> RequireRole(almoxarife) -> ExcluirEstoqueHandler).
 func deleteEstoques(db *sql.DB, authHeader, id string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("DELETE /api/estoques/{id}",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelAlmoxarife)(
-				ExcluirEstoqueHandler(db))))
-	r := httptest.NewRequest(http.MethodDelete, "/api/estoques/"+id, nil)
+	mux.HandleFunc("DELETE /e/{slug}/api/estoques/{id}",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					ExcluirEstoqueHandler(db)))))
+	r := httptest.NewRequest(http.MethodDelete, prefixoEmpresaTeste+"/api/estoques/"+id, nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
 	}
@@ -255,7 +258,7 @@ func TestListarEstoquesHandler_200PorQualquerPapel(t *testing.T) {
 	limparEstoquesHandler(t, db)
 
 	for _, nome := range []string{"Zinco", "abc", "Manga"} {
-		if _, err := services.CriarEstoque(db, nome); err != nil {
+		if _, err := services.CriarEstoque(db, empresaTeste, nome); err != nil {
 			t.Fatalf("seed CriarEstoque(%q): %v", nome, err)
 		}
 	}
@@ -312,7 +315,7 @@ func TestExcluirEstoqueHandler_204ParaAlmoxarifeGestorAdm(t *testing.T) {
 			criarContaComPapel(t, db, "Conta "+c.papel, c.email, "senha-123456", c.papel)
 			token := tokenDeLogin(t, db, c.email, "senha-123456")
 
-			e, err := services.CriarEstoque(db, "Canteiro "+c.papel)
+			e, err := services.CriarEstoque(db, empresaTeste, "Canteiro "+c.papel)
 			if err != nil {
 				t.Fatalf("seed CriarEstoque: %v", err)
 			}
@@ -371,7 +374,7 @@ func TestExcluirEstoqueHandler_403ParaUsuario(t *testing.T) {
 	criarContaComPapel(t, db, "Usuária", "del-usuario@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "del-usuario@empresa.com", "senha-123456")
 
-	e, err := services.CriarEstoque(db, "Canteiro Protegido")
+	e, err := services.CriarEstoque(db, empresaTeste, "Canteiro Protegido")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -415,12 +418,12 @@ func TestExcluirEstoqueHandler_409ComResiduo(t *testing.T) {
 	criarContaComPapel(t, db, "Almox", "del-residuo-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "del-residuo-almox@empresa.com", "senha-123456")
 
-	e, err := services.CriarEstoque(db, "Canteiro Com Resíduo Handler")
+	e, err := services.CriarEstoque(db, empresaTeste, "Canteiro Com Resíduo Handler")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.005")
-	produto, err := services.CriarProduto(db, services.CriarProdutoInput{
+	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
 		Nome:              "Tubo PVC 100mm",
 		CategoriaID:       categoriaID,
 		EstoqueID:         e.ID,

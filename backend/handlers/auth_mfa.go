@@ -34,6 +34,11 @@ type mfaVerificarRequest struct {
 // compartilhado com senha) -> 429 ACCOUNT_LOCKED, mesma mensagem do login.
 func MFAVerificarHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
 		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
 
 		var req mfaVerificarRequest
@@ -42,7 +47,7 @@ func MFAVerificarHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 			return
 		}
 
-		usuarioID, err := services.ConcluirLoginMFA(db, req.MfaToken, req.Codigo)
+		usuarioID, err := services.ConcluirLoginMFA(db, empresa.ID, req.MfaToken, req.Codigo)
 		switch {
 		case err == nil:
 			// segue abaixo

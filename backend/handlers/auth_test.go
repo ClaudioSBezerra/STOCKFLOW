@@ -74,6 +74,11 @@ func testDB(t *testing.T) *sql.DB {
 		t.Fatalf("falha ao limpar tabelas entre testes: %v", err)
 	}
 
+	// Story 9.1: toda rota vive sob uma Empresa, e todo service recebe o
+	// `empresaID` como argumento — a suíte precisa de uma Empresa real
+	// antes de semear qualquer linha.
+	empresaTeste = garantirEmpresaTeste(t, db)
+
 	return db
 }
 
@@ -95,10 +100,10 @@ func decodeErro(t *testing.T, body []byte) erroEnvelope {
 }
 
 func postCadastro(db *sql.DB, jsonBody string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/cadastro", strings.NewReader(jsonBody))
+	req := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/auth/cadastro", strings.NewReader(jsonBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	CadastroHandler(db, testEmailCfg)(w, req)
+	comEmpresa(db, CadastroHandler(db, testEmailCfg))(w, req)
 	return w
 }
 
@@ -203,9 +208,9 @@ func TestCadastroHandler_CorpoMuitoGrande(t *testing.T) {
 }
 
 func getVerificarEmail(db *sql.DB, token string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodGet, "/api/auth/verificar-email?token="+token, nil)
+	req := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/auth/verificar-email?token="+token, nil)
 	w := httptest.NewRecorder()
-	VerificarEmailHandler(db)(w, req)
+	comEmpresa(db, VerificarEmailHandler(db))(w, req)
 	return w
 }
 
@@ -213,7 +218,7 @@ func getVerificarEmail(db *sql.DB, token string) *httptest.ResponseRecorder {
 // válido" na fronteira HTTP: 200 e email_verificado=true no banco.
 func TestVerificarEmailHandler_Sucesso(t *testing.T) {
 	db := testDB(t)
-	usuarioID, err := services.Cadastrar(db, testEmailCfg, "Verificando", "verificando@empresa.com", "senha-123456")
+	usuarioID, err := services.Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Verificando", "verificando@empresa.com", "senha-123456")
 	if err != nil {
 		t.Fatalf("Cadastrar falhou: %v", err)
 	}
@@ -259,9 +264,9 @@ func TestVerificarEmailHandler_TokenInexistente(t *testing.T) {
 func TestVerificarEmailHandler_TokenAusente(t *testing.T) {
 	db := testDB(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/auth/verificar-email", nil)
+	req := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/auth/verificar-email", nil)
 	w := httptest.NewRecorder()
-	VerificarEmailHandler(db)(w, req)
+	comEmpresa(db, VerificarEmailHandler(db))(w, req)
 
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusNotFound, w.Body.String())
@@ -276,7 +281,7 @@ func TestVerificarEmailHandler_TokenAusente(t *testing.T) {
 // (AD-14) para o cenário "Link expirado".
 func TestVerificarEmailHandler_TokenExpirado(t *testing.T) {
 	db := testDB(t)
-	usuarioID, err := services.Cadastrar(db, testEmailCfg, "Expirando", "expirando@empresa.com", "senha-123456")
+	usuarioID, err := services.Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Expirando", "expirando@empresa.com", "senha-123456")
 	if err != nil {
 		t.Fatalf("Cadastrar falhou: %v", err)
 	}
@@ -303,7 +308,7 @@ func TestVerificarEmailHandler_TokenExpirado(t *testing.T) {
 // efeito.
 func TestVerificarEmailHandler_TokenJaUsado(t *testing.T) {
 	db := testDB(t)
-	usuarioID, err := services.Cadastrar(db, testEmailCfg, "Reusando", "reusando@empresa.com", "senha-123456")
+	usuarioID, err := services.Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Reusando", "reusando@empresa.com", "senha-123456")
 	if err != nil {
 		t.Fatalf("Cadastrar falhou: %v", err)
 	}
@@ -342,10 +347,10 @@ func criarUsuarioLogin(t *testing.T, db *sql.DB, email, senha string) string {
 	}
 	var id string
 	const insert = `
-		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
-		VALUES ('Usuário Teste', $1, $2, 'usuario', true, true)
+		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, empresa_id)
+		VALUES ('Usuário Teste', $1, $2, 'usuario', true, true, $3)
 		RETURNING id`
-	if err := db.QueryRow(insert, email, string(hash)).Scan(&id); err != nil {
+	if err := db.QueryRow(insert, email, string(hash), empresaTeste).Scan(&id); err != nil {
 		t.Fatalf("falha ao criar usuario de teste: %v", err)
 	}
 	return id
@@ -368,20 +373,20 @@ func criarUsuarioLoginComEstado(t *testing.T, db *sql.DB, email, senha string, a
 	}
 	var id string
 	const insert = `
-		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
-		VALUES ('Usuário Teste', $1, $2, 'usuario', $3, $4)
+		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, empresa_id)
+		VALUES ('Usuário Teste', $1, $2, 'usuario', $3, $4, $5)
 		RETURNING id`
-	if err := db.QueryRow(insert, email, senhaHash, emailVerificado, ativo).Scan(&id); err != nil {
+	if err := db.QueryRow(insert, email, senhaHash, emailVerificado, ativo, empresaTeste).Scan(&id); err != nil {
 		t.Fatalf("falha ao criar usuario de teste: %v", err)
 	}
 	return id
 }
 
 func postLogin(db *sql.DB, jsonBody string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(jsonBody))
+	req := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/auth/login", strings.NewReader(jsonBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	LoginHandler(db, testJWTSecret)(w, req)
+	comEmpresa(db, LoginHandler(db, testJWTSecret))(w, req)
 	return w
 }
 
@@ -400,12 +405,12 @@ func refreshCookieDoResultado(t *testing.T, w *httptest.ResponseRecorder) *http.
 }
 
 func postRefresh(db *sql.DB, cookie *http.Cookie) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
+	req := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/auth/refresh", nil)
 	if cookie != nil {
 		req.AddCookie(cookie)
 	}
 	w := httptest.NewRecorder()
-	RefreshHandler(db, testJWTSecret)(w, req)
+	comEmpresa(db, RefreshHandler(db, testJWTSecret))(w, req)
 	return w
 }
 
@@ -413,12 +418,12 @@ func postRefresh(db *sql.DB, cookie *http.Cookie) *httptest.ResponseRecorder {
 // (main.go: middleware.RequireAuth(db, jwtSecret)(handlers.MeHandler())) —
 // nunca chama MeHandler isoladamente, para provar o contrato real da rota.
 func getMe(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
+	req := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/auth/me", nil)
 	if authHeader != "" {
 		req.Header.Set("Authorization", authHeader)
 	}
 	w := httptest.NewRecorder()
-	middleware.RequireAuth(db, testJWTSecret)(MeHandler())(w, req)
+	comEmpresa(db, middleware.RequireAuth(db, testJWTSecret)(MeHandler()))(w, req)
 	return w
 }
 
@@ -466,8 +471,8 @@ func TestLoginHandler_Sucesso(t *testing.T) {
 	if !cookie.HttpOnly {
 		t.Error("cookie refresh_token não é HttpOnly")
 	}
-	if cookie.Path != "/api/auth" {
-		t.Errorf("cookie Path = %q, want %q", cookie.Path, "/api/auth")
+	if cookie.Path != prefixoEmpresaTeste+"/api/auth" {
+		t.Errorf("cookie Path = %q, want %q", cookie.Path, prefixoEmpresaTeste+"/api/auth")
 	}
 	if cookie.SameSite != http.SameSiteLaxMode {
 		t.Errorf("cookie SameSite = %v, want SameSiteLaxMode", cookie.SameSite)
@@ -529,11 +534,11 @@ func TestLoginHandler_CookieSecure(t *testing.T) {
 			db := testDB(t)
 			criarUsuarioLogin(t, db, c.email, "senha-123456")
 
-			req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"email":"`+c.email+`","senha":"senha-123456"}`))
+			req := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/auth/login", strings.NewReader(`{"email":"`+c.email+`","senha":"senha-123456"}`))
 			req.Header.Set("Content-Type", "application/json")
 			c.configurar(req)
 			w := httptest.NewRecorder()
-			LoginHandler(db, testJWTSecret)(w, req)
+			comEmpresa(db, LoginHandler(db, testJWTSecret))(w, req)
 
 			if w.Code != http.StatusOK {
 				t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
@@ -743,10 +748,10 @@ func TestRefreshHandler_CookieLimpoSecure(t *testing.T) {
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
 			db := testDB(t)
-			req := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
+			req := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/auth/refresh", nil)
 			c.configurar(req)
 			w := httptest.NewRecorder()
-			RefreshHandler(db, testJWTSecret)(w, req)
+			comEmpresa(db, RefreshHandler(db, testJWTSecret))(w, req)
 
 			if w.Code != http.StatusUnauthorized {
 				t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
@@ -864,7 +869,7 @@ func TestMeHandler_Sucesso(t *testing.T) {
 	}
 }
 
-// TestMeHandler_SemToken prova o cenário "GET /api/auth/me sem token" da I/O
+// TestMeHandler_SemToken prova o cenário "GET /e/{slug}/api/auth/me sem token" da I/O
 // Matrix: 401 TOKEN_EXPIRED.
 func TestMeHandler_SemToken(t *testing.T) {
 	db := testDB(t)
@@ -882,25 +887,25 @@ func TestMeHandler_SemToken(t *testing.T) {
 // --- Story 1.6: recuperação de senha por e-mail -------------------------
 
 func postEsqueciSenha(db *sql.DB, jsonBody string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/esqueci-senha", strings.NewReader(jsonBody))
+	req := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/auth/esqueci-senha", strings.NewReader(jsonBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	EsqueciSenhaHandler(db, testEmailCfg)(w, req)
+	comEmpresa(db, EsqueciSenhaHandler(db, testEmailCfg))(w, req)
 	return w
 }
 
 func getValidarRedefinicao(db *sql.DB, token string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodGet, "/api/auth/redefinir-senha?token="+token, nil)
+	req := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/auth/redefinir-senha?token="+token, nil)
 	w := httptest.NewRecorder()
-	ValidarRedefinicaoSenhaHandler(db)(w, req)
+	comEmpresa(db, ValidarRedefinicaoSenhaHandler(db))(w, req)
 	return w
 }
 
 func postRedefinirSenha(db *sql.DB, jsonBody string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/redefinir-senha", strings.NewReader(jsonBody))
+	req := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/auth/redefinir-senha", strings.NewReader(jsonBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	RedefinirSenhaHandler(db)(w, req)
+	comEmpresa(db, RedefinirSenhaHandler(db))(w, req)
 	return w
 }
 
@@ -909,7 +914,7 @@ func postRedefinirSenha(db *sql.DB, jsonBody string) *httptest.ResponseRecorder 
 func seedTokenRedefinicao(t *testing.T, db *sql.DB, email string) (usuarioID, token string) {
 	t.Helper()
 	usuarioID = criarUsuarioLogin(t, db, email, "senha-antiga1")
-	if err := services.SolicitarRedefinicaoSenha(db, testEmailCfg, email); err != nil {
+	if err := services.SolicitarRedefinicaoSenha(db, testEmailCfg, empresaTeste, slugEmpresaTeste, email); err != nil {
 		t.Fatalf("SolicitarRedefinicaoSenha falhou: %v", err)
 	}
 	if err := db.QueryRow(
@@ -1128,7 +1133,7 @@ func TestRedefinirSenhaHandler_TokenExpiradoEReuso(t *testing.T) {
 // tipo='verificacao_email' -> 404 NOT_FOUND.
 func TestRedefinirSenhaHandler_TokenDeVerificacaoEmail(t *testing.T) {
 	db := testDB(t)
-	usuarioID, err := services.Cadastrar(db, testEmailCfg, "isola-handler", "isola-handler@empresa.com", "senha-123456")
+	usuarioID, err := services.Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "isola-handler", "isola-handler@empresa.com", "senha-123456")
 	if err != nil {
 		t.Fatalf("Cadastrar falhou: %v", err)
 	}
@@ -1397,12 +1402,12 @@ func TestLoginHandler_IPDeXForwardedFor(t *testing.T) {
 	db := testDB(t)
 	criarUsuarioLogin(t, db, "log-xff@empresa.com", "senha-123456")
 
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/login",
+	req := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/auth/login",
 		strings.NewReader(`{"email":"log-xff@empresa.com","senha":"senha-123456"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Forwarded-For", "198.51.100.23, 10.0.0.1")
 	w := httptest.NewRecorder()
-	LoginHandler(db, testJWTSecret)(w, req)
+	comEmpresa(db, LoginHandler(db, testJWTSecret))(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
 	}
@@ -1419,12 +1424,12 @@ func TestLoginHandler_XForwardedForLixoNaoSuprimeAuditoria(t *testing.T) {
 	db := testDB(t)
 	criarUsuarioLogin(t, db, "log-xff-lixo@empresa.com", "senha-123456")
 
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/login",
+	req := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/auth/login",
 		strings.NewReader(`{"email":"log-xff-lixo@empresa.com","senha":"senha-123456"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Forwarded-For", strings.Repeat("naoehip-", 40)) // ~320 chars, não é IP
 	w := httptest.NewRecorder()
-	LoginHandler(db, testJWTSecret)(w, req)
+	comEmpresa(db, LoginHandler(db, testJWTSecret))(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
 	}

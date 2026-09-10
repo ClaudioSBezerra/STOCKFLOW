@@ -50,10 +50,10 @@ func criarContaComPapel(t *testing.T, db *sql.DB, nome, email, senha, papel stri
 	}
 	var id string
 	const insert = `
-		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, mfa_habilitado, mfa_secret)
-		VALUES ($1, $2, $3, $4, true, true, $5, $6)
+		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, mfa_habilitado, mfa_secret, empresa_id)
+		VALUES ($1, $2, $3, $4, true, true, $5, $6, $7)
 		RETURNING id`
-	if err := db.QueryRow(insert, nome, email, string(hash), papel, mfaHabilitado, mfaSecret).Scan(&id); err != nil {
+	if err := db.QueryRow(insert, nome, email, string(hash), papel, mfaHabilitado, mfaSecret, empresaTeste).Scan(&id); err != nil {
 		t.Fatalf("falha ao criar conta %q: %v", email, err)
 	}
 	return id
@@ -135,11 +135,11 @@ func tokenDeLogin(t *testing.T, db *sql.DB, email, senha string) string {
 	}
 	codigo := totpCodigoTesteAtual(t, segredo)
 
-	reqVerificar := httptest.NewRequest(http.MethodPost, "/api/auth/mfa/verificar",
+	reqVerificar := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/auth/mfa/verificar",
 		strings.NewReader(`{"mfaToken":"`+body.MfaToken+`","codigo":"`+codigo+`"}`))
 	reqVerificar.Header.Set("Content-Type", "application/json")
 	wVerificar := httptest.NewRecorder()
-	MFAVerificarHandler(db, testJWTSecret)(wVerificar, reqVerificar)
+	comEmpresa(db, MFAVerificarHandler(db, testJWTSecret))(wVerificar, reqVerificar)
 	if wVerificar.Code != http.StatusOK {
 		t.Fatalf("mfa/verificar (%s): status = %d, want %d (body=%s)", email, wVerificar.Code, http.StatusOK, wVerificar.Body.String())
 	}
@@ -156,14 +156,14 @@ func tokenDeLogin(t *testing.T, db *sql.DB, email, senha string) string {
 // (main.go): RequireAuth -> RequireRole("gestor") -> ListarUsuariosHandler —
 // nunca chama o handler isoladamente, para provar o contrato real da rota.
 func getUsuarios(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodGet, "/api/usuarios", nil)
+	req := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/usuarios", nil)
 	if authHeader != "" {
 		req.Header.Set("Authorization", authHeader)
 	}
 	w := httptest.NewRecorder()
-	middleware.RequireAuth(db, testJWTSecret)(
+	comEmpresa(db, middleware.RequireAuth(db, testJWTSecret)(
 		middleware.RequireRole(services.PapelGestor)(
-			ListarUsuariosHandler(db)))(w, req)
+			ListarUsuariosHandler(db))))(w, req)
 	return w
 }
 

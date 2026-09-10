@@ -93,6 +93,19 @@ func RequireAuth(db *sql.DB, jwtSecret []byte) func(http.HandlerFunc) http.Handl
 				return
 			}
 
+			// Fronteira de Empresa (Story 9.1, spec-9-1): quando a rota vive
+			// sob `/e/{slug}/api/...`, RequireEmpresa já resolveu a Empresa
+			// do slug — e a conta por trás do token PRECISA ser dela. Um
+			// token perfeitamente válido de outra Empresa é recusado com 401
+			// SESSION_REVOKED (nunca 403: sob o slug de outra Empresa essa
+			// sessão simplesmente não existe). Conta legada sem Empresa
+			// (`empresa_id IS NULL`, fase 1 de AD-23) também não passa —
+			// falha fechada.
+			if empresa, temEmpresa := EmpresaDaRequisicao(r.Context()); temEmpresa && usuario.EmpresaID != empresa.ID {
+				escreverErro(w, http.StatusUnauthorized, "SESSION_REVOKED", "sessão revogada")
+				return
+			}
+
 			// origem (Story 1.11) vem SEMPRE do claim do token, nunca de
 			// BuscarUsuarioSessao (que não é sequer capaz de preenchê-lo — não é
 			// estado de conta). Um access JWT emitido antes desta story (sem o

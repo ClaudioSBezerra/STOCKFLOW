@@ -46,6 +46,10 @@ func AdicionarItemCarrinhoHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
 		var req adicionarItemCarrinhoRequest
@@ -54,7 +58,7 @@ func AdicionarItemCarrinhoHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		item, err := services.AdicionarItemCarrinho(db, usuario.ID, req.ProdutoID, req.EstoqueID, req.Quantidade)
+		item, err := services.AdicionarItemCarrinho(db, empresa.ID, usuario.ID, req.ProdutoID, req.EstoqueID, req.Quantidade)
 		var erroValidacao *services.ErroCarrinhoValidacao
 		var erroIndisponivel *services.ErroCarrinhoIndisponivel
 		switch {
@@ -88,8 +92,12 @@ func ListarCarrinhoHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
-		itens, removidos, err := services.ListarCarrinho(db, usuario.ID)
+		itens, removidos, err := services.ListarCarrinho(db, empresa.ID, usuario.ID)
 		if err != nil {
 			slog.Error("falha ao listar carrinho", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao listar carrinho")
@@ -115,11 +123,15 @@ func RemoverItemCarrinhoHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		produtoID := r.PathValue("produtoId")
 		estoqueID := r.PathValue("estoqueId")
 
-		err := services.RemoverItemCarrinho(db, usuario.ID, produtoID, estoqueID)
+		err := services.RemoverItemCarrinho(db, empresa.ID, usuario.ID, produtoID, estoqueID)
 		switch {
 		case err == nil:
 			w.WriteHeader(http.StatusNoContent)

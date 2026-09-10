@@ -79,7 +79,7 @@ type SolicitacaoExclusaoPendente struct {
 // violação `23505` do índice parcial `idx_solicitacoes_exclusao_pendente_unica`
 // -> ErrExclusaoPendenteExiste (backstop de corrida). Uma solicitação anterior
 // `processada` NÃO bloqueia — o gate olha apenas `status = 'pendente'`.
-func SolicitarExclusaoConta(db *sql.DB, solicitanteID string) (SolicitacaoExclusao, error) {
+func SolicitarExclusaoConta(db *sql.DB, empresaID string, solicitanteID string) (SolicitacaoExclusao, error) {
 	var existePendente bool
 	const selectPendente = `
 		SELECT EXISTS (
@@ -94,11 +94,16 @@ func SolicitarExclusaoConta(db *sql.DB, solicitanteID string) (SolicitacaoExclus
 	}
 
 	var s SolicitacaoExclusao
+	// `solicitacoes_exclusao_conta` é tabela FILHA e não ganhou `empresa_id`
+	// (migração 000032): a posse dela é a do Usuário solicitante. Por isso o
+	// `SELECT` no lugar de `VALUES` — o guard de Empresa (Story 9.1, AD-20)
+	// mora no próprio INSERT, e um `solicitanteID` de outra Empresa não
+	// produz linha nenhuma.
 	const insert = `
 		INSERT INTO solicitacoes_exclusao_conta (solicitante_id, status)
-		VALUES ($1, 'pendente')
+		SELECT u.id, 'pendente' FROM usuarios u WHERE u.id = $1 AND u.empresa_id = $2
 		RETURNING id, status, criado_em`
-	if err := db.QueryRow(insert, solicitanteID).Scan(&s.ID, &s.Status, &s.CriadoEm); err != nil {
+	if err := db.QueryRow(insert, solicitanteID, empresaID).Scan(&s.ID, &s.Status, &s.CriadoEm); err != nil {
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && pqErr.Code == pqUniqueViolation {
 			// Corrida: outra requisição inseriu a pendente entre o SELECT acima
@@ -114,13 +119,13 @@ func SolicitarExclusaoConta(db *sql.DB, solicitanteID string) (SolicitacaoExclus
 // (GET /api/solicitacoes-exclusao), com nome/email/papel do solicitante já
 // resolvidos pelo JOIN. Ordenado por `criado_em, id`. Lista vazia não-nil,
 // nunca erro (molde de ListarUsuarios).
-func ListarSolicitacoesExclusao(db *sql.DB) ([]SolicitacaoExclusaoPendente, error) {
+func ListarSolicitacoesExclusao(db *sql.DB, empresaID string) ([]SolicitacaoExclusaoPendente, error) {
 	rows, err := db.Query(`
 		SELECT s.id, u.nome, u.email, u.papel, s.criado_em
 		FROM solicitacoes_exclusao_conta s
-		JOIN usuarios u ON u.id = s.solicitante_id
+		JOIN usuarios u ON u.id = s.solicitante_id AND u.empresa_id = $1
 		WHERE s.status = 'pendente'
-		ORDER BY s.criado_em, s.id`)
+		ORDER BY s.criado_em, s.id`, empresaID)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao listar solicitações de exclusão: %w", err)
 	}
@@ -149,9 +154,9 @@ func ListarSolicitacoesExclusao(db *sql.DB) ([]SolicitacaoExclusaoPendente, erro
 //   - `solicitacaoID` inexistente ou não-UUID (`pq` 22P02) ->
 //     ErrSolicitacaoExclusaoNaoEncontrada.
 //   - solicitação não-`pendente` -> ErrSolicitacaoExclusaoNaoPendente.
-//   - alvo `papel = 'adm'` e nenhum outro `adm` ativo
-//     (`count(*) ... WHERE papel='adm' AND ativo=true AND id <> $alvo` == 0) ->
-//     ErrUltimoAdmAtivo. NENHUMA escrita acontece.
+//   - alvo `papel = 'adm'` e nenhum outro `adm` ativo NA MESMA EMPRESA
+//     (`count(*) ... WHERE papel='adm' AND ativo=true AND id <> $alvo
+//     AND empresa_id = $empresa` == 0) -> ErrUltimoAdmAtivo. NENHUMA escrita acontece.
 //
 // Caso válido, numa única transação (`SELECT ... FOR UPDATE OF s` serializa
 // dois `adm` sobre a mesma solicitação):
@@ -170,7 +175,7 @@ func ListarSolicitacoesExclusao(db *sql.DB) ([]SolicitacaoExclusaoPendente, erro
 //
 // NUNCA faz SELECT/UPDATE/DELETE em `movimentacoes`, `pedidos` ou
 // `logs_acesso`.
-func ProcessarExclusaoConta(db *sql.DB, solicitacaoID, atorID string) (SolicitacaoExclusaoPendente, error) {
+func ProcessarExclusaoConta(db *sql.DB, empresaID string, solicitacaoID, atorID string) (SolicitacaoExclusaoPendente, error) {
 	tx, err := db.Begin()
 	if err != nil {
 		return SolicitacaoExclusaoPendente{}, fmt.Errorf("falha ao iniciar transação: %w", err)
@@ -186,10 +191,10 @@ func ProcessarExclusaoConta(db *sql.DB, solicitacaoID, atorID string) (Solicitac
 	const selectSolic = `
 		SELECT s.status, u.id, u.nome, u.email, u.papel, s.criado_em
 		FROM solicitacoes_exclusao_conta s
-		JOIN usuarios u ON u.id = s.solicitante_id
+		JOIN usuarios u ON u.id = s.solicitante_id AND u.empresa_id = $2
 		WHERE s.id = $1
 		FOR UPDATE OF s`
-	err = tx.QueryRow(selectSolic, solicitacaoID).
+	err = tx.QueryRow(selectSolic, solicitacaoID, empresaID).
 		Scan(&status, &alvoID, &p.SolicitanteNome, &p.SolicitanteEmail, &alvoPapel, &p.CriadoEm)
 	if err != nil {
 		var pqErr *pq.Error
@@ -215,10 +220,14 @@ func ProcessarExclusaoConta(db *sql.DB, solicitacaoID, atorID string) (Solicitac
 	// `adm` for relaxada no futuro.
 	if alvoPapel == PapelAdm {
 		var outrosAdmsAtivos int
+		// A contagem é POR EMPRESA (Story 9.1, AD-20): o invariante "ao menos
+		// um administrador ativo" é de cada Empresa, não da plataforma — o
+		// `adm` de outro cliente nunca pode servir de fiador para anonimizar
+		// o último `adm` deste.
 		const contarAdms = `
 			SELECT count(*) FROM usuarios
-			WHERE papel = 'adm' AND ativo = true AND id <> $1`
-		if err := tx.QueryRow(contarAdms, alvoID).Scan(&outrosAdmsAtivos); err != nil {
+			WHERE papel = 'adm' AND ativo = true AND id <> $1 AND empresa_id = $2`
+		if err := tx.QueryRow(contarAdms, alvoID, empresaID).Scan(&outrosAdmsAtivos); err != nil {
 			return SolicitacaoExclusaoPendente{}, fmt.Errorf("falha ao contar administradores ativos: %w", err)
 		}
 		if outrosAdmsAtivos == 0 {
@@ -237,8 +246,8 @@ func ProcessarExclusaoConta(db *sql.DB, solicitacaoID, atorID string) (Solicitac
 			email_verificado = false,
 			tentativas_login_falhas = 0,
 			bloqueado_ate = NULL
-		WHERE id = $1`
-	if _, err := tx.Exec(anonimizarConta, alvoID); err != nil {
+		WHERE id = $1 AND empresa_id = $2`
+	if _, err := tx.Exec(anonimizarConta, alvoID, empresaID); err != nil {
 		return SolicitacaoExclusaoPendente{}, fmt.Errorf("falha ao anonimizar conta: %w", err)
 	}
 

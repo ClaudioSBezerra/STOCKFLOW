@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ChangeEvent, type RefObj
 import { Link } from 'react-router-dom';
 import { Search } from 'lucide-react';
 import { Input } from '@/components/ui/input';
-import { getAccessToken } from '@/lib/session';
+import { apiUrl, authHeaders } from '@/lib/api';
 
 /**
  * Campo de busca do Catálogo (Story 4.1, spec-4-1, FR-4) — sempre visível no
@@ -62,11 +62,6 @@ interface ProdutoBusca {
   nome: string;
   codigo: string | null;
   categoria: CategoriaBusca;
-}
-
-function authHeaders(): Record<string, string> {
-  const token = getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 const DEBOUNCE_MS = 300;
@@ -165,7 +160,7 @@ export function BuscaCatalogo({ onTermoChange, inputRef: inputRefExterno }: Busc
 
     debounceRef.current = setTimeout(() => {
       setErro(false);
-      fetch(`/api/produtos/busca?q=${encodeURIComponent(termoTrimado)}`, {
+      fetch(apiUrl(`/api/produtos/busca?q=${encodeURIComponent(termoTrimado)}`), {
         headers: authHeaders(),
       })
         .then(async (res) => {

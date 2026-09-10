@@ -16,8 +16,9 @@ type UsuarioResumo struct {
 	Ativo bool   `json:"ativo"`
 }
 
-// ListarUsuarios devolve as contas visíveis para quem tem o papel
-// `papelSolicitante` (AD-8 forma 3 / AC3): o filtro de escopo é aplicado aqui,
+// ListarUsuarios devolve as contas da Empresa `empresaID` visíveis para quem
+// tem o papel `papelSolicitante` (AD-8 forma 3 / AC3): o filtro de escopo é
+// aplicado aqui,
 // no service, a partir do papel JÁ resolvido pelo contexto da requisição e
 // passado como argumento explícito — esta função NUNCA reconsulta `usuarios`
 // para descobrir o papel de quem chama.
@@ -27,17 +28,22 @@ type UsuarioResumo struct {
 //   - qualquer outro papel (na prática só `gestor` chega aqui, atrás de
 //     RequireRole("gestor")): apenas contas `usuario`/`almoxarife`.
 //
+// `empresaID` é a Empresa resolvida do slug da URL pelo middleware (Story
+// 9.1, AD-19/AD-20): chega como argumento explícito e recorta a listagem —
+// nenhuma conta de outra Empresa aparece, em nenhum papel.
+//
 // Ordenado por `criado_em`, com `id` como critério de desempate para uma
 // ordem determinística quando duas contas compartilham o mesmo `criado_em`.
 // Lista vazia não é erro.
-func ListarUsuarios(db *sql.DB, papelSolicitante string) ([]UsuarioResumo, error) {
+func ListarUsuarios(db *sql.DB, empresaID string, papelSolicitante string) ([]UsuarioResumo, error) {
 	var rows *sql.Rows
 	var err error
 	if papelSolicitante == PapelAdm {
 		rows, err = db.Query(`
 			SELECT id, nome, email, papel, ativo
 			FROM usuarios
-			ORDER BY criado_em, id`)
+			WHERE empresa_id = $1
+			ORDER BY criado_em, id`, empresaID)
 	} else {
 		// O escopo `gestor` (e qualquer papel abaixo de `adm` que passe pelo
 		// RequireRole da rota) enxerga só contas `usuario`/`almoxarife` — os
@@ -46,8 +52,8 @@ func ListarUsuarios(db *sql.DB, papelSolicitante string) ([]UsuarioResumo, error
 		rows, err = db.Query(`
 			SELECT id, nome, email, papel, ativo
 			FROM usuarios
-			WHERE papel IN ($1, $2)
-			ORDER BY criado_em, id`, PapelUsuario, PapelAlmoxarife)
+			WHERE empresa_id = $1 AND papel IN ($2, $3)
+			ORDER BY criado_em, id`, empresaID, PapelUsuario, PapelAlmoxarife)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("falha ao listar usuários: %w", err)

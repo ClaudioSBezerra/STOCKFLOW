@@ -6,13 +6,13 @@ import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/lib/auth';
-import { getAccessToken } from '@/lib/session';
 import { rankPapel } from '@/components/shell/nav-items';
 import { proximoPapel, rotuloPapel } from '@/lib/promocao';
 import { GestaoUsuariosSection } from '@/components/usuarios/GestaoUsuariosSection';
 import { SolicitacoesExclusaoSection } from '@/components/usuarios/SolicitacoesExclusaoSection';
 import { LogAcessoSection } from '@/components/logs/LogAcessoSection';
 import { PrivacidadeSection } from '@/components/privacidade/PrivacidadeSection';
+import { apiUrl, authHeaders } from '@/lib/api';
 
 /**
  * Página "Meu Perfil" (`/configuracoes`, Story 1.7, spec-1-7). Renderizada
@@ -72,11 +72,6 @@ interface SolicitacaoPendente {
   criado_em: string;
 }
 
-function authHeaders(): Record<string, string> {
-  const token = getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
 const MENSAGEM_ERRO_SOLICITAR =
   'Não foi possível solicitar a promoção agora. Tente novamente em instantes.';
 const MENSAGEM_ERRO_DECISAO = 'Não foi possível concluir a decisão.';
@@ -123,7 +118,7 @@ function SegurancaCard() {
     setErro(null);
     setIniciando(true);
     try {
-      const res = await fetch('/api/auth/mfa/iniciar', { method: 'POST', headers: authHeaders() });
+      const res = await fetch(apiUrl('/api/auth/mfa/iniciar'), { method: 'POST', headers: authHeaders() });
       if (!res.ok) {
         setErro('Não foi possível iniciar a configuração agora. Tente novamente em instantes.');
         return;
@@ -149,7 +144,7 @@ function SegurancaCard() {
     setErro(null);
     setConfirmando(true);
     try {
-      const res = await fetch('/api/auth/mfa/confirmar', {
+      const res = await fetch(apiUrl('/api/auth/mfa/confirmar'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ segredo, codigo, senhaAtual }),
@@ -290,7 +285,7 @@ export function ConfiguracoesPage() {
 
   const carregarMinha = useCallback(async () => {
     try {
-      const res = await fetch('/api/promocoes/minha', { headers: authHeaders() });
+      const res = await fetch(apiUrl('/api/promocoes/minha'), { headers: authHeaders() });
       if (!res.ok) {
         // Sem este alerta, uma falha de carga deixaria uma conta com
         // solicitação `pendente` vendo o botão habilitado — o clique seguinte
@@ -310,7 +305,7 @@ export function ConfiguracoesPage() {
 
   const carregarPendentes = useCallback(async () => {
     try {
-      const res = await fetch('/api/promocoes', { headers: authHeaders() });
+      const res = await fetch(apiUrl('/api/promocoes'), { headers: authHeaders() });
       if (!res.ok) {
         // Sem este alerta, uma falha de carga deixaria o gestor/adm olhando
         // "Nenhuma solicitação pendente." — um falso "nada a fazer" que
@@ -344,7 +339,7 @@ export function ConfiguracoesPage() {
     setErroSolicitar(null);
     setEnviando(true);
     try {
-      const res = await fetch('/api/promocoes', { method: 'POST', headers: authHeaders() });
+      const res = await fetch(apiUrl('/api/promocoes'), { method: 'POST', headers: authHeaders() });
       if (!res.ok) {
         setErroSolicitar(MENSAGEM_ERRO_SOLICITAR);
         return;
@@ -365,7 +360,7 @@ export function ConfiguracoesPage() {
     setAvisoDecisao(null);
     setDecidindoId(id);
     try {
-      const res = await fetch(`/api/promocoes/${id}/decisao`, {
+      const res = await fetch(apiUrl(`/api/promocoes/${id}/decisao`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ aprovar }),

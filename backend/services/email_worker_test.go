@@ -15,10 +15,10 @@ func inserirUsuarioDeTeste(t *testing.T, db *sql.DB, email string) string {
 	t.Helper()
 	var id string
 	const insert = `
-		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
-		VALUES ('Usuário Worker', $1, 'hash', 'usuario', false, true)
+		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, empresa_id)
+		VALUES ('Usuário Worker', $1, 'hash', 'usuario', false, true, $2)
 		RETURNING id`
-	if err := db.QueryRow(insert, email).Scan(&id); err != nil {
+	if err := db.QueryRow(insert, email, empresaTeste).Scan(&id); err != nil {
 		t.Fatalf("falha ao inserir usuario de teste: %v", err)
 	}
 	return id

@@ -99,7 +99,7 @@ func papelAbaixoDe(alvo string) string {
 // índice parcial `idx_solicitacoes_promocao_pendente_unica`). Uma solicitação
 // anterior `rejeitada`/`aprovada` NÃO bloqueia (AC5, sem período de espera): o
 // gate olha apenas `status = 'pendente'`.
-func SolicitarPromocao(db *sql.DB, solicitanteID, papelAtual string) (SolicitacaoPromocao, error) {
+func SolicitarPromocao(db *sql.DB, empresaID string, solicitanteID, papelAtual string) (SolicitacaoPromocao, error) {
 	alvo, ok := proximoPapelPromocao(papelAtual)
 	if !ok {
 		return SolicitacaoPromocao{}, ErrPromocaoIndisponivel
@@ -109,9 +109,9 @@ func SolicitarPromocao(db *sql.DB, solicitanteID, papelAtual string) (Solicitaca
 	const selectPendente = `
 		SELECT EXISTS (
 			SELECT 1 FROM solicitacoes_promocao
-			WHERE solicitante_id = $1 AND status = 'pendente'
+			WHERE solicitante_id = $1 AND status = 'pendente' AND empresa_id = $2
 		)`
-	if err := db.QueryRow(selectPendente, solicitanteID).Scan(&existePendente); err != nil {
+	if err := db.QueryRow(selectPendente, solicitanteID, empresaID).Scan(&existePendente); err != nil {
 		return SolicitacaoPromocao{}, fmt.Errorf("falha ao verificar solicitação pendente: %w", err)
 	}
 	if existePendente {
@@ -120,10 +120,10 @@ func SolicitarPromocao(db *sql.DB, solicitanteID, papelAtual string) (Solicitaca
 
 	var s SolicitacaoPromocao
 	const insert = `
-		INSERT INTO solicitacoes_promocao (solicitante_id, papel_alvo, status)
-		VALUES ($1, $2, 'pendente')
+		INSERT INTO solicitacoes_promocao (solicitante_id, papel_alvo, status, empresa_id)
+		VALUES ($1, $2, 'pendente', $3)
 		RETURNING id, papel_alvo, status, criado_em`
-	if err := db.QueryRow(insert, solicitanteID, alvo).Scan(&s.ID, &s.PapelAlvo, &s.Status, &s.CriadoEm); err != nil {
+	if err := db.QueryRow(insert, solicitanteID, alvo, empresaID).Scan(&s.ID, &s.PapelAlvo, &s.Status, &s.CriadoEm); err != nil {
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && pqErr.Code == pqUniqueViolation {
 			// Corrida: outra requisição inseriu a pendente entre o SELECT acima
@@ -138,16 +138,16 @@ func SolicitarPromocao(db *sql.DB, solicitanteID, papelAtual string) (Solicitaca
 // BuscarMinhaSolicitacao devolve a solicitação MAIS RECENTE da conta
 // (GET /api/promocoes/minha), ou (nil, nil) se ela nunca solicitou. Nenhuma
 // escrita.
-func BuscarMinhaSolicitacao(db *sql.DB, solicitanteID string) (*SolicitacaoPromocao, error) {
+func BuscarMinhaSolicitacao(db *sql.DB, empresaID string, solicitanteID string) (*SolicitacaoPromocao, error) {
 	var s SolicitacaoPromocao
 	var decididoEm sql.NullTime
 	const query = `
 		SELECT id, papel_alvo, status, criado_em, decidido_em
 		FROM solicitacoes_promocao
-		WHERE solicitante_id = $1
+		WHERE solicitante_id = $1 AND empresa_id = $2
 		ORDER BY criado_em DESC, id DESC
 		LIMIT 1`
-	err := db.QueryRow(query, solicitanteID).Scan(&s.ID, &s.PapelAlvo, &s.Status, &s.CriadoEm, &decididoEm)
+	err := db.QueryRow(query, solicitanteID, empresaID).Scan(&s.ID, &s.PapelAlvo, &s.Status, &s.CriadoEm, &decididoEm)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -170,23 +170,23 @@ func BuscarMinhaSolicitacao(db *sql.DB, solicitanteID string) (*SolicitacaoPromo
 //     promoção a `gestor`.
 //
 // Ordenado por `criado_em, id`. Lista vazia não é erro.
-func ListarSolicitacoesPendentes(db *sql.DB, papelDecisor string) ([]SolicitacaoPendente, error) {
+func ListarSolicitacoesPendentes(db *sql.DB, empresaID string, papelDecisor string) ([]SolicitacaoPendente, error) {
 	var rows *sql.Rows
 	var err error
 	if papelDecisor == PapelAdm {
 		rows, err = db.Query(`
 			SELECT s.id, u.nome, u.email, u.papel, s.papel_alvo, s.criado_em
 			FROM solicitacoes_promocao s
-			JOIN usuarios u ON u.id = s.solicitante_id
-			WHERE s.status = 'pendente'
-			ORDER BY s.criado_em, s.id`)
+			JOIN usuarios u ON u.id = s.solicitante_id AND u.empresa_id = $1
+			WHERE s.status = 'pendente' AND s.empresa_id = $1
+			ORDER BY s.criado_em, s.id`, empresaID)
 	} else {
 		rows, err = db.Query(`
 			SELECT s.id, u.nome, u.email, u.papel, s.papel_alvo, s.criado_em
 			FROM solicitacoes_promocao s
-			JOIN usuarios u ON u.id = s.solicitante_id
-			WHERE s.status = 'pendente' AND s.papel_alvo = $1
-			ORDER BY s.criado_em, s.id`, PapelAlmoxarife)
+			JOIN usuarios u ON u.id = s.solicitante_id AND u.empresa_id = $2
+			WHERE s.status = 'pendente' AND s.papel_alvo = $1 AND s.empresa_id = $2
+			ORDER BY s.criado_em, s.id`, PapelAlmoxarife, empresaID)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("falha ao listar solicitações pendentes: %w", err)
@@ -223,13 +223,13 @@ func ListarSolicitacoesPendentes(db *sql.DB, papelDecisor string) ([]Solicitacao
 //     `WHERE id = $1 AND status = 'pendente'`, sql.ErrNoRows no RETURNING ->
 //     ErrSolicitacaoNaoPendente, fecha a corrida entre dois decisores).
 //   - aprovar=false: só o UPDATE guardado da solicitação para `rejeitada`.
-func DecidirSolicitacao(db *sql.DB, solicitacaoID, decisorID, papelDecisor string, aprovar bool) (SolicitacaoPromocao, error) {
+func DecidirSolicitacao(db *sql.DB, empresaID string, solicitacaoID, decisorID, papelDecisor string, aprovar bool) (SolicitacaoPromocao, error) {
 	var solicitanteID, papelAlvo, status string
 	const selectSolic = `
 		SELECT solicitante_id, papel_alvo, status
 		FROM solicitacoes_promocao
-		WHERE id = $1`
-	err := db.QueryRow(selectSolic, solicitacaoID).Scan(&solicitanteID, &papelAlvo, &status)
+		WHERE id = $1 AND empresa_id = $2`
+	err := db.QueryRow(selectSolic, solicitacaoID, empresaID).Scan(&solicitanteID, &papelAlvo, &status)
 	if err != nil {
 		var pqErr *pq.Error
 		if errors.Is(err, sql.ErrNoRows) {
@@ -258,8 +258,8 @@ func DecidirSolicitacao(db *sql.DB, solicitacaoID, decisorID, papelDecisor strin
 	if aprovar {
 		novoStatus = "aprovada"
 		res, err := tx.Exec(
-			`UPDATE usuarios SET papel = $1 WHERE id = $2 AND papel = $3`,
-			papelAlvo, solicitanteID, papelAbaixoDe(papelAlvo),
+			`UPDATE usuarios SET papel = $1 WHERE id = $2 AND papel = $3 AND empresa_id = $4`,
+			papelAlvo, solicitanteID, papelAbaixoDe(papelAlvo), empresaID,
 		)
 		if err != nil {
 			return SolicitacaoPromocao{}, fmt.Errorf("falha ao promover solicitante: %w", err)
@@ -274,9 +274,9 @@ func DecidirSolicitacao(db *sql.DB, solicitacaoID, decisorID, papelDecisor strin
 	const registrarDecisao = `
 		UPDATE solicitacoes_promocao
 		SET status = $2, decidido_por = $3, decidido_em = now()
-		WHERE id = $1 AND status = 'pendente'
+		WHERE id = $1 AND status = 'pendente' AND empresa_id = $4
 		RETURNING id, status, papel_alvo, decidido_em`
-	err = tx.QueryRow(registrarDecisao, solicitacaoID, novoStatus, decisorID).
+	err = tx.QueryRow(registrarDecisao, solicitacaoID, novoStatus, decisorID, empresaID).
 		Scan(&s.ID, &s.Status, &s.PapelAlvo, &decididoEm)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

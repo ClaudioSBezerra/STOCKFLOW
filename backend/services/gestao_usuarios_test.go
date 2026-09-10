@@ -80,7 +80,7 @@ func TestAlterarAtivacaoUsuario_DesativaERevogaSessoes(t *testing.T) {
 	outra := semearConta(t, db, "Outra", "outra-conta@empresa.com", PapelUsuario, 3)
 	semearSessao(t, db, outra, "refresh-outra")
 
-	u, err := AlterarAtivacaoUsuario(db, alvo, ator, PapelGestor, false)
+	u, err := AlterarAtivacaoUsuario(db, empresaTeste, alvo, ator, PapelGestor, false)
 	if err != nil {
 		t.Fatalf("AlterarAtivacaoUsuario erro inesperado: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestAlterarAtivacaoUsuario_Reativa(t *testing.T) {
 		t.Fatalf("forçar conta inativa: %v", err)
 	}
 
-	u, err := AlterarAtivacaoUsuario(db, alvo, ator, PapelGestor, true)
+	u, err := AlterarAtivacaoUsuario(db, empresaTeste, alvo, ator, PapelGestor, true)
 	if err != nil {
 		t.Fatalf("AlterarAtivacaoUsuario erro inesperado: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestAlterarAtivacaoUsuario_GestorSobreGestorOuAdm(t *testing.T) {
 			alvo := semearConta(t, db, "Alvo "+papelAlvo, papelAlvo+"-fora-escopo@empresa.com", papelAlvo, 2)
 			semearSessao(t, db, alvo, "refresh-"+papelAlvo)
 
-			_, err := AlterarAtivacaoUsuario(db, alvo, ator, PapelGestor, false)
+			_, err := AlterarAtivacaoUsuario(db, empresaTeste, alvo, ator, PapelGestor, false)
 			if !errors.Is(err, ErrGestaoForaDeEscopo) {
 				t.Fatalf("erro = %v, want ErrGestaoForaDeEscopo", err)
 			}
@@ -157,7 +157,7 @@ func TestAlterarAtivacaoUsuario_AdmSobreGestor(t *testing.T) {
 	alvo := semearConta(t, db, "Gestor alvo", "gestor-alvo-adm@empresa.com", PapelGestor, 2)
 	semearSessao(t, db, alvo, "refresh-gestor-adm")
 
-	u, err := AlterarAtivacaoUsuario(db, alvo, ator, PapelAdm, false)
+	u, err := AlterarAtivacaoUsuario(db, empresaTeste, alvo, ator, PapelAdm, false)
 	if err != nil {
 		t.Fatalf("AlterarAtivacaoUsuario erro inesperado: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestAlterarAtivacaoUsuario_AutoAcao(t *testing.T) {
 			id := semearConta(t, db, "Eu "+papel, papel+"-auto-acao@empresa.com", papel, 1)
 			semearSessao(t, db, id, "refresh-auto-"+papel)
 
-			_, err := AlterarAtivacaoUsuario(db, id, id, papel, false)
+			_, err := AlterarAtivacaoUsuario(db, empresaTeste, id, id, papel, false)
 			if !errors.Is(err, ErrGestaoForaDeEscopo) {
 				t.Fatalf("erro = %v, want ErrGestaoForaDeEscopo", err)
 			}
@@ -198,7 +198,7 @@ func TestAlterarAtivacaoUsuario_Inexistente(t *testing.T) {
 	db := testDB(t)
 	ator := semearConta(t, db, "Gestora", "gestor-404@empresa.com", PapelGestor, 1)
 
-	_, err := AlterarAtivacaoUsuario(db, "00000000-0000-0000-0000-000000000000", ator, PapelGestor, false)
+	_, err := AlterarAtivacaoUsuario(db, empresaTeste, "00000000-0000-0000-0000-000000000000", ator, PapelGestor, false)
 	if !errors.Is(err, ErrContaNaoEncontrada) {
 		t.Fatalf("erro = %v, want ErrContaNaoEncontrada", err)
 	}
@@ -210,7 +210,7 @@ func TestAlterarAtivacaoUsuario_IDMalformado(t *testing.T) {
 	db := testDB(t)
 	ator := semearConta(t, db, "Gestora", "gestor-malformado@empresa.com", PapelGestor, 1)
 
-	_, err := AlterarAtivacaoUsuario(db, "nao-e-uuid", ator, PapelGestor, false)
+	_, err := AlterarAtivacaoUsuario(db, empresaTeste, "nao-e-uuid", ator, PapelGestor, false)
 	if !errors.Is(err, ErrContaNaoEncontrada) {
 		t.Fatalf("erro = %v, want ErrContaNaoEncontrada", err)
 	}
@@ -243,7 +243,7 @@ func TestAlterarAtivacaoUsuario_CorridaGuardaPapelAtual(t *testing.T) {
 	go func() {
 		// AlterarAtivacaoUsuario lê `almoxarife` (SELECT sem lock), abre a
 		// própria transação e bloqueia no UPDATE guardado esperando o lock.
-		_, e := AlterarAtivacaoUsuario(db, alvo, ator, PapelGestor, false)
+		_, e := AlterarAtivacaoUsuario(db, empresaTeste, alvo, ator, PapelGestor, false)
 		resultado <- e
 	}()
 
@@ -277,7 +277,7 @@ func TestRebaixarUsuario_GestorParaAlmoxarifePorAdm(t *testing.T) {
 	alvo := semearConta(t, db, "Gestor alvo", "gestor-rebaixado@empresa.com", PapelGestor, 2)
 	semearSessao(t, db, alvo, "refresh-rebaixa-g")
 
-	u, err := RebaixarUsuario(db, alvo, ator, PapelAdm)
+	u, err := RebaixarUsuario(db, empresaTeste, alvo, ator, PapelAdm)
 	if err != nil {
 		t.Fatalf("RebaixarUsuario erro inesperado: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestRebaixarUsuario_AlmoxarifeParaUsuarioPorGestor(t *testing.T) {
 	ator := semearConta(t, db, "Gestora", "gestor-rebaixa-a@empresa.com", PapelGestor, 1)
 	alvo := semearConta(t, db, "Almox alvo", "almox-rebaixado@empresa.com", PapelAlmoxarife, 2)
 
-	u, err := RebaixarUsuario(db, alvo, ator, PapelGestor)
+	u, err := RebaixarUsuario(db, empresaTeste, alvo, ator, PapelGestor)
 	if err != nil {
 		t.Fatalf("RebaixarUsuario erro inesperado: %v", err)
 	}
@@ -318,7 +318,7 @@ func TestRebaixarUsuario_JaUsuario(t *testing.T) {
 	ator := semearConta(t, db, "Gestora", "gestor-rebaixa-u@empresa.com", PapelGestor, 1)
 	alvo := semearConta(t, db, "Usuário alvo", "usuario-piso@empresa.com", PapelUsuario, 2)
 
-	_, err := RebaixarUsuario(db, alvo, ator, PapelGestor)
+	_, err := RebaixarUsuario(db, empresaTeste, alvo, ator, PapelGestor)
 	if !errors.Is(err, ErrRebaixamentoIndisponivel) {
 		t.Fatalf("erro = %v, want ErrRebaixamentoIndisponivel", err)
 	}
@@ -334,7 +334,7 @@ func TestRebaixarUsuario_GestorSobreGestor(t *testing.T) {
 	ator := semearConta(t, db, "Gestora", "gestor-reb-escopo@empresa.com", PapelGestor, 1)
 	alvo := semearConta(t, db, "Gestor alvo", "gestor-reb-alvo@empresa.com", PapelGestor, 2)
 
-	_, err := RebaixarUsuario(db, alvo, ator, PapelGestor)
+	_, err := RebaixarUsuario(db, empresaTeste, alvo, ator, PapelGestor)
 	if !errors.Is(err, ErrGestaoForaDeEscopo) {
 		t.Fatalf("erro = %v, want ErrGestaoForaDeEscopo", err)
 	}
@@ -348,7 +348,7 @@ func TestRebaixarUsuario_AutoAcao(t *testing.T) {
 	db := testDB(t)
 	id := semearConta(t, db, "Adm", "adm-reb-auto@empresa.com", PapelAdm, 1)
 
-	_, err := RebaixarUsuario(db, id, id, PapelAdm)
+	_, err := RebaixarUsuario(db, empresaTeste, id, id, PapelAdm)
 	if !errors.Is(err, ErrGestaoForaDeEscopo) {
 		t.Fatalf("erro = %v, want ErrGestaoForaDeEscopo", err)
 	}
@@ -363,7 +363,7 @@ func TestRebaixarUsuario_Inexistente(t *testing.T) {
 	db := testDB(t)
 	ator := semearConta(t, db, "Gestora", "gestor-reb-404@empresa.com", PapelGestor, 1)
 
-	_, err := RebaixarUsuario(db, "00000000-0000-0000-0000-000000000000", ator, PapelGestor)
+	_, err := RebaixarUsuario(db, empresaTeste, "00000000-0000-0000-0000-000000000000", ator, PapelGestor)
 	if !errors.Is(err, ErrContaNaoEncontrada) {
 		t.Fatalf("erro = %v, want ErrContaNaoEncontrada", err)
 	}
@@ -395,7 +395,7 @@ func TestRebaixarUsuario_CorridaGuardaPapelAtual(t *testing.T) {
 	go func() {
 		// RebaixarUsuario faz um SELECT sem lock (lê `gestor`), abre a própria
 		// transação e bloqueia no UPDATE guardado esperando o lock externo.
-		_, e := RebaixarUsuario(db, alvo, ator, PapelAdm)
+		_, e := RebaixarUsuario(db, empresaTeste, alvo, ator, PapelAdm)
 		resultado <- e
 	}()
 

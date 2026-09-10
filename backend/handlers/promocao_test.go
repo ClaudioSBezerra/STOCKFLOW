@@ -15,34 +15,34 @@ import (
 // --- despacho pela MESMA composição de newMux (main.go) ------------------
 
 func postPromocao(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/api/promocoes", nil)
+	req := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/promocoes", nil)
 	if authHeader != "" {
 		req.Header.Set("Authorization", authHeader)
 	}
 	w := httptest.NewRecorder()
-	middleware.RequireAuth(db, testJWTSecret)(SolicitarPromocaoHandler(db))(w, req)
+	comEmpresa(db, middleware.RequireAuth(db, testJWTSecret)(SolicitarPromocaoHandler(db)))(w, req)
 	return w
 }
 
 func getMinhaPromocao(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodGet, "/api/promocoes/minha", nil)
+	req := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/promocoes/minha", nil)
 	if authHeader != "" {
 		req.Header.Set("Authorization", authHeader)
 	}
 	w := httptest.NewRecorder()
-	middleware.RequireAuth(db, testJWTSecret)(MinhaSolicitacaoHandler(db))(w, req)
+	comEmpresa(db, middleware.RequireAuth(db, testJWTSecret)(MinhaSolicitacaoHandler(db)))(w, req)
 	return w
 }
 
 func getPromocoes(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodGet, "/api/promocoes", nil)
+	req := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/promocoes", nil)
 	if authHeader != "" {
 		req.Header.Set("Authorization", authHeader)
 	}
 	w := httptest.NewRecorder()
-	middleware.RequireAuth(db, testJWTSecret)(
+	comEmpresa(db, middleware.RequireAuth(db, testJWTSecret)(
 		middleware.RequireRole(services.PapelGestor)(
-			ListarPromocoesHandler(db)))(w, req)
+			ListarPromocoesHandler(db))))(w, req)
 	return w
 }
 
@@ -51,16 +51,17 @@ func getPromocoes(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
 // middleware.
 func postDecisao(db *sql.DB, id, authHeader, body string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/promocoes/{id}/decisao",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelGestor)(
-				DecidirPromocaoHandler(db))))
+	mux.HandleFunc("POST /e/{slug}/api/promocoes/{id}/decisao",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelGestor)(
+					DecidirPromocaoHandler(db)))))
 	var r *http.Request
 	if body != "" {
-		r = httptest.NewRequest(http.MethodPost, "/api/promocoes/"+id+"/decisao", strings.NewReader(body))
+		r = httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/promocoes/"+id+"/decisao", strings.NewReader(body))
 		r.Header.Set("Content-Type", "application/json")
 	} else {
-		r = httptest.NewRequest(http.MethodPost, "/api/promocoes/"+id+"/decisao", nil)
+		r = httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/promocoes/"+id+"/decisao", nil)
 	}
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)

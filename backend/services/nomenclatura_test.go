@@ -110,7 +110,7 @@ func TestNomeValidoParaTemplate_PlaceholderComQuebraDeLinha(t *testing.T) {
 func TestListarNomenclaturaTemplates_Todas28OrdenadasPorSubtipo(t *testing.T) {
 	db := testDB(t)
 
-	templates, err := ListarNomenclaturaTemplates(db)
+	templates, err := ListarNomenclaturaTemplates(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}

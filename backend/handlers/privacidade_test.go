@@ -18,9 +18,10 @@ import (
 
 func getExportarDados(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/usuarios/me/exportar-dados",
-		middleware.RequireAuth(db, testJWTSecret)(ExportarDadosUsuarioHandler(db)))
-	r := httptest.NewRequest(http.MethodGet, "/api/usuarios/me/exportar-dados", nil)
+	mux.HandleFunc("GET /e/{slug}/api/usuarios/me/exportar-dados",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(ExportarDadosUsuarioHandler(db))))
+	r := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/usuarios/me/exportar-dados", nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
 	}

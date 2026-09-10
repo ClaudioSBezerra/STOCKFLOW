@@ -3,8 +3,8 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/card';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
-import { getAccessToken } from '@/lib/session';
 import { resumirDimensoes, type Dimensoes } from '@/components/catalogo/formatacao';
+import { apiUrl, authHeaders } from '@/lib/api';
 
 /**
  * Seção "Duplicatas" da página `/normalizacao` (Story 6.3, spec-6-3; ação de
@@ -53,11 +53,6 @@ interface ProdutoDuplicata {
 
 interface GrupoDuplicata {
   produtos: ProdutoDuplicata[];
-}
-
-function authHeaders(): Record<string, string> {
-  const token = getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 const MENSAGEM_ERRO_ANALISAR =
@@ -123,7 +118,7 @@ export function DuplicatasSection({ autoAnalisar = false, onAutoAnalisado }: Dup
     // ao mesmo tempo que o alerta de erro novo.
     setGrupos(null);
     try {
-      const res = await fetch('/api/normalizacao/duplicatas', { headers: authHeaders() });
+      const res = await fetch(apiUrl('/api/normalizacao/duplicatas'), { headers: authHeaders() });
       if (!res.ok) {
         setErro(MENSAGEM_ERRO_ANALISAR);
         return;
@@ -184,7 +179,7 @@ export function DuplicatasSection({ autoAnalisar = false, onAutoAnalisado }: Dup
     setMesclando(true);
     setErroMesclagem(null);
     try {
-      const res = await fetch('/api/normalizacao/mesclar', {
+      const res = await fetch(apiUrl('/api/normalizacao/mesclar'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ produtoMantidoId: mantidoId, produtoRemovidoIds: removidoIds }),

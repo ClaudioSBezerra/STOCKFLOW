@@ -225,11 +225,18 @@ func migrarProdutos(alvo, legado *sql.DB, fotosDir string, executar bool) (Resul
 	var res ResultadoMigracaoProdutos
 
 	// 1) Pré-condição de seed — checada ANTES de ler qualquer linha legada.
+	//    `empresa_id IS NULL` (Story 9.1): desde a 9.1 cada Empresa recebe a
+	//    própria CÓPIA das listas padrão (services.ProvisionarEmpresa), e este
+	//    binário grava no escopo legado (`empresaIDLegado`, abaixo) — o seed
+	//    que ele precisa é o das linhas padrão das migrations 000010/000013,
+	//    não a cópia de alguma Empresa. HANDOFF 9.4: quando a migração passar
+	//    a gravar dentro da Empresa "Ferreira Costa", estes recortes (e os de
+	//    `estoques`/`produtos`/`usuarios`) passam a ser por aquela Empresa.
 	var nCategorias, nTemplates int
-	if err := alvo.QueryRow(`SELECT count(*) FROM categorias`).Scan(&nCategorias); err != nil {
+	if err := alvo.QueryRow(`SELECT count(*) FROM categorias WHERE empresa_id IS NULL`).Scan(&nCategorias); err != nil {
 		return res, fmt.Errorf("falha ao checar seed de categorias: %w", err)
 	}
-	if err := alvo.QueryRow(`SELECT count(*) FROM nomenclatura_templates`).Scan(&nTemplates); err != nil {
+	if err := alvo.QueryRow(`SELECT count(*) FROM nomenclatura_templates WHERE empresa_id IS NULL`).Scan(&nTemplates); err != nil {
 		return res, fmt.Errorf("falha ao checar seed de nomenclatura_templates: %w", err)
 	}
 	if nCategorias == 0 || nTemplates == 0 {
@@ -341,7 +348,11 @@ func migrarProdutos(alvo, legado *sql.DB, fotosDir string, executar bool) (Resul
 	// 3) Pré-checagem de categoria desconhecida — categoria_id é NOT NULL
 	//    (migration 000011), não há como migrar parcialmente.
 	categoriaPorNorm := make(map[string]string)
-	catRows, err := alvo.Query(`SELECT lower(btrim(nome)), id FROM categorias`)
+	// `empresa_id IS NULL`: sem o recorte, o mesmo nome de Categoria existiria
+	// uma vez por Empresa (cópias da Story 9.1) e o mapa nome -> id ficaria
+	// ambíguo — o Produto legado poderia nascer apontando para a Categoria de
+	// outro cliente.
+	catRows, err := alvo.Query(`SELECT lower(btrim(nome)), id FROM categorias WHERE empresa_id IS NULL`)
 	if err != nil {
 		return res, fmt.Errorf("falha ao carregar categorias do banco alvo: %w", err)
 	}
@@ -607,7 +618,7 @@ func migrarProdutos(alvo, legado *sql.DB, fotosDir string, executar bool) (Resul
 			// que exista ao menos uma, o comportamento continua idempotente
 			// (nunca reprocessa de novo).
 			if l.foto.Valid && strings.TrimSpace(l.foto.String) != "" {
-				fotosExistentes, errListar := services.ListarFotosProduto(alvo, fotosDir, idNovo)
+				fotosExistentes, errListar := services.ListarFotosProduto(alvo, empresaIDLegado, fotosDir, idNovo)
 				switch {
 				case errListar != nil:
 					res.FotosComFalha = append(res.FotosComFalha, FotoFalha{IDLegado: l.id, Motivo: errListar.Error()})
@@ -642,6 +653,14 @@ func migrarProdutos(alvo, legado *sql.DB, fotosDir string, executar bool) (Resul
 	return res, nil
 }
 
+// empresaIDLegado é a Empresa sob a qual `cmd/migrate-legado` grava — vazia
+// nesta story (Story 9.1, Never: o corte de dados da Ferreira Costa é da
+// Story 9.4). String vazia faz services.SalvarFotoProduto/ListarFotosProduto
+// casarem a linha legada com `empresa_id IS NULL`, preservando exatamente o
+// comportamento anterior do binário. HANDOFF 9.4: passar aqui o id da Empresa
+// "Ferreira Costa" antes do `SET NOT NULL`.
+const empresaIDLegado = ""
+
 // processarESalvarFotoLegado roda o pipeline de foto (processarFotoLegado,
 // foto.go) e, no sucesso, grava via services.SalvarFotoProduto — usada tanto
 // para um Produto recém-migrado quanto para um já mapeado que ainda não tem
@@ -653,7 +672,7 @@ func processarESalvarFotoLegado(alvo *sql.DB, fotosDir, produtoID, fotoBase64 st
 	if motivo != "" {
 		return motivo
 	}
-	if _, err := services.SalvarFotoProduto(alvo, fotosDir, produtoID, jpegBytes); err != nil {
+	if _, err := services.SalvarFotoProduto(alvo, empresaIDLegado, fotosDir, produtoID, jpegBytes); err != nil {
 		return err.Error()
 	}
 	return ""

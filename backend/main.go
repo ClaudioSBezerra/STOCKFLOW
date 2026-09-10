@@ -307,41 +307,56 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// (StreamRealtimeHandler, registrado mais adiante).
 	registro := realtime.NewRegistry()
 
+	// Fronteira de Empresa (Story 9.1, spec-9-1, AD-19). TODA rota de
+	// negócio vive sob o prefixo `/e/{slug}/api/...` e é registrada por
+	// `registrar`, que a envolve em middleware.RequireEmpresa — POR FORA de
+	// RequireAuth/RequireRole: um slug que não resolve devolve 404 antes de
+	// qualquer validação de token, e a Empresa chega ao handler pelo
+	// contexto, uma única vez por requisição.
+	//
+	// `GET /api/health` é a ÚNICA exceção: continua SEM prefixo e SEM
+	// RequireEmpresa — é o liveness do compose/CI (AD-16), que não conhece
+	// nenhum slug e precisa responder mesmo com a tabela `empresas` vazia.
+	requireEmpresa := middleware.RequireEmpresa(db)
+	registrar := func(padrao string, h http.HandlerFunc) {
+		mux.HandleFunc(padrao, requireEmpresa(h))
+	}
+
 	mux.HandleFunc("GET /api/health", healthHandler(db))
-	mux.HandleFunc("POST /api/auth/cadastro", handlers.CadastroHandler(db, emailCfg))
-	mux.HandleFunc("GET /api/auth/verificar-email", handlers.VerificarEmailHandler(db))
-	mux.HandleFunc("POST /api/auth/login", handlers.LoginHandler(db, jwtSecret))
-	mux.HandleFunc("POST /api/auth/refresh", handlers.RefreshHandler(db, jwtSecret))
-	mux.HandleFunc("POST /api/auth/esqueci-senha", handlers.EsqueciSenhaHandler(db, emailCfg))
-	mux.HandleFunc("GET /api/auth/redefinir-senha", handlers.ValidarRedefinicaoSenhaHandler(db))
-	mux.HandleFunc("POST /api/auth/redefinir-senha", handlers.RedefinirSenhaHandler(db))
-	mux.HandleFunc("GET /api/auth/me", middleware.RequireAuth(db, jwtSecret)(handlers.MeHandler()))
+	registrar("POST /e/{slug}/api/auth/cadastro", handlers.CadastroHandler(db, emailCfg))
+	registrar("GET /e/{slug}/api/auth/verificar-email", handlers.VerificarEmailHandler(db))
+	registrar("POST /e/{slug}/api/auth/login", handlers.LoginHandler(db, jwtSecret))
+	registrar("POST /e/{slug}/api/auth/refresh", handlers.RefreshHandler(db, jwtSecret))
+	registrar("POST /e/{slug}/api/auth/esqueci-senha", handlers.EsqueciSenhaHandler(db, emailCfg))
+	registrar("GET /e/{slug}/api/auth/redefinir-senha", handlers.ValidarRedefinicaoSenhaHandler(db))
+	registrar("POST /e/{slug}/api/auth/redefinir-senha", handlers.RedefinirSenhaHandler(db))
+	registrar("GET /e/{slug}/api/auth/me", middleware.RequireAuth(db, jwtSecret)(handlers.MeHandler()))
 
 	// MFA obrigatório para papéis administrativos — Story 1.11 (FR-37/SM-2).
 	// /mfa/verificar é pública (troca o token de login pendente por sessão,
 	// ainda sem sessão nenhuma nesse ponto); /mfa/iniciar e /mfa/confirmar
 	// exigem sessão já autenticada (RequireAuth), mas nenhum papel mínimo —
 	// qualquer conta pode configurar MFA, mesmo que só gestor/adm o exijam.
-	mux.HandleFunc("POST /api/auth/mfa/verificar", handlers.MFAVerificarHandler(db, jwtSecret))
-	mux.HandleFunc("POST /api/auth/mfa/iniciar", middleware.RequireAuth(db, jwtSecret)(handlers.MFAIniciarHandler(db)))
-	mux.HandleFunc("POST /api/auth/mfa/confirmar", middleware.RequireAuth(db, jwtSecret)(handlers.MFAConfirmarHandler(db)))
-	mux.HandleFunc("GET /api/usuarios", middleware.RequireAuth(db, jwtSecret)(
+	registrar("POST /e/{slug}/api/auth/mfa/verificar", handlers.MFAVerificarHandler(db, jwtSecret))
+	registrar("POST /e/{slug}/api/auth/mfa/iniciar", middleware.RequireAuth(db, jwtSecret)(handlers.MFAIniciarHandler(db)))
+	registrar("POST /e/{slug}/api/auth/mfa/confirmar", middleware.RequireAuth(db, jwtSecret)(handlers.MFAConfirmarHandler(db)))
+	registrar("GET /e/{slug}/api/usuarios", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelGestor)(
 			handlers.ListarUsuariosHandler(db))))
-	mux.HandleFunc("POST /api/promocoes", middleware.RequireAuth(db, jwtSecret)(
+	registrar("POST /e/{slug}/api/promocoes", middleware.RequireAuth(db, jwtSecret)(
 		handlers.SolicitarPromocaoHandler(db)))
-	mux.HandleFunc("GET /api/promocoes/minha", middleware.RequireAuth(db, jwtSecret)(
+	registrar("GET /e/{slug}/api/promocoes/minha", middleware.RequireAuth(db, jwtSecret)(
 		handlers.MinhaSolicitacaoHandler(db)))
-	mux.HandleFunc("GET /api/promocoes", middleware.RequireAuth(db, jwtSecret)(
+	registrar("GET /e/{slug}/api/promocoes", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelGestor)(
 			handlers.ListarPromocoesHandler(db))))
-	mux.HandleFunc("POST /api/promocoes/{id}/decisao", middleware.RequireAuth(db, jwtSecret)(
+	registrar("POST /e/{slug}/api/promocoes/{id}/decisao", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelGestor)(
 			handlers.DecidirPromocaoHandler(db))))
-	mux.HandleFunc("POST /api/usuarios/{id}/desativacao", middleware.RequireAuth(db, jwtSecret)(
+	registrar("POST /e/{slug}/api/usuarios/{id}/desativacao", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelGestor)(
 			handlers.DesativarUsuarioHandler(db))))
-	mux.HandleFunc("POST /api/usuarios/{id}/rebaixamento", middleware.RequireAuth(db, jwtSecret)(
+	registrar("POST /e/{slug}/api/usuarios/{id}/rebaixamento", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelGestor)(
 			handlers.RebaixarUsuarioHandler(db))))
 
@@ -350,7 +365,7 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// no mínimo `adm`: só um `adm` consulta a trilha append-only de tentativas
 	// de login. Não há rota de escrita — `logs_acesso` só recebe o INSERT
 	// não-fatal disparado de dentro de LoginHandler/KeycloakSSOHandler.
-	mux.HandleFunc("GET /api/logs-acesso", middleware.RequireAuth(db, jwtSecret)(
+	registrar("GET /e/{slug}/api/logs-acesso", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAdm)(
 			handlers.ListarLogsAcessoHandler(db))))
 
@@ -366,12 +381,12 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// colisão vira 409 CONFLICT. O DELETE responde 204 sem corpo no sucesso e
 	// 404 para id inexistente ou malformado; os guards de estoque residual
 	// (Epic 3) e Pedido pendente (Epic 7) entram nas Stories 3.1 e 7.2.
-	mux.HandleFunc("POST /api/estoques", middleware.RequireAuth(db, jwtSecret)(
+	registrar("POST /e/{slug}/api/estoques", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.CriarEstoqueHandler(db))))
-	mux.HandleFunc("GET /api/estoques", middleware.RequireAuth(db, jwtSecret)(
+	registrar("GET /e/{slug}/api/estoques", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarEstoquesHandler(db)))
-	mux.HandleFunc("DELETE /api/estoques/{id}", middleware.RequireAuth(db, jwtSecret)(
+	registrar("DELETE /e/{slug}/api/estoques/{id}", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.ExcluirEstoqueHandler(db))))
 
@@ -382,10 +397,10 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// só RequireAuth — a lista fixa de categorias é liberada a qualquer conta
 	// autenticada, mesmo padrão de GET /api/estoques (o formulário de cadastro
 	// e as telas de catálogo do Epic 4 precisam dela).
-	mux.HandleFunc("POST /api/produtos", middleware.RequireAuth(db, jwtSecret)(
+	registrar("POST /e/{slug}/api/produtos", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.CriarProdutoHandler(db, registro))))
-	mux.HandleFunc("GET /api/categorias", middleware.RequireAuth(db, jwtSecret)(
+	registrar("GET /e/{slug}/api/categorias", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarCategoriasHandler(db)))
 
 	// Nomenclatura Guiada por subtipo — Story 3.2 (FR-9). GET
@@ -395,9 +410,9 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// /api/produtos/{id}/renomear fica atrás de RequireRole(almoxarife): é o
 	// único endpoint de edição de Produto que existe hoje, restrito a `nome`,
 	// mesmo mínimo de papel do cadastro.
-	mux.HandleFunc("GET /api/nomenclatura-templates", middleware.RequireAuth(db, jwtSecret)(
+	registrar("GET /e/{slug}/api/nomenclatura-templates", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarNomenclaturaTemplatesHandler(db)))
-	mux.HandleFunc("POST /api/produtos/{id}/renomear", middleware.RequireAuth(db, jwtSecret)(
+	registrar("POST /e/{slug}/api/produtos/{id}/renomear", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.AtualizarNomeProdutoHandler(db, registro))))
 
@@ -409,13 +424,13 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// requisição (sem SSE, sem worker dedicado). GET /api/importacoes/ultima e
 	// POST /api/importacoes/{id}/continuar sustentam a retomada após uma
 	// interrupção (rede, navegador fechado, processo derrubado).
-	mux.HandleFunc("POST /api/importacoes", middleware.RequireAuth(db, jwtSecret)(
+	registrar("POST /e/{slug}/api/importacoes", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.CriarImportacaoHandler(db))))
-	mux.HandleFunc("GET /api/importacoes/ultima", middleware.RequireAuth(db, jwtSecret)(
+	registrar("GET /e/{slug}/api/importacoes/ultima", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.UltimaImportacaoHandler(db))))
-	mux.HandleFunc("POST /api/importacoes/{id}/continuar", middleware.RequireAuth(db, jwtSecret)(
+	registrar("POST /e/{slug}/api/importacoes/{id}/continuar", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.ContinuarImportacaoHandler(db))))
 
@@ -428,12 +443,12 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// visualização de foto é liberada a qualquer conta autenticada, mesmo
 	// padrão de GET /api/categorias/GET /api/estoques. Nenhuma tabela nova: o
 	// nome do arquivo é o único vínculo com o Produto.
-	mux.HandleFunc("POST /api/produtos/{id}/fotos", middleware.RequireAuth(db, jwtSecret)(
+	registrar("POST /e/{slug}/api/produtos/{id}/fotos", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.EnviarFotoProdutoHandler(db, fotosDir))))
-	mux.HandleFunc("GET /api/produtos/{id}/fotos/{arquivo}", middleware.RequireAuth(db, jwtSecret)(
-		handlers.ServirFotoProdutoHandler(fotosDir)))
-	mux.HandleFunc("GET /api/produtos/{id}/fotos", middleware.RequireAuth(db, jwtSecret)(
+	registrar("GET /e/{slug}/api/produtos/{id}/fotos/{arquivo}", middleware.RequireAuth(db, jwtSecret)(
+		handlers.ServirFotoProdutoHandler(db, fotosDir)))
+	registrar("GET /e/{slug}/api/produtos/{id}/fotos", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarFotosProdutoHandler(db, fotosDir)))
 
 	// Busca por nome/código/categoria com sugestões — Story 4.1 (FR-4). GET
@@ -441,7 +456,7 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// /api/categorias/GET /api/estoques: qualquer conta autenticada
 	// (`usuario`+) busca, sem RequireRole. Até 7 Produtos ranqueados por
 	// relevância; `q` vazio/só espaços -> 400 VALIDATION_ERROR.
-	mux.HandleFunc("GET /api/produtos/busca", middleware.RequireAuth(db, jwtSecret)(
+	registrar("GET /e/{slug}/api/produtos/busca", middleware.RequireAuth(db, jwtSecret)(
 		handlers.BuscarProdutosHandler(db)))
 
 	// Visualização em grade e tabela agrupada do Catálogo — Story 4.3
@@ -460,7 +475,7 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// escopado a `estoqueId` na mesma chamada). `pagina` inválida / `agrupar`
 	// inválido / `comEstoque` inválido / `q` muito longo -> 400
 	// VALIDATION_ERROR.
-	mux.HandleFunc("GET /api/produtos/catalogo", middleware.RequireAuth(db, jwtSecret)(
+	registrar("GET /e/{slug}/api/produtos/catalogo", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarCatalogoHandler(db)))
 
 	// Exportação da tabela do Catálogo para Excel — Story 4.6 (FR-30).
@@ -477,7 +492,7 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// por grupo e total geral via fórmula `SUBTOTAL`, nunca soma estática,
 	// para permanecer correto quando o próprio arquivo já exportado é
 	// filtrado no Excel.
-	mux.HandleFunc("GET /api/produtos/catalogo/exportar", middleware.RequireAuth(db, jwtSecret)(
+	registrar("GET /e/{slug}/api/produtos/catalogo/exportar", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.ExportarCatalogoHandler(db))))
 
@@ -491,7 +506,7 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// wildcard `{id}` na mesma posição, sem panic de conflito (mesmo caso já
 	// provado por `busca`/`catalogo`). `codigo` vazio -> 400 VALIDATION_ERROR;
 	// `codigo` sem Produto correspondente -> 404 NOT_FOUND.
-	mux.HandleFunc("GET /api/produtos/por-codigo", middleware.RequireAuth(db, jwtSecret)(
+	registrar("GET /e/{slug}/api/produtos/por-codigo", middleware.RequireAuth(db, jwtSecret)(
 		handlers.BuscarProdutoPorCodigoHandler(db)))
 
 	// Detalhe do Produto por Estoque com atualização em tempo real —
@@ -499,7 +514,7 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// padrão de GET /api/produtos/catalogo: qualquer conta autenticada
 	// (`usuario`+), sem RequireRole. `id` inexistente/malformado ->
 	// 404 NOT_FOUND.
-	mux.HandleFunc("GET /api/produtos/{id}", middleware.RequireAuth(db, jwtSecret)(
+	registrar("GET /e/{slug}/api/produtos/{id}", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ObterProdutoHandler(db)))
 
 	// Registrar Baixa (consumo) — Story 5.1 (Epic 5, Movimentação de
@@ -511,7 +526,7 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// Movimentação `tipo='baixa'` correspondente numa única transação
 	// (services.RegistrarBaixa), publicando no canal `movimentacoes` (AD-3
 	// do epic-5-context.md) a cada sucesso.
-	mux.HandleFunc("POST /api/produtos/{id}/estoques/{estoqueId}/baixa", middleware.RequireAuth(db, jwtSecret)(
+	registrar("POST /e/{slug}/api/produtos/{id}/estoques/{estoqueId}/baixa", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.RegistrarBaixaHandler(db, registro))))
 
@@ -525,7 +540,7 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// produto_estoque na ordem canônica ascendente de estoque_id (AD-10) —
 	// nunca na ordem origem/destino declarada pelo chamador; publicando no
 	// canal `movimentacoes` (AD-3 do epic-5-context.md) a cada sucesso.
-	mux.HandleFunc("POST /api/produtos/{id}/estoques/{estoqueId}/transferencia", middleware.RequireAuth(db, jwtSecret)(
+	registrar("POST /e/{slug}/api/produtos/{id}/estoques/{estoqueId}/transferencia", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.RegistrarTransferenciaHandler(db, registro))))
 
@@ -538,7 +553,7 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// ordenação mais-recente-primeiro, teto de 500) vive em
 	// services.ListarMovimentacoes. Não há rota de escrita: a trilha é
 	// append-only (as Movimentações nascem só de Baixa/Transferência).
-	mux.HandleFunc("GET /api/movimentacoes", middleware.RequireAuth(db, jwtSecret)(
+	registrar("GET /e/{slug}/api/movimentacoes", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.ListarMovimentacoesHandler(db))))
 
@@ -550,7 +565,7 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// origem "migracao", heurística de campo único vazio da origem "nome")
 	// vive em services.AnalisarInconsistencias. Nenhuma escrita: aplicar/
 	// ignorar sugestão é Story 6.2.
-	mux.HandleFunc("GET /api/normalizacao/inconsistencias", middleware.RequireAuth(db, jwtSecret)(
+	registrar("GET /e/{slug}/api/normalizacao/inconsistencias", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.AnalisarInconsistenciasHandler(db))))
 
@@ -562,10 +577,10 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// `produtos`; POST /api/normalizacao/ignoradas grava a tupla exata
 	// (produto,campo,valor) que o Almoxarife decidiu não aplicar, para que
 	// AnalisarInconsistencias pare de sugeri-la.
-	mux.HandleFunc("POST /api/normalizacao/correcoes", middleware.RequireAuth(db, jwtSecret)(
+	registrar("POST /e/{slug}/api/normalizacao/correcoes", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.AplicarCorrecoesHandler(db, registro))))
-	mux.HandleFunc("POST /api/normalizacao/ignoradas", middleware.RequireAuth(db, jwtSecret)(
+	registrar("POST /e/{slug}/api/normalizacao/ignoradas", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.IgnorarSugestaoHandler(db))))
 
@@ -575,7 +590,7 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// agrupamento (nome normalizado + dimensões equivalentes + local em
 	// comum) vive em services.DetectarDuplicatas. Sem publicação em tempo
 	// real: análise sob demanda, nenhum estado persistido para notificar.
-	mux.HandleFunc("GET /api/normalizacao/duplicatas", middleware.RequireAuth(db, jwtSecret)(
+	registrar("GET /e/{slug}/api/normalizacao/duplicatas", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.DetectarDuplicatasHandler(db))))
 
@@ -586,7 +601,7 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// ids do cliente) e grava a auditoria permanente; o handler publica os 3
 	// eventos em tempo real (produtos updated/deleted + movimentacoes
 	// updated) só depois do commit.
-	mux.HandleFunc("POST /api/normalizacao/mesclar", middleware.RequireAuth(db, jwtSecret)(
+	registrar("POST /e/{slug}/api/normalizacao/mesclar", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.MesclarDuplicatasHandler(db, registro))))
 
@@ -598,11 +613,11 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// corpo/rota (Always, spec-7-1). Sem publicação em canal SSE (Never,
 	// spec-7-1): o carrinho sincroniza só por refetch da própria aba após a
 	// própria ação do usuário.
-	mux.HandleFunc("POST /api/carrinho/itens", middleware.RequireAuth(db, jwtSecret)(
+	registrar("POST /e/{slug}/api/carrinho/itens", middleware.RequireAuth(db, jwtSecret)(
 		handlers.AdicionarItemCarrinhoHandler(db)))
-	mux.HandleFunc("GET /api/carrinho", middleware.RequireAuth(db, jwtSecret)(
+	registrar("GET /e/{slug}/api/carrinho", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarCarrinhoHandler(db)))
-	mux.HandleFunc("DELETE /api/carrinho/itens/{produtoId}/{estoqueId}", middleware.RequireAuth(db, jwtSecret)(
+	registrar("DELETE /e/{slug}/api/carrinho/itens/{produtoId}/{estoqueId}", middleware.RequireAuth(db, jwtSecret)(
 		handlers.RemoverItemCarrinhoHandler(db)))
 
 	// Envio de Pedido — Story 7.2 (Epic 7, Pedidos de Retirada). Atrás só de
@@ -610,7 +625,7 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// conta autenticada (`usuario`+) envia seu próprio Pedido. `usuarioID` vem
 	// sempre de middleware.UsuarioDaSessao dentro do handler, nunca de um campo
 	// do corpo (Always, spec-7-2). Publica no canal `pedidos` (AD-3) no sucesso.
-	mux.HandleFunc("POST /api/pedidos", middleware.RequireAuth(db, jwtSecret)(
+	registrar("POST /e/{slug}/api/pedidos", middleware.RequireAuth(db, jwtSecret)(
 		handlers.SubmeterPedidoHandler(db, registro)))
 
 	// Consulta de Pedidos próprios — Story 7.3 (Epic 7, Pedidos de Retirada).
@@ -620,9 +635,9 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// cabeçalho + itens em snapshot, liberado ao dono ou a `almoxarife`+ pelo
 	// padrão de escopo AD-8. Esta story só CONSOME o canal SSE `pedidos` — não
 	// publica nada.
-	mux.HandleFunc("GET /api/pedidos", middleware.RequireAuth(db, jwtSecret)(
+	registrar("GET /e/{slug}/api/pedidos", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarPedidosHandler(db)))
-	mux.HandleFunc("GET /api/pedidos/{id}", middleware.RequireAuth(db, jwtSecret)(
+	registrar("GET /e/{slug}/api/pedidos/{id}", middleware.RequireAuth(db, jwtSecret)(
 		handlers.BuscarPedidoHandler(db)))
 
 	// Recibo do Pedido em PDF gerado pelo servidor — Story 7.6 (Epic 7,
@@ -630,7 +645,7 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// acima: atrás SÓ de RequireAuth, SEM RequireRole — mesmo padrão de
 	// escopo AD-8 (dono OU `almoxarife`+). Pedido ainda não decidido
 	// (`pendente`/`rejeitado`) devolve 409 CONFLICT, sem gerar PDF nenhum.
-	mux.HandleFunc("GET /api/pedidos/{id}/recibo", middleware.RequireAuth(db, jwtSecret)(
+	registrar("GET /e/{slug}/api/pedidos/{id}/recibo", middleware.RequireAuth(db, jwtSecret)(
 		handlers.BaixarReciboPedidoHandler(db)))
 
 	// Aprovação/rejeição com revalidação de estoque item a item — Story 7.5
@@ -639,7 +654,7 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// RequireRole roda a CADA requisição, nunca cacheado, o que já satisfaz
 	// "papel do aprovador revalidado na submissão da decisão" só por
 	// composição. Publica no canal `pedidos` (novo status) no sucesso.
-	mux.HandleFunc("POST /api/pedidos/{id}/decisao", middleware.RequireAuth(db, jwtSecret)(
+	registrar("POST /e/{slug}/api/pedidos/{id}/decisao", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.DecidirPedidoHandler(db, registro))))
 
@@ -648,7 +663,7 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// RequireRole: qualquer papel autenticado exporta os PRÓPRIOS dados,
 	// nunca os de terceiros (isso é a Story 8.2, anonimização, fora de
 	// escopo aqui).
-	mux.HandleFunc("GET /api/usuarios/me/exportar-dados", middleware.RequireAuth(db, jwtSecret)(
+	registrar("GET /e/{slug}/api/usuarios/me/exportar-dados", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ExportarDadosUsuarioHandler(db)))
 
 	// Exclusão e anonimização de dados pessoais por Adm — Story 8.2 (Epic 8,
@@ -662,12 +677,12 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// um `adm` lista a fila e anonimiza. A anonimização reescreve apenas
 	// nome/email/credenciais na linha de `usuarios`; nenhuma linha de
 	// `movimentacoes`/`pedidos`/`logs_acesso` é tocada.
-	mux.HandleFunc("POST /api/usuarios/me/solicitacao-exclusao", middleware.RequireAuth(db, jwtSecret)(
+	registrar("POST /e/{slug}/api/usuarios/me/solicitacao-exclusao", middleware.RequireAuth(db, jwtSecret)(
 		handlers.SolicitarExclusaoContaHandler(db)))
-	mux.HandleFunc("GET /api/solicitacoes-exclusao", middleware.RequireAuth(db, jwtSecret)(
+	registrar("GET /e/{slug}/api/solicitacoes-exclusao", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAdm)(
 			handlers.ListarSolicitacoesExclusaoHandler(db))))
-	mux.HandleFunc("POST /api/solicitacoes-exclusao/{id}/processamento", middleware.RequireAuth(db, jwtSecret)(
+	registrar("POST /e/{slug}/api/solicitacoes-exclusao/{id}/processamento", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAdm)(
 			handlers.ProcessarExclusaoContaHandler(db))))
 
@@ -680,9 +695,9 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// query string; StreamRealtimeHandler revalida o usuário por trás do
 	// ticket (services.BuscarUsuarioSessao) antes de promover a resposta a
 	// `text/event-stream` — mesma defesa em profundidade de RequireAuth.
-	mux.HandleFunc("POST /api/realtime/ticket", middleware.RequireAuth(db, jwtSecret)(
+	registrar("POST /e/{slug}/api/realtime/ticket", middleware.RequireAuth(db, jwtSecret)(
 		handlers.EmitirTicketRealtimeHandler(db)))
-	mux.HandleFunc("GET /api/realtime/stream", handlers.StreamRealtimeHandler(db, registro))
+	registrar("GET /e/{slug}/api/realtime/stream", handlers.StreamRealtimeHandler(db, registro))
 
 	// Login federado via Keycloak — SSO Ferreira Costa (Story 1.9, AD-7).
 	// /api/auth/sso/config e /api/auth/logout são SEMPRE registrados (o
@@ -690,14 +705,14 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// caminho de logout do produto, inclusive para o login por senha). A troca
 	// de token só existe quando o realm está configurado, sempre atrás do
 	// middleware `iam`.
-	mux.HandleFunc("GET /api/auth/sso/config", handlers.SSOConfigHandler(iamCfg))
-	mux.HandleFunc("POST /api/auth/logout", handlers.LogoutHandler(db))
+	registrar("GET /e/{slug}/api/auth/sso/config", handlers.SSOConfigHandler(iamCfg))
+	registrar("POST /e/{slug}/api/auth/logout", handlers.LogoutHandler(db))
 	if iamCfg.Habilitado() {
 		jwks := iam.NewJWKSClient(iamCfg.RealmURL+"/protocol/openid-connect/certs", time.Hour)
 		if len(iamCfg.AllowedClientIDs) == 0 {
 			slog.Warn("SSO habilitado mas IAM_ALLOWED_CLIENT_IDS vazio — todo login SSO falhará no azp")
 		}
-		mux.HandleFunc("POST /api/auth/sso/keycloak",
+		registrar("POST /e/{slug}/api/auth/sso/keycloak",
 			iam.Middleware(jwks, iamCfg)(handlers.KeycloakSSOHandler(db, jwtSecret)))
 	}
 

@@ -26,10 +26,11 @@ import (
 
 func postRealtimeTicket(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/realtime/ticket",
-		middleware.RequireAuth(db, testJWTSecret)(
-			EmitirTicketRealtimeHandler(db)))
-	r := httptest.NewRequest(http.MethodPost, "/api/realtime/ticket", nil)
+	mux.HandleFunc("POST /e/{slug}/api/realtime/ticket",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				EmitirTicketRealtimeHandler(db))))
+	r := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/realtime/ticket", nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
 	}
@@ -43,13 +44,13 @@ func postRealtimeTicket(db *sql.DB, authHeader string) *httptest.ResponseRecorde
 // com o context de `r` já ligado a `ctx` (o chamador controla o
 // cancelamento).
 func getRealtimeStream(ctx context.Context, db *sql.DB, registro *realtime.Registry, ticket string) *httptest.ResponseRecorder {
-	alvo := "/api/realtime/stream"
+	alvo := prefixoEmpresaTeste + "/api/realtime/stream"
 	if ticket != "" {
 		alvo += "?ticket=" + ticket
 	}
 	r := httptest.NewRequest(http.MethodGet, alvo, nil).WithContext(ctx)
 	w := httptest.NewRecorder()
-	StreamRealtimeHandler(db, registro)(w, r)
+	comEmpresa(db, StreamRealtimeHandler(db, registro))(w, r)
 	return w
 }
 
@@ -116,7 +117,7 @@ func TestStreamRealtimeHandler_401TicketInexistente(t *testing.T) {
 func TestStreamRealtimeHandler_401TicketReaproveitado(t *testing.T) {
 	db := testDB(t)
 	usuarioID := criarContaComPapel(t, db, "Ticket Reuso", "ticket-reuso@empresa.com", "senha-123456", "usuario")
-	ticket, err := services.EmitirTicketRealtime(db, usuarioID)
+	ticket, err := services.EmitirTicketRealtime(db, empresaTeste, usuarioID)
 	if err != nil {
 		t.Fatalf("seed EmitirTicketRealtime: %v", err)
 	}
@@ -144,7 +145,7 @@ func TestStreamRealtimeHandler_401TicketReaproveitado(t *testing.T) {
 func TestStreamRealtimeHandler_401TicketExpirado(t *testing.T) {
 	db := testDB(t)
 	usuarioID := criarContaComPapel(t, db, "Ticket Expirado", "ticket-expirado@empresa.com", "senha-123456", "usuario")
-	ticket, err := services.EmitirTicketRealtime(db, usuarioID)
+	ticket, err := services.EmitirTicketRealtime(db, empresaTeste, usuarioID)
 	if err != nil {
 		t.Fatalf("seed EmitirTicketRealtime: %v", err)
 	}
@@ -166,7 +167,7 @@ func TestStreamRealtimeHandler_401TicketExpirado(t *testing.T) {
 func TestStreamRealtimeHandler_200TicketValidoPromoveParaSSE(t *testing.T) {
 	db := testDB(t)
 	usuarioID := criarContaComPapel(t, db, "Ticket Sucesso", "ticket-sucesso@empresa.com", "senha-123456", "usuario")
-	ticket, err := services.EmitirTicketRealtime(db, usuarioID)
+	ticket, err := services.EmitirTicketRealtime(db, empresaTeste, usuarioID)
 	if err != nil {
 		t.Fatalf("seed EmitirTicketRealtime: %v", err)
 	}
@@ -199,7 +200,7 @@ func TestStreamRealtimeHandler_200TicketValidoPromoveParaSSE(t *testing.T) {
 func TestStreamRealtimeHandler_ContaInativaRecusada(t *testing.T) {
 	db := testDB(t)
 	usuarioID := criarContaComPapel(t, db, "Ticket Conta Inativa", "ticket-conta-inativa@empresa.com", "senha-123456", "usuario")
-	ticket, err := services.EmitirTicketRealtime(db, usuarioID)
+	ticket, err := services.EmitirTicketRealtime(db, empresaTeste, usuarioID)
 	if err != nil {
 		t.Fatalf("seed EmitirTicketRealtime: %v", err)
 	}

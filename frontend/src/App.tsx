@@ -1,5 +1,6 @@
 import { createBrowserRouter, Navigate, RouterProvider, useLocation } from 'react-router-dom';
 import { AppShell } from '@/components/shell/AppShell';
+import { prefixoEmpresa } from '@/lib/api';
 import { AuthProvider, useAuth } from '@/lib/auth';
 import { CarrinhoProvider } from '@/lib/carrinho';
 import { rankPapel } from '@/components/shell/nav-items';
@@ -106,28 +107,36 @@ export function RotaProtegida() {
 
 // Exportado só para os testes poderem resetar a localização entre casos
 // (`router.navigate('/')`) — em runtime só o `<App />` abaixo o consome.
-export const router = createBrowserRouter([
-  {
-    path: '/',
-    element: <RotaProtegida />,
-    children: [
-      { index: true, element: <CatalogoPage /> },
-      { path: 'produtos/:id', element: <ProdutoDetalhePage /> },
-      { path: 'carrinho', element: <CarrinhoPage /> },
-      { path: 'pedidos', element: <PedidosPage /> },
-      { path: 'configuracoes', element: <ConfiguracoesPage /> },
-      { path: 'estoques', element: <EstoquesPage /> },
-      { path: 'normalizacao', element: <NormalizacaoPage /> },
-      { path: '*', element: <PlaceholderPage /> },
-    ],
-  },
-  { path: '/cadastro', element: <CadastroPage /> },
-  { path: '/verificar-email', element: <VerificarEmailPage /> },
-  { path: '/login', element: <LoginPage /> },
-  { path: '/esqueci-senha', element: <EsqueciSenhaPage /> },
-  { path: '/redefinir-senha', element: <RedefinirSenhaPage /> },
-  { path: '/auth/callback', element: <AuthCallbackPage /> },
-]);
+export const router = createBrowserRouter(
+  [
+    {
+      path: '/',
+      element: <RotaProtegida />,
+      children: [
+        { index: true, element: <CatalogoPage /> },
+        { path: 'produtos/:id', element: <ProdutoDetalhePage /> },
+        { path: 'carrinho', element: <CarrinhoPage /> },
+        { path: 'pedidos', element: <PedidosPage /> },
+        { path: 'configuracoes', element: <ConfiguracoesPage /> },
+        { path: 'estoques', element: <EstoquesPage /> },
+        { path: 'normalizacao', element: <NormalizacaoPage /> },
+        { path: '*', element: <PlaceholderPage /> },
+      ],
+    },
+    { path: '/cadastro', element: <CadastroPage /> },
+    { path: '/verificar-email', element: <VerificarEmailPage /> },
+    { path: '/login', element: <LoginPage /> },
+    { path: '/esqueci-senha', element: <EsqueciSenhaPage /> },
+    { path: '/redefinir-senha', element: <RedefinirSenhaPage /> },
+    { path: '/auth/callback', element: <AuthCallbackPage /> },
+  ],
+  // basename = prefixo da Empresa da URL (`/e/{slug}`) — Story 9.1,
+  // spec-9-1. Todo `path`/`to=`/`navigate()` acima continua escrito SEM
+  // prefixo e passa a resolver sob a Empresa; sem slug na URL (app servido em
+  // `/`) o basename é '' e nada muda — o que preserva os testes atuais, que
+  // rodam em jsdom com `location.pathname === '/'`.
+  { basename: prefixoEmpresa() },
+);
 
 function App() {
   return (

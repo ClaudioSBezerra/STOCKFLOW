@@ -21,11 +21,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { getAccessToken } from '@/lib/session';
 import { useAuth } from '@/lib/auth';
 import { useCarrinho } from '@/lib/carrinho';
 import { rankPapel } from '@/components/shell/nav-items';
 import { conectarRealtime, type StatusRealtime } from '@/lib/realtime/client';
+import { apiUrl, authHeaders } from '@/lib/api';
 import {
   formatarQuantidade,
   IndicadorDisponibilidade,
@@ -157,11 +157,6 @@ interface FotoGaleria {
   objectUrl: string;
 }
 
-function authHeaders(): Record<string, string> {
-  const token = getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
 type ErroDetalhe = 'nao-encontrado' | 'generico';
 
 const MENSAGEM_ERRO = 'Não foi possível carregar o produto agora. Tente novamente em instantes.';
@@ -269,7 +264,7 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
   // tiver começado.
   const carregarFotos = useCallback(async (produtoId: string, seq: number) => {
     try {
-      const res = await fetch(`/api/produtos/${produtoId}/fotos`, { headers: authHeaders() });
+      const res = await fetch(apiUrl(`/api/produtos/${produtoId}/fotos`), { headers: authHeaders() });
       if (seq !== seqRef.current) return;
       if (!res.ok) return;
       const body = (await res.json()) as { fotos: { nome: string; url: string }[] };
@@ -280,7 +275,7 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
         if (seq !== seqRef.current) return;
         let objectUrl = objectUrlCacheRef.current.get(foto.nome);
         if (!objectUrl) {
-          const resFoto = await fetch(foto.url, { headers: authHeaders() });
+          const resFoto = await fetch(apiUrl(foto.url), { headers: authHeaders() });
           if (seq !== seqRef.current) return;
           if (!resFoto.ok) return;
           const blob = await resFoto.blob();
@@ -309,7 +304,7 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
     setErro(null);
     setCarregando(true);
     try {
-      const res = await fetch(`/api/produtos/${id}`, { headers: authHeaders() });
+      const res = await fetch(apiUrl(`/api/produtos/${id}`), { headers: authHeaders() });
       if (seq !== seqRef.current) return;
       if (!res.ok) {
         setErro(res.status === 404 ? 'nao-encontrado' : 'generico');
@@ -353,7 +348,7 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
     setEnviandoBaixa(true);
     setErroBaixa(null);
     try {
-      const res = await fetch(`/api/produtos/${id}/estoques/${baixaEstoque.estoqueId}/baixa`, {
+      const res = await fetch(apiUrl(`/api/produtos/${id}/estoques/${baixaEstoque.estoqueId}/baixa`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ quantidade }),
@@ -413,7 +408,7 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
   const carregarEstoquesDestino = useCallback(async () => {
     setCarregandoEstoques(true);
     try {
-      const res = await fetch('/api/estoques', { headers: authHeaders() });
+      const res = await fetch(apiUrl('/api/estoques'), { headers: authHeaders() });
       if (!res.ok) {
         setErroTransferencia(MENSAGEM_ERRO_LISTAR_ESTOQUES);
         return;
@@ -461,7 +456,7 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
     setErroTransferencia(null);
     try {
       const res = await fetch(
-        `/api/produtos/${id}/estoques/${transferenciaEstoque.estoqueId}/transferencia`,
+        apiUrl(`/api/produtos/${id}/estoques/${transferenciaEstoque.estoqueId}/transferencia`),
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders() },

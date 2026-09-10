@@ -40,8 +40,12 @@ func EmitirTicketRealtimeHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
-		ticket, err := services.EmitirTicketRealtime(db, usuario.ID)
+		ticket, err := services.EmitirTicketRealtime(db, empresa.ID, usuario.ID)
 		if err != nil {
 			slog.Error("falha ao emitir ticket de conexão em tempo real", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao emitir ticket")
@@ -81,13 +85,22 @@ const intervaloKeepAliveSSE = 15 * time.Second
 // (`defer cancelar()`).
 func StreamRealtimeHandler(db *sql.DB, registro *realtime.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Esta é a única rota autenticada que NÃO passa por RequireAuth (um
+		// EventSource do navegador nunca envia `Authorization`), mas passa
+		// SIM por RequireEmpresa: ela vive sob o prefixo `/e/{slug}/api/...`
+		// como todas as outras (Story 9.1, spec-9-1).
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
 		ticket := strings.TrimSpace(r.URL.Query().Get("ticket"))
 		if ticket == "" {
 			escreverErro(w, http.StatusUnauthorized, "TOKEN_EXPIRED", "ticket de conexão ausente ou inválido")
 			return
 		}
 
-		usuarioID, err := services.ConsumirTicketRealtime(db, ticket)
+		usuarioID, err := services.ConsumirTicketRealtime(db, empresa.ID, ticket)
 		if err != nil {
 			if !errors.Is(err, services.ErrTokenNaoEncontrado) && !errors.Is(err, services.ErrTokenExpirado) {
 				slog.Error("falha ao consumir ticket de conexão em tempo real", "error", err)
@@ -108,15 +121,24 @@ func StreamRealtimeHandler(db *sql.DB, registro *realtime.Registry) http.Handler
 			escreverErro(w, http.StatusUnauthorized, "SESSION_REVOKED", "sessão revogada")
 			return
 		}
+		// Mesma fronteira de Empresa de middleware.RequireAuth (Story 9.1):
+		// a conta por trás do ticket tem de ser da Empresa do slug. Na
+		// prática ConsumirTicketRealtime já garante isso (o JOIN por
+		// `empresa_id`), mas a checagem explícita aqui é defesa em
+		// profundidade — este é o único caminho autenticado sem RequireAuth.
+		if usuario.EmpresaID != empresa.ID {
+			escreverErro(w, http.StatusUnauthorized, "SESSION_REVOKED", "sessão revogada")
+			return
+		}
 
-		flusher, ok := w.(http.Flusher)
-		if !ok {
+		flusher, okFlusher := w.(http.Flusher)
+		if !okFlusher {
 			slog.Error("StreamRealtimeHandler: http.ResponseWriter não implementa http.Flusher")
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "streaming não suportado")
 			return
 		}
 
-		eventos, cancelar := registro.Subscribe()
+		eventos, cancelar := registro.Subscribe(empresa.ID)
 		defer cancelar()
 
 		// O http.Server compartilhado (main.go) tem WriteTimeout: 15s — sem

@@ -92,13 +92,13 @@ func ssoHandler(t *testing.T, db *sql.DB, priv *rsa.PrivateKey, jwksURL string) 
 	return iam.Middleware(jwks, cfg)(KeycloakSSOHandler(db, testJWTSecret))
 }
 
-func postSSOKeycloak(h http.HandlerFunc, bearer string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/sso/keycloak", nil)
+func postSSOKeycloak(db *sql.DB, h http.HandlerFunc, bearer string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/auth/sso/keycloak", nil)
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
 	w := httptest.NewRecorder()
-	h(w, req)
+	comEmpresa(db, h)(w, req)
 	return w
 }
 
@@ -119,7 +119,7 @@ func TestKeycloakSSO_TrocaValida(t *testing.T) {
 	id := criarContaComPapel(t, db, "Carlos", "carlos@fc.com", "senha-123456", "usuario")
 	h := ssoHandler(t, db, priv, "")
 
-	w := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
+	w := postSSOKeycloak(db, h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
 	}
@@ -171,7 +171,7 @@ func TestKeycloakSSO_ContaBloqueadaPorSenhaAindaEntra(t *testing.T) {
 	}
 
 	h := ssoHandler(t, db, priv, "")
-	w := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
+	w := postSSOKeycloak(db, h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 — SSO não deve ser afetado pelo bloqueio de senha (body=%s)", w.Code, w.Body.String())
 	}
@@ -209,7 +209,7 @@ func TestKeycloakSSO_PapelPreservadoDoBanco(t *testing.T) {
 	h := ssoHandler(t, db, priv, "")
 
 	// O token não carrega papel; mesmo que carregasse, o handler ignora.
-	w := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
+	w := postSSOKeycloak(db, h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
 	}
@@ -235,7 +235,7 @@ func TestKeycloakSSO_OrigemSSO(t *testing.T) {
 	criarContaComPapel(t, db, "Gestora", "carlos@fc.com", "senha-123456", "gestor")
 	h := ssoHandler(t, db, priv, "")
 
-	w := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
+	w := postSSOKeycloak(db, h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
 	}
@@ -260,7 +260,7 @@ func TestKeycloakSSO_EmailCaseInsensitive(t *testing.T) {
 
 	c := ssoClaims()
 	c["email"] = "Carlos@FC.com"
-	w := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, c))
+	w := postSSOKeycloak(db, h, ssoAssinar(t, priv, ssoKid, c))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
 	}
@@ -280,7 +280,7 @@ func TestKeycloakSSO_SemContaLocal(t *testing.T) {
 	priv := ssoGerarChave(t)
 	h := ssoHandler(t, db, priv, "")
 
-	w := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
+	w := postSSOKeycloak(db, h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401 (body=%s)", w.Code, w.Body.String())
 	}
@@ -300,7 +300,7 @@ func TestKeycloakSSO_EmailNaoVerificado(t *testing.T) {
 
 	c := ssoClaims()
 	c["email_verified"] = false
-	w := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, c))
+	w := postSSOKeycloak(db, h, ssoAssinar(t, priv, ssoKid, c))
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401 (body=%s)", w.Code, w.Body.String())
 	}
@@ -315,7 +315,7 @@ func TestKeycloakSSO_ContaDesativada(t *testing.T) {
 	criarUsuarioLoginComEstado(t, db, "carlos@fc.com", "", false, true) // ativo=false
 	h := ssoHandler(t, db, priv, "")
 
-	w := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
+	w := postSSOKeycloak(db, h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401 (body=%s)", w.Code, w.Body.String())
 	}
@@ -383,7 +383,7 @@ func TestKeycloakSSO_MiddlewareRejeitaAntesDoHandler(t *testing.T) {
 			if !tc.bare {
 				bearer = tc.bearer()
 			}
-			w := postSSOKeycloak(h, bearer)
+			w := postSSOKeycloak(db, h, bearer)
 			if w.Code != http.StatusUnauthorized {
 				t.Fatalf("status = %d, want 401 (body=%s)", w.Code, w.Body.String())
 			}
@@ -405,7 +405,7 @@ func TestKeycloakSSO_JWKSIndisponivel(t *testing.T) {
 	srv := ssoJWKSServer(t, `{"keys":[]}`, http.StatusServiceUnavailable)
 	h := ssoHandler(t, db, priv, srv.URL)
 
-	w := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
+	w := postSSOKeycloak(db, h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401 (JWKS 503 nunca vira sucesso) (body=%s)", w.Code, w.Body.String())
 	}
@@ -414,12 +414,12 @@ func TestKeycloakSSO_JWKSIndisponivel(t *testing.T) {
 // --- POST /api/auth/logout ---
 
 func postLogout(db *sql.DB, cookie *http.Cookie) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+	req := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/auth/logout", nil)
 	if cookie != nil {
 		req.AddCookie(cookie)
 	}
 	w := httptest.NewRecorder()
-	LogoutHandler(db)(w, req)
+	comEmpresa(db, LogoutHandler(db))(w, req)
 	return w
 }
 
@@ -430,7 +430,7 @@ func TestLogoutHandler_RevogaSessaoELimpaCookie(t *testing.T) {
 
 	// Emite uma sessão real via troca SSO e captura o cookie.
 	h := ssoHandler(t, db, priv, "")
-	wSSO := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
+	wSSO := postSSOKeycloak(db, h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
 	if wSSO.Code != http.StatusOK {
 		t.Fatalf("pré-condição: troca SSO status = %d (body=%s)", wSSO.Code, wSSO.Body.String())
 	}
@@ -487,8 +487,12 @@ func TestLogoutHandler_Idempotente(t *testing.T) {
 // --- GET /api/auth/sso/config ---
 
 func getSSOConfig(cfg iam.Config) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodGet, "/api/auth/sso/config", nil)
+	req := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/auth/sso/config", nil)
 	w := httptest.NewRecorder()
+	// SSOConfigHandler devolve só a configuração estática do Keycloak: não
+	// lê a Empresa do contexto nem toca no banco, então o teste o despacha
+	// direto (sem RequireEmpresa, que exigiria uma conexão só para resolver
+	// o slug do caminho).
 	SSOConfigHandler(cfg)(w, req)
 	return w
 }
@@ -557,7 +561,7 @@ func TestKeycloakSSO_RegistraTentativaBemSucedida(t *testing.T) {
 	id := criarContaComPapel(t, db, "Carlos", "carlos@fc.com", "senha-123456", "usuario")
 	h := ssoHandler(t, db, priv, "")
 
-	w := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
+	w := postSSOKeycloak(db, h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
 	}
@@ -584,7 +588,7 @@ func TestKeycloakSSO_SemContaRegistraFalha(t *testing.T) {
 	priv := ssoGerarChave(t)
 	h := ssoHandler(t, db, priv, "")
 
-	w := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
+	w := postSSOKeycloak(db, h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401 (body=%s)", w.Code, w.Body.String())
 	}
@@ -611,7 +615,7 @@ func TestKeycloakSSO_EmailNaoVerificadoRegistraFalha(t *testing.T) {
 
 	c := ssoClaims()
 	c["email_verified"] = false
-	w := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, c))
+	w := postSSOKeycloak(db, h, ssoAssinar(t, priv, ssoKid, c))
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401 (body=%s)", w.Code, w.Body.String())
 	}
@@ -633,7 +637,7 @@ func TestKeycloakSSO_ContaInativaRegistraFalhaComUsuario(t *testing.T) {
 	id := criarUsuarioLoginComEstado(t, db, "carlos@fc.com", "", false, true) // ativo=false
 	h := ssoHandler(t, db, priv, "")
 
-	w := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
+	w := postSSOKeycloak(db, h, ssoAssinar(t, priv, ssoKid, ssoClaims()))
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401 (body=%s)", w.Code, w.Body.String())
 	}
@@ -655,7 +659,7 @@ func TestKeycloakSSO_TokenSemEmailNaoRegistra(t *testing.T) {
 
 	c := ssoClaims()
 	delete(c, "email")
-	w := postSSOKeycloak(h, ssoAssinar(t, priv, ssoKid, c))
+	w := postSSOKeycloak(db, h, ssoAssinar(t, priv, ssoKid, c))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 (body=%s)", w.Code, w.Body.String())
 	}

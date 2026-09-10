@@ -10,10 +10,10 @@ func inserirUsuario(t *testing.T, db *sql.DB, nome, email, papel string, ativo b
 	t.Helper()
 	var id string
 	const q = `
-		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
-		VALUES ($1, $2, NULL, $3, true, $4)
+		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, empresa_id)
+		VALUES ($1, $2, NULL, $3, true, $4, $5)
 		RETURNING id`
-	if err := db.QueryRow(q, nome, email, papel, ativo).Scan(&id); err != nil {
+	if err := db.QueryRow(q, nome, email, papel, ativo, empresaTeste).Scan(&id); err != nil {
 		t.Fatalf("inserir usuario %q: %v", email, err)
 	}
 	return id
@@ -23,7 +23,7 @@ func TestBuscarUsuarioPorEmailSSO_CaseInsensitive(t *testing.T) {
 	db := testDB(t)
 	id := inserirUsuario(t, db, "Carlos", "carlos@fc.com", "gestor", true)
 
-	got, err := BuscarUsuarioPorEmailSSO(db, "Carlos@FC.com")
+	got, err := BuscarUsuarioPorEmailSSO(db, empresaTeste, "Carlos@FC.com")
 	if err != nil {
 		t.Fatalf("BuscarUsuarioPorEmailSSO: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestBuscarUsuarioPorEmailSSO_CaseInsensitive(t *testing.T) {
 func TestBuscarUsuarioPorEmailSSO_SemConta(t *testing.T) {
 	db := testDB(t)
 
-	_, err := BuscarUsuarioPorEmailSSO(db, "ninguem@fc.com")
+	_, err := BuscarUsuarioPorEmailSSO(db, empresaTeste, "ninguem@fc.com")
 	if !errors.Is(err, ErrContaSSONaoEncontrada) {
 		t.Fatalf("err = %v, want ErrContaSSONaoEncontrada", err)
 	}
@@ -55,7 +55,7 @@ func TestBuscarUsuarioPorEmailSSO_DevolveContaDesativada(t *testing.T) {
 	db := testDB(t)
 	inserirUsuario(t, db, "Inativa", "inativa@fc.com", "usuario", false)
 
-	got, err := BuscarUsuarioPorEmailSSO(db, "inativa@fc.com")
+	got, err := BuscarUsuarioPorEmailSSO(db, empresaTeste, "inativa@fc.com")
 	if err != nil {
 		t.Fatalf("BuscarUsuarioPorEmailSSO: %v — a conta desativada deve ser devolvida (o handler decide o 401)", err)
 	}
@@ -73,7 +73,7 @@ func TestRevogarSessaoPorRefreshToken_RevogaSessaoViva(t *testing.T) {
 		t.Fatalf("EmitirSessao: %v", err)
 	}
 
-	if err := RevogarSessaoPorRefreshToken(db, refreshToken); err != nil {
+	if err := RevogarSessaoPorRefreshToken(db, empresaTeste, refreshToken); err != nil {
 		t.Fatalf("RevogarSessaoPorRefreshToken: %v", err)
 	}
 
@@ -89,10 +89,10 @@ func TestRevogarSessaoPorRefreshToken_RevogaSessaoViva(t *testing.T) {
 func TestRevogarSessaoPorRefreshToken_NoOpToleranteNaoErra(t *testing.T) {
 	db := testDB(t)
 
-	if err := RevogarSessaoPorRefreshToken(db, ""); err != nil {
+	if err := RevogarSessaoPorRefreshToken(db, empresaTeste, ""); err != nil {
 		t.Fatalf("token vazio deveria ser no-op, got %v", err)
 	}
-	if err := RevogarSessaoPorRefreshToken(db, "token-que-nao-existe"); err != nil {
+	if err := RevogarSessaoPorRefreshToken(db, empresaTeste, "token-que-nao-existe"); err != nil {
 		t.Fatalf("token inexistente (0 linhas) não é erro, got %v", err)
 	}
 
@@ -102,10 +102,10 @@ func TestRevogarSessaoPorRefreshToken_NoOpToleranteNaoErra(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmitirSessao: %v", err)
 	}
-	if err := RevogarSessaoPorRefreshToken(db, refreshToken); err != nil {
+	if err := RevogarSessaoPorRefreshToken(db, empresaTeste, refreshToken); err != nil {
 		t.Fatalf("primeira revogação: %v", err)
 	}
-	if err := RevogarSessaoPorRefreshToken(db, refreshToken); err != nil {
+	if err := RevogarSessaoPorRefreshToken(db, empresaTeste, refreshToken); err != nil {
 		t.Fatalf("segunda revogação (idempotente): %v", err)
 	}
 }

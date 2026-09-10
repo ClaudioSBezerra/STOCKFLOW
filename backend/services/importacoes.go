@@ -197,7 +197,7 @@ func prepararLinhasDados(linhasDeDados [][]string) []linhaBruta {
 // handlers.CriarImportacaoHandler contra CabecalhoEsperado ANTES desta
 // função ser chamada — nenhuma validação de cabeçalho acontece aqui, e
 // `linhas[0]` nunca é lido por esta função (só `linhas[1:]`).
-func CriarImportacao(db *sql.DB, criadoPor, nomeArquivo string, linhas [][]string) (Importacao, RelatorioImportacao, error) {
+func CriarImportacao(db *sql.DB, empresaID string, criadoPor, nomeArquivo string, linhas [][]string) (Importacao, RelatorioImportacao, error) {
 	var linhasDeDados [][]string
 	if len(linhas) > 1 {
 		linhasDeDados = linhas[1:]
@@ -212,10 +212,10 @@ func CriarImportacao(db *sql.DB, criadoPor, nomeArquivo string, linhas [][]strin
 
 	var importacaoID string
 	const insertImportacao = `
-		INSERT INTO importacoes (nome_arquivo, total_linhas, criado_por)
-		VALUES ($1, $2, $3)
+		INSERT INTO importacoes (nome_arquivo, total_linhas, criado_por, empresa_id)
+		VALUES ($1, $2, $3, $4)
 		RETURNING id`
-	if err := tx.QueryRow(insertImportacao, nomeArquivo, len(preparadas), criadoPor).Scan(&importacaoID); err != nil {
+	if err := tx.QueryRow(insertImportacao, nomeArquivo, len(preparadas), criadoPor, empresaID).Scan(&importacaoID); err != nil {
 		return Importacao{}, RelatorioImportacao{}, fmt.Errorf("falha ao inserir importação: %w", err)
 	}
 
@@ -236,7 +236,7 @@ func CriarImportacao(db *sql.DB, criadoPor, nomeArquivo string, linhas [][]strin
 		return Importacao{}, RelatorioImportacao{}, fmt.Errorf("falha ao commitar importação: %w", err)
 	}
 
-	return processarECarregar(db, importacaoID)
+	return processarECarregar(db, empresaID, importacaoID)
 }
 
 // ContinuarImportacao retoma o processamento de uma importação existente —
@@ -246,23 +246,25 @@ func CriarImportacao(db *sql.DB, criadoPor, nomeArquivo string, linhas [][]strin
 // (não-UUID) -> ErrImportacaoNaoEncontrada, verificado ANTES de processar —
 // sem essa checagem prévia, um id inexistente processaria silenciosamente
 // zero linhas e devolveria um relatório vazio "de sucesso", mascarando o 404.
-func ContinuarImportacao(db *sql.DB, id string) (Importacao, RelatorioImportacao, error) {
-	if _, err := buscarImportacao(db, id); err != nil {
+func ContinuarImportacao(db *sql.DB, empresaID string, id string) (Importacao, RelatorioImportacao, error) {
+	if _, err := buscarImportacao(db, empresaID, id); err != nil {
 		return Importacao{}, RelatorioImportacao{}, err
 	}
-	return processarECarregar(db, id)
+	return processarECarregar(db, empresaID, id)
 }
 
-// ObterUltimaImportacao devolve a importação mais recente (`ORDER BY
+// ObterUltimaImportacao devolve a importação mais recente DA EMPRESA
+// `empresaID` (Story 9.1, AD-20 — nunca a de outro cliente) (`ORDER BY
 // iniciado_em DESC LIMIT 1`) com o relatório agregado do seu estado atual —
 // `em_andamento` (parou em algum ponto) ou `concluida`. Nenhuma importação
 // registrada -> `(nil, RelatorioImportacao{}, nil)`, nunca erro.
-func ObterUltimaImportacao(db *sql.DB) (*Importacao, RelatorioImportacao, error) {
+func ObterUltimaImportacao(db *sql.DB, empresaID string) (*Importacao, RelatorioImportacao, error) {
 	var imp Importacao
 	const selectUltima = `
 		SELECT id, status, total_linhas FROM importacoes
+		WHERE empresa_id = $1
 		ORDER BY iniciado_em DESC LIMIT 1`
-	if err := db.QueryRow(selectUltima).Scan(&imp.ID, &imp.Status, &imp.TotalLinhas); err != nil {
+	if err := db.QueryRow(selectUltima, empresaID).Scan(&imp.ID, &imp.Status, &imp.TotalLinhas); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, RelatorioImportacao{}, nil
 		}
@@ -284,10 +286,10 @@ func ObterUltimaImportacao(db *sql.DB) (*Importacao, RelatorioImportacao, error)
 // buscarImportacao lê `id`/`status`/`total_linhas`/`proxima_linha_pendente`
 // de uma importação existente. `id` inexistente OU malformado (não-UUID,
 // `pq` SQLSTATE 22P02) colapsam em ErrImportacaoNaoEncontrada.
-func buscarImportacao(db *sql.DB, id string) (Importacao, error) {
+func buscarImportacao(db *sql.DB, empresaID string, id string) (Importacao, error) {
 	var imp Importacao
-	const selectImportacao = `SELECT id, status, total_linhas FROM importacoes WHERE id = $1`
-	if err := db.QueryRow(selectImportacao, id).Scan(&imp.ID, &imp.Status, &imp.TotalLinhas); err != nil {
+	const selectImportacao = `SELECT id, status, total_linhas FROM importacoes WHERE id = $1 AND empresa_id = $2`
+	if err := db.QueryRow(selectImportacao, id, empresaID).Scan(&imp.ID, &imp.Status, &imp.TotalLinhas); err != nil {
 		var pqErr *pq.Error
 		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
 			return Importacao{}, ErrImportacaoNaoEncontrada
@@ -328,12 +330,12 @@ func proximaLinhaPendente(db *sql.DB, importacaoID string) (*int, error) {
 // a Importacao (para refletir um eventual status='concluida' setado pelo
 // próprio processarPendentes) — usado por CriarImportacao e
 // ContinuarImportacao, os dois pontos de entrada que disparam processamento.
-func processarECarregar(db *sql.DB, importacaoID string) (Importacao, RelatorioImportacao, error) {
-	relatorio, err := processarPendentes(db, importacaoID)
+func processarECarregar(db *sql.DB, empresaID string, importacaoID string) (Importacao, RelatorioImportacao, error) {
+	relatorio, err := processarPendentes(db, empresaID, importacaoID)
 	if err != nil {
 		return Importacao{}, RelatorioImportacao{}, err
 	}
-	importacao, err := buscarImportacao(db, importacaoID)
+	importacao, err := buscarImportacao(db, empresaID, importacaoID)
 	if err != nil {
 		return Importacao{}, RelatorioImportacao{}, err
 	}
@@ -409,9 +411,9 @@ func montarRelatorio(db *sql.DB, importacaoID string) (RelatorioImportacao, erro
 // infraestrutura em qualquer iteração interrompe o laço inteiro e é
 // devolvido ao chamador — a importação permanece `em_andamento`, retomável
 // por uma futura chamada de ContinuarImportacao.
-func processarPendentes(db *sql.DB, importacaoID string) (RelatorioImportacao, error) {
+func processarPendentes(db *sql.DB, empresaID string, importacaoID string) (RelatorioImportacao, error) {
 	for {
-		encontrou, err := processarProximaLinha(db, importacaoID)
+		encontrou, err := processarProximaLinha(db, empresaID, importacaoID)
 		if err != nil {
 			return RelatorioImportacao{}, err
 		}
@@ -430,8 +432,8 @@ func processarPendentes(db *sql.DB, importacaoID string) (RelatorioImportacao, e
 	if restantes == 0 {
 		const concluir = `
 			UPDATE importacoes SET status = 'concluida', concluido_em = now()
-			WHERE id = $1 AND status = 'em_andamento'`
-		if _, err := db.Exec(concluir, importacaoID); err != nil {
+			WHERE id = $1 AND status = 'em_andamento' AND empresa_id = $2`
+		if _, err := db.Exec(concluir, importacaoID, empresaID); err != nil {
 			return RelatorioImportacao{}, fmt.Errorf("falha ao concluir importação: %w", err)
 		}
 	}
@@ -468,7 +470,7 @@ func processarPendentes(db *sql.DB, importacaoID string) (RelatorioImportacao, e
 // só aquela linha como `rejeitada` e commita, devolvendo `(true, nil)` para
 // a próxima iteração seguir; um erro de INFRAESTRUTURA desfaz a transação e
 // é devolvido ao chamador, interrompendo o laço inteiro.
-func processarProximaLinha(db *sql.DB, importacaoID string) (bool, error) {
+func processarProximaLinha(db *sql.DB, empresaID string, importacaoID string) (bool, error) {
 	tx, err := db.Begin()
 	if err != nil {
 		return false, fmt.Errorf("falha ao iniciar transação de processamento: %w", err)
@@ -507,8 +509,10 @@ func processarProximaLinha(db *sql.DB, importacaoID string) (bool, error) {
 	}
 
 	var categoriaID string
-	const selectCategoria = `SELECT id FROM categorias WHERE lower(btrim(nome)) = lower(btrim($1))`
-	err = tx.QueryRow(selectCategoria, validada.categoriaTexto).Scan(&categoriaID)
+	const selectCategoria = `
+		SELECT id FROM categorias
+		WHERE lower(btrim(nome)) = lower(btrim($1)) AND empresa_id = $2`
+	err = tx.QueryRow(selectCategoria, validada.categoriaTexto, empresaID).Scan(&categoriaID)
 	if errors.Is(err, sql.ErrNoRows) {
 		motivo := fmt.Sprintf("categoria %q não encontrada", validada.categoriaTexto)
 		return true, rejeitarECommitar(tx, linhaID, numeroLinha, motivo)
@@ -523,16 +527,16 @@ func processarProximaLinha(db *sql.DB, importacaoID string) (bool, error) {
 	// graças ao índice único parcial `idx_produtos_codigo` (migration
 	// 000017): no máximo uma linha em `produtos` pode ter esse `código`.
 	if validada.codigo.Valid {
-		produtoExistenteID, produtoExistenteTemplateID, encontrado, err := buscarProdutoPorCodigo(tx, validada.codigo.String)
+		produtoExistenteID, produtoExistenteTemplateID, encontrado, err := buscarProdutoPorCodigo(tx, empresaID, validada.codigo.String)
 		if err != nil {
 			return false, fmt.Errorf("falha ao buscar produto existente por código da linha %d: %w", numeroLinha, err)
 		}
 		if encontrado {
-			return processarLinhaDeAtualizacao(tx, linhaID, numeroLinha, validada, categoriaID, produtoExistenteID, produtoExistenteTemplateID)
+			return processarLinhaDeAtualizacao(tx, empresaID, linhaID, numeroLinha, validada, categoriaID, produtoExistenteID, produtoExistenteTemplateID)
 		}
 	}
 
-	estoque, err := encontrarOuCriarEstoque(tx, validada.estoqueNome)
+	estoque, err := encontrarOuCriarEstoque(tx, empresaID, validada.estoqueNome)
 	if errors.Is(err, ErrEstoqueValidacao) {
 		return true, rejeitarECommitar(tx, linhaID, numeroLinha, err.Error())
 	}
@@ -547,8 +551,9 @@ func processarProximaLinha(db *sql.DB, importacaoID string) (bool, error) {
 			largura_valor, largura_unidade,
 			diametro_valor, diametro_unidade,
 			altura_valor, altura_unidade,
-			espessura_valor, espessura_unidade
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+			espessura_valor, espessura_unidade,
+			empresa_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		RETURNING id`
 	// SAVEPOINT antes do INSERT (Story 3.4, review pass): protege contra a
 	// corrida "duas linhas da mesma leva com o mesmo código NOVO, processadas
@@ -579,6 +584,7 @@ func processarProximaLinha(db *sql.DB, importacaoID string) (bool, error) {
 		validada.diametroValor, validada.diametroUnidade,
 		validada.alturaValor, validada.alturaUnidade,
 		validada.espessuraValor, validada.espessuraUnidade,
+		empresaID,
 	).Scan(&produtoID)
 	if err != nil {
 		var pqErr *pq.Error
@@ -586,7 +592,7 @@ func processarProximaLinha(db *sql.DB, importacaoID string) (bool, error) {
 			if _, errRollback := tx.Exec(`ROLLBACK TO SAVEPOINT sp_insert_produto`); errRollback != nil {
 				return false, fmt.Errorf("falha ao reverter savepoint da linha %d: %w", numeroLinha, errRollback)
 			}
-			produtoExistenteID, produtoExistenteTemplateID, encontrado, errBusca := buscarProdutoPorCodigo(tx, validada.codigo.String)
+			produtoExistenteID, produtoExistenteTemplateID, encontrado, errBusca := buscarProdutoPorCodigo(tx, empresaID, validada.codigo.String)
 			if errBusca != nil {
 				return false, fmt.Errorf("falha ao buscar produto após corrida de código na linha %d: %w", numeroLinha, errBusca)
 			}
@@ -596,7 +602,7 @@ func processarProximaLinha(db *sql.DB, importacaoID string) (bool, error) {
 				// Defesa em profundidade contra um estado inconsistente.
 				return false, fmt.Errorf("violação de unicidade de código na linha %d, mas produto não encontrado na re-busca", numeroLinha)
 			}
-			return processarLinhaDeAtualizacao(tx, linhaID, numeroLinha, validada, categoriaID, produtoExistenteID, produtoExistenteTemplateID)
+			return processarLinhaDeAtualizacao(tx, empresaID, linhaID, numeroLinha, validada, categoriaID, produtoExistenteID, produtoExistenteTemplateID)
 		}
 		return false, fmt.Errorf("falha ao inserir produto da linha %d: %w", numeroLinha, err)
 	}
@@ -627,9 +633,11 @@ func processarProximaLinha(db *sql.DB, importacaoID string) (bool, error) {
 // processarProximaLinha). `encontrado=false` (sql.ErrNoRows) nunca é erro —
 // significa "nenhum Produto com esse código ainda", que o chamador trata
 // como sinal para seguir o caminho de criação.
-func buscarProdutoPorCodigo(tx *sql.Tx, codigo string) (id string, templateID sql.NullString, encontrado bool, err error) {
-	const selectProdutoPorCodigo = `SELECT id, template_id FROM produtos WHERE codigo = $1 AND deleted_at IS NULL`
-	err = tx.QueryRow(selectProdutoPorCodigo, codigo).Scan(&id, &templateID)
+func buscarProdutoPorCodigo(tx *sql.Tx, empresaID string, codigo string) (id string, templateID sql.NullString, encontrado bool, err error) {
+	const selectProdutoPorCodigo = `
+		SELECT id, template_id FROM produtos
+		WHERE codigo = $1 AND deleted_at IS NULL AND empresa_id = $2`
+	err = tx.QueryRow(selectProdutoPorCodigo, codigo, empresaID).Scan(&id, &templateID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", sql.NullString{}, false, nil
 	}
@@ -665,13 +673,13 @@ func buscarProdutoPorCodigo(tx *sql.Tx, codigo string) (id string, templateID sq
 // rejeição). Mesma ordem do caminho de criação em processarProximaLinha, que
 // resolve o Estoque antes do `INSERT INTO produtos` pelo mesmo motivo.
 func processarLinhaDeAtualizacao(
-	tx *sql.Tx, linhaID string, numeroLinha int, validada linhaValidada,
+	tx *sql.Tx, empresaID string, linhaID string, numeroLinha int, validada linhaValidada,
 	categoriaID string, produtoExistenteID string, produtoExistenteTemplateID sql.NullString,
 ) (bool, error) {
 	if produtoExistenteTemplateID.Valid {
 		var templateTexto string
-		const selectTemplate = `SELECT template FROM nomenclatura_templates WHERE id = $1`
-		if err := tx.QueryRow(selectTemplate, produtoExistenteTemplateID.String).Scan(&templateTexto); err != nil {
+		const selectTemplate = `SELECT template FROM nomenclatura_templates WHERE id = $1 AND empresa_id = $2`
+		if err := tx.QueryRow(selectTemplate, produtoExistenteTemplateID.String, empresaID).Scan(&templateTexto); err != nil {
 			return false, fmt.Errorf("falha ao buscar template aplicado ao produto da linha %d: %w", numeroLinha, err)
 		}
 		if !nomeValidoParaTemplate(templateTexto, validada.nome) {
@@ -679,7 +687,7 @@ func processarLinhaDeAtualizacao(
 		}
 	}
 
-	estoque, err := encontrarOuCriarEstoque(tx, validada.estoqueNome)
+	estoque, err := encontrarOuCriarEstoque(tx, empresaID, validada.estoqueNome)
 	if errors.Is(err, ErrEstoqueValidacao) {
 		return true, rejeitarECommitar(tx, linhaID, numeroLinha, err.Error())
 	}
@@ -695,7 +703,7 @@ func processarLinhaDeAtualizacao(
 			diametro_valor = $9, diametro_unidade = $10,
 			altura_valor = $11, altura_unidade = $12,
 			espessura_valor = $13, espessura_unidade = $14
-		WHERE id = $15`
+		WHERE id = $15 AND empresa_id = $16`
 	if _, err := tx.Exec(updateProduto,
 		validada.nome, validada.codigo, categoriaID, validada.observacoes,
 		validada.comprimentoValor, validada.comprimentoUnidade,
@@ -703,7 +711,7 @@ func processarLinhaDeAtualizacao(
 		validada.diametroValor, validada.diametroUnidade,
 		validada.alturaValor, validada.alturaUnidade,
 		validada.espessuraValor, validada.espessuraUnidade,
-		produtoExistenteID,
+		produtoExistenteID, empresaID,
 	); err != nil {
 		return false, fmt.Errorf("falha ao atualizar produto da linha %d: %w", numeroLinha, err)
 	}
@@ -934,18 +942,22 @@ func validarDimensaoLinha(campo, valorTexto, unidadeTexto string) (sql.NullFloat
 // instruções continuam sem janela de corrida real: entre o INSERT falhar
 // por conflito e o SELECT seguinte rodar, a linha já está commitada e
 // permanece (Estoques nunca são excluídos por nenhuma story implementada).
-func encontrarOuCriarEstoque(tx *sql.Tx, nome string) (Estoque, error) {
+func encontrarOuCriarEstoque(tx *sql.Tx, empresaID string, nome string) (Estoque, error) {
 	nomeTrimado := strings.TrimSpace(nome)
 	if nomeTrimado == "" || utf8.RuneCountInString(nomeTrimado) > 255 {
 		return Estoque{}, ErrEstoqueValidacao
 	}
 
 	var e Estoque
+	// O alvo de inferência do ON CONFLICT acompanha o índice
+	// `idx_estoques_nome_normalizado`, que a migração 000032 reescopou para
+	// `(empresa_id, nome_normalizado)` (Story 9.1) — sem as duas colunas aqui,
+	// o Postgres não acharia o índice e a instrução falharia.
 	const inserir = `
-		INSERT INTO estoques (nome) VALUES ($1)
-		ON CONFLICT (nome_normalizado) DO NOTHING
+		INSERT INTO estoques (nome, empresa_id) VALUES ($1, $2)
+		ON CONFLICT (empresa_id, nome_normalizado) DO NOTHING
 		RETURNING id, nome`
-	err := tx.QueryRow(inserir, nomeTrimado).Scan(&e.ID, &e.Nome)
+	err := tx.QueryRow(inserir, nomeTrimado, empresaID).Scan(&e.ID, &e.Nome)
 	if errors.Is(err, sql.ErrNoRows) {
 		// Conflito: já existe uma linha com esse nome_normalizado — commitada
 		// por outra transação (própria instrução, próprio snapshot, ver o
@@ -953,8 +965,9 @@ func encontrarOuCriarEstoque(tx *sql.Tx, nome string) (Estoque, error) {
 		// transação (nome repetido dentro da mesma planilha).
 		const buscarExistente = `
 			SELECT id, nome FROM estoques
-			WHERE nome_normalizado = lower(regexp_replace(btrim($1), '\s+', ' ', 'g'))`
-		err = tx.QueryRow(buscarExistente, nomeTrimado).Scan(&e.ID, &e.Nome)
+			WHERE nome_normalizado = lower(regexp_replace(btrim($1), '\s+', ' ', 'g'))
+			  AND empresa_id = $2`
+		err = tx.QueryRow(buscarExistente, nomeTrimado, empresaID).Scan(&e.ID, &e.Nome)
 	}
 	if err != nil {
 		return Estoque{}, fmt.Errorf("falha ao encontrar ou criar estoque: %w", err)

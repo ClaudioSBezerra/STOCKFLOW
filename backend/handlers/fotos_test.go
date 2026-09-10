@@ -35,15 +35,15 @@ func limparProdutosFotos(t *testing.T, db *sql.DB) {
 // testes de fronteira HTTP desta suíte.
 func criarProdutoParaFotoHandler(t *testing.T, db *sql.DB, nome string) string {
 	t.Helper()
-	estoque, err := services.CriarEstoque(db, "Canteiro Foto HTTP "+nome)
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Foto HTTP "+nome)
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	var categoriaID string
-	if err := db.QueryRow(`SELECT id FROM categorias WHERE codigo = $1`, "04.001").Scan(&categoriaID); err != nil {
+	if err := db.QueryRow(`SELECT id FROM categorias WHERE codigo = $1 AND empresa_id = $2`, "04.001", empresaTeste).Scan(&categoriaID); err != nil {
 		t.Fatalf("seed categoria: %v", err)
 	}
-	p, err := services.CriarProduto(db, services.CriarProdutoInput{
+	p, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
 		Nome:              nome,
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -61,10 +61,11 @@ func criarProdutoParaFotoHandler(t *testing.T, db *sql.DB, nome string) string {
 // nenhum arquivo).
 func postFotoProduto(db *sql.DB, fotosDir, authHeader, produtoID string, conteudo []byte, nomeArquivo string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/produtos/{id}/fotos",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelAlmoxarife)(
-				EnviarFotoProdutoHandler(db, fotosDir))))
+	mux.HandleFunc("POST /e/{slug}/api/produtos/{id}/fotos",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					EnviarFotoProdutoHandler(db, fotosDir)))))
 
 	corpo := &bytes.Buffer{}
 	writer := multipart.NewWriter(corpo)
@@ -74,7 +75,7 @@ func postFotoProduto(db *sql.DB, fotosDir, authHeader, produtoID string, conteud
 	}
 	_ = writer.Close()
 
-	r := httptest.NewRequest(http.MethodPost, "/api/produtos/"+produtoID+"/fotos", corpo)
+	r := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/produtos/"+produtoID+"/fotos", corpo)
 	r.Header.Set("Content-Type", writer.FormDataContentType())
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
@@ -88,11 +89,12 @@ func postFotoProduto(db *sql.DB, fotosDir, authHeader, produtoID string, conteud
 // composição de newMux (só RequireAuth, sem RequireRole).
 func getFotoProduto(db *sql.DB, fotosDir, authHeader, produtoID, arquivo string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/produtos/{id}/fotos/{arquivo}",
-		middleware.RequireAuth(db, testJWTSecret)(
-			ServirFotoProdutoHandler(fotosDir)))
+	mux.HandleFunc("GET /e/{slug}/api/produtos/{id}/fotos/{arquivo}",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				ServirFotoProdutoHandler(db, fotosDir))))
 
-	r := httptest.NewRequest(http.MethodGet, "/api/produtos/"+produtoID+"/fotos/"+arquivo, nil)
+	r := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/produtos/"+produtoID+"/fotos/"+arquivo, nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
 	}
@@ -105,11 +107,12 @@ func getFotoProduto(db *sql.DB, fotosDir, authHeader, produtoID, arquivo string)
 // composição de newMux (só RequireAuth, sem RequireRole — Story 3.6).
 func listarFotosProduto(db *sql.DB, fotosDir, authHeader, produtoID string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/produtos/{id}/fotos",
-		middleware.RequireAuth(db, testJWTSecret)(
-			ListarFotosProdutoHandler(db, fotosDir)))
+	mux.HandleFunc("GET /e/{slug}/api/produtos/{id}/fotos",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				ListarFotosProdutoHandler(db, fotosDir))))
 
-	r := httptest.NewRequest(http.MethodGet, "/api/produtos/"+produtoID+"/fotos", nil)
+	r := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/produtos/"+produtoID+"/fotos", nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
 	}
@@ -207,6 +210,9 @@ func TestEnviarFotoProdutoHandler_JPEGGrandeRedimensiona(t *testing.T) {
 	if resp.Foto.Nome == "" || resp.Foto.URL == "" {
 		t.Fatalf("resposta incompleta: %+v", resp.Foto)
 	}
+	// A URL de fio NÃO leva o prefixo de Empresa (Story 9.1): o backend
+	// devolve o caminho sem prefixo e o cliente o completa com `apiUrl()`
+	// (frontend/src/lib/api.ts), que é quem conhece o slug da URL atual.
 	wantURL := "/api/produtos/" + produtoID + "/fotos/" + resp.Foto.Nome
 	if resp.Foto.URL != wantURL {
 		t.Errorf("url = %q, want %q", resp.Foto.URL, wantURL)

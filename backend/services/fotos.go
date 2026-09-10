@@ -34,6 +34,45 @@ type FotoProduto struct {
 	URL  string `json:"url"`
 }
 
+// produtoDaEmpresa confirma que `produtoID` existe E pertence à Empresa
+// `empresaID` — o guard de posse compartilhado pelos três caminhos de foto
+// (gravar, listar e servir o arquivo). É a razão pela qual `fotosDir` pode
+// continuar plano, sem partição por Empresa (Design Notes, spec-9-1): o nome
+// do arquivo carrega o `produtoID` (UUID), e nenhum caminho da API chega ao
+// disco sem passar por aqui antes.
+//
+// `produtoID` inexistente, malformado (não-UUID, `pq` SQLSTATE 22P02) OU de
+// outra Empresa -> ErrProdutoNaoEncontrado, os três no mesmo sentinela.
+func produtoDaEmpresa(db *sql.DB, empresaID, produtoID string) error {
+	// `empresaID` vazio significa "linha legada, ainda sem Empresa"
+	// (`empresa_id IS NULL`, fase 1 de AD-23) — o único chamador nesse caso é
+	// `cmd/migrate-legado`, que a Story 9.4 passa a rodar com a Empresa da
+	// Ferreira Costa. Nenhum caminho HTTP pode chegar aqui com string vazia:
+	// middleware.RequireEmpresa só injeta Empresas existentes e ativas.
+	var existe bool
+	err := db.QueryRow(
+		`SELECT true FROM produtos
+		 WHERE id = $1 AND (($2 = '' AND empresa_id IS NULL) OR empresa_id::text = $2)`,
+		produtoID, empresaID,
+	).Scan(&existe)
+	if err != nil {
+		var pqErr *pq.Error
+		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
+			return ErrProdutoNaoEncontrado
+		}
+		return fmt.Errorf("falha ao verificar produto da empresa: %w", err)
+	}
+	return nil
+}
+
+// ProdutoPertenceAEmpresa é a forma exportada de produtoDaEmpresa, para o
+// handler que SERVE o arquivo de foto (handlers.ServirFotoProdutoHandler):
+// aquele handler nunca consulta o banco por conta própria, mas precisa do
+// mesmo guard de posse antes de abrir qualquer caminho em `fotosDir`.
+func ProdutoPertenceAEmpresa(db *sql.DB, empresaID, produtoID string) error {
+	return produtoDaEmpresa(db, empresaID, produtoID)
+}
+
 // SalvarFotoProduto grava `jpegBytes` (já decodificado, redimensionado e
 // recomprimido pelo chamador) em `fotosDir`, com nome versionado
 // `<produtoID>-<timestamp_unix>.jpg`. Verifica a existência do Produto ANTES
@@ -46,15 +85,9 @@ type FotoProduto struct {
 // mesmo Produto) incrementa o timestamp em 1s e tenta de novo, até
 // fotoMaxTentativasColisao tentativas antes de devolver erro de
 // infraestrutura.
-func SalvarFotoProduto(db *sql.DB, fotosDir string, produtoID string, jpegBytes []byte) (FotoProduto, error) {
-	var existe bool
-	err := db.QueryRow(`SELECT true FROM produtos WHERE id = $1`, produtoID).Scan(&existe)
-	if err != nil {
-		var pqErr *pq.Error
-		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
-			return FotoProduto{}, ErrProdutoNaoEncontrado
-		}
-		return FotoProduto{}, fmt.Errorf("falha ao verificar produto para foto: %w", err)
+func SalvarFotoProduto(db *sql.DB, empresaID string, fotosDir string, produtoID string, jpegBytes []byte) (FotoProduto, error) {
+	if err := produtoDaEmpresa(db, empresaID, produtoID); err != nil {
+		return FotoProduto{}, err
 	}
 
 	timestampBase := time.Now().Unix()
@@ -103,15 +136,9 @@ func SalvarFotoProduto(db *sql.DB, fotosDir string, produtoID string, jpegBytes 
 // prefixo `<produtoID>-` é constante por Produto, ordenar a STRING do nome é
 // equivalente a ordenar pelo timestamp numérico (== ordem de envio), sem
 // parse extra. Produto sem nenhuma foto -> slice vazia, nunca erro.
-func ListarFotosProduto(db *sql.DB, fotosDir string, produtoID string) ([]FotoProduto, error) {
-	var existe bool
-	err := db.QueryRow(`SELECT true FROM produtos WHERE id = $1`, produtoID).Scan(&existe)
-	if err != nil {
-		var pqErr *pq.Error
-		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
-			return nil, ErrProdutoNaoEncontrado
-		}
-		return nil, fmt.Errorf("falha ao verificar produto para listar fotos: %w", err)
+func ListarFotosProduto(db *sql.DB, empresaID string, fotosDir string, produtoID string) ([]FotoProduto, error) {
+	if err := produtoDaEmpresa(db, empresaID, produtoID); err != nil {
+		return nil, err
 	}
 
 	padrao := filepath.Join(fotosDir, fmt.Sprintf("%s-*.jpg", produtoID))

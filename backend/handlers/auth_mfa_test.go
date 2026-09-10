@@ -18,10 +18,10 @@ import (
 // padrão do restante da suíte de handlers.
 
 func postMFAVerificar(db *sql.DB, jsonBody string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/mfa/verificar", strings.NewReader(jsonBody))
+	req := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/auth/mfa/verificar", strings.NewReader(jsonBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	MFAVerificarHandler(db, testJWTSecret)(w, req)
+	comEmpresa(db, MFAVerificarHandler(db, testJWTSecret))(w, req)
 	return w
 }
 
@@ -29,23 +29,23 @@ func postMFAVerificar(db *sql.DB, jsonBody string) *httptest.ResponseRecorder {
 // registrada em main.go (RequireAuth, sem RequireRole) — nunca chamam o
 // handler isoladamente.
 func postMFAIniciar(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/mfa/iniciar", nil)
+	req := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/auth/mfa/iniciar", nil)
 	if authHeader != "" {
 		req.Header.Set("Authorization", authHeader)
 	}
 	w := httptest.NewRecorder()
-	middleware.RequireAuth(db, testJWTSecret)(MFAIniciarHandler(db))(w, req)
+	comEmpresa(db, middleware.RequireAuth(db, testJWTSecret)(MFAIniciarHandler(db)))(w, req)
 	return w
 }
 
 func postMFAConfirmar(db *sql.DB, authHeader, jsonBody string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/mfa/confirmar", strings.NewReader(jsonBody))
+	req := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/auth/mfa/confirmar", strings.NewReader(jsonBody))
 	req.Header.Set("Content-Type", "application/json")
 	if authHeader != "" {
 		req.Header.Set("Authorization", authHeader)
 	}
 	w := httptest.NewRecorder()
-	middleware.RequireAuth(db, testJWTSecret)(MFAConfirmarHandler(db))(w, req)
+	comEmpresa(db, middleware.RequireAuth(db, testJWTSecret)(MFAConfirmarHandler(db)))(w, req)
 	return w
 }
 

@@ -1,3 +1,4 @@
+import { apiUrl } from '@/lib/api';
 /**
  * Config de SSO (Story 1.9) buscada em RUNTIME do backend
  * (`GET /api/auth/sso/config`), nunca de env var de build: a mesma imagem de
@@ -25,7 +26,7 @@ export async function fetchSSOConfig(): Promise<SSOConfig> {
     return cache;
   }
   try {
-    const res = await fetch('/api/auth/sso/config');
+    const res = await fetch(apiUrl('/api/auth/sso/config'));
     if (!res.ok) {
       return { enabled: false };
     }

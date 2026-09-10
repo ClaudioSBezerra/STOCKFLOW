@@ -12,10 +12,10 @@ func semearConta(t *testing.T, db *sql.DB, nome, email, papel string, ordem int)
 	t.Helper()
 	var id string
 	const insert = `
-		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, criado_em)
-		VALUES ($1, $2, 'hash-qualquer', $3, true, true, now() + ($4 || ' seconds')::interval)
+		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, criado_em, empresa_id)
+		VALUES ($1, $2, 'hash-qualquer', $3, true, true, now() + ($4 || ' seconds')::interval, $5)
 		RETURNING id`
-	if err := db.QueryRow(insert, nome, email, papel, ordem).Scan(&id); err != nil {
+	if err := db.QueryRow(insert, nome, email, papel, ordem, empresaTeste).Scan(&id); err != nil {
 		t.Fatalf("falha ao semear conta %q: %v", email, err)
 	}
 	return id
@@ -34,7 +34,7 @@ func TestListarUsuarios_EscopoGestorVsAdm(t *testing.T) {
 	semearConta(t, db, "Diego Adm", "diego.adm@empresa.com", PapelAdm, 4)
 
 	t.Run("gestor vê só usuario/almoxarife", func(t *testing.T) {
-		lista, err := ListarUsuarios(db, PapelGestor)
+		lista, err := ListarUsuarios(db, empresaTeste, PapelGestor)
 		if err != nil {
 			t.Fatalf("ListarUsuarios(gestor) erro: %v", err)
 		}
@@ -49,7 +49,7 @@ func TestListarUsuarios_EscopoGestorVsAdm(t *testing.T) {
 	})
 
 	t.Run("adm vê todas as contas", func(t *testing.T) {
-		lista, err := ListarUsuarios(db, PapelAdm)
+		lista, err := ListarUsuarios(db, empresaTeste, PapelAdm)
 		if err != nil {
 			t.Fatalf("ListarUsuarios(adm) erro: %v", err)
 		}
@@ -77,7 +77,7 @@ func TestListarUsuarios_OrdenadoPorCriadoEm(t *testing.T) {
 	semearConta(t, db, "Primeira", "primeira@empresa.com", PapelUsuario, 10)
 	semearConta(t, db, "Segunda", "segunda@empresa.com", PapelAlmoxarife, 20)
 
-	lista, err := ListarUsuarios(db, PapelAdm)
+	lista, err := ListarUsuarios(db, empresaTeste, PapelAdm)
 	if err != nil {
 		t.Fatalf("ListarUsuarios erro: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestListarUsuarios_OrdenadoPorCriadoEm(t *testing.T) {
 func TestListarUsuarios_ListaVaziaNaoEhErro(t *testing.T) {
 	db := testDB(t)
 
-	lista, err := ListarUsuarios(db, PapelGestor)
+	lista, err := ListarUsuarios(db, empresaTeste, PapelGestor)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}

@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { senhaAtendePolitica } from '@/lib/senha';
+import { apiUrl } from '@/lib/api';
 
 /**
  * Tela pública de redefinição de senha (Story 1.6, spec-1-6). Rota irmã de
@@ -76,7 +77,7 @@ export function RedefinirSenhaPage() {
     (async () => {
       let resultante: Fase;
       try {
-        const res = await fetch(`/api/auth/redefinir-senha?token=${encodeURIComponent(token)}`);
+        const res = await fetch(apiUrl(`/api/auth/redefinir-senha?token=${encodeURIComponent(token)}`));
         if (res.ok) {
           resultante = 'formulario';
         } else {
@@ -109,7 +110,7 @@ export function RedefinirSenhaPage() {
 
     setEnviando(true);
     try {
-      const res = await fetch('/api/auth/redefinir-senha', {
+      const res = await fetch(apiUrl('/api/auth/redefinir-senha'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token, senha }),

@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { getAccessToken } from '@/lib/session';
+import { apiUrl, authHeaders } from '@/lib/api';
 import {
   formatarQuantidade,
   IndicadorDisponibilidade,
@@ -128,11 +128,6 @@ const MENSAGEM_SEM_ESTOQUE_REGISTRADO = 'Sem quantidade registrada por estoque.'
 const SEM_CATEGORIA = '__todas-categorias__';
 const SEM_ESTOQUE = '__todos-estoques__';
 
-function authHeaders(): Record<string, string> {
-  const token = getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
 interface FiltrosAtivos {
   categoriaId: string;
   estoqueId: string;
@@ -241,7 +236,7 @@ export function CatalogoListagem({ termo = '', podeExportar = false }: CatalogoL
       if (extras !== '') {
         query += `&${extras}`;
       }
-      const res = await fetch(`/api/produtos/catalogo?${query}`, { headers: authHeaders() });
+      const res = await fetch(apiUrl(`/api/produtos/catalogo?${query}`), { headers: authHeaders() });
       if (seq !== seqRef.current) {
         return;
       }
@@ -312,7 +307,7 @@ export function CatalogoListagem({ termo = '', podeExportar = false }: CatalogoL
   useEffect(() => {
     void (async () => {
       try {
-        const res = await fetch('/api/categorias', { headers: authHeaders() });
+        const res = await fetch(apiUrl('/api/categorias'), { headers: authHeaders() });
         if (res.ok) {
           const body = (await res.json()) as { categorias?: CategoriaCatalogo[] };
           setCategorias(Array.isArray(body.categorias) ? body.categorias : []);
@@ -328,7 +323,7 @@ export function CatalogoListagem({ termo = '', podeExportar = false }: CatalogoL
   useEffect(() => {
     void (async () => {
       try {
-        const res = await fetch('/api/estoques', { headers: authHeaders() });
+        const res = await fetch(apiUrl('/api/estoques'), { headers: authHeaders() });
         if (res.ok) {
           const body = (await res.json()) as { estoques?: EstoqueFiltro[] };
           setEstoques(Array.isArray(body.estoques) ? body.estoques : []);
@@ -361,7 +356,7 @@ export function CatalogoListagem({ termo = '', podeExportar = false }: CatalogoL
     try {
       const extras = queryFiltros({ categoriaId, estoqueId, comEstoque, termo });
       const url = `/api/produtos/catalogo/exportar${extras !== '' ? `?${extras}` : ''}`;
-      const res = await fetch(url, { headers: authHeaders() });
+      const res = await fetch(apiUrl(url), { headers: authHeaders() });
       if (!res.ok) {
         toast.error(MENSAGEM_ERRO_EXPORTACAO);
         return;

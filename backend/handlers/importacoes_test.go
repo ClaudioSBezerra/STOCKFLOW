@@ -64,10 +64,11 @@ func construirXLSX(t *testing.T, linhas [][]string) []byte {
 // omite o campo por completo (simula o cliente não anexar nenhum arquivo).
 func postImportacoes(db *sql.DB, authHeader string, arquivo []byte, nomeArquivo string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/importacoes",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelAlmoxarife)(
-				CriarImportacaoHandler(db))))
+	mux.HandleFunc("POST /e/{slug}/api/importacoes",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					CriarImportacaoHandler(db)))))
 
 	corpo := &bytes.Buffer{}
 	writer := multipart.NewWriter(corpo)
@@ -77,7 +78,7 @@ func postImportacoes(db *sql.DB, authHeader string, arquivo []byte, nomeArquivo 
 	}
 	_ = writer.Close()
 
-	r := httptest.NewRequest(http.MethodPost, "/api/importacoes", corpo)
+	r := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/importacoes", corpo)
 	r.Header.Set("Content-Type", writer.FormDataContentType())
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
@@ -89,11 +90,12 @@ func postImportacoes(db *sql.DB, authHeader string, arquivo []byte, nomeArquivo 
 
 func postContinuarImportacao(db *sql.DB, authHeader, id string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/importacoes/{id}/continuar",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelAlmoxarife)(
-				ContinuarImportacaoHandler(db))))
-	r := httptest.NewRequest(http.MethodPost, "/api/importacoes/"+id+"/continuar", nil)
+	mux.HandleFunc("POST /e/{slug}/api/importacoes/{id}/continuar",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					ContinuarImportacaoHandler(db)))))
+	r := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/importacoes/"+id+"/continuar", nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
 	}
@@ -104,11 +106,12 @@ func postContinuarImportacao(db *sql.DB, authHeader, id string) *httptest.Respon
 
 func getUltimaImportacao(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/importacoes/ultima",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelAlmoxarife)(
-				UltimaImportacaoHandler(db))))
-	r := httptest.NewRequest(http.MethodGet, "/api/importacoes/ultima", nil)
+	mux.HandleFunc("GET /e/{slug}/api/importacoes/ultima",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					UltimaImportacaoHandler(db)))))
+	r := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/importacoes/ultima", nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
 	}
@@ -401,7 +404,7 @@ func TestContinuarImportacaoHandler_200Sucesso(t *testing.T) {
 	categoria := categoriaNomePorCodigoHandler(t, db, "04.002")
 
 	usuarioID := usuarioIDPorEmail(t, db, "importacao-continuar-http@empresa.com")
-	importacao, _, err := services.CriarImportacao(db, usuarioID, "planilha.xlsx", [][]string{
+	importacao, _, err := services.CriarImportacao(db, empresaTeste, usuarioID, "planilha.xlsx", [][]string{
 		services.CabecalhoEsperado,
 		linhaImportacao("Produto Continuar HTTP", "SKU-CONT-HTTP", categoria, "1", "Canteiro Continuar HTTP"),
 	})
@@ -488,7 +491,7 @@ func TestUltimaImportacaoHandler_ProximaLinhaPendente(t *testing.T) {
 	categoria := categoriaNomePorCodigoHandler(t, db, "04.003")
 
 	usuarioID := usuarioIDPorEmail(t, db, "importacao-proximalinha-http@empresa.com")
-	importacao, _, err := services.CriarImportacao(db, usuarioID, "planilha.xlsx", [][]string{
+	importacao, _, err := services.CriarImportacao(db, empresaTeste, usuarioID, "planilha.xlsx", [][]string{
 		services.CabecalhoEsperado,
 		linhaImportacao("Produto Proxima Um", "SKU-PLH-1", categoria, "1", "Canteiro Proxima HTTP"),
 		linhaImportacao("Produto Proxima Dois", "SKU-PLH-2", categoria, "1", "Canteiro Proxima HTTP"),

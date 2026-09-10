@@ -72,8 +72,12 @@ func SolicitarPromocaoHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
-		s, err := services.SolicitarPromocao(db, usuario.ID, usuario.Papel)
+		s, err := services.SolicitarPromocao(db, empresa.ID, usuario.ID, usuario.Papel)
 		switch {
 		case err == nil:
 			escreverJSON(w, http.StatusCreated, map[string]any{
@@ -107,8 +111,12 @@ func MinhaSolicitacaoHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
-		s, err := services.BuscarMinhaSolicitacao(db, usuario.ID)
+		s, err := services.BuscarMinhaSolicitacao(db, empresa.ID, usuario.ID)
 		if err != nil {
 			slog.Error("falha ao buscar solicitação de promoção da conta", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao buscar solicitação de promoção")
@@ -142,8 +150,12 @@ func ListarPromocoesHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
-		pendentes, err := services.ListarSolicitacoesPendentes(db, usuario.Papel)
+		pendentes, err := services.ListarSolicitacoesPendentes(db, empresa.ID, usuario.Papel)
 		if err != nil {
 			slog.Error("falha ao listar solicitações de promoção pendentes", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao listar solicitações de promoção")
@@ -177,6 +189,10 @@ func DecidirPromocaoHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
 		var req decisaoRequest
@@ -189,7 +205,7 @@ func DecidirPromocaoHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		s, err := services.DecidirSolicitacao(db, r.PathValue("id"), usuario.ID, usuario.Papel, *req.Aprovar)
+		s, err := services.DecidirSolicitacao(db, empresa.ID, r.PathValue("id"), usuario.ID, usuario.Papel, *req.Aprovar)
 		switch {
 		case err == nil:
 			escreverJSON(w, http.StatusOK, map[string]any{

@@ -20,13 +20,13 @@ func TestExportarDadosUsuario_ComHistoricoCompleto(t *testing.T) {
 	inserirLogAcessoDireto(t, db, &usuarioID, "exportar-completo@empresa.com", "senha", true, "10.0.0.1", time.Now())
 
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Canteiro Exportar Completo", 20)
-	if _, err := RegistrarBaixa(db, produtoID, estoqueID, usuarioID, 2); err != nil {
+	if _, err := RegistrarBaixa(db, empresaTeste, produtoID, estoqueID, usuarioID, 2); err != nil {
 		t.Fatalf("seed RegistrarBaixa: %v", err)
 	}
 
 	pedido := seedPedidoComItem(t, db, usuarioID, "Exportar Completo", 3)
 
-	dados, err := ExportarDadosUsuario(db, usuarioID, "Exportar Completo", "exportar-completo@empresa.com")
+	dados, err := ExportarDadosUsuario(db, empresaTeste, usuarioID, "Exportar Completo", "exportar-completo@empresa.com")
 	if err != nil {
 		t.Fatalf("ExportarDadosUsuario: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestExportarDadosUsuario_SemNenhumRegistro(t *testing.T) {
 
 	usuarioID := semearConta(t, db, "Exportar Vazio", "exportar-vazio@empresa.com", PapelUsuario, 0)
 
-	dados, err := ExportarDadosUsuario(db, usuarioID, "Exportar Vazio", "exportar-vazio@empresa.com")
+	dados, err := ExportarDadosUsuario(db, empresaTeste, usuarioID, "Exportar Vazio", "exportar-vazio@empresa.com")
 	if err != nil {
 		t.Fatalf("ExportarDadosUsuario: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestExportarDadosUsuario_ErroDeQueryPropagado(t *testing.T) {
 	db := testDB(t)
 	db.Close()
 
-	dados, err := ExportarDadosUsuario(db, "qualquer-id", "Nome", "email@empresa.com")
+	dados, err := ExportarDadosUsuario(db, empresaTeste, "qualquer-id", "Nome", "email@empresa.com")
 	if err == nil {
 		t.Fatal("ExportarDadosUsuario: erro esperado com a conexão fechada")
 	}

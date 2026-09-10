@@ -14,6 +14,8 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
+
+	"stockflow/backend/services"
 )
 
 var (
@@ -87,6 +89,13 @@ func testDB(t *testing.T) *sql.DB {
 		t.Fatalf("falha ao limpar tabela usuarios entre testes: %v", err)
 	}
 
+	// `empresas` NUNCA entra neste TRUNCATE (Story 9.1): ela é referenciada
+	// por categorias/nomenclatura_templates e por toda tabela de domínio, e
+	// um TRUNCATE ... CASCADE nela levaria embora o seed das migrations
+	// 000010/000013 — que nenhuma migration recriaria, quebrando as outras
+	// suítes que compartilham este banco. A Empresa desta suíte é criada uma
+	// vez e reaproveitada (garantirEmpresaSeed).
+
 	return db
 }
 
@@ -96,7 +105,7 @@ func testDB(t *testing.T) *sql.DB {
 func TestSeedAdmin_Inicial(t *testing.T) {
 	db := testDB(t)
 
-	id, err := seedAdmin(db, "  Primeira Adm  ", "Admin@Empresa.COM", "senha-super-secreta")
+	id, err := seedAdmin(db, "", "  Primeira Adm  ", "Admin@Empresa.COM", "senha-super-secreta")
 	if err != nil {
 		t.Fatalf("seedAdmin retornou erro inesperado: %v", err)
 	}
@@ -141,12 +150,12 @@ func TestSeedAdmin_Inicial(t *testing.T) {
 func TestSeedAdmin_Duplicado(t *testing.T) {
 	db := testDB(t)
 
-	firstID, err := seedAdmin(db, "Primeiro Adm", "primeiro@empresa.com", "senha-123456")
+	firstID, err := seedAdmin(db, "", "Primeiro Adm", "primeiro@empresa.com", "senha-123456")
 	if err != nil {
 		t.Fatalf("primeiro seedAdmin falhou: %v", err)
 	}
 
-	_, err = seedAdmin(db, "Segundo Adm", "segundo@empresa.com", "outra-senha")
+	_, err = seedAdmin(db, "", "Segundo Adm", "segundo@empresa.com", "outra-senha")
 	if !errors.Is(err, errAdminAlreadyExists) {
 		t.Fatalf("erro = %v, want errAdminAlreadyExists", err)
 	}
@@ -181,7 +190,7 @@ func TestSeedAdmin_Duplicado(t *testing.T) {
 func TestSeedAdmin_EmailMaiusculo(t *testing.T) {
 	db := testDB(t)
 
-	id, err := seedAdmin(db, "Adm Maiusculo", "ADMIN@EMPRESA.COM", "senha-123456")
+	id, err := seedAdmin(db, "", "Adm Maiusculo", "ADMIN@EMPRESA.COM", "senha-123456")
 	if err != nil {
 		t.Fatalf("seedAdmin falhou: %v", err)
 	}
@@ -201,7 +210,7 @@ func TestSeedAdmin_EmailMaiusculo(t *testing.T) {
 func TestSeedAdmin_SenhaFraca(t *testing.T) {
 	db := testDB(t)
 
-	id, err := seedAdmin(db, "Adm Senha Fraca", "fraca@empresa.com", "123")
+	id, err := seedAdmin(db, "", "Adm Senha Fraca", "fraca@empresa.com", "123")
 	if err != nil {
 		t.Fatalf("seedAdmin retornou erro para senha fraca (fora de escopo desta story): %v", err)
 	}
@@ -239,7 +248,7 @@ func TestSeedAdmin_Concorrente(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			_, err := seedAdmin(db, fmt.Sprintf("Adm Concorrente %d", i), fmt.Sprintf("concorrente%d@empresa.com", i), "senha-123456")
+			_, err := seedAdmin(db, "", fmt.Sprintf("Adm Concorrente %d", i), fmt.Sprintf("concorrente%d@empresa.com", i), "senha-123456")
 			results[i] = err
 		}(i)
 	}
@@ -310,5 +319,115 @@ func TestValidateFlags(t *testing.T) {
 				t.Errorf("validateFlags(%q, %q, %q) err = %v, wantErr %v", c.nome, c.email, c.senha, err, c.wantErr)
 			}
 		})
+	}
+}
+
+// garantirEmpresaSeed devolve o id da Empresa desta suíte, provisionando-a na
+// primeira chamada — Story 9.1 (Multi-Empresa), spec-9-1. `empresas` não é
+// truncada entre testes (ver testDB), então o SELECT por slug reaproveita a
+// linha já gravada.
+func garantirEmpresaSeed(t *testing.T, db *sql.DB) string {
+	t.Helper()
+
+	const slug = "seed-admin-empresa"
+	var id string
+	err := db.QueryRow(`SELECT id FROM empresas WHERE slug = $1`, slug).Scan(&id)
+	if err == nil {
+		return id
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("garantirEmpresaSeed: %v", err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("garantirEmpresaSeed: begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	e, err := services.ProvisionarEmpresa(tx, services.DadosEmpresa{
+		NomeFantasia: "Empresa Seed Admin",
+		RazaoSocial:  "Empresa Seed Admin LTDA",
+		CNPJ:         "23456789000195",
+		Slug:         slug,
+		Endereco: services.EnderecoEmpresa{
+			Logradouro: "Rua de Teste",
+			Numero:     "100",
+			Bairro:     "Centro",
+			Cidade:     "Recife",
+			CEP:        "50000000",
+			UF:         "PE",
+		},
+	})
+	if err != nil {
+		t.Fatalf("garantirEmpresaSeed: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("garantirEmpresaSeed: commit: %v", err)
+	}
+	return e.ID
+}
+
+// TestSeedAdmin_ComEmpresaSlug prova o contrato do flag OPCIONAL
+// `--empresa-slug` (Story 9.1): com o slug, o `adm` nasce DENTRO da Empresa;
+// um segundo `adm` na mesma Empresa é recusado; e o `adm` sem Empresa
+// (comportamento do deploy em CI, que não passa o flag) continua sendo aceito
+// em paralelo — é a prova do AC 5 na fronteira do CLI.
+func TestSeedAdmin_ComEmpresaSlug(t *testing.T) {
+	db := testDB(t)
+	empresaID := garantirEmpresaSeed(t, db)
+
+	id, err := seedAdmin(db, "seed-admin-empresa", "Adm da Empresa", "adm-empresa@empresa.com", "senha-123456")
+	if err != nil {
+		t.Fatalf("seedAdmin com --empresa-slug: %v", err)
+	}
+	var gravado sql.NullString
+	var papel string
+	if err := db.QueryRow(`SELECT empresa_id, papel FROM usuarios WHERE id = $1`, id).Scan(&gravado, &papel); err != nil {
+		t.Fatalf("falha ao reler a conta criada: %v", err)
+	}
+	if !gravado.Valid || gravado.String != empresaID {
+		t.Errorf("empresa_id = %v, want %q", gravado, empresaID)
+	}
+	if papel != "adm" {
+		t.Errorf("papel = %q, want adm", papel)
+	}
+
+	// Segundo `adm` na MESMA Empresa: recusado.
+	if _, err := seedAdmin(db, "seed-admin-empresa", "Segundo Adm", "segundo-empresa@empresa.com", "senha-123456"); !errors.Is(err, errAdminAlreadyExists) {
+		t.Fatalf("segundo adm na mesma Empresa: erro = %v, want errAdminAlreadyExists", err)
+	}
+
+	// `adm` SEM Empresa (o que o deploy em CI faz) continua aceito: a
+	// unicidade passou a ser por Empresa, e `empresa_id IS NULL` é um escopo
+	// próprio.
+	idLegado, err := seedAdmin(db, "", "Adm Sem Empresa", "adm-sem-empresa@empresa.com", "senha-123456")
+	if err != nil {
+		t.Fatalf("seedAdmin sem slug depois do adm da Empresa: %v", err)
+	}
+	var empresaLegado sql.NullString
+	if err := db.QueryRow(`SELECT empresa_id FROM usuarios WHERE id = $1`, idLegado).Scan(&empresaLegado); err != nil {
+		t.Fatalf("falha ao reler a conta legada: %v", err)
+	}
+	if empresaLegado.Valid {
+		t.Errorf("empresa_id = %v, want NULL", empresaLegado)
+	}
+}
+
+// TestSeedAdmin_EmpresaSlugInexistente prova que um slug que não resolve
+// aborta sem escrever nada — o operador recebe erro claro em vez de um `adm`
+// criado fora de qualquer Empresa.
+func TestSeedAdmin_EmpresaSlugInexistente(t *testing.T) {
+	db := testDB(t)
+
+	if _, err := seedAdmin(db, "empresa-que-nao-existe", "Adm Fantasma", "fantasma@empresa.com", "senha-123456"); !errors.Is(err, errEmpresaNaoEncontrada) {
+		t.Fatalf("erro = %v, want errEmpresaNaoEncontrada", err)
+	}
+	var total int
+	if err := db.QueryRow(`SELECT count(*) FROM usuarios`).Scan(&total); err != nil {
+		t.Fatalf("falha ao contar linhas: %v", err)
+	}
+	if total != 0 {
+		t.Errorf("count(*) usuarios = %d, want 0 — slug inválido não pode inserir nada", total)
 	}
 }

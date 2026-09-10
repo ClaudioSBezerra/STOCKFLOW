@@ -76,14 +76,14 @@ func TestSubmeterPedido_Sucesso(t *testing.T) {
 	usuarioID := semearConta(t, db, "Usuario Pedido Sucesso", "pedido-sucesso@empresa.com", PapelUsuario, 0)
 	produtoA, estoqueA, _ := seedProdutoComSaldo(t, db, "Pedido Sucesso A", 10)
 	produtoB, estoqueB, _ := seedProdutoComSaldo(t, db, "Pedido Sucesso B", 5)
-	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoA, estoqueA, 4); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoA, estoqueA, 4); err != nil {
 		t.Fatalf("seed AdicionarItemCarrinho A: %v", err)
 	}
-	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoB, estoqueB, 2); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoB, estoqueB, 2); err != nil {
 		t.Fatalf("seed AdicionarItemCarrinho B: %v", err)
 	}
 
-	pedido, err := SubmeterPedido(db, usuarioID, "  Fulano de Tal  ", "  Obra Norte  ", "  urgente  ")
+	pedido, err := SubmeterPedido(db, empresaTeste, usuarioID, "  Fulano de Tal  ", "  Obra Norte  ", "  urgente  ")
 	if err != nil {
 		t.Fatalf("SubmeterPedido erro inesperado: %v", err)
 	}
@@ -141,11 +141,11 @@ func TestSubmeterPedido_ObservacaoAusenteFicaNula(t *testing.T) {
 
 	usuarioID := semearConta(t, db, "Usuario Pedido Sem Obs", "pedido-sem-obs@empresa.com", PapelUsuario, 0)
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Pedido Sem Obs", 10)
-	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoID, estoqueID, 1); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, 1); err != nil {
 		t.Fatalf("seed AdicionarItemCarrinho: %v", err)
 	}
 
-	pedido, err := SubmeterPedido(db, usuarioID, "Fulano", "Obra X", "   ")
+	pedido, err := SubmeterPedido(db, empresaTeste, usuarioID, "Fulano", "Obra X", "   ")
 	if err != nil {
 		t.Fatalf("SubmeterPedido erro inesperado: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestSubmeterPedido_CarrinhoVazio(t *testing.T) {
 	usuarioID := semearConta(t, db, "Usuario Pedido Vazio", "pedido-vazio@empresa.com", PapelUsuario, 0)
 
 	antes := contarPedidos(t, db)
-	_, err := SubmeterPedido(db, usuarioID, "Fulano", "Obra X", "")
+	_, err := SubmeterPedido(db, empresaTeste, usuarioID, "Fulano", "Obra X", "")
 	if !errors.Is(err, ErrPedidoCarrinhoVazio) {
 		t.Fatalf("erro = %v, want ErrPedidoCarrinhoVazio", err)
 	}
@@ -181,14 +181,14 @@ func TestSubmeterPedido_CarrinhoSoComItemObsoleto(t *testing.T) {
 
 	usuarioID := semearConta(t, db, "Usuario Pedido Obsoleto", "pedido-obsoleto@empresa.com", PapelUsuario, 0)
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Pedido Obsoleto", 10)
-	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoID, estoqueID, 1); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, 1); err != nil {
 		t.Fatalf("seed AdicionarItemCarrinho: %v", err)
 	}
 	if _, err := db.Exec(`UPDATE produtos SET deleted_at = now() WHERE id = $1`, produtoID); err != nil {
 		t.Fatalf("seed soft-delete: %v", err)
 	}
 
-	_, err := SubmeterPedido(db, usuarioID, "Fulano", "Obra X", "")
+	_, err := SubmeterPedido(db, empresaTeste, usuarioID, "Fulano", "Obra X", "")
 	if !errors.Is(err, ErrPedidoCarrinhoVazio) {
 		t.Fatalf("erro = %v, want ErrPedidoCarrinhoVazio", err)
 	}
@@ -205,21 +205,21 @@ func TestSubmeterPedido_DisponibilidadeInsuficiente(t *testing.T) {
 	usuarioID := semearConta(t, db, "Usuario Pedido Insuf", "pedido-insuf@empresa.com", PapelUsuario, 0)
 	produtoA, estoqueA, autorID := seedProdutoComSaldo(t, db, "Pedido Insuf A", 10)
 	produtoB, estoqueB, _ := seedProdutoComSaldo(t, db, "Pedido Insuf B", 5)
-	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoA, estoqueA, 4); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoA, estoqueA, 4); err != nil {
 		t.Fatalf("seed AdicionarItemCarrinho A: %v", err)
 	}
-	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoB, estoqueB, 4); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoB, estoqueB, 4); err != nil {
 		t.Fatalf("seed AdicionarItemCarrinho B: %v", err)
 	}
 
 	// Saldo real de B cai para 1 (< 4 pedidos) DEPOIS da montagem do
 	// carrinho — simula outra Baixa concorrente.
-	if _, err := RegistrarBaixa(db, produtoB, estoqueB, autorID, 4); err != nil {
+	if _, err := RegistrarBaixa(db, empresaTeste, produtoB, estoqueB, autorID, 4); err != nil {
 		t.Fatalf("seed RegistrarBaixa: %v", err)
 	}
 
 	antes := contarPedidos(t, db)
-	_, err := SubmeterPedido(db, usuarioID, "Fulano", "Obra X", "")
+	_, err := SubmeterPedido(db, empresaTeste, usuarioID, "Fulano", "Obra X", "")
 	var erroIndisponivel *ErroPedidoIndisponivel
 	if !errors.As(err, &erroIndisponivel) {
 		t.Fatalf("erro = %v, want *ErroPedidoIndisponivel", err)
@@ -248,7 +248,7 @@ func TestSubmeterPedido_SolicitanteAusente(t *testing.T) {
 
 	usuarioID := semearConta(t, db, "Usuario Pedido Sem Solic", "pedido-sem-solic@empresa.com", PapelUsuario, 0)
 
-	_, err := SubmeterPedido(db, usuarioID, "   ", "Obra X", "")
+	_, err := SubmeterPedido(db, empresaTeste, usuarioID, "   ", "Obra X", "")
 	var erroValidacao *ErroPedidoValidacao
 	if !errors.As(err, &erroValidacao) {
 		t.Fatalf("erro = %v, want *ErroPedidoValidacao", err)
@@ -263,7 +263,7 @@ func TestSubmeterPedido_ObraAusente(t *testing.T) {
 
 	usuarioID := semearConta(t, db, "Usuario Pedido Sem Obra", "pedido-sem-obra@empresa.com", PapelUsuario, 0)
 
-	_, err := SubmeterPedido(db, usuarioID, "Fulano", "", "")
+	_, err := SubmeterPedido(db, empresaTeste, usuarioID, "Fulano", "", "")
 	var erroValidacao *ErroPedidoValidacao
 	if !errors.As(err, &erroValidacao) {
 		t.Fatalf("erro = %v, want *ErroPedidoValidacao", err)
@@ -280,11 +280,11 @@ func TestSubmeterPedido_SolicitanteDiferenteDoUsuarioAutenticado(t *testing.T) {
 
 	usuarioID := semearConta(t, db, "Usuario Pedido Dono", "pedido-dono@empresa.com", PapelUsuario, 0)
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Pedido Solicitante Livre", 10)
-	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoID, estoqueID, 1); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, 1); err != nil {
 		t.Fatalf("seed AdicionarItemCarrinho: %v", err)
 	}
 
-	pedido, err := SubmeterPedido(db, usuarioID, "Nome Completamente Diferente", "Obra X", "")
+	pedido, err := SubmeterPedido(db, empresaTeste, usuarioID, "Nome Completamente Diferente", "Obra X", "")
 	if err != nil {
 		t.Fatalf("SubmeterPedido erro inesperado: %v", err)
 	}
@@ -312,10 +312,10 @@ func TestSubmeterPedido_SolicitanteDiferenteDoUsuarioAutenticado(t *testing.T) {
 func seedPedidoComItem(t *testing.T, db *sql.DB, usuarioID, nomeBase string, qtd float64) Pedido {
 	t.Helper()
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, nomeBase, qtd+10)
-	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoID, estoqueID, qtd); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, qtd); err != nil {
 		t.Fatalf("seed AdicionarItemCarrinho (%s): %v", nomeBase, err)
 	}
-	pedido, err := SubmeterPedido(db, usuarioID, "Solicitante "+nomeBase, "Obra "+nomeBase, "")
+	pedido, err := SubmeterPedido(db, empresaTeste, usuarioID, "Solicitante "+nomeBase, "Obra "+nomeBase, "")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedido (%s): %v", nomeBase, err)
 	}
@@ -342,7 +342,7 @@ func TestListarPedidosProprios_EscopadoAoDono(t *testing.T) {
 	seedPedidoComItem(t, db, usuarioA, "73 Escopo A2", 2)
 	seedPedidoComItem(t, db, usuarioB, "73 Escopo B1", 3)
 
-	lista, err := ListarPedidosProprios(db, usuarioA, "")
+	lista, err := ListarPedidosProprios(db, empresaTeste, usuarioA, "")
 	if err != nil {
 		t.Fatalf("ListarPedidosProprios(A) erro: %v", err)
 	}
@@ -373,18 +373,18 @@ func TestListarPedidosProprios_OrdemDescEQtdItens(t *testing.T) {
 	// Pedido recente: 2 itens (dois produtos/estoques distintos).
 	pA, eA, _ := seedProdutoComSaldo(t, db, "73 Ordem Recente A", 10)
 	pB, eB, _ := seedProdutoComSaldo(t, db, "73 Ordem Recente B", 10)
-	if _, err := AdicionarItemCarrinho(db, usuarioID, pA, eA, 1); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, pA, eA, 1); err != nil {
 		t.Fatalf("seed item A: %v", err)
 	}
-	if _, err := AdicionarItemCarrinho(db, usuarioID, pB, eB, 1); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, pB, eB, 1); err != nil {
 		t.Fatalf("seed item B: %v", err)
 	}
-	recente, err := SubmeterPedido(db, usuarioID, "Solicitante", "Obra", "")
+	recente, err := SubmeterPedido(db, empresaTeste, usuarioID, "Solicitante", "Obra", "")
 	if err != nil {
 		t.Fatalf("SubmeterPedido recente: %v", err)
 	}
 
-	lista, err := ListarPedidosProprios(db, usuarioID, "")
+	lista, err := ListarPedidosProprios(db, empresaTeste, usuarioID, "")
 	if err != nil {
 		t.Fatalf("ListarPedidosProprios erro: %v", err)
 	}
@@ -417,7 +417,7 @@ func TestListarPedidosProprios_FiltroPorStatus(t *testing.T) {
 	aprovado := seedPedidoComItem(t, db, usuarioID, "73 Filtro Aprovado", 1)
 	setStatusPedido(t, db, aprovado.ID, "aprovado")
 
-	lista, err := ListarPedidosProprios(db, usuarioID, "aprovado")
+	lista, err := ListarPedidosProprios(db, empresaTeste, usuarioID, "aprovado")
 	if err != nil {
 		t.Fatalf("ListarPedidosProprios(aprovado) erro: %v", err)
 	}
@@ -446,7 +446,7 @@ func TestListarPedidosProprios_FiltroPorStatusParcialmenteAprovado(t *testing.T)
 	parcial := seedPedidoComItem(t, db, usuarioID, "75 Filtro Parcial", 1)
 	setStatusPedido(t, db, parcial.ID, "parcialmente_aprovado")
 
-	lista, err := ListarPedidosProprios(db, usuarioID, "parcialmente_aprovado")
+	lista, err := ListarPedidosProprios(db, empresaTeste, usuarioID, "parcialmente_aprovado")
 	if err != nil {
 		t.Fatalf("ListarPedidosProprios(parcialmente_aprovado) erro: %v", err)
 	}
@@ -461,7 +461,7 @@ func TestListarPedidosProprios_FiltroPorStatusParcialmenteAprovado(t *testing.T)
 func TestListarPedidosProprios_FiltroInvalido(t *testing.T) {
 	db := testDB(t)
 
-	_, err := ListarPedidosProprios(db, "qualquer-coisa", "banana")
+	_, err := ListarPedidosProprios(db, empresaTeste, "qualquer-coisa", "banana")
 	var erroValidacao *ErroPedidoValidacao
 	if !errors.As(err, &erroValidacao) {
 		t.Fatalf("erro = %v, want *ErroPedidoValidacao", err)
@@ -476,7 +476,7 @@ func TestListarPedidosProprios_SemPedidos(t *testing.T) {
 
 	usuarioID := semearConta(t, db, "Sem Pedidos 73", "pedidos-73-vazio@empresa.com", PapelUsuario, 0)
 
-	lista, err := ListarPedidosProprios(db, usuarioID, "")
+	lista, err := ListarPedidosProprios(db, empresaTeste, usuarioID, "")
 	if err != nil {
 		t.Fatalf("ListarPedidosProprios erro: %v", err)
 	}
@@ -497,7 +497,7 @@ func TestBuscarPedidoProprio_DonoComItens(t *testing.T) {
 	usuarioID := semearConta(t, db, "Detalhe Dono 73", "pedidos-73-detalhe-dono@empresa.com", PapelUsuario, 0)
 	pedido := seedPedidoComItem(t, db, usuarioID, "73 Detalhe Dono", 4)
 
-	det, err := BuscarPedidoProprio(db, pedido.ID, usuarioID, PapelUsuario)
+	det, err := BuscarPedidoProprio(db, empresaTeste, pedido.ID, usuarioID, PapelUsuario)
 	if err != nil {
 		t.Fatalf("BuscarPedidoProprio erro: %v", err)
 	}
@@ -524,7 +524,7 @@ func TestBuscarPedidoProprio_OutroUsuarioPapelUsuario(t *testing.T) {
 	outro := semearConta(t, db, "Outro 73", "pedidos-73-outro@empresa.com", PapelUsuario, 0)
 	pedido := seedPedidoComItem(t, db, dono, "73 Alheio", 1)
 
-	_, err := BuscarPedidoProprio(db, pedido.ID, outro, PapelUsuario)
+	_, err := BuscarPedidoProprio(db, empresaTeste, pedido.ID, outro, PapelUsuario)
 	if !errors.Is(err, ErrPedidoNaoEncontrado) {
 		t.Fatalf("erro = %v, want ErrPedidoNaoEncontrado", err)
 	}
@@ -541,7 +541,7 @@ func TestBuscarPedidoProprio_AlmoxarifeVeDeQualquerUm(t *testing.T) {
 	almox := semearConta(t, db, "Almox Consulta 73", "pedidos-73-almox-consulta@empresa.com", PapelAlmoxarife, 0)
 	pedido := seedPedidoComItem(t, db, dono, "73 Almox Ve", 2)
 
-	det, err := BuscarPedidoProprio(db, pedido.ID, almox, PapelAlmoxarife)
+	det, err := BuscarPedidoProprio(db, empresaTeste, pedido.ID, almox, PapelAlmoxarife)
 	if err != nil {
 		t.Fatalf("BuscarPedidoProprio(almox) erro: %v", err)
 	}
@@ -561,10 +561,10 @@ func TestBuscarPedidoProprio_IdMalformadoOuInexistente(t *testing.T) {
 
 	usuarioID := semearConta(t, db, "Id Ruim 73", "pedidos-73-id-ruim@empresa.com", PapelUsuario, 0)
 
-	if _, err := BuscarPedidoProprio(db, "nao-e-uuid", usuarioID, PapelUsuario); !errors.Is(err, ErrPedidoNaoEncontrado) {
+	if _, err := BuscarPedidoProprio(db, empresaTeste, "nao-e-uuid", usuarioID, PapelUsuario); !errors.Is(err, ErrPedidoNaoEncontrado) {
 		t.Errorf("id malformado: erro = %v, want ErrPedidoNaoEncontrado", err)
 	}
-	if _, err := BuscarPedidoProprio(db, "00000000-0000-0000-0000-000000000000", usuarioID, PapelUsuario); !errors.Is(err, ErrPedidoNaoEncontrado) {
+	if _, err := BuscarPedidoProprio(db, empresaTeste, "00000000-0000-0000-0000-000000000000", usuarioID, PapelUsuario); !errors.Is(err, ErrPedidoNaoEncontrado) {
 		t.Errorf("id inexistente: erro = %v, want ErrPedidoNaoEncontrado", err)
 	}
 }
@@ -584,7 +584,7 @@ func TestListarPedidosFila_TodosOsUsuarios(t *testing.T) {
 	pA := seedPedidoComItem(t, db, usuarioA, "74 Fila A", 1)
 	pB := seedPedidoComItem(t, db, usuarioB, "74 Fila B", 2)
 
-	lista, err := ListarPedidosFila(db, "")
+	lista, err := ListarPedidosFila(db, empresaTeste, "")
 	if err != nil {
 		t.Fatalf("ListarPedidosFila erro: %v", err)
 	}
@@ -611,7 +611,7 @@ func TestListarPedidosFila_OrdemDesc(t *testing.T) {
 	}
 	recente := seedPedidoComItem(t, db, usuarioID, "74 Fila Ordem Recente", 1)
 
-	lista, err := ListarPedidosFila(db, "")
+	lista, err := ListarPedidosFila(db, empresaTeste, "")
 	if err != nil {
 		t.Fatalf("ListarPedidosFila erro: %v", err)
 	}
@@ -636,7 +636,7 @@ func TestListarPedidosFila_FiltroPorStatus(t *testing.T) {
 	aprovadoB := seedPedidoComItem(t, db, usuarioB, "74 Fila Filtro Aprov B", 1)
 	setStatusPedido(t, db, aprovadoB.ID, "aprovado")
 
-	lista, err := ListarPedidosFila(db, "aprovado")
+	lista, err := ListarPedidosFila(db, empresaTeste, "aprovado")
 	if err != nil {
 		t.Fatalf("ListarPedidosFila(aprovado) erro: %v", err)
 	}
@@ -663,7 +663,7 @@ func TestListarPedidosFila_FiltroPorStatusParcialmenteAprovado(t *testing.T) {
 	parcialB := seedPedidoComItem(t, db, usuarioB, "75 Fila Filtro Parcial B", 1)
 	setStatusPedido(t, db, parcialB.ID, "parcialmente_aprovado")
 
-	lista, err := ListarPedidosFila(db, "parcialmente_aprovado")
+	lista, err := ListarPedidosFila(db, empresaTeste, "parcialmente_aprovado")
 	if err != nil {
 		t.Fatalf("ListarPedidosFila(parcialmente_aprovado) erro: %v", err)
 	}
@@ -678,7 +678,7 @@ func TestListarPedidosFila_FiltroPorStatusParcialmenteAprovado(t *testing.T) {
 func TestListarPedidosFila_FiltroInvalido(t *testing.T) {
 	db := testDB(t)
 
-	_, err := ListarPedidosFila(db, "banana")
+	_, err := ListarPedidosFila(db, empresaTeste, "banana")
 	var erroValidacao *ErroPedidoValidacao
 	if !errors.As(err, &erroValidacao) {
 		t.Fatalf("erro = %v, want *ErroPedidoValidacao", err)
@@ -691,7 +691,7 @@ func TestListarPedidosFila_Vazia(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	lista, err := ListarPedidosFila(db, "")
+	lista, err := ListarPedidosFila(db, empresaTeste, "")
 	if err != nil {
 		t.Fatalf("ListarPedidosFila erro: %v", err)
 	}
@@ -719,7 +719,7 @@ func TestListarPedidosParaSessao_AlmoxarifeEscopoTodos(t *testing.T) {
 	pedidoOutro := seedPedidoComItem(t, db, outro, "74 Sessao Almox Todos", 1)
 	pedidoProprioAlmox := seedPedidoComItem(t, db, almox, "74 Sessao Almox Todos Proprio", 1)
 
-	lista, err := ListarPedidosParaSessao(db, almox, PapelAlmoxarife, true, "")
+	lista, err := ListarPedidosParaSessao(db, empresaTeste, almox, PapelAlmoxarife, true, "")
 	if err != nil {
 		t.Fatalf("ListarPedidosParaSessao erro: %v", err)
 	}
@@ -746,7 +746,7 @@ func TestListarPedidosParaSessao_AlmoxarifeEscopoProprio(t *testing.T) {
 	outro := semearConta(t, db, "Sessao Dono Alheio 2", "pedidos-74-sessao-dono-alheio-2@empresa.com", PapelUsuario, 0)
 	seedPedidoComItem(t, db, outro, "74 Sessao Almox Proprio Alheio", 1)
 
-	lista, err := ListarPedidosParaSessao(db, almox, PapelAlmoxarife, false, "")
+	lista, err := ListarPedidosParaSessao(db, empresaTeste, almox, PapelAlmoxarife, false, "")
 	if err != nil {
 		t.Fatalf("ListarPedidosParaSessao erro: %v", err)
 	}
@@ -768,7 +768,7 @@ func TestListarPedidosParaSessao_PapelInsuficienteEscopoTodos(t *testing.T) {
 	proprio := seedPedidoComItem(t, db, usuarioA, "74 Sessao Papel Insuf Proprio", 1)
 	seedPedidoComItem(t, db, usuarioB, "74 Sessao Papel Insuf Alheio", 1)
 
-	lista, err := ListarPedidosParaSessao(db, usuarioA, PapelUsuario, true, "")
+	lista, err := ListarPedidosParaSessao(db, empresaTeste, usuarioA, PapelUsuario, true, "")
 	if err != nil {
 		t.Fatalf("ListarPedidosParaSessao erro: %v", err)
 	}
@@ -791,7 +791,7 @@ func TestListarPedidosParaSessao_GestorEAdmEscopoTodos(t *testing.T) {
 			outro := semearConta(t, db, "Sessao Dono "+papel, "pedidos-74-sessao-dono-"+papel+"@empresa.com", PapelUsuario, 0)
 			pedido := seedPedidoComItem(t, db, outro, "74 Sessao "+papel, 1)
 
-			lista, err := ListarPedidosParaSessao(db, ator, papel, true, "")
+			lista, err := ListarPedidosParaSessao(db, empresaTeste, ator, papel, true, "")
 			if err != nil {
 				t.Fatalf("ListarPedidosParaSessao(%s) erro: %v", papel, err)
 			}
@@ -817,18 +817,18 @@ func TestBuscarPedidoProprio_ItensOrdenadosPorNome(t *testing.T) {
 	// a ordem de inserção (Zebra, Arame) vazaria na resposta.
 	produtoZ, estoqueZ, _ := seedProdutoComSaldo(t, db, "73 Ordem Itens Zebra", 10)
 	produtoA, estoqueA, _ := seedProdutoComSaldo(t, db, "73 Ordem Itens Arame", 10)
-	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoZ, estoqueZ, 1); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoZ, estoqueZ, 1); err != nil {
 		t.Fatalf("seed item Zebra: %v", err)
 	}
-	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoA, estoqueA, 1); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoA, estoqueA, 1); err != nil {
 		t.Fatalf("seed item Arame: %v", err)
 	}
-	pedido, err := SubmeterPedido(db, usuarioID, "Solicitante", "Obra", "")
+	pedido, err := SubmeterPedido(db, empresaTeste, usuarioID, "Solicitante", "Obra", "")
 	if err != nil {
 		t.Fatalf("SubmeterPedido: %v", err)
 	}
 
-	det, err := BuscarPedidoProprio(db, pedido.ID, usuarioID, PapelUsuario)
+	det, err := BuscarPedidoProprio(db, empresaTeste, pedido.ID, usuarioID, PapelUsuario)
 	if err != nil {
 		t.Fatalf("BuscarPedidoProprio erro: %v", err)
 	}
@@ -871,11 +871,11 @@ func seedPedidoComItens(t *testing.T, db *sql.DB, usuarioID string, itens []item
 	for i, it := range itens {
 		produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, it.NomeBase, it.SaldoInicial)
 		pares[i] = parProdutoEstoque{ProdutoID: produtoID, EstoqueID: estoqueID}
-		if _, err := AdicionarItemCarrinho(db, usuarioID, produtoID, estoqueID, it.QtdSolicitada); err != nil {
+		if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, it.QtdSolicitada); err != nil {
 			t.Fatalf("seed AdicionarItemCarrinho (%s): %v", it.NomeBase, err)
 		}
 	}
-	pedido, err := SubmeterPedido(db, usuarioID, "Solicitante Decisao", "Obra Decisao", "")
+	pedido, err := SubmeterPedido(db, empresaTeste, usuarioID, "Solicitante Decisao", "Obra Decisao", "")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedido: %v", err)
 	}
@@ -898,7 +898,7 @@ func TestDecidirPedido_AprovacaoTotal(t *testing.T) {
 		{NomeBase: "Decisao Total B", SaldoInicial: 5, QtdSolicitada: 5},
 	})
 
-	det, err := DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, true)
+	det, err := DecidirPedido(db, empresaTeste, pedido.ID, almoxID, PapelAlmoxarife, true)
 	if err != nil {
 		t.Fatalf("DecidirPedido erro inesperado: %v", err)
 	}
@@ -964,7 +964,7 @@ func TestDecidirPedido_AprovacaoParcial(t *testing.T) {
 		t.Fatalf("seed reduzir saldo divergente: %v", err)
 	}
 
-	det, err := DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, true)
+	det, err := DecidirPedido(db, empresaTeste, pedido.ID, almoxID, PapelAlmoxarife, true)
 	if err != nil {
 		t.Fatalf("DecidirPedido erro inesperado: %v", err)
 	}
@@ -1014,7 +1014,7 @@ func TestDecidirPedido_ItemSemEstoqueAlgum(t *testing.T) {
 		t.Fatalf("seed zerar saldo: %v", err)
 	}
 
-	det, err := DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, true)
+	det, err := DecidirPedido(db, empresaTeste, pedido.ID, almoxID, PapelAlmoxarife, true)
 	if err != nil {
 		t.Fatalf("DecidirPedido erro inesperado: %v", err)
 	}
@@ -1045,7 +1045,7 @@ func TestDecidirPedido_Rejeicao(t *testing.T) {
 		{NomeBase: "Decisao Rejeicao A", SaldoInicial: 10, QtdSolicitada: 4},
 	})
 
-	det, err := DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, false)
+	det, err := DecidirPedido(db, empresaTeste, pedido.ID, almoxID, PapelAlmoxarife, false)
 	if err != nil {
 		t.Fatalf("DecidirPedido erro inesperado: %v", err)
 	}
@@ -1077,7 +1077,7 @@ func TestDecidirPedido_PedidoJaDecidido(t *testing.T) {
 	})
 	setStatusPedido(t, db, pedido.ID, "aprovado")
 
-	_, err := DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, true)
+	_, err := DecidirPedido(db, empresaTeste, pedido.ID, almoxID, PapelAlmoxarife, true)
 	if !errors.Is(err, ErrPedidoNaoPendente) {
 		t.Fatalf("erro = %v, want ErrPedidoNaoPendente", err)
 	}
@@ -1091,10 +1091,10 @@ func TestDecidirPedido_IdInexistenteOuMalformado(t *testing.T) {
 
 	almoxID := semearConta(t, db, "Decisao IdRuim Almox", "decisao-id-ruim-almox@empresa.com", PapelAlmoxarife, 0)
 
-	if _, err := DecidirPedido(db, "nao-e-uuid", almoxID, PapelAlmoxarife, true); !errors.Is(err, ErrPedidoNaoEncontrado) {
+	if _, err := DecidirPedido(db, empresaTeste, "nao-e-uuid", almoxID, PapelAlmoxarife, true); !errors.Is(err, ErrPedidoNaoEncontrado) {
 		t.Errorf("id malformado: erro = %v, want ErrPedidoNaoEncontrado", err)
 	}
-	if _, err := DecidirPedido(db, "00000000-0000-0000-0000-000000000000", almoxID, PapelAlmoxarife, true); !errors.Is(err, ErrPedidoNaoEncontrado) {
+	if _, err := DecidirPedido(db, empresaTeste, "00000000-0000-0000-0000-000000000000", almoxID, PapelAlmoxarife, true); !errors.Is(err, ErrPedidoNaoEncontrado) {
 		t.Errorf("id inexistente: erro = %v, want ErrPedidoNaoEncontrado", err)
 	}
 }
@@ -1123,12 +1123,12 @@ func TestDecidirPedido_DecisoesConcorrentesSoAPrimeiraGanha(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		<-start
-		_, err1 = DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, true)
+		_, err1 = DecidirPedido(db, empresaTeste, pedido.ID, almoxID, PapelAlmoxarife, true)
 	}()
 	go func() {
 		defer wg.Done()
 		<-start
-		_, err2 = DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, true)
+		_, err2 = DecidirPedido(db, empresaTeste, pedido.ID, almoxID, PapelAlmoxarife, true)
 	}()
 	close(start)
 	wg.Wait()
@@ -1183,12 +1183,12 @@ func TestDecidirPedido_DecisoesConcorrentesMistasSoAPrimeiraGanha(t *testing.T) 
 	go func() {
 		defer wg.Done()
 		<-start
-		det1, err1 = DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, true)
+		det1, err1 = DecidirPedido(db, empresaTeste, pedido.ID, almoxID, PapelAlmoxarife, true)
 	}()
 	go func() {
 		defer wg.Done()
 		<-start
-		det2, err2 = DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, false)
+		det2, err2 = DecidirPedido(db, empresaTeste, pedido.ID, almoxID, PapelAlmoxarife, false)
 	}()
 	close(start)
 	wg.Wait()
@@ -1257,26 +1257,26 @@ func TestDecidirPedido_OrdemLocksAscendenteSemDeadlock(t *testing.T) {
 
 	// Pedido1: item B adicionado ao carrinho ANTES de A (ordem de inserção
 	// inversa à ordem ascendente de produto_id/estoque_id).
-	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoB, estoqueB, 2); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoB, estoqueB, 2); err != nil {
 		t.Fatalf("seed Pedido1 item B: %v", err)
 	}
-	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoA, estoqueA, 2); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoA, estoqueA, 2); err != nil {
 		t.Fatalf("seed Pedido1 item A: %v", err)
 	}
-	pedido1, err := SubmeterPedido(db, usuarioID, "Solicitante 1", "Obra 1", "")
+	pedido1, err := SubmeterPedido(db, empresaTeste, usuarioID, "Solicitante 1", "Obra 1", "")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedido Pedido1: %v", err)
 	}
 
 	// Pedido2: mesmos dois produtos, item A adicionado ANTES de B.
 	usuario2ID := semearConta(t, db, "Decisao OrdemLocks U2", "decisao-ordem-locks-u2@empresa.com", PapelUsuario, 0)
-	if _, err := AdicionarItemCarrinho(db, usuario2ID, produtoA, estoqueA, 2); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuario2ID, produtoA, estoqueA, 2); err != nil {
 		t.Fatalf("seed Pedido2 item A: %v", err)
 	}
-	if _, err := AdicionarItemCarrinho(db, usuario2ID, produtoB, estoqueB, 2); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuario2ID, produtoB, estoqueB, 2); err != nil {
 		t.Fatalf("seed Pedido2 item B: %v", err)
 	}
-	pedido2, err := SubmeterPedido(db, usuario2ID, "Solicitante 2", "Obra 2", "")
+	pedido2, err := SubmeterPedido(db, empresaTeste, usuario2ID, "Solicitante 2", "Obra 2", "")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedido Pedido2: %v", err)
 	}
@@ -1291,23 +1291,23 @@ func TestDecidirPedido_OrdemLocksAscendenteSemDeadlock(t *testing.T) {
 			if _, err := db.Exec(`UPDATE produto_estoque SET quantidade = 100 WHERE produto_id IN ($1, $2)`, produtoA, produtoB); err != nil {
 				t.Fatalf("iteração %d: reset saldo: %v", i, err)
 			}
-			if _, err := AdicionarItemCarrinho(db, usuarioID, produtoB, estoqueB, 2); err != nil {
+			if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoB, estoqueB, 2); err != nil {
 				t.Fatalf("iteração %d: seed Pedido1 item B: %v", i, err)
 			}
-			if _, err := AdicionarItemCarrinho(db, usuarioID, produtoA, estoqueA, 2); err != nil {
+			if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoA, estoqueA, 2); err != nil {
 				t.Fatalf("iteração %d: seed Pedido1 item A: %v", i, err)
 			}
-			pedido1, err = SubmeterPedido(db, usuarioID, "Solicitante 1", "Obra 1", "")
+			pedido1, err = SubmeterPedido(db, empresaTeste, usuarioID, "Solicitante 1", "Obra 1", "")
 			if err != nil {
 				t.Fatalf("iteração %d: seed SubmeterPedido Pedido1: %v", i, err)
 			}
-			if _, err := AdicionarItemCarrinho(db, usuario2ID, produtoA, estoqueA, 2); err != nil {
+			if _, err := AdicionarItemCarrinho(db, empresaTeste, usuario2ID, produtoA, estoqueA, 2); err != nil {
 				t.Fatalf("iteração %d: seed Pedido2 item A: %v", i, err)
 			}
-			if _, err := AdicionarItemCarrinho(db, usuario2ID, produtoB, estoqueB, 2); err != nil {
+			if _, err := AdicionarItemCarrinho(db, empresaTeste, usuario2ID, produtoB, estoqueB, 2); err != nil {
 				t.Fatalf("iteração %d: seed Pedido2 item B: %v", i, err)
 			}
-			pedido2, err = SubmeterPedido(db, usuario2ID, "Solicitante 2", "Obra 2", "")
+			pedido2, err = SubmeterPedido(db, empresaTeste, usuario2ID, "Solicitante 2", "Obra 2", "")
 			if err != nil {
 				t.Fatalf("iteração %d: seed SubmeterPedido Pedido2: %v", i, err)
 			}
@@ -1320,12 +1320,12 @@ func TestDecidirPedido_OrdemLocksAscendenteSemDeadlock(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, err1 = DecidirPedido(db, pedido1.ID, almoxID, PapelAlmoxarife, true)
+			_, err1 = DecidirPedido(db, empresaTeste, pedido1.ID, almoxID, PapelAlmoxarife, true)
 		}()
 		go func() {
 			defer wg.Done()
 			<-start
-			_, err2 = DecidirPedido(db, pedido2.ID, almoxID, PapelAlmoxarife, true)
+			_, err2 = DecidirPedido(db, empresaTeste, pedido2.ID, almoxID, PapelAlmoxarife, true)
 		}()
 		close(start)
 		wg.Wait()
@@ -1360,7 +1360,7 @@ func TestMontarReciboPedidoConteudo_ConteudoCorreto(t *testing.T) {
 	})
 	_ = pares
 
-	det, err := DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, true)
+	det, err := DecidirPedido(db, empresaTeste, pedido.ID, almoxID, PapelAlmoxarife, true)
 	if err != nil {
 		t.Fatalf("seed DecidirPedido: %v", err)
 	}
@@ -1370,7 +1370,7 @@ func TestMontarReciboPedidoConteudo_ConteudoCorreto(t *testing.T) {
 		t.Fatalf("seed: buscar nome do aprovador: %v", err)
 	}
 
-	conteudo, err := MontarReciboPedidoConteudo(db, pedido.ID, usuarioID, PapelUsuario)
+	conteudo, err := MontarReciboPedidoConteudo(db, empresaTeste, pedido.ID, usuarioID, PapelUsuario)
 	if err != nil {
 		t.Fatalf("MontarReciboPedidoConteudo erro inesperado: %v", err)
 	}
@@ -1421,11 +1421,11 @@ func TestMontarReciboPedidoConteudo_ItemDivergente(t *testing.T) {
 	if _, err := db.Exec(`UPDATE produto_estoque SET quantidade = 4 WHERE produto_id = $1 AND estoque_id = $2`, pares[0].ProdutoID, pares[0].EstoqueID); err != nil {
 		t.Fatalf("seed: reduzir saldo real: %v", err)
 	}
-	if _, err := DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, true); err != nil {
+	if _, err := DecidirPedido(db, empresaTeste, pedido.ID, almoxID, PapelAlmoxarife, true); err != nil {
 		t.Fatalf("seed DecidirPedido: %v", err)
 	}
 
-	conteudo, err := MontarReciboPedidoConteudo(db, pedido.ID, usuarioID, PapelUsuario)
+	conteudo, err := MontarReciboPedidoConteudo(db, empresaTeste, pedido.ID, usuarioID, PapelUsuario)
 	if err != nil {
 		t.Fatalf("MontarReciboPedidoConteudo erro inesperado: %v", err)
 	}
@@ -1452,7 +1452,7 @@ func TestMontarReciboPedidoConteudo_GatePendente(t *testing.T) {
 		{NomeBase: "Recibo Pendente A", SaldoInicial: 10, QtdSolicitada: 1},
 	})
 
-	_, err := MontarReciboPedidoConteudo(db, pedido.ID, usuarioID, PapelUsuario)
+	_, err := MontarReciboPedidoConteudo(db, empresaTeste, pedido.ID, usuarioID, PapelUsuario)
 	if !errors.Is(err, ErrPedidoSemRecibo) {
 		t.Fatalf("erro = %v, want ErrPedidoSemRecibo", err)
 	}
@@ -1469,11 +1469,11 @@ func TestMontarReciboPedidoConteudo_GateRejeitado(t *testing.T) {
 	pedido, _ := seedPedidoComItens(t, db, usuarioID, []itemPedidoSeedSpec{
 		{NomeBase: "Recibo Rejeitado A", SaldoInicial: 10, QtdSolicitada: 1},
 	})
-	if _, err := DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, false); err != nil {
+	if _, err := DecidirPedido(db, empresaTeste, pedido.ID, almoxID, PapelAlmoxarife, false); err != nil {
 		t.Fatalf("seed DecidirPedido (rejeitar): %v", err)
 	}
 
-	_, err := MontarReciboPedidoConteudo(db, pedido.ID, usuarioID, PapelUsuario)
+	_, err := MontarReciboPedidoConteudo(db, empresaTeste, pedido.ID, usuarioID, PapelUsuario)
 	if !errors.Is(err, ErrPedidoSemRecibo) {
 		t.Fatalf("erro = %v, want ErrPedidoSemRecibo", err)
 	}
@@ -1492,11 +1492,11 @@ func TestMontarReciboPedidoConteudo_PedidoAlheio(t *testing.T) {
 	pedido, _ := seedPedidoComItens(t, db, dono, []itemPedidoSeedSpec{
 		{NomeBase: "Recibo Alheio A", SaldoInicial: 10, QtdSolicitada: 1},
 	})
-	if _, err := DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, true); err != nil {
+	if _, err := DecidirPedido(db, empresaTeste, pedido.ID, almoxID, PapelAlmoxarife, true); err != nil {
 		t.Fatalf("seed DecidirPedido: %v", err)
 	}
 
-	_, err := MontarReciboPedidoConteudo(db, pedido.ID, outro, PapelUsuario)
+	_, err := MontarReciboPedidoConteudo(db, empresaTeste, pedido.ID, outro, PapelUsuario)
 	if !errors.Is(err, ErrPedidoNaoEncontrado) {
 		t.Fatalf("erro = %v, want ErrPedidoNaoEncontrado", err)
 	}
@@ -1550,11 +1550,11 @@ func TestGerarReciboPedidoPDF_DeterministicoAposEdicaoDoProduto(t *testing.T) {
 	pedido, pares := seedPedidoComItens(t, db, usuarioID, []itemPedidoSeedSpec{
 		{NomeBase: "Recibo Determinismo A", SaldoInicial: 10, QtdSolicitada: 4},
 	})
-	if _, err := DecidirPedido(db, pedido.ID, almoxID, PapelAlmoxarife, true); err != nil {
+	if _, err := DecidirPedido(db, empresaTeste, pedido.ID, almoxID, PapelAlmoxarife, true); err != nil {
 		t.Fatalf("seed DecidirPedido: %v", err)
 	}
 
-	b1, err := GerarReciboPedidoPDF(db, pedido.ID, usuarioID, PapelUsuario)
+	b1, err := GerarReciboPedidoPDF(db, empresaTeste, pedido.ID, usuarioID, PapelUsuario)
 	if err != nil {
 		t.Fatalf("GerarReciboPedidoPDF erro inesperado (1º download): %v", err)
 	}
@@ -1568,7 +1568,7 @@ func TestGerarReciboPedidoPDF_DeterministicoAposEdicaoDoProduto(t *testing.T) {
 		t.Fatalf("seed: editar produto entre downloads: %v", err)
 	}
 
-	b2, err := GerarReciboPedidoPDF(db, pedido.ID, usuarioID, PapelUsuario)
+	b2, err := GerarReciboPedidoPDF(db, empresaTeste, pedido.ID, usuarioID, PapelUsuario)
 	if err != nil {
 		t.Fatalf("GerarReciboPedidoPDF erro inesperado (2º download): %v", err)
 	}
@@ -1589,7 +1589,7 @@ func TestGerarReciboPedidoPDF_GatePendente(t *testing.T) {
 		{NomeBase: "Recibo Gerar Pendente A", SaldoInicial: 10, QtdSolicitada: 1},
 	})
 
-	_, err := GerarReciboPedidoPDF(db, pedido.ID, usuarioID, PapelUsuario)
+	_, err := GerarReciboPedidoPDF(db, empresaTeste, pedido.ID, usuarioID, PapelUsuario)
 	if !errors.Is(err, ErrPedidoSemRecibo) {
 		t.Fatalf("erro = %v, want ErrPedidoSemRecibo", err)
 	}

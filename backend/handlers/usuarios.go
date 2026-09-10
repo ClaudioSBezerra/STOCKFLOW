@@ -26,8 +26,12 @@ func ListarUsuariosHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
-		usuarios, err := services.ListarUsuarios(db, usuario.Papel)
+		usuarios, err := services.ListarUsuarios(db, empresa.ID, usuario.Papel)
 		if err != nil {
 			slog.Error("falha ao listar usuários", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao listar usuários")

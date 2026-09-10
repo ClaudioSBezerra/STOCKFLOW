@@ -17,7 +17,7 @@ import (
 
 func seedUsuarioRealtime(t *testing.T, db *sql.DB, email string) string {
 	t.Helper()
-	usuarioID, err := Cadastrar(db, testEmailCfg, "Usuário Realtime", email, "senha-123456")
+	usuarioID, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Usuário Realtime", email, "senha-123456")
 	if err != nil {
 		t.Fatalf("seed Cadastrar: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestEmitirTicketRealtime_GeraTokenValido(t *testing.T) {
 	db := testDB(t)
 	usuarioID := seedUsuarioRealtime(t, db, "realtime-emitir@empresa.com")
 
-	token, err := EmitirTicketRealtime(db, usuarioID)
+	token, err := EmitirTicketRealtime(db, empresaTeste, usuarioID)
 	if err != nil {
 		t.Fatalf("EmitirTicketRealtime: %v", err)
 	}
@@ -66,11 +66,11 @@ func TestEmitirTicketRealtime_NaoInvalidaTicketsAnteriores(t *testing.T) {
 	db := testDB(t)
 	usuarioID := seedUsuarioRealtime(t, db, "realtime-multiplas-abas@empresa.com")
 
-	primeiro, err := EmitirTicketRealtime(db, usuarioID)
+	primeiro, err := EmitirTicketRealtime(db, empresaTeste, usuarioID)
 	if err != nil {
 		t.Fatalf("EmitirTicketRealtime (1º): %v", err)
 	}
-	if _, err := EmitirTicketRealtime(db, usuarioID); err != nil {
+	if _, err := EmitirTicketRealtime(db, empresaTeste, usuarioID); err != nil {
 		t.Fatalf("EmitirTicketRealtime (2º): %v", err)
 	}
 
@@ -83,7 +83,7 @@ func TestEmitirTicketRealtime_NaoInvalidaTicketsAnteriores(t *testing.T) {
 	}
 
 	// O primeiro ticket ainda deve ser consumível normalmente.
-	consumidor, err := ConsumirTicketRealtime(db, primeiro)
+	consumidor, err := ConsumirTicketRealtime(db, empresaTeste, primeiro)
 	if err != nil {
 		t.Fatalf("ConsumirTicketRealtime(primeiro): %v", err)
 	}
@@ -99,12 +99,12 @@ func TestEmitirTicketRealtime_NaoInvalidaTicketsAnteriores(t *testing.T) {
 func TestConsumirTicketRealtime_UsoUnico(t *testing.T) {
 	db := testDB(t)
 	usuarioID := seedUsuarioRealtime(t, db, "realtime-uso-unico@empresa.com")
-	token, err := EmitirTicketRealtime(db, usuarioID)
+	token, err := EmitirTicketRealtime(db, empresaTeste, usuarioID)
 	if err != nil {
 		t.Fatalf("EmitirTicketRealtime: %v", err)
 	}
 
-	got, err := ConsumirTicketRealtime(db, token)
+	got, err := ConsumirTicketRealtime(db, empresaTeste, token)
 	if err != nil {
 		t.Fatalf("1ª chamada: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestConsumirTicketRealtime_UsoUnico(t *testing.T) {
 		t.Errorf("usuarioID = %q, want %q", got, usuarioID)
 	}
 
-	_, err = ConsumirTicketRealtime(db, token)
+	_, err = ConsumirTicketRealtime(db, empresaTeste, token)
 	if !errors.Is(err, ErrTokenExpirado) {
 		t.Fatalf("2ª chamada: erro = %v, want ErrTokenExpirado", err)
 	}
@@ -123,7 +123,7 @@ func TestConsumirTicketRealtime_UsoUnico(t *testing.T) {
 func TestConsumirTicketRealtime_Expirado(t *testing.T) {
 	db := testDB(t)
 	usuarioID := seedUsuarioRealtime(t, db, "realtime-expirado@empresa.com")
-	token, err := EmitirTicketRealtime(db, usuarioID)
+	token, err := EmitirTicketRealtime(db, empresaTeste, usuarioID)
 	if err != nil {
 		t.Fatalf("EmitirTicketRealtime: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestConsumirTicketRealtime_Expirado(t *testing.T) {
 		t.Fatalf("falha ao forçar expiração: %v", err)
 	}
 
-	_, err = ConsumirTicketRealtime(db, token)
+	_, err = ConsumirTicketRealtime(db, empresaTeste, token)
 	if !errors.Is(err, ErrTokenExpirado) {
 		t.Fatalf("erro = %v, want ErrTokenExpirado", err)
 	}
@@ -142,7 +142,7 @@ func TestConsumirTicketRealtime_Expirado(t *testing.T) {
 // mesma distinção de VerificarEmail.
 func TestConsumirTicketRealtime_Inexistente(t *testing.T) {
 	db := testDB(t)
-	_, err := ConsumirTicketRealtime(db, "token-que-nunca-existiu")
+	_, err := ConsumirTicketRealtime(db, empresaTeste, "token-que-nunca-existiu")
 	if !errors.Is(err, ErrTokenNaoEncontrado) {
 		t.Fatalf("erro = %v, want ErrTokenNaoEncontrado", err)
 	}

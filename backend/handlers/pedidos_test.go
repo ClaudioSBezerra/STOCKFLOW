@@ -23,14 +23,15 @@ import (
 
 func postPedido(db *sql.DB, authHeader, body string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/pedidos",
-		middleware.RequireAuth(db, testJWTSecret)(SubmeterPedidoHandler(db, realtime.NewRegistry())))
+	mux.HandleFunc("POST /e/{slug}/api/pedidos",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(SubmeterPedidoHandler(db, realtime.NewRegistry()))))
 	var r *http.Request
 	if body != "" {
-		r = httptest.NewRequest(http.MethodPost, "/api/pedidos", strings.NewReader(body))
+		r = httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/pedidos", strings.NewReader(body))
 		r.Header.Set("Content-Type", "application/json")
 	} else {
-		r = httptest.NewRequest(http.MethodPost, "/api/pedidos", nil)
+		r = httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/pedidos", nil)
 	}
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
@@ -107,14 +108,15 @@ func TestSubmeterPedidoHandler_PublicaEventoNoSucesso(t *testing.T) {
 	}
 
 	registro := realtime.NewRegistry()
-	eventos, cancelar := registro.Subscribe()
+	eventos, cancelar := registro.Subscribe(empresaTeste)
 	defer cancelar()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/pedidos",
-		middleware.RequireAuth(db, testJWTSecret)(SubmeterPedidoHandler(db, registro)))
+	mux.HandleFunc("POST /e/{slug}/api/pedidos",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(SubmeterPedidoHandler(db, registro))))
 
-	r := httptest.NewRequest(http.MethodPost, "/api/pedidos", strings.NewReader(`{"solicitante":"Fulano","obraCentroCusto":"Obra X"}`))
+	r := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/pedidos", strings.NewReader(`{"solicitante":"Fulano","obraCentroCusto":"Obra X"}`))
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
@@ -290,9 +292,10 @@ func TestSubmeterPedidoHandler_401SemToken(t *testing.T) {
 
 func getPedidos(db *sql.DB, authHeader, query string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/pedidos",
-		middleware.RequireAuth(db, testJWTSecret)(ListarPedidosHandler(db)))
-	url := "/api/pedidos"
+	mux.HandleFunc("GET /e/{slug}/api/pedidos",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(ListarPedidosHandler(db))))
+	url := prefixoEmpresaTeste + "/api/pedidos"
 	if query != "" {
 		url += "?" + query
 	}
@@ -307,9 +310,10 @@ func getPedidos(db *sql.DB, authHeader, query string) *httptest.ResponseRecorder
 
 func getPedido(db *sql.DB, authHeader, id string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/pedidos/{id}",
-		middleware.RequireAuth(db, testJWTSecret)(BuscarPedidoHandler(db)))
-	r := httptest.NewRequest(http.MethodGet, "/api/pedidos/"+id, nil)
+	mux.HandleFunc("GET /e/{slug}/api/pedidos/{id}",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(BuscarPedidoHandler(db))))
+	r := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/pedidos/"+id, nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
 	}
@@ -323,10 +327,10 @@ func getPedido(db *sql.DB, authHeader, id string) *httptest.ResponseRecorder {
 func seedPedidoViaServico(t *testing.T, db *sql.DB, usuarioID, nomeBase string, qtd float64) services.Pedido {
 	t.Helper()
 	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, nomeBase, qtd+10)
-	if _, err := services.AdicionarItemCarrinho(db, usuarioID, produtoID, estoqueID, qtd); err != nil {
+	if _, err := services.AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, qtd); err != nil {
 		t.Fatalf("seed AdicionarItemCarrinho (%s): %v", nomeBase, err)
 	}
-	pedido, err := services.SubmeterPedido(db, usuarioID, "Solicitante "+nomeBase, "Obra "+nomeBase, "")
+	pedido, err := services.SubmeterPedido(db, empresaTeste, usuarioID, "Solicitante "+nomeBase, "Obra "+nomeBase, "")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedido (%s): %v", nomeBase, err)
 	}
@@ -759,16 +763,17 @@ func TestListarPedidosHandler_EscopoDesconhecidoCaiNoProprio(t *testing.T) {
 
 func postDecisaoPedido(db *sql.DB, authHeader, id, body string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/pedidos/{id}/decisao",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelAlmoxarife)(
-				DecidirPedidoHandler(db, realtime.NewRegistry()))))
+	mux.HandleFunc("POST /e/{slug}/api/pedidos/{id}/decisao",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					DecidirPedidoHandler(db, realtime.NewRegistry())))))
 	var r *http.Request
 	if body != "" {
-		r = httptest.NewRequest(http.MethodPost, "/api/pedidos/"+id+"/decisao", strings.NewReader(body))
+		r = httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/pedidos/"+id+"/decisao", strings.NewReader(body))
 		r.Header.Set("Content-Type", "application/json")
 	} else {
-		r = httptest.NewRequest(http.MethodPost, "/api/pedidos/"+id+"/decisao", nil)
+		r = httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/pedidos/"+id+"/decisao", nil)
 	}
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
@@ -993,16 +998,17 @@ func TestDecidirPedidoHandler_PublicaEventoNoSucesso(t *testing.T) {
 	pedido := seedPedidoViaServico(t, db, dono, "H75 Evento", 1)
 
 	registro := realtime.NewRegistry()
-	eventos, cancelar := registro.Subscribe()
+	eventos, cancelar := registro.Subscribe(empresaTeste)
 	defer cancelar()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/pedidos/{id}/decisao",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelAlmoxarife)(
-				DecidirPedidoHandler(db, registro))))
+	mux.HandleFunc("POST /e/{slug}/api/pedidos/{id}/decisao",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					DecidirPedidoHandler(db, registro)))))
 
-	r := httptest.NewRequest(http.MethodPost, "/api/pedidos/"+pedido.ID+"/decisao", strings.NewReader(`{"aprovar":true}`))
+	r := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/pedidos/"+pedido.ID+"/decisao", strings.NewReader(`{"aprovar":true}`))
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+tokenAlmox)
 	w := httptest.NewRecorder()
@@ -1029,9 +1035,10 @@ func TestDecidirPedidoHandler_PublicaEventoNoSucesso(t *testing.T) {
 
 func getRecibo(db *sql.DB, authHeader, id string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/pedidos/{id}/recibo",
-		middleware.RequireAuth(db, testJWTSecret)(BaixarReciboPedidoHandler(db)))
-	r := httptest.NewRequest(http.MethodGet, "/api/pedidos/"+id+"/recibo", nil)
+	mux.HandleFunc("GET /e/{slug}/api/pedidos/{id}/recibo",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(BaixarReciboPedidoHandler(db))))
+	r := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/pedidos/"+id+"/recibo", nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
 	}
@@ -1045,7 +1052,7 @@ func getRecibo(db *sql.DB, authHeader, id string) *httptest.ResponseRecorder {
 // desta seção que só precisam de um Pedido JÁ decidido.
 func decidirPedidoViaServico(t *testing.T, db *sql.DB, pedidoID, almoxID string, aprovar bool) services.PedidoDetalhe {
 	t.Helper()
-	det, err := services.DecidirPedido(db, pedidoID, almoxID, services.PapelAlmoxarife, aprovar)
+	det, err := services.DecidirPedido(db, empresaTeste, pedidoID, almoxID, services.PapelAlmoxarife, aprovar)
 	if err != nil {
 		t.Fatalf("seed DecidirPedido: %v", err)
 	}

@@ -13,7 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { getAccessToken } from '@/lib/session';
+import { apiUrl, authHeaders } from '@/lib/api';
 
 /**
  * Seção "Cadastrar Produto" da `CatalogoPage` (Story 3.1, spec-3-1; Story 3.2,
@@ -106,11 +106,6 @@ const UNIDADES = ['mm', 'cm', 'm'] as const;
 // precisa de um valor não-vazio próprio, traduzido de volta para `''`
 // (estado `templateId`) no `onValueChange`.
 const SEM_TEMPLATE = '__sem-template__';
-
-function authHeaders(): Record<string, string> {
-  const token = getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
 
 const MENSAGEM_ERRO_CARREGAR =
   'Não foi possível carregar categorias/estoques. Recarregue a página.';
@@ -265,8 +260,8 @@ export function CadastroProdutoSection() {
   const carregarListas = useCallback(async () => {
     try {
       const [resCategorias, resEstoques] = await Promise.all([
-        fetch('/api/categorias', { headers: authHeaders() }),
-        fetch('/api/estoques', { headers: authHeaders() }),
+        fetch(apiUrl('/api/categorias'), { headers: authHeaders() }),
+        fetch(apiUrl('/api/estoques'), { headers: authHeaders() }),
       ]);
       if (!resCategorias.ok || !resEstoques.ok) {
         setErroCarregar(MENSAGEM_ERRO_CARREGAR);
@@ -289,7 +284,7 @@ export function CadastroProdutoSection() {
     // silenciosamente para "nenhum template disponível" (o `<Select>` mostra
     // só a opção "Nome livre"), sem acionar `erroCarregar`.
     try {
-      const resTemplates = await fetch('/api/nomenclatura-templates', { headers: authHeaders() });
+      const resTemplates = await fetch(apiUrl('/api/nomenclatura-templates'), { headers: authHeaders() });
       if (resTemplates.ok) {
         const bodyTemplates = (await resTemplates.json()) as { templates: NomenclaturaTemplate[] };
         setTemplates(bodyTemplates.templates ?? []);
@@ -339,7 +334,7 @@ export function CadastroProdutoSection() {
     setErro(null);
     setEnviando(true);
     try {
-      const res = await fetch('/api/produtos', {
+      const res = await fetch(apiUrl('/api/produtos'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
@@ -396,7 +391,7 @@ export function CadastroProdutoSection() {
   // chamador decide o que fazer com o erro.
   async function carregarFotos(produtoId: string): Promise<boolean> {
     try {
-      const res = await fetch(`/api/produtos/${produtoId}/fotos`, { headers: authHeaders() });
+      const res = await fetch(apiUrl(`/api/produtos/${produtoId}/fotos`), { headers: authHeaders() });
       if (!res.ok) {
         return false;
       }
@@ -406,7 +401,7 @@ export function CadastroProdutoSection() {
       for (const foto of body.fotos) {
         let objectUrl = objectUrlCacheRef.current.get(foto.nome);
         if (!objectUrl) {
-          const resFoto = await fetch(foto.url, { headers: authHeaders() });
+          const resFoto = await fetch(apiUrl(foto.url), { headers: authHeaders() });
           if (!resFoto.ok) {
             return false;
           }
@@ -441,7 +436,7 @@ export function CadastroProdutoSection() {
     try {
       const formData = new FormData();
       formData.append('foto', arquivoFoto);
-      const res = await fetch(`/api/produtos/${produtoCriado.id}/fotos`, {
+      const res = await fetch(apiUrl(`/api/produtos/${produtoCriado.id}/fotos`), {
         method: 'POST',
         headers: authHeaders(),
         body: formData,

@@ -49,6 +49,10 @@ func SubmeterPedidoHandler(db *sql.DB, registro *realtime.Registry) http.Handler
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
 		var req submeterPedidoRequest
@@ -57,12 +61,12 @@ func SubmeterPedidoHandler(db *sql.DB, registro *realtime.Registry) http.Handler
 			return
 		}
 
-		pedido, err := services.SubmeterPedido(db, usuario.ID, req.Solicitante, req.ObraCentroCusto, req.Observacao)
+		pedido, err := services.SubmeterPedido(db, empresa.ID, usuario.ID, req.Solicitante, req.ObraCentroCusto, req.Observacao)
 		var erroValidacao *services.ErroPedidoValidacao
 		var erroIndisponivel *services.ErroPedidoIndisponivel
 		switch {
 		case err == nil:
-			registro.Publish("pedidos", realtime.Evento{ID: pedido.ID, Change: "created"})
+			registro.Publish(empresa.ID, "pedidos", realtime.Evento{ID: pedido.ID, Change: "created"})
 			escreverJSON(w, http.StatusCreated, map[string]any{"pedido": pedido})
 		case errors.As(err, &erroValidacao):
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
@@ -99,10 +103,14 @@ func ListarPedidosHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		escopoTodos := r.URL.Query().Get("escopo") == "todos"
 		filtroStatus := r.URL.Query().Get("status")
-		resumos, err := services.ListarPedidosParaSessao(db, usuario.ID, usuario.Papel, escopoTodos, filtroStatus)
+		resumos, err := services.ListarPedidosParaSessao(db, empresa.ID, usuario.ID, usuario.Papel, escopoTodos, filtroStatus)
 		var erroValidacao *services.ErroPedidoValidacao
 		switch {
 		case err == nil:
@@ -150,6 +158,10 @@ func DecidirPedidoHandler(db *sql.DB, registro *realtime.Registry) http.HandlerF
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
 		var req decisaoPedidoRequest
@@ -162,10 +174,10 @@ func DecidirPedidoHandler(db *sql.DB, registro *realtime.Registry) http.HandlerF
 			return
 		}
 
-		pedido, err := services.DecidirPedido(db, r.PathValue("id"), usuario.ID, usuario.Papel, *req.Aprovar)
+		pedido, err := services.DecidirPedido(db, empresa.ID, r.PathValue("id"), usuario.ID, usuario.Papel, *req.Aprovar)
 		switch {
 		case err == nil:
-			registro.Publish("pedidos", realtime.Evento{ID: pedido.ID, Change: pedido.Status})
+			registro.Publish(empresa.ID, "pedidos", realtime.Evento{ID: pedido.ID, Change: pedido.Status})
 			escreverJSON(w, http.StatusOK, map[string]any{"pedido": pedido})
 		case errors.Is(err, services.ErrPedidoNaoEncontrado):
 			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "pedido não encontrado")
@@ -194,8 +206,12 @@ func BuscarPedidoHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
-		detalhe, err := services.BuscarPedidoProprio(db, r.PathValue("id"), usuario.ID, usuario.Papel)
+		detalhe, err := services.BuscarPedidoProprio(db, empresa.ID, r.PathValue("id"), usuario.ID, usuario.Papel)
 		switch {
 		case err == nil:
 			escreverJSON(w, http.StatusOK, map[string]any{"pedido": detalhe})
@@ -227,9 +243,13 @@ func BaixarReciboPedidoHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		id := r.PathValue("id")
-		pdf, err := services.GerarReciboPedidoPDF(db, id, usuario.ID, usuario.Papel)
+		pdf, err := services.GerarReciboPedidoPDF(db, empresa.ID, id, usuario.ID, usuario.Papel)
 		switch {
 		case err == nil:
 			w.Header().Set("Content-Type", "application/pdf")

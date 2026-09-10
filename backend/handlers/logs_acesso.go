@@ -44,8 +44,9 @@ func ipDaRequisicao(r *http.Request) string {
 // ipDaRequisicao) e delega a services.RegistrarTentativaLogin. Erro do INSERT
 // é engolido com um slog.Warn — registrar a auditoria NUNCA altera a resposta
 // ao solicitante nem transforma um login em 500 (FR-32/FR-38).
-func registrarTentativaLogin(r *http.Request, db *sql.DB, metodo, emailInformado string, usuarioID *string, sucesso bool) {
+func registrarTentativaLogin(r *http.Request, db *sql.DB, empresaID string, metodo, emailInformado string, usuarioID *string, sucesso bool) {
 	err := services.RegistrarTentativaLogin(db, services.RegistroTentativaLogin{
+		EmpresaID:      empresaID,
 		UsuarioID:      usuarioID,
 		EmailInformado: emailInformado,
 		Metodo:         metodo,
@@ -100,6 +101,10 @@ func ListarLogsAcessoHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		q := r.URL.Query()
 		inicio, err := parsePeriodoLog(q.Get("inicio"), false)
@@ -113,7 +118,7 @@ func ListarLogsAcessoHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		logs, err := services.ListarLogsAcesso(db, inicio, fim)
+		logs, err := services.ListarLogsAcesso(db, empresa.ID, inicio, fim)
 		if err != nil {
 			slog.Error("falha ao listar logs de acesso", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao listar logs de acesso")

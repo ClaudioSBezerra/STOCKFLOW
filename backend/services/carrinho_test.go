@@ -38,7 +38,7 @@ func TestAdicionarItemCarrinho_Sucesso(t *testing.T) {
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Carrinho Add Sucesso", 10)
 	usuarioID := semearConta(t, db, "Usuario Carrinho Sucesso", "carrinho-sucesso@empresa.com", PapelUsuario, 0)
 
-	item, err := AdicionarItemCarrinho(db, usuarioID, produtoID, estoqueID, 4)
+	item, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, 4)
 	if err != nil {
 		t.Fatalf("AdicionarItemCarrinho erro inesperado: %v", err)
 	}
@@ -75,10 +75,10 @@ func TestAdicionarItemCarrinho_IncrementoDoMesmoPar(t *testing.T) {
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Carrinho Incremento", 10)
 	usuarioID := semearConta(t, db, "Usuario Carrinho Incremento", "carrinho-incremento@empresa.com", PapelUsuario, 0)
 
-	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoID, estoqueID, 3); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, 3); err != nil {
 		t.Fatalf("primeira adição: erro inesperado: %v", err)
 	}
-	item, err := AdicionarItemCarrinho(db, usuarioID, produtoID, estoqueID, 5)
+	item, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, 5)
 	if err != nil {
 		t.Fatalf("segunda adição: erro inesperado: %v", err)
 	}
@@ -106,11 +106,11 @@ func TestAdicionarItemCarrinho_DisponibilidadeInsuficiente(t *testing.T) {
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Carrinho Insuficiente", 10)
 	usuarioID := semearConta(t, db, "Usuario Carrinho Insuficiente", "carrinho-insuficiente@empresa.com", PapelUsuario, 0)
 
-	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoID, estoqueID, 8); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, 8); err != nil {
 		t.Fatalf("adição inicial: erro inesperado: %v", err)
 	}
 
-	_, err := AdicionarItemCarrinho(db, usuarioID, produtoID, estoqueID, 5)
+	_, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, 5)
 	var erroIndisponivel *ErroCarrinhoIndisponivel
 	if !errors.As(err, &erroIndisponivel) {
 		t.Fatalf("erro = %v, want *ErroCarrinhoIndisponivel", err)
@@ -134,13 +134,13 @@ func TestAdicionarItemCarrinho_SemLinhaEmProdutoEstoque(t *testing.T) {
 	limparProdutos(t, db)
 
 	produtoID, _, _ := seedProdutoComSaldo(t, db, "Carrinho A Sem Saldo", 5)
-	outroEstoque, err := CriarEstoque(db, "Carrinho B Sem Saldo")
+	outroEstoque, err := CriarEstoque(db, empresaTeste, "Carrinho B Sem Saldo")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	usuarioID := semearConta(t, db, "Usuario Carrinho Sem Saldo", "carrinho-sem-saldo@empresa.com", PapelUsuario, 0)
 
-	_, err = AdicionarItemCarrinho(db, usuarioID, produtoID, outroEstoque.ID, 1)
+	_, err = AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, outroEstoque.ID, 1)
 	var erroIndisponivel *ErroCarrinhoIndisponivel
 	if !errors.As(err, &erroIndisponivel) {
 		t.Fatalf("erro = %v, want *ErroCarrinhoIndisponivel", err)
@@ -175,14 +175,14 @@ func TestAdicionarItemCarrinho_ProdutoInexistenteOuMesclado(t *testing.T) {
 	usuarioID := semearConta(t, db, "Usuario Carrinho Produto Ruim", "carrinho-produto-ruim@empresa.com", PapelUsuario, 0)
 
 	t.Run("inexistente", func(t *testing.T) {
-		_, err := AdicionarItemCarrinho(db, usuarioID, "00000000-0000-0000-0000-000000000000", "00000000-0000-0000-0000-000000000000", 1)
+		_, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, "00000000-0000-0000-0000-000000000000", "00000000-0000-0000-0000-000000000000", 1)
 		if !errors.Is(err, ErrCarrinhoProdutoNaoEncontrado) {
 			t.Fatalf("erro = %v, want ErrCarrinhoProdutoNaoEncontrado", err)
 		}
 	})
 
 	t.Run("malformado", func(t *testing.T) {
-		_, err := AdicionarItemCarrinho(db, usuarioID, "nao-e-um-uuid", "nao-e-um-uuid", 1)
+		_, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, "nao-e-um-uuid", "nao-e-um-uuid", 1)
 		if !errors.Is(err, ErrCarrinhoProdutoNaoEncontrado) {
 			t.Fatalf("erro = %v, want ErrCarrinhoProdutoNaoEncontrado", err)
 		}
@@ -193,7 +193,7 @@ func TestAdicionarItemCarrinho_ProdutoInexistenteOuMesclado(t *testing.T) {
 		if _, err := db.Exec(`UPDATE produtos SET deleted_at = now() WHERE id = $1`, produtoID); err != nil {
 			t.Fatalf("seed soft-delete: %v", err)
 		}
-		_, err := AdicionarItemCarrinho(db, usuarioID, produtoID, estoqueID, 1)
+		_, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, 1)
 		if !errors.Is(err, ErrCarrinhoProdutoNaoEncontrado) {
 			t.Fatalf("erro = %v, want ErrCarrinhoProdutoNaoEncontrado", err)
 		}
@@ -216,7 +216,7 @@ func TestAdicionarItemCarrinho_EstoqueInexistenteOuMalformado(t *testing.T) {
 	usuarioID := semearConta(t, db, "Usuario Carrinho Estoque Ruim", "carrinho-estoque-ruim@empresa.com", PapelUsuario, 0)
 
 	t.Run("inexistente (sintaticamente válido)", func(t *testing.T) {
-		_, err := AdicionarItemCarrinho(db, usuarioID, produtoID, "00000000-0000-0000-0000-000000000000", 1)
+		_, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, "00000000-0000-0000-0000-000000000000", 1)
 		if !errors.Is(err, ErrCarrinhoEstoqueNaoEncontrado) {
 			t.Fatalf("erro = %v, want ErrCarrinhoEstoqueNaoEncontrado", err)
 		}
@@ -227,7 +227,7 @@ func TestAdicionarItemCarrinho_EstoqueInexistenteOuMalformado(t *testing.T) {
 	})
 
 	t.Run("malformado", func(t *testing.T) {
-		_, err := AdicionarItemCarrinho(db, usuarioID, produtoID, "nao-e-um-uuid", 1)
+		_, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, "nao-e-um-uuid", 1)
 		if !errors.Is(err, ErrCarrinhoEstoqueNaoEncontrado) {
 			t.Fatalf("erro = %v, want ErrCarrinhoEstoqueNaoEncontrado", err)
 		}
@@ -245,7 +245,7 @@ func TestAdicionarItemCarrinho_QuantidadeInvalida(t *testing.T) {
 	usuarioID := semearConta(t, db, "Usuario Carrinho Qtd Invalida", "carrinho-qtd-invalida@empresa.com", PapelUsuario, 0)
 
 	for _, quantidade := range []float64{0, -5, limiteNumeric103 + 0.001} {
-		_, err := AdicionarItemCarrinho(db, usuarioID, produtoID, estoqueID, quantidade)
+		_, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, quantidade)
 		var erroValidacao *ErroCarrinhoValidacao
 		if !errors.As(err, &erroValidacao) {
 			t.Fatalf("quantidade=%v: erro = %v, want *ErroCarrinhoValidacao", quantidade, err)
@@ -278,12 +278,12 @@ func TestAdicionarItemCarrinho_ConcorrenciaMesmoUsuarioMesmoPar(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		<-start
-		_, err1 = AdicionarItemCarrinho(db, usuarioID, produtoID, estoqueID, 6)
+		_, err1 = AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, 6)
 	}()
 	go func() {
 		defer wg.Done()
 		<-start
-		_, err2 = AdicionarItemCarrinho(db, usuarioID, produtoID, estoqueID, 6)
+		_, err2 = AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, 6)
 	}()
 	close(start)
 	wg.Wait()
@@ -324,7 +324,7 @@ func TestListarCarrinho_CarrinhoVazio(t *testing.T) {
 
 	usuarioID := semearConta(t, db, "Usuario Carrinho Vazio", "carrinho-vazio@empresa.com", PapelUsuario, 0)
 
-	itens, removidos, err := ListarCarrinho(db, usuarioID)
+	itens, removidos, err := ListarCarrinho(db, empresaTeste, usuarioID)
 	if err != nil {
 		t.Fatalf("ListarCarrinho erro inesperado: %v", err)
 	}
@@ -345,11 +345,11 @@ func TestListarCarrinho_ItensAtivos(t *testing.T) {
 
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Carrinho Listar Ativo", 10)
 	usuarioID := semearConta(t, db, "Usuario Carrinho Listar Ativo", "carrinho-listar-ativo@empresa.com", PapelUsuario, 0)
-	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoID, estoqueID, 3); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, 3); err != nil {
 		t.Fatalf("seed AdicionarItemCarrinho: %v", err)
 	}
 
-	itens, removidos, err := ListarCarrinho(db, usuarioID)
+	itens, removidos, err := ListarCarrinho(db, empresaTeste, usuarioID)
 	if err != nil {
 		t.Fatalf("ListarCarrinho erro inesperado: %v", err)
 	}
@@ -380,14 +380,14 @@ func TestListarCarrinho_ProdutoMescladoRemovidoAoAbrir(t *testing.T) {
 
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Carrinho Produto Mesclado Listar", 10)
 	usuarioID := semearConta(t, db, "Usuario Carrinho Produto Mesclado", "carrinho-produto-mesclado@empresa.com", PapelUsuario, 0)
-	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoID, estoqueID, 2); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, 2); err != nil {
 		t.Fatalf("seed AdicionarItemCarrinho: %v", err)
 	}
 	if _, err := db.Exec(`UPDATE produtos SET deleted_at = now() WHERE id = $1`, produtoID); err != nil {
 		t.Fatalf("seed soft-delete: %v", err)
 	}
 
-	itens, removidos, err := ListarCarrinho(db, usuarioID)
+	itens, removidos, err := ListarCarrinho(db, empresaTeste, usuarioID)
 	if err != nil {
 		t.Fatalf("ListarCarrinho erro inesperado: %v", err)
 	}
@@ -409,7 +409,7 @@ func TestListarCarrinho_ProdutoMescladoRemovidoAoAbrir(t *testing.T) {
 	}
 
 	// Segunda chamada: a linha já foi apagada, nada mais a limpar.
-	itens2, removidos2, err := ListarCarrinho(db, usuarioID)
+	itens2, removidos2, err := ListarCarrinho(db, empresaTeste, usuarioID)
 	if err != nil {
 		t.Fatalf("segunda ListarCarrinho erro inesperado: %v", err)
 	}
@@ -430,7 +430,7 @@ func TestListarCarrinho_EstoqueExcluidoRemovidoAoAbrir(t *testing.T) {
 
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Carrinho Estoque Excluido Listar", 10)
 	usuarioID := semearConta(t, db, "Usuario Carrinho Estoque Excluido", "carrinho-estoque-excluido@empresa.com", PapelUsuario, 0)
-	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoID, estoqueID, 2); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, 2); err != nil {
 		t.Fatalf("seed AdicionarItemCarrinho: %v", err)
 	}
 
@@ -442,7 +442,7 @@ func TestListarCarrinho_EstoqueExcluidoRemovidoAoAbrir(t *testing.T) {
 		t.Fatalf("seed hard-delete do estoque: %v", err)
 	}
 
-	itens, removidos, err := ListarCarrinho(db, usuarioID)
+	itens, removidos, err := ListarCarrinho(db, empresaTeste, usuarioID)
 	if err != nil {
 		t.Fatalf("ListarCarrinho erro inesperado: %v", err)
 	}
@@ -477,11 +477,11 @@ func TestRemoverItemCarrinho_Sucesso(t *testing.T) {
 
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Carrinho Remover Sucesso", 10)
 	usuarioID := semearConta(t, db, "Usuario Carrinho Remover", "carrinho-remover@empresa.com", PapelUsuario, 0)
-	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoID, estoqueID, 2); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, 2); err != nil {
 		t.Fatalf("seed AdicionarItemCarrinho: %v", err)
 	}
 
-	if err := RemoverItemCarrinho(db, usuarioID, produtoID, estoqueID); err != nil {
+	if err := RemoverItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID); err != nil {
 		t.Fatalf("RemoverItemCarrinho erro inesperado: %v", err)
 	}
 
@@ -499,7 +499,7 @@ func TestRemoverItemCarrinho_ItemInexistente(t *testing.T) {
 
 	usuarioID := semearConta(t, db, "Usuario Carrinho Item Inexistente", "carrinho-item-inexistente@empresa.com", PapelUsuario, 0)
 
-	err := RemoverItemCarrinho(db, usuarioID, "00000000-0000-0000-0000-000000000000", "00000000-0000-0000-0000-000000000000")
+	err := RemoverItemCarrinho(db, empresaTeste, usuarioID, "00000000-0000-0000-0000-000000000000", "00000000-0000-0000-0000-000000000000")
 	if !errors.Is(err, ErrCarrinhoItemNaoEncontrado) {
 		t.Fatalf("erro = %v, want ErrCarrinhoItemNaoEncontrado", err)
 	}
@@ -516,11 +516,11 @@ func TestRemoverItemCarrinho_EscopadoPorUsuario(t *testing.T) {
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Carrinho Escopo Usuario", 10)
 	usuarioDono := semearConta(t, db, "Usuario Carrinho Dono", "carrinho-dono@empresa.com", PapelUsuario, 0)
 	usuarioOutro := semearConta(t, db, "Usuario Carrinho Outro", "carrinho-outro@empresa.com", PapelUsuario, 1)
-	if _, err := AdicionarItemCarrinho(db, usuarioDono, produtoID, estoqueID, 2); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioDono, produtoID, estoqueID, 2); err != nil {
 		t.Fatalf("seed AdicionarItemCarrinho: %v", err)
 	}
 
-	err := RemoverItemCarrinho(db, usuarioOutro, produtoID, estoqueID)
+	err := RemoverItemCarrinho(db, empresaTeste, usuarioOutro, produtoID, estoqueID)
 	if !errors.Is(err, ErrCarrinhoItemNaoEncontrado) {
 		t.Fatalf("erro = %v, want ErrCarrinhoItemNaoEncontrado (item pertence a outro usuário)", err)
 	}

@@ -55,6 +55,10 @@ func RegistrarBaixaHandler(db *sql.DB, registro *realtime.Registry) http.Handler
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
 		var req registrarBaixaRequest
@@ -66,12 +70,12 @@ func RegistrarBaixaHandler(db *sql.DB, registro *realtime.Registry) http.Handler
 		produtoID := r.PathValue("id")
 		estoqueID := r.PathValue("estoqueId")
 
-		mov, err := services.RegistrarBaixa(db, produtoID, estoqueID, usuario.ID, req.Quantidade)
+		mov, err := services.RegistrarBaixa(db, empresa.ID, produtoID, estoqueID, usuario.ID, req.Quantidade)
 		var erroValidacao *services.ErroMovimentacaoValidacao
 		var erroIndisponivel *services.ErroQuantidadeIndisponivel
 		switch {
 		case err == nil:
-			registro.Publish("movimentacoes", realtime.Evento{ID: mov.ID, Change: "created"})
+			registro.Publish(empresa.ID, "movimentacoes", realtime.Evento{ID: mov.ID, Change: "created"})
 			escreverJSON(w, http.StatusCreated, map[string]any{"movimentacao": mov})
 		case errors.As(err, &erroValidacao):
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
@@ -101,8 +105,12 @@ func ListarMovimentacoesHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
-		movimentacoes, err := services.ListarMovimentacoes(db)
+		movimentacoes, err := services.ListarMovimentacoes(db, empresa.ID)
 		if err != nil {
 			slog.Error("falha ao listar movimentações", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao listar movimentações")
@@ -140,6 +148,10 @@ func RegistrarTransferenciaHandler(db *sql.DB, registro *realtime.Registry) http
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
 		var req registrarTransferenciaRequest
@@ -151,12 +163,12 @@ func RegistrarTransferenciaHandler(db *sql.DB, registro *realtime.Registry) http
 		produtoID := r.PathValue("id")
 		estoqueOrigemID := r.PathValue("estoqueId")
 
-		mov, err := services.RegistrarTransferencia(db, produtoID, estoqueOrigemID, req.EstoqueDestinoID, usuario.ID, req.Quantidade)
+		mov, err := services.RegistrarTransferencia(db, empresa.ID, produtoID, estoqueOrigemID, req.EstoqueDestinoID, usuario.ID, req.Quantidade)
 		var erroValidacao *services.ErroMovimentacaoValidacao
 		var erroIndisponivel *services.ErroQuantidadeIndisponivel
 		switch {
 		case err == nil:
-			registro.Publish("movimentacoes", realtime.Evento{ID: mov.ID, Change: "created"})
+			registro.Publish(empresa.ID, "movimentacoes", realtime.Evento{ID: mov.ID, Change: "created"})
 			escreverJSON(w, http.StatusCreated, map[string]any{"movimentacao": mov})
 		case errors.As(err, &erroValidacao):
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)

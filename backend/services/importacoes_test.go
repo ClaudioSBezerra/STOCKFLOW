@@ -60,7 +60,7 @@ func TestCriarImportacao_SucessoCompleto(t *testing.T) {
 		linhaBase("Produto Importado Dois", "SKU-IMP-2", categoria, "3", "Canteiro Importação Sucesso"),
 	}
 
-	importacao, relatorio, err := CriarImportacao(db, criadoPor, "planilha.xlsx", linhas)
+	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestCriarImportacao_LinhaComDimensaoIncompleta(t *testing.T) {
 		linhaBase("Produto Valido Dois", "SKU-V2", categoria, "1", "Canteiro Dimensao"),
 	}
 
-	importacao, relatorio, err := CriarImportacao(db, criadoPor, "planilha.xlsx", linhas)
+	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestCriarImportacao_CategoriaInexistente(t *testing.T) {
 		linhaBase("Produto Categoria Ruim", "SKU-CAT", "Categoria Totalmente Inexistente", "1", "Estoque Nao Deveria Existir"),
 	}
 
-	importacao, relatorio, err := CriarImportacao(db, criadoPor, "planilha.xlsx", linhas)
+	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestCriarImportacao_EstoqueNovoReaproveitadoEntreLinhas(t *testing.T) {
 		linhaBase("Produto Deposito B Dois", "SKU-DB2", categoria, "1", "Depósito B"),
 	}
 
-	_, relatorio, err := CriarImportacao(db, criadoPor, "planilha.xlsx", linhas)
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestContinuarImportacao_SoProcessaLinhasPendentes(t *testing.T) {
 		linhaBase("Produto Continuar Tres", "SKU-CONT-3", categoria, "1", "Canteiro Continuar"),
 	}
 
-	importacao, relatorio, err := CriarImportacao(db, criadoPor, "planilha.xlsx", linhas)
+	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -301,7 +301,7 @@ func TestContinuarImportacao_SoProcessaLinhasPendentes(t *testing.T) {
 	// Antes de continuar: a importação "parada" deve apontar exatamente para
 	// a linha 4 (a única pendente) — prova o mecanismo por trás do banner de
 	// retomada do frontend (spec-3-3, review pass), não um valor qualquer.
-	ultimaAntesDeContinuar, _, err := ObterUltimaImportacao(db)
+	ultimaAntesDeContinuar, _, err := ObterUltimaImportacao(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("ObterUltimaImportacao antes de continuar: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestContinuarImportacao_SoProcessaLinhasPendentes(t *testing.T) {
 
 	produtosAntes := contarProdutos(t, db)
 
-	importacaoContinuada, relatorioContinuado, err := ContinuarImportacao(db, importacao.ID)
+	importacaoContinuada, relatorioContinuado, err := ContinuarImportacao(db, empresaTeste, importacao.ID)
 	if err != nil {
 		t.Fatalf("ContinuarImportacao erro inesperado: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestContinuarImportacao_SoProcessaLinhasPendentes(t *testing.T) {
 func TestObterUltimaImportacao_SemNenhumaImportacao(t *testing.T) {
 	db := testDB(t)
 
-	importacao, relatorio, err := ObterUltimaImportacao(db)
+	importacao, relatorio, err := ObterUltimaImportacao(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("ObterUltimaImportacao erro inesperado: %v", err)
 	}
@@ -393,7 +393,7 @@ func TestObterUltimaImportacao_DevolveAMaisRecente(t *testing.T) {
 		CabecalhoEsperado,
 		linhaBase("Produto Ultima A", "SKU-ULT-A", categoria, "1", "Canteiro Ultima"),
 	}
-	importacaoA, _, err := CriarImportacao(db, criadoPor, "planilha-a.xlsx", linhasA)
+	importacaoA, _, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha-a.xlsx", linhasA)
 	if err != nil {
 		t.Fatalf("CriarImportacao A: %v", err)
 	}
@@ -402,7 +402,7 @@ func TestObterUltimaImportacao_DevolveAMaisRecente(t *testing.T) {
 		CabecalhoEsperado,
 		linhaBase("Produto Ultima B", "SKU-ULT-B", categoria, "1", "Canteiro Ultima"),
 	}
-	importacaoB, _, err := CriarImportacao(db, criadoPor, "planilha-b.xlsx", linhasB)
+	importacaoB, _, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha-b.xlsx", linhasB)
 	if err != nil {
 		t.Fatalf("CriarImportacao B: %v", err)
 	}
@@ -415,7 +415,7 @@ func TestObterUltimaImportacao_DevolveAMaisRecente(t *testing.T) {
 		t.Fatalf("forçar iniciado_em de B mais recente: %v", err)
 	}
 
-	ultima, _, err := ObterUltimaImportacao(db)
+	ultima, _, err := ObterUltimaImportacao(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("ObterUltimaImportacao erro inesperado: %v", err)
 	}
@@ -449,7 +449,7 @@ func TestObterUltimaImportacao_ProximaLinhaPendente(t *testing.T) {
 		linhaBase("Produto Proxima Quatro", "SKU-PL-4", categoria, "1", "Canteiro Proxima Linha"), // numero_linha 5
 		linhaBase("Produto Proxima Cinco", "SKU-PL-5", categoria, "1", "Canteiro Proxima Linha"),  // numero_linha 6
 	}
-	importacao, relatorio, err := CriarImportacao(db, criadoPor, "planilha.xlsx", linhas)
+	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -470,7 +470,7 @@ func TestObterUltimaImportacao_ProximaLinhaPendente(t *testing.T) {
 		t.Fatalf("resetar importação para em_andamento: %v", err)
 	}
 
-	ultima, _, err := ObterUltimaImportacao(db)
+	ultima, _, err := ObterUltimaImportacao(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("ObterUltimaImportacao erro inesperado: %v", err)
 	}
@@ -563,7 +563,7 @@ func TestCriarImportacao_QuantidadeInvalidaOuNaoFinita(t *testing.T) {
 		linhaBase("Produto Quantidade Valida", "SKU-QOK", categoria, "2.5", "Canteiro Quantidade"),
 	}
 
-	importacao, relatorio, err := CriarImportacao(db, criadoPor, "planilha.xlsx", linhas)
+	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -598,7 +598,7 @@ func TestContinuarImportacao_IDInexistente(t *testing.T) {
 		"nao-e-um-uuid",                        // malformado
 	} {
 		t.Run(id, func(t *testing.T) {
-			_, _, err := ContinuarImportacao(db, id)
+			_, _, err := ContinuarImportacao(db, empresaTeste, id)
 			if !errors.Is(err, ErrImportacaoNaoEncontrada) {
 				t.Errorf("err = %v, want ErrImportacaoNaoEncontrada", err)
 			}
@@ -624,9 +624,9 @@ func seedImportacaoBruta(t *testing.T, db *sql.DB, criadoPor string, numeroDeLin
 	t.Helper()
 	var importacaoID string
 	const insertImportacao = `
-		INSERT INTO importacoes (nome_arquivo, total_linhas, criado_por)
-		VALUES ($1, $2, $3) RETURNING id`
-	if err := db.QueryRow(insertImportacao, "planilha-concorrencia.xlsx", numeroDeLinhas, criadoPor).Scan(&importacaoID); err != nil {
+		INSERT INTO importacoes (nome_arquivo, total_linhas, criado_por, empresa_id)
+		VALUES ($1, $2, $3, $4) RETURNING id`
+	if err := db.QueryRow(insertImportacao, "planilha-concorrencia.xlsx", numeroDeLinhas, criadoPor, empresaTeste).Scan(&importacaoID); err != nil {
 		t.Fatalf("seed importacoes: %v", err)
 	}
 	for i := 0; i < numeroDeLinhas; i++ {
@@ -692,7 +692,7 @@ func TestContinuarImportacao_ConcorrenciaSemDuplicarProcessamento(t *testing.T) 
 		wg.Add(1)
 		go func(indice int) {
 			defer wg.Done()
-			_, _, err := ContinuarImportacao(db, importacaoID)
+			_, _, err := ContinuarImportacao(db, empresaTeste, importacaoID)
 			erros[indice] = err
 		}(i)
 	}
@@ -791,12 +791,12 @@ func TestCriarImportacao_CodigoExistente_AtualizaEmVezDeCriar(t *testing.T) {
 	criadoPor := criarUsuarioImportacao(t, db, "importacao-atualiza@empresa.com")
 	categoriaAntiga := categoriaIDPorCodigo(t, db, "04.001")
 	categoriaNova := categoriaNomePorCodigo(t, db, "04.002")
-	estoque, err := CriarEstoque(db, "Canteiro Atualiza Existente")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Atualiza Existente")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 
-	produtoExistente, err := CriarProduto(db, CriarProdutoInput{
+	produtoExistente, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "Produto Nome Antigo",
 		Codigo:            "SKU-ATUALIZA-1",
 		CategoriaID:       categoriaAntiga,
@@ -811,7 +811,7 @@ func TestCriarImportacao_CodigoExistente_AtualizaEmVezDeCriar(t *testing.T) {
 		CabecalhoEsperado,
 		linhaBase("Produto Nome Novo", "SKU-ATUALIZA-1", categoriaNova, "3", estoque.Nome),
 	}
-	importacao, relatorio, err := CriarImportacao(db, criadoPor, "planilha.xlsx", linhas)
+	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -870,7 +870,7 @@ func TestCriarImportacao_ReimportacaoIdentica_NuncaContaComoCriado(t *testing.T)
 		linhaBase("Produto Reimportado", "SKU-REIMPORT-1", categoria, "5", "Canteiro Reimportacao"),
 	}
 
-	_, relatorioPrimeiraVez, err := CriarImportacao(db, criadoPor, "planilha-1.xlsx", linhas)
+	_, relatorioPrimeiraVez, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha-1.xlsx", linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao (primeira vez) erro inesperado: %v", err)
 	}
@@ -879,7 +879,7 @@ func TestCriarImportacao_ReimportacaoIdentica_NuncaContaComoCriado(t *testing.T)
 	}
 	produtosAntes := contarProdutos(t, db)
 
-	_, relatorioSegundaVez, err := CriarImportacao(db, criadoPor, "planilha-2.xlsx", linhas)
+	_, relatorioSegundaVez, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha-2.xlsx", linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao (segunda vez) erro inesperado: %v", err)
 	}
@@ -906,13 +906,13 @@ func TestCriarImportacao_CodigoExistente_TemplateNomeInvalido_Rejeitada(t *testi
 	criadoPor := criarUsuarioImportacao(t, db, "importacao-template-invalido@empresa.com")
 	categoriaID := categoriaIDPorCodigo(t, db, "04.002")
 	categoriaNome := categoriaNomePorCodigo(t, db, "04.002")
-	estoque, err := CriarEstoque(db, "Canteiro Template Invalido Import")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Template Invalido Import")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	templateID, _ := templatePorSubtipo(t, db, "Tubo — PEAD/PPR")
 
-	produtoExistente, err := CriarProduto(db, CriarProdutoInput{
+	produtoExistente, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "TUBO PEAD PN80 DN50",
 		Codigo:            "SKU-TEMPLATE-IMPORT-1",
 		CategoriaID:       categoriaID,
@@ -928,7 +928,7 @@ func TestCriarImportacao_CodigoExistente_TemplateNomeInvalido_Rejeitada(t *testi
 		CabecalhoEsperado,
 		linhaBase("Nome Fora Do Formato", "SKU-TEMPLATE-IMPORT-1", categoriaNome, "1", estoque.Nome),
 	}
-	_, relatorio, err := CriarImportacao(db, criadoPor, "planilha.xlsx", linhas)
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -963,12 +963,12 @@ func TestCriarImportacao_LinhaSemCodigo_NomeParecidoAindaAssimCria(t *testing.T)
 	criadoPor := criarUsuarioImportacao(t, db, "importacao-sem-codigo@empresa.com")
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 	categoriaNome := categoriaNomePorCodigo(t, db, "04.001")
-	estoque, err := CriarEstoque(db, "Canteiro Sem Codigo")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Sem Codigo")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 
-	_, err = CriarProduto(db, CriarProdutoInput{
+	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "Produto Nome Igualzinho",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -982,7 +982,7 @@ func TestCriarImportacao_LinhaSemCodigo_NomeParecidoAindaAssimCria(t *testing.T)
 		CabecalhoEsperado,
 		linhaBase("Produto Nome Igualzinho", "", categoriaNome, "1", estoque.Nome),
 	}
-	_, relatorio, err := CriarImportacao(db, criadoPor, "planilha.xlsx", linhas)
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -1014,7 +1014,7 @@ func TestCriarImportacao_DuasLinhasMesmoCodigoNovo_SegundaAtualizaAPrimeira(t *t
 		linhaBase("Produto Codigo Novo Primeira Vez", "SKU-DUPNOVO-1", categoria, "1", "Canteiro Codigo Novo"),
 		linhaBase("Produto Codigo Novo Segunda Vez", "SKU-DUPNOVO-1", categoria, "9", "Canteiro Codigo Novo"),
 	}
-	importacao, relatorio, err := CriarImportacao(db, criadoPor, "planilha.xlsx", linhas)
+	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -1069,12 +1069,12 @@ func TestCriarImportacao_CodigoExistente_NovoEstoque_ParExistenteIntacto(t *test
 	criadoPor := criarUsuarioImportacao(t, db, "importacao-novo-estoque@empresa.com")
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 	categoriaNome := categoriaNomePorCodigo(t, db, "04.001")
-	estoqueOriginal, err := CriarEstoque(db, "Canteiro Estoque Original")
+	estoqueOriginal, err := CriarEstoque(db, empresaTeste, "Canteiro Estoque Original")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque original: %v", err)
 	}
 
-	produtoExistente, err := CriarProduto(db, CriarProdutoInput{
+	produtoExistente, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "Produto Multi Estoque",
 		Codigo:            "SKU-MULTIESTOQUE-1",
 		CategoriaID:       categoriaID,
@@ -1089,7 +1089,7 @@ func TestCriarImportacao_CodigoExistente_NovoEstoque_ParExistenteIntacto(t *test
 		CabecalhoEsperado,
 		linhaBase("Produto Multi Estoque", "SKU-MULTIESTOQUE-1", categoriaNome, "7", "Canteiro Estoque Novo"),
 	}
-	_, relatorio, err := CriarImportacao(db, criadoPor, "planilha.xlsx", linhas)
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -1148,12 +1148,12 @@ func TestCriarImportacao_CodigoExistente_EstoqueInvalido_NaoAlteraProduto(t *tes
 	criadoPor := criarUsuarioImportacao(t, db, "importacao-estoque-invalido@empresa.com")
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 	categoriaNome := categoriaNomePorCodigo(t, db, "04.001")
-	estoqueOriginal, err := CriarEstoque(db, "Canteiro Estoque Invalido Original")
+	estoqueOriginal, err := CriarEstoque(db, empresaTeste, "Canteiro Estoque Invalido Original")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 
-	produtoExistente, err := CriarProduto(db, CriarProdutoInput{
+	produtoExistente, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "Produto Nome Original",
 		Codigo:            "SKU-ESTOQUE-INVALIDO-1",
 		CategoriaID:       categoriaID,
@@ -1171,7 +1171,7 @@ func TestCriarImportacao_CodigoExistente_EstoqueInvalido_NaoAlteraProduto(t *tes
 		CabecalhoEsperado,
 		linhaBase("Produto Nome Diferente", "SKU-ESTOQUE-INVALIDO-1", categoriaNome, "9", "   "),
 	}
-	_, relatorio, err := CriarImportacao(db, criadoPor, "planilha.xlsx", linhas)
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -1225,9 +1225,9 @@ func TestContinuarImportacao_CorridaMesmoCodigoNovo_SemErroNemDuplicar(t *testin
 	const codigoDisputado = "SKU-CORRIDA-CODIGO-NOVO"
 	var importacaoID string
 	const insertImportacao = `
-		INSERT INTO importacoes (nome_arquivo, total_linhas, criado_por)
-		VALUES ($1, $2, $3) RETURNING id`
-	if err := db.QueryRow(insertImportacao, "planilha-corrida-codigo.xlsx", totalLinhas, criadoPor).Scan(&importacaoID); err != nil {
+		INSERT INTO importacoes (nome_arquivo, total_linhas, criado_por, empresa_id)
+		VALUES ($1, $2, $3, $4) RETURNING id`
+	if err := db.QueryRow(insertImportacao, "planilha-corrida-codigo.xlsx", totalLinhas, criadoPor, empresaTeste).Scan(&importacaoID); err != nil {
 		t.Fatalf("seed importacoes: %v", err)
 	}
 	for i := 0; i < totalLinhas; i++ {
@@ -1259,7 +1259,7 @@ func TestContinuarImportacao_CorridaMesmoCodigoNovo_SemErroNemDuplicar(t *testin
 		wg.Add(1)
 		go func(indice int) {
 			defer wg.Done()
-			_, _, err := ContinuarImportacao(db, importacaoID)
+			_, _, err := ContinuarImportacao(db, empresaTeste, importacaoID)
 			erros[indice] = err
 		}(i)
 	}

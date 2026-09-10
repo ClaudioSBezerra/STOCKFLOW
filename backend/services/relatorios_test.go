@@ -44,7 +44,7 @@ func TestGerarCatalogoXLSX_CabecalhoFixo(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	dados, err := GerarCatalogoXLSX(db, FiltrosCatalogo{Q: "produto-que-nao-existe-em-lugar-nenhum"})
+	dados, err := GerarCatalogoXLSX(db, FiltrosCatalogo{EmpresaID: empresaTeste, Q: "produto-que-nao-existe-em-lugar-nenhum"})
 	if err != nil {
 		t.Fatalf("GerarCatalogoXLSX: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestGerarCatalogoXLSX_ZeroGrupos(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	dados, err := GerarCatalogoXLSX(db, FiltrosCatalogo{})
+	dados, err := GerarCatalogoXLSX(db, FiltrosCatalogo{EmpresaID: empresaTeste})
 	if err != nil {
 		t.Fatalf("GerarCatalogoXLSX: %v", err)
 	}
@@ -105,11 +105,11 @@ func TestGerarCatalogoXLSX_GrupoComEstoques(t *testing.T) {
 	limparProdutos(t, db)
 
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
-	estA, err := CriarEstoque(db, "Canteiro XLSX A")
+	estA, err := CriarEstoque(db, empresaTeste, "Canteiro XLSX A")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque A: %v", err)
 	}
-	estB, err := CriarEstoque(db, "Canteiro XLSX B")
+	estB, err := CriarEstoque(db, empresaTeste, "Canteiro XLSX B")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque B: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestGerarCatalogoXLSX_GrupoComEstoques(t *testing.T) {
 	})
 	setQuantidade(t, db, p2, estB.ID, 2)
 
-	dados, err := GerarCatalogoXLSX(db, FiltrosCatalogo{})
+	dados, err := GerarCatalogoXLSX(db, FiltrosCatalogo{EmpresaID: empresaTeste})
 	if err != nil {
 		t.Fatalf("GerarCatalogoXLSX: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestGerarCatalogoXLSX_GrupoSemEstoque(t *testing.T) {
 	limparProdutos(t, db)
 
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
-	estoque, err := CriarEstoque(db, "Canteiro XLSX Sem Estoque")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro XLSX Sem Estoque")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestGerarCatalogoXLSX_GrupoSemEstoque(t *testing.T) {
 	})
 	limparEstoqueDe(t, db, p)
 
-	dados, err := GerarCatalogoXLSX(db, FiltrosCatalogo{})
+	dados, err := GerarCatalogoXLSX(db, FiltrosCatalogo{EmpresaID: empresaTeste})
 	if err != nil {
 		t.Fatalf("GerarCatalogoXLSX: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestGerarCatalogoXLSX_MultiplosGrupos(t *testing.T) {
 	limparProdutos(t, db)
 
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
-	estoque, err := CriarEstoque(db, "Canteiro XLSX Multiplos")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro XLSX Multiplos")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestGerarCatalogoXLSX_MultiplosGrupos(t *testing.T) {
 		Nome: "Grupo B XLSX", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 6,
 	})
 
-	dados, err := GerarCatalogoXLSX(db, FiltrosCatalogo{})
+	dados, err := GerarCatalogoXLSX(db, FiltrosCatalogo{EmpresaID: empresaTeste})
 	if err != nil {
 		t.Fatalf("GerarCatalogoXLSX: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestGerarCatalogoXLSX_AutoFilterNoCabecalho(t *testing.T) {
 	limparProdutos(t, db)
 
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
-	estoque, err := CriarEstoque(db, "Canteiro XLSX AutoFilter")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro XLSX AutoFilter")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -327,7 +327,7 @@ func TestGerarCatalogoXLSX_AutoFilterNoCabecalho(t *testing.T) {
 		Nome: "AutoFilter XLSX", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	})
 
-	dados, err := GerarCatalogoXLSX(db, FiltrosCatalogo{})
+	dados, err := GerarCatalogoXLSX(db, FiltrosCatalogo{EmpresaID: empresaTeste})
 	if err != nil {
 		t.Fatalf("GerarCatalogoXLSX: %v", err)
 	}
@@ -376,7 +376,7 @@ func TestGerarCatalogoXLSX_FiltroSemResultado(t *testing.T) {
 	limparProdutos(t, db)
 
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
-	estoque, err := CriarEstoque(db, "Canteiro XLSX Filtro Vazio")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro XLSX Filtro Vazio")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -384,7 +384,7 @@ func TestGerarCatalogoXLSX_FiltroSemResultado(t *testing.T) {
 		Nome: "Existe XLSX", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	})
 
-	dados, err := GerarCatalogoXLSX(db, FiltrosCatalogo{Q: "não-existe-jamais-xlsx"})
+	dados, err := GerarCatalogoXLSX(db, FiltrosCatalogo{EmpresaID: empresaTeste, Q: "não-existe-jamais-xlsx"})
 	if err != nil {
 		t.Fatalf("GerarCatalogoXLSX: %v", err)
 	}
@@ -408,7 +408,7 @@ func TestGerarCatalogoXLSX_CategoriaEstoqueMalformadosSoCabecalho(t *testing.T) 
 	limparProdutos(t, db)
 
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
-	estoque, err := CriarEstoque(db, "Canteiro XLSX Malformado")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro XLSX Malformado")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -416,7 +416,7 @@ func TestGerarCatalogoXLSX_CategoriaEstoqueMalformadosSoCabecalho(t *testing.T) 
 		Nome: "Malformado XLSX", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	})
 
-	dados, err := GerarCatalogoXLSX(db, FiltrosCatalogo{CategoriaID: "abc"})
+	dados, err := GerarCatalogoXLSX(db, FiltrosCatalogo{EmpresaID: empresaTeste, CategoriaID: "abc"})
 	if err != nil {
 		t.Fatalf("GerarCatalogoXLSX categoriaId malformado: %v", err)
 	}

@@ -22,14 +22,15 @@ import (
 
 func postItemCarrinho(db *sql.DB, authHeader, body string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/carrinho/itens",
-		middleware.RequireAuth(db, testJWTSecret)(AdicionarItemCarrinhoHandler(db)))
+	mux.HandleFunc("POST /e/{slug}/api/carrinho/itens",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(AdicionarItemCarrinhoHandler(db))))
 	var r *http.Request
 	if body != "" {
-		r = httptest.NewRequest(http.MethodPost, "/api/carrinho/itens", strings.NewReader(body))
+		r = httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/carrinho/itens", strings.NewReader(body))
 		r.Header.Set("Content-Type", "application/json")
 	} else {
-		r = httptest.NewRequest(http.MethodPost, "/api/carrinho/itens", nil)
+		r = httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/carrinho/itens", nil)
 	}
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
@@ -41,9 +42,10 @@ func postItemCarrinho(db *sql.DB, authHeader, body string) *httptest.ResponseRec
 
 func getCarrinho(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/carrinho",
-		middleware.RequireAuth(db, testJWTSecret)(ListarCarrinhoHandler(db)))
-	r := httptest.NewRequest(http.MethodGet, "/api/carrinho", nil)
+	mux.HandleFunc("GET /e/{slug}/api/carrinho",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(ListarCarrinhoHandler(db))))
+	r := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/carrinho", nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
 	}
@@ -54,9 +56,10 @@ func getCarrinho(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
 
 func deleteItemCarrinho(db *sql.DB, authHeader, produtoID, estoqueID string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("DELETE /api/carrinho/itens/{produtoId}/{estoqueId}",
-		middleware.RequireAuth(db, testJWTSecret)(RemoverItemCarrinhoHandler(db)))
-	r := httptest.NewRequest(http.MethodDelete, "/api/carrinho/itens/"+produtoID+"/"+estoqueID, nil)
+	mux.HandleFunc("DELETE /e/{slug}/api/carrinho/itens/{produtoId}/{estoqueId}",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(RemoverItemCarrinhoHandler(db))))
+	r := httptest.NewRequest(http.MethodDelete, prefixoEmpresaTeste+"/api/carrinho/itens/"+produtoID+"/"+estoqueID, nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
 	}

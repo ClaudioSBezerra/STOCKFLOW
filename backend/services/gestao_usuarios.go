@@ -64,9 +64,11 @@ func papelImediatamenteAbaixo(papel string) (string, bool) {
 //   - `alvoID == atorID` -> ErrGestaoForaDeEscopo (guarda de auto-ação).
 //   - ator abaixo de `adm` (na prática `gestor`) agindo sobre alvo `gestor`/
 //     `adm` -> ErrGestaoForaDeEscopo. `adm` age sobre qualquer conta.
-func carregarAlvoParaGestao(db *sql.DB, alvoID, atorID, papelAtor string) (string, error) {
+func carregarAlvoParaGestao(db *sql.DB, empresaID string, alvoID, atorID, papelAtor string) (string, error) {
 	var papelAlvo string
-	err := db.QueryRow(`SELECT papel FROM usuarios WHERE id = $1`, alvoID).Scan(&papelAlvo)
+	err := db.QueryRow(
+		`SELECT papel FROM usuarios WHERE id = $1 AND empresa_id = $2`, alvoID, empresaID,
+	).Scan(&papelAlvo)
 	if err != nil {
 		var pqErr *pq.Error
 		if errors.Is(err, sql.ErrNoRows) {
@@ -97,8 +99,8 @@ func carregarAlvoParaGestao(db *sql.DB, alvoID, atorID, papelAtor string) (strin
 // `UPDATE sessoes SET revogado_em = now() WHERE usuario_id = $2 AND
 // revogado_em IS NULL` (molde de RedefinirSenha). Devolve o UsuarioResumo já
 // atualizado.
-func AlterarAtivacaoUsuario(db *sql.DB, alvoID, atorID, papelAtor string, ativo bool) (UsuarioResumo, error) {
-	papelAlvo, err := carregarAlvoParaGestao(db, alvoID, atorID, papelAtor)
+func AlterarAtivacaoUsuario(db *sql.DB, empresaID string, alvoID, atorID, papelAtor string, ativo bool) (UsuarioResumo, error) {
+	papelAlvo, err := carregarAlvoParaGestao(db, empresaID, alvoID, atorID, papelAtor)
 	if err != nil {
 		return UsuarioResumo{}, err
 	}
@@ -115,7 +117,9 @@ func AlterarAtivacaoUsuario(db *sql.DB, alvoID, atorID, papelAtor string, ativo 
 	// a `gestor`/`adm` numa corrida NÃO pode ser desativado por um `gestor`
 	// (AC3) — RowsAffected()==0 -> ErrEstadoContaMudou, antes de qualquer
 	// revogação de sessão.
-	res, err := tx.Exec(`UPDATE usuarios SET ativo = $1 WHERE id = $2 AND papel = $3`, ativo, alvoID, papelAlvo)
+	res, err := tx.Exec(
+		`UPDATE usuarios SET ativo = $1 WHERE id = $2 AND papel = $3 AND empresa_id = $4`,
+		ativo, alvoID, papelAlvo, empresaID)
 	if err != nil {
 		return UsuarioResumo{}, fmt.Errorf("falha ao alterar ativação da conta: %w", err)
 	}
@@ -131,7 +135,7 @@ func AlterarAtivacaoUsuario(db *sql.DB, alvoID, atorID, papelAtor string, ativo 
 		}
 	}
 
-	u, err := relerUsuarioResumoTx(tx, alvoID)
+	u, err := relerUsuarioResumoTx(tx, empresaID, alvoID)
 	if err != nil {
 		return UsuarioResumo{}, err
 	}
@@ -150,8 +154,8 @@ func AlterarAtivacaoUsuario(db *sql.DB, alvoID, atorID, papelAtor string, ativo 
 // — o guard do papel atual fecha a corrida com uma promoção/rebaixamento
 // concorrente (RowsAffected()==0 -> ErrEstadoContaMudou, reusado de
 // promocao.go). NÃO revoga sessões. Devolve o UsuarioResumo já atualizado.
-func RebaixarUsuario(db *sql.DB, alvoID, atorID, papelAtor string) (UsuarioResumo, error) {
-	papelAlvo, err := carregarAlvoParaGestao(db, alvoID, atorID, papelAtor)
+func RebaixarUsuario(db *sql.DB, empresaID string, alvoID, atorID, papelAtor string) (UsuarioResumo, error) {
+	papelAlvo, err := carregarAlvoParaGestao(db, empresaID, alvoID, atorID, papelAtor)
 	if err != nil {
 		return UsuarioResumo{}, err
 	}
@@ -168,8 +172,8 @@ func RebaixarUsuario(db *sql.DB, alvoID, atorID, papelAtor string) (UsuarioResum
 	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
 
 	res, err := tx.Exec(
-		`UPDATE usuarios SET papel = $1 WHERE id = $2 AND papel = $3`,
-		abaixo, alvoID, papelAlvo,
+		`UPDATE usuarios SET papel = $1 WHERE id = $2 AND papel = $3 AND empresa_id = $4`,
+		abaixo, alvoID, papelAlvo, empresaID,
 	)
 	if err != nil {
 		return UsuarioResumo{}, fmt.Errorf("falha ao rebaixar conta: %w", err)
@@ -178,7 +182,7 @@ func RebaixarUsuario(db *sql.DB, alvoID, atorID, papelAtor string) (UsuarioResum
 		return UsuarioResumo{}, ErrEstadoContaMudou
 	}
 
-	u, err := relerUsuarioResumoTx(tx, alvoID)
+	u, err := relerUsuarioResumoTx(tx, empresaID, alvoID)
 	if err != nil {
 		return UsuarioResumo{}, err
 	}
@@ -192,10 +196,10 @@ func RebaixarUsuario(db *sql.DB, alvoID, atorID, papelAtor string) (UsuarioResum
 // relerUsuarioResumoTx relê a projeção somente-leitura da conta dentro da
 // transação em curso — a resposta 200 das duas rotas devolve o estado já
 // aplicado, nunca o de antes da escrita.
-func relerUsuarioResumoTx(tx *sql.Tx, id string) (UsuarioResumo, error) {
+func relerUsuarioResumoTx(tx *sql.Tx, empresaID string, id string) (UsuarioResumo, error) {
 	var u UsuarioResumo
 	err := tx.QueryRow(
-		`SELECT id, nome, email, papel, ativo FROM usuarios WHERE id = $1`, id,
+		`SELECT id, nome, email, papel, ativo FROM usuarios WHERE id = $1 AND empresa_id = $2`, id, empresaID,
 	).Scan(&u.ID, &u.Nome, &u.Email, &u.Papel, &u.Ativo)
 	if err != nil {
 		return UsuarioResumo{}, fmt.Errorf("falha ao reler conta após a escrita: %w", err)

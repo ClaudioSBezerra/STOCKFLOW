@@ -276,6 +276,10 @@ func EnviarFotoProdutoHandler(db *sql.DB, fotosDir string) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		produtoID := r.PathValue("id")
 
@@ -345,7 +349,7 @@ func EnviarFotoProdutoHandler(db *sql.DB, fotosDir string) http.HandlerFunc {
 			return
 		}
 
-		foto, err := services.SalvarFotoProduto(db, fotosDir, produtoID, jpegBuf.Bytes())
+		foto, err := services.SalvarFotoProduto(db, empresa.ID, fotosDir, produtoID, jpegBuf.Bytes())
 		switch {
 		case err == nil:
 			escreverJSON(w, http.StatusCreated, map[string]any{"foto": foto})
@@ -365,11 +369,15 @@ func EnviarFotoProdutoHandler(db *sql.DB, fotosDir string) http.HandlerFunc {
 // `404 NOT_FOUND`, nunca lê fora de `fotosDir`. Não depende de nenhum estado
 // de `produtos` (a tabela não tem soft-delete ainda; mesmo que tivesse, a
 // foto sobreviveria em disco).
-func ServirFotoProdutoHandler(fotosDir string) http.HandlerFunc {
+func ServirFotoProdutoHandler(db *sql.DB, fotosDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := middleware.UsuarioDaSessao(r.Context()); !ok {
 			slog.Error("ServirFotoProdutoHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
 			return
 		}
 
@@ -379,6 +387,22 @@ func ServirFotoProdutoHandler(fotosDir string) http.HandlerFunc {
 		padrao, err := regexp.Compile(`^` + regexp.QuoteMeta(produtoID) + `-\d+\.jpg$`)
 		if err != nil || !padrao.MatchString(nomeArquivo) {
 			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "foto não encontrada")
+			return
+		}
+
+		// Guard de posse por Empresa (Story 9.1, spec-9-1, Design Notes): o
+		// nome do arquivo carrega o `produtoID`, então servir o arquivo sem
+		// checar a quem o Produto pertence deixaria a foto de um cliente
+		// legível por outro que adivinhasse/vazasse o UUID. É por causa deste
+		// guard que `fotosDir` pode continuar plano, sem partição por Empresa.
+		// Produto de outra Empresa colapsa no MESMO 404 de foto inexistente.
+		if err := services.ProdutoPertenceAEmpresa(db, empresa.ID, produtoID); err != nil {
+			if errors.Is(err, services.ErrProdutoNaoEncontrado) {
+				escreverErro(w, http.StatusNotFound, "NOT_FOUND", "foto não encontrada")
+				return
+			}
+			slog.Error("falha ao verificar produto ao servir foto", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao servir foto")
 			return
 		}
 
@@ -420,10 +444,14 @@ func ListarFotosProdutoHandler(db *sql.DB, fotosDir string) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		produtoID := r.PathValue("id")
 
-		fotos, err := services.ListarFotosProduto(db, fotosDir, produtoID)
+		fotos, err := services.ListarFotosProduto(db, empresa.ID, fotosDir, produtoID)
 		switch {
 		case err == nil:
 			escreverJSON(w, http.StatusOK, map[string]any{"fotos": fotos})

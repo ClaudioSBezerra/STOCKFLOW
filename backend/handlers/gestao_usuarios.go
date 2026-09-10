@@ -41,6 +41,10 @@ func DesativarUsuarioHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
 		var req ativacaoRequest
@@ -53,7 +57,7 @@ func DesativarUsuarioHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		u, err := services.AlterarAtivacaoUsuario(db, r.PathValue("id"), usuario.ID, usuario.Papel, *req.Ativo)
+		u, err := services.AlterarAtivacaoUsuario(db, empresa.ID, r.PathValue("id"), usuario.ID, usuario.Papel, *req.Ativo)
 		switch {
 		case err == nil:
 			escreverJSON(w, http.StatusOK, map[string]any{"usuario": u})
@@ -81,8 +85,12 @@ func RebaixarUsuarioHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
-		u, err := services.RebaixarUsuario(db, r.PathValue("id"), usuario.ID, usuario.Papel)
+		u, err := services.RebaixarUsuario(db, empresa.ID, r.PathValue("id"), usuario.ID, usuario.Papel)
 		switch {
 		case err == nil:
 			escreverJSON(w, http.StatusOK, map[string]any{"usuario": u})

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/card';
-import { getAccessToken } from '@/lib/session';
 import { conectarRealtime, type StatusRealtime } from '@/lib/realtime/client';
 import { formatarQuantidade } from '@/components/catalogo/formatacao';
+import { apiUrl, authHeaders } from '@/lib/api';
 
 /**
  * Aba "Movimentações" da página `/estoques` (Story 5.3, spec-5-3). Tabela
@@ -42,11 +42,6 @@ interface Movimentacao {
   criadoEm: string;
 }
 
-function authHeaders(): Record<string, string> {
-  const token = getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
 const MENSAGEM_ERRO_CARREGAR =
   'Não foi possível carregar as movimentações. Tente novamente em instantes.';
 
@@ -76,7 +71,7 @@ export function MovimentacoesSection() {
   const carregar = useCallback(async () => {
     const seq = ++seqRef.current;
     try {
-      const res = await fetch('/api/movimentacoes', { headers: authHeaders() });
+      const res = await fetch(apiUrl('/api/movimentacoes'), { headers: authHeaders() });
       if (seq !== seqRef.current) {
         return;
       }

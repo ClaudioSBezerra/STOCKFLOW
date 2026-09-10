@@ -34,6 +34,21 @@ type EmailConfig struct {
 	AppURL   string
 }
 
+// LinkDaEmpresa monta um link de e-mail SOB o prefixo de rota da Empresa
+// (Story 9.1): `{APP_URL}/e/{slug}{caminho}?token={token}`. Sem o prefixo o
+// link cairia fora de `/e/{slug}/...` e nem o SPA (que passa a rodar com
+// `basename`) nem a API resolveriam a Empresa da requisição.
+//
+// `slug` vazio (nenhuma Empresa resolvida — só possível fora do prefixo,
+// como no `cmd/migrate-legado`) devolve o link SEM prefixo, exatamente como
+// antes desta story.
+func LinkDaEmpresa(appURL, slug, caminho, token string) string {
+	if slug == "" {
+		return fmt.Sprintf("%s%s?token=%s", appURL, caminho, token)
+	}
+	return fmt.Sprintf("%s/e/%s%s?token=%s", appURL, slug, caminho, token)
+}
+
 // CarregarEmailConfig lê a configuração de SMTP do ambiente. Nenhum valor
 // aqui é obrigatório para o processo subir: com SMTP_PASSWORD vazio (padrão
 // em ambiente local/CI) o envio real simplesmente falha de forma

@@ -193,7 +193,7 @@ func validarDimensao(campo string, d *DimensaoInput) (sql.NullFloat64, sql.NullS
 // depois, já com um `produto_id` válido) só pode falhar por causa de
 // `estoque_id` — por isso a mensagem de cada ramo já nomeia o campo certo
 // sem precisar inspecionar o nome da constraint.
-func CriarProduto(db *sql.DB, input CriarProdutoInput) (Produto, error) {
+func CriarProduto(db *sql.DB, empresaID string, input CriarProdutoInput) (Produto, error) {
 	nomeTrimado := strings.TrimSpace(input.Nome)
 	if nomeTrimado == "" || utf8.RuneCountInString(nomeTrimado) > 255 {
 		return Produto{}, &ErroProdutoValidacao{
@@ -257,7 +257,8 @@ func CriarProduto(db *sql.DB, input CriarProdutoInput) (Produto, error) {
 	if templateIDTrimado != "" {
 		var templateTexto string
 		err := db.QueryRow(
-			`SELECT template FROM nomenclatura_templates WHERE id = $1`, templateIDTrimado,
+			`SELECT template FROM nomenclatura_templates WHERE id = $1 AND empresa_id = $2`,
+			templateIDTrimado, empresaID,
 		).Scan(&templateTexto)
 		if err != nil {
 			var pqErr *pq.Error
@@ -289,6 +290,12 @@ func CriarProduto(db *sql.DB, input CriarProdutoInput) (Produto, error) {
 	}
 	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
 
+	// A Categoria informada precisa pertencer À MESMA Empresa (Story 9.1,
+	// AD-20): em vez de um SELECT-antes-de-INSERT (que teria janela de
+	// corrida), o próprio INSERT lê `categorias` com o filtro de Empresa —
+	// uma Categoria de outra Empresa simplesmente não produz linha, e o
+	// `sql.ErrNoRows` do RETURNING colapsa na MESMA mensagem de "categoria
+	// informada não existe" de um id inexistente (nunca revela existência).
 	const insertProduto = `
 		INSERT INTO produtos (
 			nome, codigo, categoria_id, observacoes, template_id,
@@ -296,8 +303,12 @@ func CriarProduto(db *sql.DB, input CriarProdutoInput) (Produto, error) {
 			largura_valor, largura_unidade,
 			diametro_valor, diametro_unidade,
 			altura_valor, altura_unidade,
-			espessura_valor, espessura_unidade
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+			espessura_valor, espessura_unidade,
+			empresa_id
+		)
+		SELECT $1, $2, c.id, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+		FROM categorias c
+		WHERE c.id = $3 AND c.empresa_id = $16
 		RETURNING id, nome`
 	var p Produto
 	err = tx.QueryRow(insertProduto,
@@ -307,10 +318,11 @@ func CriarProduto(db *sql.DB, input CriarProdutoInput) (Produto, error) {
 		diametroValor, diametroUnidade,
 		alturaValor, alturaUnidade,
 		espessuraValor, espessuraUnidade,
+		empresaID,
 	).Scan(&p.ID, &p.Nome)
 	if err != nil {
 		var pqErr *pq.Error
-		if errors.As(err, &pqErr) && (pqErr.Code == pqForeignKeyViolation || pqErr.Code == pqInvalidTextRepresentation) {
+		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && (pqErr.Code == pqForeignKeyViolation || pqErr.Code == pqInvalidTextRepresentation)) {
 			return Produto{}, &ErroProdutoValidacao{Mensagem: "categoria informada não existe"}
 		}
 		// Violação do índice único parcial `idx_produtos_codigo` (migration
@@ -324,15 +336,26 @@ func CriarProduto(db *sql.DB, input CriarProdutoInput) (Produto, error) {
 		return Produto{}, fmt.Errorf("falha ao inserir produto: %w", err)
 	}
 
+	// Mesmo padrão do INSERT acima para o Estoque: a linha só nasce se o
+	// Estoque for da Empresa da requisição; `RowsAffected() == 0` é o sinal
+	// de "estoque de outra Empresa OU inexistente" — indistinguíveis de fora.
 	const insertProdutoEstoque = `
 		INSERT INTO produto_estoque (produto_id, estoque_id, quantidade)
-		VALUES ($1, $2, $3)`
-	if _, err := tx.Exec(insertProdutoEstoque, p.ID, estoqueID, input.QuantidadeInicial); err != nil {
+		SELECT $1, e.id, $3 FROM estoques e WHERE e.id = $2 AND e.empresa_id = $4`
+	res, err := tx.Exec(insertProdutoEstoque, p.ID, estoqueID, input.QuantidadeInicial, empresaID)
+	if err != nil {
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && (pqErr.Code == pqForeignKeyViolation || pqErr.Code == pqInvalidTextRepresentation) {
 			return Produto{}, &ErroProdutoValidacao{Mensagem: "estoque informado não existe"}
 		}
 		return Produto{}, fmt.Errorf("falha ao inserir produto_estoque: %w", err)
+	}
+	linhasEstoque, err := res.RowsAffected()
+	if err != nil {
+		return Produto{}, fmt.Errorf("falha ao ler linhas afetadas em produto_estoque: %w", err)
+	}
+	if linhasEstoque == 0 {
+		return Produto{}, &ErroProdutoValidacao{Mensagem: "estoque informado não existe"}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -358,7 +381,7 @@ func CriarProduto(db *sql.DB, input CriarProdutoInput) (Produto, error) {
 // permanece o anterior (nenhum UPDATE roda). Produto sem template
 // (`template_id IS NULL`) aceita qualquer texto que passe na validação
 // básica acima.
-func AtualizarNomeProduto(db *sql.DB, id string, novoNome string) (Produto, error) {
+func AtualizarNomeProduto(db *sql.DB, empresaID string, id string, novoNome string) (Produto, error) {
 	nomeTrimado := strings.TrimSpace(novoNome)
 	if nomeTrimado == "" || utf8.RuneCountInString(nomeTrimado) > 255 {
 		return Produto{}, &ErroProdutoValidacao{
@@ -367,7 +390,9 @@ func AtualizarNomeProduto(db *sql.DB, id string, novoNome string) (Produto, erro
 	}
 
 	var templateID sql.NullString
-	err := db.QueryRow(`SELECT template_id FROM produtos WHERE id = $1`, id).Scan(&templateID)
+	err := db.QueryRow(
+		`SELECT template_id FROM produtos WHERE id = $1 AND empresa_id = $2`, id, empresaID,
+	).Scan(&templateID)
 	if err != nil {
 		var pqErr *pq.Error
 		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
@@ -392,7 +417,8 @@ func AtualizarNomeProduto(db *sql.DB, id string, novoNome string) (Produto, erro
 
 	var p Produto
 	if err := db.QueryRow(
-		`UPDATE produtos SET nome = $1 WHERE id = $2 RETURNING id, nome`, nomeTrimado, id,
+		`UPDATE produtos SET nome = $1 WHERE id = $2 AND empresa_id = $3 RETURNING id, nome`,
+		nomeTrimado, id, empresaID,
 	).Scan(&p.ID, &p.Nome); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			// Inalcançável na prática: o SELECT acima já provou que a linha
@@ -454,6 +480,7 @@ const buscarProdutosQuery = `
 	FROM produtos p
 	JOIN categorias c ON c.id = p.categoria_id
 	WHERE p.deleted_at IS NULL
+	  AND p.empresa_id = $4
 	  AND (p.nome ILIKE $3 ESCAPE '\' OR p.codigo ILIKE $3 ESCAPE '\' OR c.nome ILIKE $3 ESCAPE '\')
 	ORDER BY rank ASC, p.nome ASC, p.id ASC
 	LIMIT 7`
@@ -465,12 +492,12 @@ const buscarProdutosQuery = `
 // função nunca devolve erro de validação, só erro de banco. Nenhum match em
 // nenhum dos três campos -> slice vazio (nunca `nil`), mesmo padrão de
 // ListarCategorias.
-func BuscarProdutos(db *sql.DB, termo string) ([]ProdutoBusca, error) {
+func BuscarProdutos(db *sql.DB, empresaID string, termo string) ([]ProdutoBusca, error) {
 	termoEscapado := escaparCoringasLike(termo)
 	padraoPrefixo := termoEscapado + "%"
 	padraoSubstring := "%" + termoEscapado + "%"
 
-	rows, err := db.Query(buscarProdutosQuery, termo, padraoPrefixo, padraoSubstring)
+	rows, err := db.Query(buscarProdutosQuery, termo, padraoPrefixo, padraoSubstring, empresaID)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao buscar produtos: %w", err)
 	}
@@ -510,7 +537,7 @@ const buscarProdutoPorCodigoQuery = `
 	SELECT p.id, p.nome, p.codigo, c.id, c.codigo, c.nome
 	FROM produtos p
 	JOIN categorias c ON c.id = p.categoria_id
-	WHERE p.codigo = $1 AND p.deleted_at IS NULL`
+	WHERE p.codigo = $1 AND p.deleted_at IS NULL AND p.empresa_id = $2`
 
 // BuscarProdutoPorCodigo devolve o Produto cujo `codigo` é EXATAMENTE igual a
 // `codigo` (Story 4.5, spec-4-5, FR-35) — a resolução do valor lido de um
@@ -521,10 +548,10 @@ const buscarProdutoPorCodigoQuery = `
 // código exato) -> ErrProdutoNaoEncontrado, mesmo colapso de
 // ObterProdutoHandler; qualquer outro erro -> erro de banco cru para o 500
 // genérico do handler.
-func BuscarProdutoPorCodigo(db *sql.DB, codigo string) (ProdutoBusca, error) {
+func BuscarProdutoPorCodigo(db *sql.DB, empresaID string, codigo string) (ProdutoBusca, error) {
 	var pb ProdutoBusca
 	var codigoLido sql.NullString
-	err := db.QueryRow(buscarProdutoPorCodigoQuery, codigo).Scan(
+	err := db.QueryRow(buscarProdutoPorCodigoQuery, codigo, empresaID).Scan(
 		&pb.ID, &pb.Nome, &codigoLido,
 		&pb.Categoria.ID, &pb.Categoria.Codigo, &pb.Categoria.Nome,
 	)
@@ -541,12 +568,16 @@ func BuscarProdutoPorCodigo(db *sql.DB, codigo string) (ProdutoBusca, error) {
 	return pb, nil
 }
 
-// ListarCategorias devolve as categorias fixas ordenadas por `codigo`
-// ascendente (Story 3.1, AC4) — a lista da qual o formulário de cadastro
-// seleciona, nunca digitável livremente. Lista vazia não é erro (embora não
-// deva ocorrer em produção: a migração 000010 sempre semeia as 25 linhas).
-func ListarCategorias(db *sql.DB) ([]Categoria, error) {
-	rows, err := db.Query(`SELECT id, codigo, nome FROM categorias ORDER BY codigo ASC`)
+// ListarCategorias devolve as categorias DA EMPRESA `empresaID` ordenadas
+// por `codigo` ascendente (Story 3.1, AC4) — a lista da qual o formulário de
+// cadastro seleciona, nunca digitável livremente. Cada Empresa recebe a
+// própria cópia das 25 linhas padrão em services.ProvisionarEmpresa (Story
+// 9.1); as linhas semeadas pela migração 000010 (`empresa_id IS NULL`) são só
+// o molde dessa cópia e nunca aparecem aqui. Lista vazia não é erro.
+func ListarCategorias(db *sql.DB, empresaID string) ([]Categoria, error) {
+	rows, err := db.Query(
+		`SELECT id, codigo, nome FROM categorias WHERE empresa_id = $1 ORDER BY codigo ASC`,
+		empresaID)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao listar categorias: %w", err)
 	}

@@ -86,7 +86,10 @@ func inserirLegadoProduto(t *testing.T, alvo *sql.DB, in legadoProdutoInput) {
 // hardcodar um dos 25 nomes.
 func categoriaExistente(t *testing.T, alvo *sql.DB) (id, nome string) {
 	t.Helper()
-	if err := alvo.QueryRow(`SELECT id, nome FROM categorias ORDER BY codigo LIMIT 1`).Scan(&id, &nome); err != nil {
+	// `empresa_id IS NULL` (Story 9.1): a lista de Categorias passou a ter
+	// uma cópia por Empresa, e este binário resolve nome -> id no escopo
+	// legado — o teste tem de esperar o id da MESMA linha padrão.
+	if err := alvo.QueryRow(`SELECT id, nome FROM categorias WHERE empresa_id IS NULL ORDER BY codigo LIMIT 1`).Scan(&id, &nome); err != nil {
 		t.Fatalf("falha ao buscar categoria de seed: %v", err)
 	}
 	return id, nome
@@ -529,7 +532,7 @@ func TestMigrarProdutos_CategoriaComPrefixoDeCodigoEAcentoResolve(t *testing.T) 
 
 	var categoriaID, categoriaNome string
 	if err := alvo.QueryRow(
-		`SELECT id, nome FROM categorias WHERE nome ~ '[áéíóúâêôãõç]' ORDER BY codigo LIMIT 1`,
+		`SELECT id, nome FROM categorias WHERE empresa_id IS NULL AND nome ~ '[áéíóúâêôãõç]' ORDER BY codigo LIMIT 1`,
 	).Scan(&categoriaID, &categoriaNome); err != nil {
 		t.Fatalf("falha ao buscar categoria de seed com acento: %v", err)
 	}
@@ -824,15 +827,23 @@ func TestMigrarProdutos_ProdutoSemFoto(t *testing.T) {
 func TestMigrarProdutos_SeedAusente(t *testing.T) {
 	alvo, legado := testDB(t)
 
-	type categoriaRow struct{ codigo, nome string }
+	// Story 9.1: `categorias` deixou de ser uma lista só global — cada
+	// Empresa recebe a própria cópia (services.ProvisionarEmpresa). O
+	// snapshot PRECISA carregar `empresa_id`, senão o cleanup devolveria
+	// apenas as linhas padrão e apagaria as cópias das Empresas criadas por
+	// outras suítes contra o mesmo banco (nenhuma migration as recriaria).
+	type categoriaRow struct {
+		codigo, nome string
+		empresaID    sql.NullString
+	}
 	var originais []categoriaRow
-	rows, err := alvo.Query(`SELECT codigo, nome FROM categorias`)
+	rows, err := alvo.Query(`SELECT codigo, nome, empresa_id FROM categorias`)
 	if err != nil {
 		t.Fatalf("falha ao capturar snapshot de categorias: %v", err)
 	}
 	for rows.Next() {
 		var c categoriaRow
-		if err := rows.Scan(&c.codigo, &c.nome); err != nil {
+		if err := rows.Scan(&c.codigo, &c.nome, &c.empresaID); err != nil {
 			rows.Close()
 			t.Fatalf("falha ao ler snapshot de categorias: %v", err)
 		}
@@ -846,7 +857,8 @@ func TestMigrarProdutos_SeedAusente(t *testing.T) {
 	t.Cleanup(func() {
 		for _, c := range originais {
 			if _, err := alvo.Exec(
-				`INSERT INTO categorias (codigo, nome) VALUES ($1, $2) ON CONFLICT DO NOTHING`, c.codigo, c.nome,
+				`INSERT INTO categorias (codigo, nome, empresa_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+				c.codigo, c.nome, c.empresaID,
 			); err != nil {
 				t.Errorf("falha ao restaurar categoria %q no cleanup: %v", c.codigo, err)
 			}

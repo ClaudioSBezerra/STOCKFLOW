@@ -20,11 +20,11 @@ func inserirSolicitacao(t *testing.T, db *sql.DB, solicitanteID, papelAlvo, stat
 	// decidido_em: now() quando já decidida, NULL enquanto pendente.
 	decididoEm := sql.NullTime{Time: time.Now().UTC(), Valid: status != "pendente"}
 	const insert = `
-		INSERT INTO solicitacoes_promocao (solicitante_id, papel_alvo, status, decidido_por, decidido_em)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO solicitacoes_promocao (solicitante_id, papel_alvo, status, decidido_por, decidido_em, empresa_id)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id`
 	var id string
-	if err := db.QueryRow(insert, solicitanteID, papelAlvo, status, decisor, decididoEm).Scan(&id); err != nil {
+	if err := db.QueryRow(insert, solicitanteID, papelAlvo, status, decisor, decididoEm, empresaTeste).Scan(&id); err != nil {
 		t.Fatalf("falha ao inserir solicitação (%s): %v", status, err)
 	}
 	return id
@@ -93,7 +93,7 @@ func TestSolicitarPromocao_AlvoDerivadoDoPapel(t *testing.T) {
 		t.Run(c.papelAtual, func(t *testing.T) {
 			id := semearConta(t, db, "Conta "+c.papelAtual, c.papelAtual+"-solicita@empresa.com", c.papelAtual, 1)
 
-			s, err := SolicitarPromocao(db, id, c.papelAtual)
+			s, err := SolicitarPromocao(db, empresaTeste, id, c.papelAtual)
 			if err != nil {
 				t.Fatalf("SolicitarPromocao erro inesperado: %v", err)
 			}
@@ -133,7 +133,7 @@ func TestSolicitarPromocao_PapelSemPromocao(t *testing.T) {
 		t.Run(papel, func(t *testing.T) {
 			id := semearConta(t, db, "Conta "+papel, papel+"-sem-promo@empresa.com", papel, 1)
 
-			_, err := SolicitarPromocao(db, id, papel)
+			_, err := SolicitarPromocao(db, empresaTeste, id, papel)
 			if !errors.Is(err, ErrPromocaoIndisponivel) {
 				t.Fatalf("erro = %v, want ErrPromocaoIndisponivel", err)
 			}
@@ -154,10 +154,10 @@ func TestSolicitarPromocao_JaHaPendente(t *testing.T) {
 	db := testDB(t)
 	id := semearConta(t, db, "Repetida", "repete-solicita@empresa.com", PapelUsuario, 1)
 
-	if _, err := SolicitarPromocao(db, id, PapelUsuario); err != nil {
+	if _, err := SolicitarPromocao(db, empresaTeste, id, PapelUsuario); err != nil {
 		t.Fatalf("primeira SolicitarPromocao falhou: %v", err)
 	}
-	_, err := SolicitarPromocao(db, id, PapelUsuario)
+	_, err := SolicitarPromocao(db, empresaTeste, id, PapelUsuario)
 	if !errors.Is(err, ErrSolicitacaoPendenteExiste) {
 		t.Fatalf("erro = %v, want ErrSolicitacaoPendenteExiste", err)
 	}
@@ -178,7 +178,7 @@ func TestSolicitarPromocao_AposRejeicao(t *testing.T) {
 	decisor := semearConta(t, db, "Gestor", "gestor-rejeitou@empresa.com", PapelGestor, 2)
 	inserirSolicitacao(t, db, solicitante, PapelAlmoxarife, "rejeitada", decisor)
 
-	s, err := SolicitarPromocao(db, solicitante, PapelUsuario)
+	s, err := SolicitarPromocao(db, empresaTeste, solicitante, PapelUsuario)
 	if err != nil {
 		t.Fatalf("SolicitarPromocao após rejeição: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestSolicitarPromocao_CorridaIndicePartial(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			_, errs[i] = SolicitarPromocao(db, id, PapelUsuario)
+			_, errs[i] = SolicitarPromocao(db, empresaTeste, id, PapelUsuario)
 		}(i)
 	}
 	close(start)
@@ -241,7 +241,7 @@ func TestBuscarMinhaSolicitacao_MaisRecenteOuNil(t *testing.T) {
 	db := testDB(t)
 
 	semNada := semearConta(t, db, "Sem histórico", "sem-historico@empresa.com", PapelUsuario, 1)
-	got, err := BuscarMinhaSolicitacao(db, semNada)
+	got, err := BuscarMinhaSolicitacao(db, empresaTeste, semNada)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestBuscarMinhaSolicitacao_MaisRecenteOuNil(t *testing.T) {
 	// A mais recente: uma pendente inserida depois.
 	pendenteID := inserirSolicitacao(t, db, comHist, PapelAlmoxarife, "pendente", "")
 
-	got, err = BuscarMinhaSolicitacao(db, comHist)
+	got, err = BuscarMinhaSolicitacao(db, empresaTeste, comHist)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestBuscarMinhaSolicitacao_DecididoEmPreenchido(t *testing.T) {
 	decisor := semearConta(t, db, "Adm dec", "adm-dec@empresa.com", PapelAdm, 2)
 	inserirSolicitacao(t, db, solicitante, PapelGestor, "aprovada", decisor)
 
-	got, err := BuscarMinhaSolicitacao(db, solicitante)
+	got, err := BuscarMinhaSolicitacao(db, empresaTeste, solicitante)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestListarSolicitacoesPendentes_RecorteGestorVsAdm(t *testing.T) {
 	inserirSolicitacao(t, db, u3, PapelAlmoxarife, "rejeitada", decisor)
 
 	t.Run("gestor vê só alvo almoxarife", func(t *testing.T) {
-		lista, err := ListarSolicitacoesPendentes(db, PapelGestor)
+		lista, err := ListarSolicitacoesPendentes(db, empresaTeste, PapelGestor)
 		if err != nil {
 			t.Fatalf("erro: %v", err)
 		}
@@ -332,7 +332,7 @@ func TestListarSolicitacoesPendentes_RecorteGestorVsAdm(t *testing.T) {
 	})
 
 	t.Run("adm vê todas as pendentes", func(t *testing.T) {
-		lista, err := ListarSolicitacoesPendentes(db, PapelAdm)
+		lista, err := ListarSolicitacoesPendentes(db, empresaTeste, PapelAdm)
 		if err != nil {
 			t.Fatalf("erro: %v", err)
 		}
@@ -353,7 +353,7 @@ func TestListarSolicitacoesPendentes_RecorteGestorVsAdm(t *testing.T) {
 // devolve slice vazio, nunca nil/erro.
 func TestListarSolicitacoesPendentes_ListaVazia(t *testing.T) {
 	db := testDB(t)
-	lista, err := ListarSolicitacoesPendentes(db, PapelAdm)
+	lista, err := ListarSolicitacoesPendentes(db, empresaTeste, PapelAdm)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -376,7 +376,7 @@ func TestDecidirSolicitacao_AprovarTrocaPapelEAuditoria(t *testing.T) {
 	decisor := semearConta(t, db, "Gestor aprova", "gestor-aprova@empresa.com", PapelGestor, 2)
 	solID := inserirSolicitacao(t, db, solicitante, PapelAlmoxarife, "pendente", "")
 
-	s, err := DecidirSolicitacao(db, solID, decisor, PapelGestor, true)
+	s, err := DecidirSolicitacao(db, empresaTeste, solID, decisor, PapelGestor, true)
 	if err != nil {
 		t.Fatalf("DecidirSolicitacao erro inesperado: %v", err)
 	}
@@ -411,7 +411,7 @@ func TestDecidirSolicitacao_AprovarAlvoGestorPorAdm(t *testing.T) {
 	decisor := semearConta(t, db, "Adm aprova", "adm-aprova@empresa.com", PapelAdm, 2)
 	solID := inserirSolicitacao(t, db, solicitante, PapelGestor, "pendente", "")
 
-	s, err := DecidirSolicitacao(db, solID, decisor, PapelAdm, true)
+	s, err := DecidirSolicitacao(db, empresaTeste, solID, decisor, PapelAdm, true)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -431,7 +431,7 @@ func TestDecidirSolicitacao_AlvoGestorPorNaoAdm(t *testing.T) {
 	decisor := semearConta(t, db, "Gestor nao-adm", "gestor-naoadm@empresa.com", PapelGestor, 2)
 	solID := inserirSolicitacao(t, db, solicitante, PapelGestor, "pendente", "")
 
-	_, err := DecidirSolicitacao(db, solID, decisor, PapelGestor, true)
+	_, err := DecidirSolicitacao(db, empresaTeste, solID, decisor, PapelGestor, true)
 	if !errors.Is(err, ErrDecisaoNaoAutorizada) {
 		t.Fatalf("erro = %v, want ErrDecisaoNaoAutorizada", err)
 	}
@@ -455,7 +455,7 @@ func TestDecidirSolicitacao_Rejeitar(t *testing.T) {
 	decisor := semearConta(t, db, "Gestor recusa", "gestor-recusa@empresa.com", PapelGestor, 2)
 	solID := inserirSolicitacao(t, db, solicitante, PapelAlmoxarife, "pendente", "")
 
-	s, err := DecidirSolicitacao(db, solID, decisor, PapelGestor, false)
+	s, err := DecidirSolicitacao(db, empresaTeste, solID, decisor, PapelGestor, false)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -476,7 +476,7 @@ func TestDecidirSolicitacao_Inexistente(t *testing.T) {
 	db := testDB(t)
 	decisor := semearConta(t, db, "Gestor 404", "gestor-404@empresa.com", PapelGestor, 1)
 
-	_, err := DecidirSolicitacao(db, "00000000-0000-0000-0000-000000000000", decisor, PapelGestor, true)
+	_, err := DecidirSolicitacao(db, empresaTeste, "00000000-0000-0000-0000-000000000000", decisor, PapelGestor, true)
 	if !errors.Is(err, ErrSolicitacaoNaoEncontrada) {
 		t.Fatalf("erro = %v, want ErrSolicitacaoNaoEncontrada", err)
 	}
@@ -488,7 +488,7 @@ func TestDecidirSolicitacao_IDMalformado(t *testing.T) {
 	db := testDB(t)
 	decisor := semearConta(t, db, "Gestor malformado", "gestor-malformado@empresa.com", PapelGestor, 1)
 
-	_, err := DecidirSolicitacao(db, "nao-e-um-uuid", decisor, PapelGestor, true)
+	_, err := DecidirSolicitacao(db, empresaTeste, "nao-e-um-uuid", decisor, PapelGestor, true)
 	if !errors.Is(err, ErrSolicitacaoNaoEncontrada) {
 		t.Fatalf("erro = %v, want ErrSolicitacaoNaoEncontrada", err)
 	}
@@ -502,10 +502,10 @@ func TestDecidirSolicitacao_JaDecidida(t *testing.T) {
 	decisor := semearConta(t, db, "Gestor 2x", "gestor-2x@empresa.com", PapelGestor, 2)
 	solID := inserirSolicitacao(t, db, solicitante, PapelAlmoxarife, "pendente", "")
 
-	if _, err := DecidirSolicitacao(db, solID, decisor, PapelGestor, true); err != nil {
+	if _, err := DecidirSolicitacao(db, empresaTeste, solID, decisor, PapelGestor, true); err != nil {
 		t.Fatalf("primeira decisão falhou: %v", err)
 	}
-	_, err := DecidirSolicitacao(db, solID, decisor, PapelGestor, false)
+	_, err := DecidirSolicitacao(db, empresaTeste, solID, decisor, PapelGestor, false)
 	if !errors.Is(err, ErrSolicitacaoNaoPendente) {
 		t.Fatalf("erro = %v, want ErrSolicitacaoNaoPendente", err)
 	}
@@ -525,7 +525,7 @@ func TestDecidirSolicitacao_PapelDoSolicitanteMudou(t *testing.T) {
 		t.Fatalf("forçar mudança de papel: %v", err)
 	}
 
-	_, err := DecidirSolicitacao(db, solID, decisor, PapelGestor, true)
+	_, err := DecidirSolicitacao(db, empresaTeste, solID, decisor, PapelGestor, true)
 	if !errors.Is(err, ErrEstadoContaMudou) {
 		t.Fatalf("erro = %v, want ErrEstadoContaMudou", err)
 	}
@@ -560,7 +560,7 @@ func TestDecidirSolicitacao_CorridaEntreDoisDecisores(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			_, errs[i] = DecidirSolicitacao(db, solID, decisores[i], PapelGestor, false)
+			_, errs[i] = DecidirSolicitacao(db, empresaTeste, solID, decisores[i], PapelGestor, false)
 		}(i)
 	}
 	close(start)
@@ -611,7 +611,7 @@ func TestDecidirSolicitacao_CorridaAprovacaoConcorrente(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			_, errs[i] = DecidirSolicitacao(db, solID, decisores[i], PapelGestor, true)
+			_, errs[i] = DecidirSolicitacao(db, empresaTeste, solID, decisores[i], PapelGestor, true)
 		}(i)
 	}
 	close(start)

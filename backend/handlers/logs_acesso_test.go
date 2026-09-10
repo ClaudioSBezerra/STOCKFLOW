@@ -50,7 +50,7 @@ func ultimoLogAcesso(t *testing.T, db *sql.DB) logAcessoLinha {
 // getLogsAcesso despacha através da MESMA composição registrada em newMux
 // (main.go): RequireAuth -> RequireRole(PapelAdm) -> ListarLogsAcessoHandler.
 func getLogsAcesso(db *sql.DB, authHeader, query string) *httptest.ResponseRecorder {
-	caminho := "/api/logs-acesso"
+	caminho := prefixoEmpresaTeste + "/api/logs-acesso"
 	if query != "" {
 		caminho += "?" + query
 	}
@@ -59,9 +59,9 @@ func getLogsAcesso(db *sql.DB, authHeader, query string) *httptest.ResponseRecor
 		req.Header.Set("Authorization", authHeader)
 	}
 	w := httptest.NewRecorder()
-	middleware.RequireAuth(db, testJWTSecret)(
+	comEmpresa(db, middleware.RequireAuth(db, testJWTSecret)(
 		middleware.RequireRole(services.PapelAdm)(
-			ListarLogsAcessoHandler(db)))(w, req)
+			ListarLogsAcessoHandler(db))))(w, req)
 	return w
 }
 
@@ -214,13 +214,13 @@ func TestListarLogsAcessoHandler_FiltroDePeriodoRestringe(t *testing.T) {
 		t.Fatalf("truncate logs_acesso: %v", err)
 	}
 	const q = `
-		INSERT INTO logs_acesso (email_informado, metodo, sucesso, ip, criado_em)
+		INSERT INTO logs_acesso (email_informado, metodo, sucesso, ip, criado_em, empresa_id)
 		VALUES
-			('a@x.com', 'senha', false, '1.1.1.1', TIMESTAMPTZ '2026-07-31 23:00:00Z'),
-			('b@x.com', 'senha', true,  '1.1.1.1', TIMESTAMPTZ '2026-08-05 10:00:00Z'),
-			('c@x.com', 'sso',   true,  '1.1.1.1', TIMESTAMPTZ '2026-08-15 18:30:00Z'),
-			('d@x.com', 'senha', false, '1.1.1.1', TIMESTAMPTZ '2026-08-16 01:00:00Z')`
-	if _, err := db.Exec(q); err != nil {
+			('a@x.com', 'senha', false, '1.1.1.1', TIMESTAMPTZ '2026-07-31 23:00:00Z', $1),
+			('b@x.com', 'senha', true,  '1.1.1.1', TIMESTAMPTZ '2026-08-05 10:00:00Z', $1),
+			('c@x.com', 'sso',   true,  '1.1.1.1', TIMESTAMPTZ '2026-08-15 18:30:00Z', $1),
+			('d@x.com', 'senha', false, '1.1.1.1', TIMESTAMPTZ '2026-08-16 01:00:00Z', $1)`
+	if _, err := db.Exec(q, empresaTeste); err != nil {
 		t.Fatalf("seed logs: %v", err)
 	}
 
@@ -253,13 +253,13 @@ func TestListarLogsAcessoHandler_FiltroRFC3339(t *testing.T) {
 		t.Fatalf("truncate logs_acesso: %v", err)
 	}
 	const seed = `
-		INSERT INTO logs_acesso (email_informado, metodo, sucesso, ip, criado_em)
+		INSERT INTO logs_acesso (email_informado, metodo, sucesso, ip, criado_em, empresa_id)
 		VALUES
-			('antes@x.com',  'senha', false, '1.1.1.1', TIMESTAMPTZ '2026-08-04 23:59:59Z'),
-			('dentro1@x.com','senha', true,  '1.1.1.1', TIMESTAMPTZ '2026-08-05 00:00:01Z'),
-			('dentro2@x.com','sso',   true,  '1.1.1.1', TIMESTAMPTZ '2026-08-15 23:59:58Z'),
-			('depois@x.com', 'senha', false, '1.1.1.1', TIMESTAMPTZ '2026-08-16 00:00:05Z')`
-	if _, err := db.Exec(seed); err != nil {
+			('antes@x.com',  'senha', false, '1.1.1.1', TIMESTAMPTZ '2026-08-04 23:59:59Z', $1),
+			('dentro1@x.com','senha', true,  '1.1.1.1', TIMESTAMPTZ '2026-08-05 00:00:01Z', $1),
+			('dentro2@x.com','sso',   true,  '1.1.1.1', TIMESTAMPTZ '2026-08-15 23:59:58Z', $1),
+			('depois@x.com', 'senha', false, '1.1.1.1', TIMESTAMPTZ '2026-08-16 00:00:05Z', $1)`
+	if _, err := db.Exec(seed, empresaTeste); err != nil {
 		t.Fatalf("seed logs: %v", err)
 	}
 

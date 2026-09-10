@@ -18,6 +18,11 @@ const maxLogsAcessoPorConsulta = 500
 // conta não é identificável sem ferir a não-enumeração de e-mail (falha de
 // senha, SSO sem conta / e-mail não verificado).
 type RegistroTentativaLogin struct {
+	// EmpresaID é a Empresa resolvida do slug da URL pelo middleware (Story
+	// 9.1, AD-19): toda tentativa de login acontece SOB uma Empresa, mesmo
+	// quando o e-mail informado não corresponde a conta nenhuma — é o que
+	// mantém a trilha de auditoria de cada cliente isolada da dos outros.
+	EmpresaID      string
 	UsuarioID      *string
 	EmailInformado string
 	Metodo         string
@@ -56,9 +61,9 @@ func RegistrarTentativaLogin(db *sql.DB, r RegistroTentativaLogin) error {
 	}
 
 	const insert = `
-		INSERT INTO logs_acesso (usuario_id, email_informado, metodo, sucesso, ip)
-		VALUES ($1, $2, $3, $4, $5)`
-	if _, err := db.Exec(insert, r.UsuarioID, email, r.Metodo, r.Sucesso, ip); err != nil {
+		INSERT INTO logs_acesso (usuario_id, email_informado, metodo, sucesso, ip, empresa_id)
+		VALUES ($1, $2, $3, $4, $5, $6)`
+	if _, err := db.Exec(insert, r.UsuarioID, email, r.Metodo, r.Sucesso, ip, r.EmpresaID); err != nil {
 		return fmt.Errorf("falha ao registrar tentativa de login em logs_acesso: %w", err)
 	}
 	return nil
@@ -80,12 +85,13 @@ type LogAcesso struct {
 	CriadoEm       time.Time `json:"criadoEm"`
 }
 
-// ListarLogsAcesso devolve as linhas de `logs_acesso` no intervalo
-// [inicio, fim] (ambos opcionais — nil = sem limite naquele extremo),
+// ListarLogsAcesso devolve as linhas de `logs_acesso` DA EMPRESA `empresaID`
+// (Story 9.1, AD-20 — a trilha de um cliente nunca aparece para outro) no
+// intervalo [inicio, fim] (ambos opcionais — nil = sem limite naquele extremo),
 // ordenadas do mais recente ao mais antigo e limitadas a
 // maxLogsAcessoPorConsulta. Lista vazia não é erro. Molde de ListarUsuarios
 // (services/usuarios.go).
-func ListarLogsAcesso(db *sql.DB, inicio, fim *time.Time) ([]LogAcesso, error) {
+func ListarLogsAcesso(db *sql.DB, empresaID string, inicio, fim *time.Time) ([]LogAcesso, error) {
 	// Dereferência explícita para interface{}: um *time.Time nil é passado
 	// como NULL, e o predicado `$n::timestamptz IS NULL OR ...` desliga o
 	// filtro daquele extremo.
@@ -104,13 +110,14 @@ func ListarLogsAcesso(db *sql.DB, inicio, fim *time.Time) ([]LogAcesso, error) {
 	q := fmt.Sprintf(`
 		SELECT l.id, l.usuario_id, u.nome, l.email_informado, l.metodo, l.sucesso, l.ip, l.criado_em
 		FROM logs_acesso l
-		LEFT JOIN usuarios u ON u.id = l.usuario_id
-		WHERE ($1::timestamptz IS NULL OR l.criado_em >= $1)
+		LEFT JOIN usuarios u ON u.id = l.usuario_id AND u.empresa_id = $3
+		WHERE l.empresa_id = $3
+		  AND ($1::timestamptz IS NULL OR l.criado_em >= $1)
 		  AND ($2::timestamptz IS NULL OR l.criado_em <= $2)
 		ORDER BY l.criado_em DESC, l.id DESC
 		LIMIT %d`, maxLogsAcessoPorConsulta)
 
-	rows, err := db.Query(q, inicioArg, fimArg)
+	rows, err := db.Query(q, inicioArg, fimArg, empresaID)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao listar logs de acesso: %w", err)
 	}
@@ -146,15 +153,15 @@ func ListarLogsAcesso(db *sql.DB, inicio, fim *time.Time) ([]LogAcesso, error) {
 // conjunto já está limitado a um único usuário e a LGPD pede o histórico
 // completo, não uma amostra. Mesmo `ORDER BY l.criado_em DESC, l.id DESC`
 // (desempate determinístico). Lista vazia não é erro.
-func ListarLogsAcessoDoUsuario(db *sql.DB, usuarioID string) ([]LogAcesso, error) {
+func ListarLogsAcessoDoUsuario(db *sql.DB, empresaID string, usuarioID string) ([]LogAcesso, error) {
 	const q = `
 		SELECT l.id, l.usuario_id, u.nome, l.email_informado, l.metodo, l.sucesso, l.ip, l.criado_em
 		FROM logs_acesso l
-		LEFT JOIN usuarios u ON u.id = l.usuario_id
-		WHERE l.usuario_id = $1
+		LEFT JOIN usuarios u ON u.id = l.usuario_id AND u.empresa_id = $2
+		WHERE l.usuario_id = $1 AND l.empresa_id = $2
 		ORDER BY l.criado_em DESC, l.id DESC`
 
-	rows, err := db.Query(q, usuarioID)
+	rows, err := db.Query(q, usuarioID, empresaID)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao listar logs de acesso do usuário: %w", err)
 	}

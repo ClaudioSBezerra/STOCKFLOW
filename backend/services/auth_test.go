@@ -76,6 +76,12 @@ func testDB(t *testing.T) *sql.DB {
 		t.Fatalf("falha ao limpar tabelas entre testes: %v", err)
 	}
 
+	// Story 9.1 (Multi-Empresa): toda função de service recebe `empresaID`
+	// como argumento explícito, então a suíte precisa de uma Empresa real.
+	// Provisionada uma única vez e reaproveitada (nenhum TRUNCATE desta
+	// suíte alcança `empresas`) — ver empresa_teste_test.go.
+	empresaTeste = garantirEmpresaTeste(t, db)
+
 	return db
 }
 
@@ -106,7 +112,7 @@ func contarLinhas(t *testing.T, db *sql.DB, tabela string) int {
 func TestCadastrar_Sucesso(t *testing.T) {
 	db := testDB(t)
 
-	id, err := Cadastrar(db, testEmailCfg, "  Fulano de Tal  ", "Fulano@Empresa.COM", "senha-123456")
+	id, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "  Fulano de Tal  ", "Fulano@Empresa.COM", "senha-123456")
 	if err != nil {
 		t.Fatalf("Cadastrar retornou erro inesperado: %v", err)
 	}
@@ -185,7 +191,9 @@ func TestCadastrar_Sucesso(t *testing.T) {
 	if link == "" {
 		t.Error("variaveis_json.link vazio")
 	}
-	wantLinkPrefix := "http://test.local/verificar-email?token=" + token
+	// O link nasce prefixado pela Empresa da requisição (Story 9.1):
+	// {APP_URL}/e/{slug}/verificar-email?token=...
+	wantLinkPrefix := "http://test.local/e/" + slugEmpresaTeste + "/verificar-email?token=" + token
 	if link != wantLinkPrefix {
 		t.Errorf("link = %q, want %q", link, wantLinkPrefix)
 	}
@@ -197,7 +205,7 @@ func TestCadastrar_Sucesso(t *testing.T) {
 func TestCadastrar_EmailDuplicado(t *testing.T) {
 	db := testDB(t)
 
-	if _, err := Cadastrar(db, testEmailCfg, "Primeiro", "duplicado@empresa.com", "senha-123456"); err != nil {
+	if _, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Primeiro", "duplicado@empresa.com", "senha-123456"); err != nil {
 		t.Fatalf("primeiro Cadastrar falhou: %v", err)
 	}
 
@@ -205,7 +213,7 @@ func TestCadastrar_EmailDuplicado(t *testing.T) {
 	tokensAntes := contarLinhas(t, db, "tokens_acao")
 	emailsAntes := contarLinhas(t, db, "emails_pendentes")
 
-	_, err := Cadastrar(db, testEmailCfg, "Segundo", "DUPLICADO@Empresa.com", "outra-senha1")
+	_, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Segundo", "DUPLICADO@Empresa.com", "outra-senha1")
 	if !errors.Is(err, ErrEmailDuplicado) {
 		t.Fatalf("erro = %v, want ErrEmailDuplicado", err)
 	}
@@ -239,7 +247,7 @@ func TestCadastrar_CampoObrigatorioAusente(t *testing.T) {
 	for _, c := range casos {
 		t.Run(fmt.Sprintf("nome=%q email=%q senha=%q", c.nome, c.email, c.senha), func(t *testing.T) {
 			antes := contarLinhas(t, db, "usuarios")
-			_, err := Cadastrar(db, testEmailCfg, c.nome, c.email, c.senha)
+			_, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, c.nome, c.email, c.senha)
 			if !errors.Is(err, ErrCadastroValidacao) {
 				t.Fatalf("erro = %v, want ErrCadastroValidacao", err)
 			}
@@ -278,7 +286,7 @@ func TestCadastrar_ValidacaoDeTamanho(t *testing.T) {
 	for _, c := range casos {
 		t.Run(c.desc, func(t *testing.T) {
 			antes := contarLinhas(t, db, "usuarios")
-			_, err := Cadastrar(db, testEmailCfg, c.nome, c.email, c.senha)
+			_, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, c.nome, c.email, c.senha)
 			if !errors.Is(err, c.wantErr) {
 				t.Fatalf("erro = %v, want %v", err, c.wantErr)
 			}
@@ -302,7 +310,7 @@ func TestCadastrar_NomeComAcentosDentroDoLimiteDeCaracteres(t *testing.T) {
 		t.Fatalf("nome de teste deveria ter mais de 255 bytes, tem %d", len(nome))
 	}
 
-	usuarioID, err := Cadastrar(db, testEmailCfg, nome, "nomeacentuado@empresa.com", "senha-123456")
+	usuarioID, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, nome, "nomeacentuado@empresa.com", "senha-123456")
 	if err != nil {
 		t.Fatalf("Cadastrar retornou erro inesperado para nome de 255 caracteres: %v", err)
 	}
@@ -315,7 +323,7 @@ func TestCadastrar_NomeComAcentosDentroDoLimiteDeCaracteres(t *testing.T) {
 // e retorna o id do usuário e o token de verificação gerado.
 func criarUsuarioComToken(t *testing.T, db *sql.DB, email string) (usuarioID, token string) {
 	t.Helper()
-	usuarioID, err := Cadastrar(db, testEmailCfg, "Usuário Teste", email, "senha-123456")
+	usuarioID, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Usuário Teste", email, "senha-123456")
 	if err != nil {
 		t.Fatalf("Cadastrar falhou: %v", err)
 	}
@@ -331,7 +339,7 @@ func TestVerificarEmail_LinkValido(t *testing.T) {
 	db := testDB(t)
 	usuarioID, token := criarUsuarioComToken(t, db, "verificar-ok@empresa.com")
 
-	if err := VerificarEmail(db, token); err != nil {
+	if err := VerificarEmail(db, empresaTeste, token); err != nil {
 		t.Fatalf("VerificarEmail retornou erro inesperado: %v", err)
 	}
 
@@ -363,7 +371,7 @@ func TestVerificarEmail_LinkExpirado(t *testing.T) {
 		t.Fatalf("falha ao forçar expiração: %v", err)
 	}
 
-	err := VerificarEmail(db, token)
+	err := VerificarEmail(db, empresaTeste, token)
 	if !errors.Is(err, ErrTokenExpirado) {
 		t.Fatalf("erro = %v, want ErrTokenExpirado", err)
 	}
@@ -384,11 +392,11 @@ func TestVerificarEmail_LinkJaUsado(t *testing.T) {
 	db := testDB(t)
 	_, token := criarUsuarioComToken(t, db, "verificar-usado@empresa.com")
 
-	if err := VerificarEmail(db, token); err != nil {
+	if err := VerificarEmail(db, empresaTeste, token); err != nil {
 		t.Fatalf("primeira verificação falhou: %v", err)
 	}
 
-	err := VerificarEmail(db, token)
+	err := VerificarEmail(db, empresaTeste, token)
 	if !errors.Is(err, ErrTokenExpirado) {
 		t.Fatalf("segunda verificação: erro = %v, want ErrTokenExpirado", err)
 	}
@@ -417,7 +425,7 @@ func TestVerificarEmail_Concorrente(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			results[i] = VerificarEmail(db, token)
+			results[i] = VerificarEmail(db, empresaTeste, token)
 		}(i)
 	}
 	close(start)
@@ -457,7 +465,7 @@ func TestVerificarEmail_Concorrente(t *testing.T) {
 func TestVerificarEmail_TokenInexistente(t *testing.T) {
 	db := testDB(t)
 
-	err := VerificarEmail(db, "token-que-nunca-existiu")
+	err := VerificarEmail(db, empresaTeste, "token-que-nunca-existiu")
 	if !errors.Is(err, ErrTokenNaoEncontrado) {
 		t.Fatalf("erro = %v, want ErrTokenNaoEncontrado", err)
 	}
@@ -515,10 +523,10 @@ func criarUsuarioParaLogin(t *testing.T, db *sql.DB, email, senha string, ativo,
 
 	var id string
 	const insert = `
-		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
-		VALUES ('Usuário Teste', $1, $2, 'usuario', $3, $4)
+		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, empresa_id)
+		VALUES ('Usuário Teste', $1, $2, 'usuario', $3, $4, $5)
 		RETURNING id`
-	if err := db.QueryRow(insert, email, senhaHash, emailVerificado, ativo).Scan(&id); err != nil {
+	if err := db.QueryRow(insert, email, senhaHash, emailVerificado, ativo, empresaTeste).Scan(&id); err != nil {
 		t.Fatalf("falha ao criar usuario de teste: %v", err)
 	}
 	return id
@@ -531,7 +539,7 @@ func TestLogin_Sucesso(t *testing.T) {
 	db := testDB(t)
 	id := criarUsuarioParaLogin(t, db, "login-ok@empresa.com", "senha-123456", true, true)
 
-	got, err := Login(db, "Login-OK@Empresa.com", "senha-123456")
+	got, err := Login(db, empresaTeste, "Login-OK@Empresa.com", "senha-123456")
 	if err != nil {
 		t.Fatalf("Login retornou erro inesperado: %v", err)
 	}
@@ -563,7 +571,7 @@ func TestLogin_CredenciaisInvalidas(t *testing.T) {
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
-			_, err := Login(db, c.email, c.senha)
+			_, err := Login(db, empresaTeste, c.email, c.senha)
 			if !errors.Is(err, ErrCredenciaisInvalidas) {
 				t.Fatalf("erro = %v, want ErrCredenciaisInvalidas", err)
 			}
@@ -585,7 +593,7 @@ func TestLogin_CampoObrigatorioAusente(t *testing.T) {
 	}
 	for _, c := range casos {
 		t.Run(fmt.Sprintf("email=%q senha=%q", c.email, c.senha), func(t *testing.T) {
-			_, err := Login(db, c.email, c.senha)
+			_, err := Login(db, empresaTeste, c.email, c.senha)
 			if !errors.Is(err, ErrLoginValidacao) {
 				t.Fatalf("erro = %v, want ErrLoginValidacao", err)
 			}
@@ -657,7 +665,7 @@ func TestRenovarSessao_Sucesso(t *testing.T) {
 		t.Fatalf("EmitirSessao falhou: %v", err)
 	}
 
-	novoAccess, novoRefresh, novoExpiraRefresh, err := RenovarSessao(db, testJWTSecret, refreshToken)
+	novoAccess, novoRefresh, novoExpiraRefresh, err := RenovarSessao(db, testJWTSecret, empresaTeste, refreshToken)
 	if err != nil {
 		t.Fatalf("RenovarSessao retornou erro inesperado: %v", err)
 	}
@@ -712,7 +720,7 @@ func TestRenovarSessao_TokenInexistenteOuVazio(t *testing.T) {
 
 	for _, token := range []string{"token-que-nunca-existiu", ""} {
 		t.Run(fmt.Sprintf("token=%q", token), func(t *testing.T) {
-			_, _, _, err := RenovarSessao(db, testJWTSecret, token)
+			_, _, _, err := RenovarSessao(db, testJWTSecret, empresaTeste, token)
 			if !errors.Is(err, ErrSessaoInvalida) {
 				t.Fatalf("erro = %v, want ErrSessaoInvalida", err)
 			}
@@ -734,7 +742,7 @@ func TestRenovarSessao_TokenExpirado(t *testing.T) {
 		t.Fatalf("falha ao forçar expiração: %v", err)
 	}
 
-	_, _, _, err = RenovarSessao(db, testJWTSecret, refreshToken)
+	_, _, _, err = RenovarSessao(db, testJWTSecret, empresaTeste, refreshToken)
 	if !errors.Is(err, ErrSessaoInvalida) {
 		t.Fatalf("erro = %v, want ErrSessaoInvalida", err)
 	}
@@ -751,11 +759,11 @@ func TestRenovarSessao_TokenJaRevogado(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmitirSessao falhou: %v", err)
 	}
-	if _, _, _, err := RenovarSessao(db, testJWTSecret, refreshToken); err != nil {
+	if _, _, _, err := RenovarSessao(db, testJWTSecret, empresaTeste, refreshToken); err != nil {
 		t.Fatalf("primeira renovação falhou: %v", err)
 	}
 
-	_, _, _, err = RenovarSessao(db, testJWTSecret, refreshToken)
+	_, _, _, err = RenovarSessao(db, testJWTSecret, empresaTeste, refreshToken)
 	if !errors.Is(err, ErrSessaoInvalida) {
 		t.Fatalf("segunda renovação: erro = %v, want ErrSessaoInvalida", err)
 	}
@@ -784,7 +792,7 @@ func TestRenovarSessao_Concorrente(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			_, _, _, errs[i] = RenovarSessao(db, testJWTSecret, refreshToken)
+			_, _, _, errs[i] = RenovarSessao(db, testJWTSecret, empresaTeste, refreshToken)
 		}(i)
 	}
 	close(start)
@@ -916,7 +924,7 @@ func TestSolicitarRedefinicaoSenha_ContaExiste(t *testing.T) {
 	db := testDB(t)
 	usuarioID := criarUsuarioParaLogin(t, db, "reset-existe@empresa.com", "senha-123456", true, true)
 
-	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, "Reset-Existe@Empresa.com"); err != nil {
+	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Reset-Existe@Empresa.com"); err != nil {
 		t.Fatalf("SolicitarRedefinicaoSenha retornou erro inesperado: %v", err)
 	}
 
@@ -955,7 +963,7 @@ func TestSolicitarRedefinicaoSenha_ContaExiste(t *testing.T) {
 	if err := json.Unmarshal([]byte(variaveisRaw), &variaveis); err != nil {
 		t.Fatalf("variaveis_json inválido: %v", err)
 	}
-	wantLink := "http://test.local/redefinir-senha?token=" + token
+	wantLink := "http://test.local/e/" + slugEmpresaTeste + "/redefinir-senha?token=" + token
 	if got, _ := variaveis["link"].(string); got != wantLink {
 		t.Errorf("link = %q, want %q", got, wantLink)
 	}
@@ -966,7 +974,7 @@ func TestSolicitarRedefinicaoSenha_ContaExiste(t *testing.T) {
 func TestSolicitarRedefinicaoSenha_ContaNaoExiste(t *testing.T) {
 	db := testDB(t)
 
-	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, "nunca-existiu@empresa.com"); err != nil {
+	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "nunca-existiu@empresa.com"); err != nil {
 		t.Fatalf("SolicitarRedefinicaoSenha retornou erro inesperado: %v", err)
 	}
 	if n := contarLinhas(t, db, "tokens_acao"); n != 0 {
@@ -983,7 +991,7 @@ func TestSolicitarRedefinicaoSenha_ContaSoSSO(t *testing.T) {
 	db := testDB(t)
 	usuarioID := criarUsuarioParaLogin(t, db, "reset-sso@empresa.com", "", true, true)
 
-	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, "reset-sso@empresa.com"); err != nil {
+	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "reset-sso@empresa.com"); err != nil {
 		t.Fatalf("SolicitarRedefinicaoSenha retornou erro inesperado: %v", err)
 	}
 	_ = lerTokenRedefinicao(t, db, usuarioID)
@@ -998,7 +1006,7 @@ func TestSolicitarRedefinicaoSenha_EmailComMaiusculasEEspacos(t *testing.T) {
 	db := testDB(t)
 	usuarioID := criarUsuarioParaLogin(t, db, "reset-normaliza@empresa.com", "senha-123456", true, true)
 
-	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, "  Reset-Normaliza@Empresa.COM "); err != nil {
+	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "  Reset-Normaliza@Empresa.COM "); err != nil {
 		t.Fatalf("SolicitarRedefinicaoSenha retornou erro inesperado: %v", err)
 	}
 	_ = lerTokenRedefinicao(t, db, usuarioID)
@@ -1012,7 +1020,7 @@ func TestSolicitarRedefinicaoSenha_InvalidaTokensAnteriores(t *testing.T) {
 	db := testDB(t)
 	usuarioID := criarUsuarioParaLogin(t, db, "reset-invalida-anterior@empresa.com", "senha-antiga1", true, true)
 
-	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, "reset-invalida-anterior@empresa.com"); err != nil {
+	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "reset-invalida-anterior@empresa.com"); err != nil {
 		t.Fatalf("primeira solicitação falhou: %v", err)
 	}
 	var primeiroToken string
@@ -1023,7 +1031,7 @@ func TestSolicitarRedefinicaoSenha_InvalidaTokensAnteriores(t *testing.T) {
 		t.Fatalf("falha ao ler primeiro token: %v", err)
 	}
 
-	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, "reset-invalida-anterior@empresa.com"); err != nil {
+	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "reset-invalida-anterior@empresa.com"); err != nil {
 		t.Fatalf("segunda solicitação falhou: %v", err)
 	}
 
@@ -1046,16 +1054,16 @@ func TestSolicitarRedefinicaoSenha_InvalidaTokensAnteriores(t *testing.T) {
 		t.Fatal("segundo token igual ao primeiro")
 	}
 
-	if err := ValidarTokenRedefinicao(db, primeiroToken); !errors.Is(err, ErrTokenExpirado) {
+	if err := ValidarTokenRedefinicao(db, empresaTeste, primeiroToken); !errors.Is(err, ErrTokenExpirado) {
 		t.Errorf("ValidarTokenRedefinicao(primeiro) = %v, want ErrTokenExpirado", err)
 	}
-	if err := ValidarTokenRedefinicao(db, segundoToken); err != nil {
+	if err := ValidarTokenRedefinicao(db, empresaTeste, segundoToken); err != nil {
 		t.Errorf("ValidarTokenRedefinicao(segundo) = %v, want nil", err)
 	}
-	if err := RedefinirSenha(db, primeiroToken, "nova-senha1"); !errors.Is(err, ErrTokenExpirado) {
+	if err := RedefinirSenha(db, empresaTeste, primeiroToken, "nova-senha1"); !errors.Is(err, ErrTokenExpirado) {
 		t.Errorf("RedefinirSenha(primeiro) = %v, want ErrTokenExpirado", err)
 	}
-	if err := RedefinirSenha(db, segundoToken, "nova-senha1"); err != nil {
+	if err := RedefinirSenha(db, empresaTeste, segundoToken, "nova-senha1"); err != nil {
 		t.Errorf("RedefinirSenha(segundo) = %v, want nil", err)
 	}
 }
@@ -1065,12 +1073,12 @@ func TestSolicitarRedefinicaoSenha_InvalidaTokensAnteriores(t *testing.T) {
 func TestValidarTokenRedefinicao(t *testing.T) {
 	db := testDB(t)
 	usuarioID := criarUsuarioParaLogin(t, db, "valida-token@empresa.com", "senha-123456", true, true)
-	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, "valida-token@empresa.com"); err != nil {
+	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "valida-token@empresa.com"); err != nil {
 		t.Fatalf("SolicitarRedefinicaoSenha falhou: %v", err)
 	}
 	token := lerTokenRedefinicao(t, db, usuarioID)
 
-	if err := ValidarTokenRedefinicao(db, token); err != nil {
+	if err := ValidarTokenRedefinicao(db, empresaTeste, token); err != nil {
 		t.Fatalf("ValidarTokenRedefinicao(token válido) = %v, want nil", err)
 	}
 	var usadoEm sql.NullTime
@@ -1081,7 +1089,7 @@ func TestValidarTokenRedefinicao(t *testing.T) {
 		t.Error("usado_em preenchido — ValidarTokenRedefinicao não pode consumir o token")
 	}
 
-	if err := ValidarTokenRedefinicao(db, "token-que-nunca-existiu"); !errors.Is(err, ErrTokenNaoEncontrado) {
+	if err := ValidarTokenRedefinicao(db, empresaTeste, "token-que-nunca-existiu"); !errors.Is(err, ErrTokenNaoEncontrado) {
 		t.Fatalf("erro = %v, want ErrTokenNaoEncontrado", err)
 	}
 
@@ -1091,14 +1099,14 @@ func TestValidarTokenRedefinicao(t *testing.T) {
 	if _, err := db.Exec(`UPDATE tokens_acao SET usado_em = now() WHERE token = $1`, token); err != nil {
 		t.Fatalf("falha ao marcar token como usado: %v", err)
 	}
-	if err := ValidarTokenRedefinicao(db, token); !errors.Is(err, ErrTokenExpirado) {
+	if err := ValidarTokenRedefinicao(db, empresaTeste, token); !errors.Is(err, ErrTokenExpirado) {
 		t.Fatalf("token usado (não expirado): erro = %v, want ErrTokenExpirado", err)
 	}
 
 	if _, err := db.Exec(`UPDATE tokens_acao SET expira_em = now() - interval '1 minute' WHERE token = $1`, token); err != nil {
 		t.Fatalf("falha ao forçar expiração: %v", err)
 	}
-	if err := ValidarTokenRedefinicao(db, token); !errors.Is(err, ErrTokenExpirado) {
+	if err := ValidarTokenRedefinicao(db, empresaTeste, token); !errors.Is(err, ErrTokenExpirado) {
 		t.Fatalf("erro = %v, want ErrTokenExpirado", err)
 	}
 }
@@ -1110,7 +1118,7 @@ func TestValidarTokenRedefinicao_TokenDeVerificacaoEmailIsolado(t *testing.T) {
 	db := testDB(t)
 	_, tokenVerificacao := criarUsuarioComToken(t, db, "isola-verificacao@empresa.com")
 
-	if err := ValidarTokenRedefinicao(db, tokenVerificacao); !errors.Is(err, ErrTokenNaoEncontrado) {
+	if err := ValidarTokenRedefinicao(db, empresaTeste, tokenVerificacao); !errors.Is(err, ErrTokenNaoEncontrado) {
 		t.Fatalf("erro = %v, want ErrTokenNaoEncontrado — fluxos isolados", err)
 	}
 }
@@ -1120,7 +1128,7 @@ func TestValidarTokenRedefinicao_TokenDeVerificacaoEmailIsolado(t *testing.T) {
 func prepararRedefinicao(t *testing.T, db *sql.DB, email string) (usuarioID, token string) {
 	t.Helper()
 	usuarioID = criarUsuarioParaLogin(t, db, email, "senha-antiga1", true, true)
-	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, email); err != nil {
+	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, empresaTeste, slugEmpresaTeste, email); err != nil {
 		t.Fatalf("SolicitarRedefinicaoSenha falhou: %v", err)
 	}
 	return usuarioID, lerTokenRedefinicao(t, db, usuarioID)
@@ -1144,7 +1152,7 @@ func TestRedefinirSenha_Sucesso(t *testing.T) {
 		t.Fatalf("EmitirSessao (outra conta) falhou: %v", err)
 	}
 
-	if err := RedefinirSenha(db, token, "nova-senha1"); err != nil {
+	if err := RedefinirSenha(db, empresaTeste, token, "nova-senha1"); err != nil {
 		t.Fatalf("RedefinirSenha retornou erro inesperado: %v", err)
 	}
 
@@ -1176,7 +1184,7 @@ func TestRedefinirSenha_Sucesso(t *testing.T) {
 	}
 
 	// A sessão da outra conta continua utilizável.
-	if _, _, _, err := RenovarSessao(db, testJWTSecret, outroRefresh); err != nil {
+	if _, _, _, err := RenovarSessao(db, testJWTSecret, empresaTeste, outroRefresh); err != nil {
 		t.Errorf("sessão de outra conta foi afetada: %v", err)
 	}
 }
@@ -1187,7 +1195,7 @@ func TestRedefinirSenha_SenhaFracaNaoConsomeToken(t *testing.T) {
 	db := testDB(t)
 	usuarioID, token := prepararRedefinicao(t, db, "redefine-fraca@empresa.com")
 
-	if err := RedefinirSenha(db, token, "curta1"); !errors.Is(err, ErrSenhaFraca) {
+	if err := RedefinirSenha(db, empresaTeste, token, "curta1"); !errors.Is(err, ErrSenhaFraca) {
 		t.Fatalf("erro = %v, want ErrSenhaFraca", err)
 	}
 
@@ -1206,7 +1214,7 @@ func TestRedefinirSenha_SenhaFracaNaoConsomeToken(t *testing.T) {
 		t.Error("senha_hash mudou apesar da senha fraca")
 	}
 	// O mesmo link continua válido para nova tentativa.
-	if err := RedefinirSenha(db, token, "nova-senha1"); err != nil {
+	if err := RedefinirSenha(db, empresaTeste, token, "nova-senha1"); err != nil {
 		t.Fatalf("segunda tentativa com senha forte falhou: %v", err)
 	}
 }
@@ -1216,7 +1224,7 @@ func TestRedefinirSenha_SenhaFracaNaoConsomeToken(t *testing.T) {
 func TestRedefinirSenha_TokenInexistente(t *testing.T) {
 	db := testDB(t)
 
-	if err := RedefinirSenha(db, "token-que-nunca-existiu", "nova-senha1"); !errors.Is(err, ErrTokenNaoEncontrado) {
+	if err := RedefinirSenha(db, empresaTeste, "token-que-nunca-existiu", "nova-senha1"); !errors.Is(err, ErrTokenNaoEncontrado) {
 		t.Fatalf("erro = %v, want ErrTokenNaoEncontrado", err)
 	}
 }
@@ -1232,7 +1240,7 @@ func TestRedefinirSenha_TokenExpirado(t *testing.T) {
 		t.Fatalf("falha ao forçar expiração: %v", err)
 	}
 
-	if err := RedefinirSenha(db, token, "nova-senha1"); !errors.Is(err, ErrTokenExpirado) {
+	if err := RedefinirSenha(db, empresaTeste, token, "nova-senha1"); !errors.Is(err, ErrTokenExpirado) {
 		t.Fatalf("erro = %v, want ErrTokenExpirado", err)
 	}
 
@@ -1263,10 +1271,10 @@ func TestRedefinirSenha_ReusoDoMesmoToken(t *testing.T) {
 	db := testDB(t)
 	_, token := prepararRedefinicao(t, db, "redefine-reuso@empresa.com")
 
-	if err := RedefinirSenha(db, token, "nova-senha1"); err != nil {
+	if err := RedefinirSenha(db, empresaTeste, token, "nova-senha1"); err != nil {
 		t.Fatalf("primeira redefinição falhou: %v", err)
 	}
-	if err := RedefinirSenha(db, token, "outra-senha2"); !errors.Is(err, ErrTokenExpirado) {
+	if err := RedefinirSenha(db, empresaTeste, token, "outra-senha2"); !errors.Is(err, ErrTokenExpirado) {
 		t.Fatalf("segunda redefinição: erro = %v, want ErrTokenExpirado", err)
 	}
 }
@@ -1277,7 +1285,7 @@ func TestRedefinirSenha_TokenDeVerificacaoEmailIsolado(t *testing.T) {
 	db := testDB(t)
 	_, tokenVerificacao := criarUsuarioComToken(t, db, "redefine-isola@empresa.com")
 
-	if err := RedefinirSenha(db, tokenVerificacao, "nova-senha1"); !errors.Is(err, ErrTokenNaoEncontrado) {
+	if err := RedefinirSenha(db, empresaTeste, tokenVerificacao, "nova-senha1"); !errors.Is(err, ErrTokenNaoEncontrado) {
 		t.Fatalf("erro = %v, want ErrTokenNaoEncontrado — fluxos isolados", err)
 	}
 }
@@ -1288,16 +1296,16 @@ func TestRedefinirSenha_TokenDeVerificacaoEmailIsolado(t *testing.T) {
 func TestRedefinirSenha_ContaSoSSOPassaAAutenticarPorSenha(t *testing.T) {
 	db := testDB(t)
 	usuarioID := criarUsuarioParaLogin(t, db, "sso-ganha-senha@empresa.com", "", true, true)
-	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, "sso-ganha-senha@empresa.com"); err != nil {
+	if err := SolicitarRedefinicaoSenha(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "sso-ganha-senha@empresa.com"); err != nil {
 		t.Fatalf("SolicitarRedefinicaoSenha falhou: %v", err)
 	}
 	token := lerTokenRedefinicao(t, db, usuarioID)
 
-	if err := RedefinirSenha(db, token, "nova-senha1"); err != nil {
+	if err := RedefinirSenha(db, empresaTeste, token, "nova-senha1"); err != nil {
 		t.Fatalf("RedefinirSenha falhou: %v", err)
 	}
 
-	got, err := Login(db, "sso-ganha-senha@empresa.com", "nova-senha1")
+	got, err := Login(db, empresaTeste, "sso-ganha-senha@empresa.com", "nova-senha1")
 	if err != nil {
 		t.Fatalf("Login com a nova senha falhou: %v", err)
 	}
@@ -1333,7 +1341,7 @@ func TestRedefinirSenha_Concorrente(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			results[i] = RedefinirSenha(db, token, "nova-senha1")
+			results[i] = RedefinirSenha(db, empresaTeste, token, "nova-senha1")
 		}(i)
 	}
 	close(start)
@@ -1379,7 +1387,7 @@ func TestLogin_BloqueiaNaQuintaFalhaERecusaSexta(t *testing.T) {
 	id := criarUsuarioParaLogin(t, db, "brute-force@empresa.com", "senha-correta1", true, true)
 
 	for i := 1; i <= 5; i++ {
-		_, err := Login(db, "brute-force@empresa.com", "senha-errada")
+		_, err := Login(db, empresaTeste, "brute-force@empresa.com", "senha-errada")
 		if !errors.Is(err, ErrCredenciaisInvalidas) {
 			t.Fatalf("falha %d: erro = %v, want ErrCredenciaisInvalidas", i, err)
 		}
@@ -1412,7 +1420,7 @@ func TestLogin_BloqueiaNaQuintaFalhaERecusaSexta(t *testing.T) {
 	// 6ª tentativa com a senha CORRETA: recusada como bloqueada, sem alterar
 	// contador nem prazo.
 	tentativasAntes, bloqueioAntes := lerBloqueioLogin(t, db, id)
-	_, err := Login(db, "brute-force@empresa.com", "senha-correta1")
+	_, err := Login(db, empresaTeste, "brute-force@empresa.com", "senha-correta1")
 	if !errors.Is(err, ErrContaBloqueada) {
 		t.Fatalf("6ª tentativa: erro = %v, want ErrContaBloqueada", err)
 	}
@@ -1433,7 +1441,7 @@ func TestLogin_SucessoAntesDoLimiteZeraContador(t *testing.T) {
 	id := criarUsuarioParaLogin(t, db, "reset-sucesso@empresa.com", "senha-correta1", true, true)
 
 	for i := 0; i < 3; i++ {
-		if _, err := Login(db, "reset-sucesso@empresa.com", "errada"); !errors.Is(err, ErrCredenciaisInvalidas) {
+		if _, err := Login(db, empresaTeste, "reset-sucesso@empresa.com", "errada"); !errors.Is(err, ErrCredenciaisInvalidas) {
 			t.Fatalf("falha %d: erro = %v", i, err)
 		}
 	}
@@ -1441,7 +1449,7 @@ func TestLogin_SucessoAntesDoLimiteZeraContador(t *testing.T) {
 		t.Fatalf("pré-condição: tentativas = %d, want 3", tentativas)
 	}
 
-	got, err := Login(db, "reset-sucesso@empresa.com", "senha-correta1")
+	got, err := Login(db, empresaTeste, "reset-sucesso@empresa.com", "senha-correta1")
 	if err != nil {
 		t.Fatalf("Login válido retornou erro: %v", err)
 	}
@@ -1462,13 +1470,13 @@ func TestLogin_BloqueioExpiradoDestrava(t *testing.T) {
 		db := testDB(t)
 		id := criarUsuarioParaLogin(t, db, "expira-ok@empresa.com", "senha-correta1", true, true)
 		for i := 0; i < 5; i++ {
-			_, _ = Login(db, "expira-ok@empresa.com", "errada")
+			_, _ = Login(db, empresaTeste, "expira-ok@empresa.com", "errada")
 		}
 		if _, err := db.Exec(`UPDATE usuarios SET bloqueado_ate = now() - interval '1 minute' WHERE id = $1`, id); err != nil {
 			t.Fatalf("falha ao expirar bloqueio: %v", err)
 		}
 
-		got, err := Login(db, "expira-ok@empresa.com", "senha-correta1")
+		got, err := Login(db, empresaTeste, "expira-ok@empresa.com", "senha-correta1")
 		if err != nil || got != id {
 			t.Fatalf("Login após expiração: id=%q err=%v, want id=%q nil", got, err, id)
 		}
@@ -1482,13 +1490,13 @@ func TestLogin_BloqueioExpiradoDestrava(t *testing.T) {
 		db := testDB(t)
 		id := criarUsuarioParaLogin(t, db, "expira-erro@empresa.com", "senha-correta1", true, true)
 		for i := 0; i < 5; i++ {
-			_, _ = Login(db, "expira-erro@empresa.com", "errada")
+			_, _ = Login(db, empresaTeste, "expira-erro@empresa.com", "errada")
 		}
 		if _, err := db.Exec(`UPDATE usuarios SET bloqueado_ate = now() - interval '1 minute' WHERE id = $1`, id); err != nil {
 			t.Fatalf("falha ao expirar bloqueio: %v", err)
 		}
 
-		if _, err := Login(db, "expira-erro@empresa.com", "ainda-errada"); !errors.Is(err, ErrCredenciaisInvalidas) {
+		if _, err := Login(db, empresaTeste, "expira-erro@empresa.com", "ainda-errada"); !errors.Is(err, ErrCredenciaisInvalidas) {
 			t.Fatalf("erro = %v, want ErrCredenciaisInvalidas", err)
 		}
 		tentativas, bloqueadoAte := lerBloqueioLogin(t, db, id)
@@ -1506,18 +1514,18 @@ func TestLogin_FalhasNaoConsecutivasNuncaBloqueiam(t *testing.T) {
 	id := criarUsuarioParaLogin(t, db, "nao-consecutivas@empresa.com", "senha-correta1", true, true)
 
 	for i := 0; i < 3; i++ {
-		if _, err := Login(db, "nao-consecutivas@empresa.com", "errada"); !errors.Is(err, ErrCredenciaisInvalidas) {
+		if _, err := Login(db, empresaTeste, "nao-consecutivas@empresa.com", "errada"); !errors.Is(err, ErrCredenciaisInvalidas) {
 			t.Fatalf("falha %d: erro = %v", i, err)
 		}
 	}
-	if _, err := Login(db, "nao-consecutivas@empresa.com", "senha-correta1"); err != nil {
+	if _, err := Login(db, empresaTeste, "nao-consecutivas@empresa.com", "senha-correta1"); err != nil {
 		t.Fatalf("sucesso intermediário retornou erro: %v", err)
 	}
 	if tentativas, _ := lerBloqueioLogin(t, db, id); tentativas != 0 {
 		t.Fatalf("após sucesso: tentativas = %d, want 0", tentativas)
 	}
 	for i := 0; i < 2; i++ {
-		if _, err := Login(db, "nao-consecutivas@empresa.com", "errada"); !errors.Is(err, ErrCredenciaisInvalidas) {
+		if _, err := Login(db, empresaTeste, "nao-consecutivas@empresa.com", "errada"); !errors.Is(err, ErrCredenciaisInvalidas) {
 			t.Fatalf("falha pós-sucesso %d: erro = %v", i, err)
 		}
 	}
@@ -1533,7 +1541,7 @@ func TestLogin_FalhasNaoConsecutivasNuncaBloqueiam(t *testing.T) {
 func TestLogin_EmailInexistenteMarteladoNaoBloqueia(t *testing.T) {
 	db := testDB(t)
 	for i := 0; i < 8; i++ {
-		if _, err := Login(db, "fantasma@empresa.com", "qualquer"); !errors.Is(err, ErrCredenciaisInvalidas) {
+		if _, err := Login(db, empresaTeste, "fantasma@empresa.com", "qualquer"); !errors.Is(err, ErrCredenciaisInvalidas) {
 			t.Fatalf("tentativa %d: erro = %v, want ErrCredenciaisInvalidas", i, err)
 		}
 	}
@@ -1561,7 +1569,7 @@ func TestLogin_SenhaCorretaEmContaNaoElegivelNaoIncrementa(t *testing.T) {
 			email := "nao-elegivel@empresa.com"
 			id := criarUsuarioParaLogin(t, db, email, "senha-correta1", c.ativo, c.emailVerificado)
 
-			if _, err := Login(db, email, "senha-correta1"); !errors.Is(err, ErrCredenciaisInvalidas) {
+			if _, err := Login(db, empresaTeste, email, "senha-correta1"); !errors.Is(err, ErrCredenciaisInvalidas) {
 				t.Fatalf("erro = %v, want ErrCredenciaisInvalidas", err)
 			}
 			tentativas, bloqueadoAte := lerBloqueioLogin(t, db, id)
@@ -1594,7 +1602,7 @@ func TestLogin_SenhaErradaEmContaNaoElegivelIncrementa(t *testing.T) {
 			email := "nao-elegivel-brute@empresa.com"
 			id := criarUsuarioParaLogin(t, db, email, "senha-correta1", c.ativo, c.emailVerificado)
 
-			if _, err := Login(db, email, "senha-errada"); !errors.Is(err, ErrCredenciaisInvalidas) {
+			if _, err := Login(db, empresaTeste, email, "senha-errada"); !errors.Is(err, ErrCredenciaisInvalidas) {
 				t.Fatalf("erro = %v, want ErrCredenciaisInvalidas", err)
 			}
 			if tentativas, _ := lerBloqueioLogin(t, db, id); tentativas != 1 {
@@ -1602,7 +1610,7 @@ func TestLogin_SenhaErradaEmContaNaoElegivelIncrementa(t *testing.T) {
 			}
 
 			for i := 0; i < 4; i++ {
-				_, _ = Login(db, email, "senha-errada")
+				_, _ = Login(db, empresaTeste, email, "senha-errada")
 			}
 			tentativas, bloqueadoAte := lerBloqueioLogin(t, db, id)
 			if tentativas != 5 || !bloqueadoAte.Valid {
@@ -1619,7 +1627,7 @@ func TestCadastrar_SenhaFraca(t *testing.T) {
 	for nome, senha := range map[string]string{"curta (<8)": "abc", "sem dígito": "abcdefgh"} {
 		t.Run(nome, func(t *testing.T) {
 			db := testDB(t)
-			_, err := Cadastrar(db, testEmailCfg, "Fulano", "fraca@empresa.com", senha)
+			_, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Fulano", "fraca@empresa.com", senha)
 			if !errors.Is(err, ErrSenhaFraca) {
 				t.Fatalf("erro = %v, want ErrSenhaFraca", err)
 			}
@@ -1637,7 +1645,7 @@ func TestCadastrar_SenhaFraca(t *testing.T) {
 // email_verificado=false.
 func TestCadastrar_SenhaForteCriaConta(t *testing.T) {
 	db := testDB(t)
-	id, err := Cadastrar(db, testEmailCfg, "Fulano", "forte@empresa.com", "abcd1234")
+	id, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Fulano", "forte@empresa.com", "abcd1234")
 	if err != nil {
 		t.Fatalf("Cadastrar retornou erro inesperado: %v", err)
 	}
@@ -1669,7 +1677,7 @@ func TestLogin_FalhasConcorrentes(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			_, results[i] = Login(db, "brute-concorrente@empresa.com", "senha-errada")
+			_, results[i] = Login(db, empresaTeste, "brute-concorrente@empresa.com", "senha-errada")
 		}(i)
 	}
 	close(start)
@@ -1807,7 +1815,7 @@ func TestConcluirLoginMFA_CodigoCorreto(t *testing.T) {
 		t.Fatalf("IniciarLoginMFA falhou: %v", err)
 	}
 
-	got, err := ConcluirLoginMFA(db, token, codigoTOTPValidoAgora(t, segredo))
+	got, err := ConcluirLoginMFA(db, empresaTeste, token, codigoTOTPValidoAgora(t, segredo))
 	if err != nil {
 		t.Fatalf("ConcluirLoginMFA retornou erro inesperado: %v", err)
 	}
@@ -1835,7 +1843,7 @@ func TestConcluirLoginMFA_CodigoErradoNaoConsomeToken(t *testing.T) {
 		t.Fatalf("IniciarLoginMFA falhou: %v", err)
 	}
 
-	_, err = ConcluirLoginMFA(db, token, "000000")
+	_, err = ConcluirLoginMFA(db, empresaTeste, token, "000000")
 	if !errors.Is(err, ErrMFACodigoInvalido) {
 		t.Fatalf("erro = %v, want ErrMFACodigoInvalido", err)
 	}
@@ -1866,7 +1874,7 @@ func TestConcluirLoginMFA_QuintaFalhaBloqueiaConta(t *testing.T) {
 		if err != nil {
 			t.Fatalf("IniciarLoginMFA (tentativa %d) falhou: %v", i+1, err)
 		}
-		_, err = ConcluirLoginMFA(db, token, "000000")
+		_, err = ConcluirLoginMFA(db, empresaTeste, token, "000000")
 		if i < maxTentativasLogin-1 {
 			if !errors.Is(err, ErrMFACodigoInvalido) {
 				t.Fatalf("tentativa %d: erro = %v, want ErrMFACodigoInvalido", i+1, err)
@@ -1886,7 +1894,7 @@ func TestConcluirLoginMFA_QuintaFalhaBloqueiaConta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IniciarLoginMFA (pós-bloqueio) falhou: %v", err)
 	}
-	if _, err := ConcluirLoginMFA(db, token, codigoTOTPValidoAgora(t, segredo)); !errors.Is(err, ErrContaBloqueada) {
+	if _, err := ConcluirLoginMFA(db, empresaTeste, token, codigoTOTPValidoAgora(t, segredo)); !errors.Is(err, ErrContaBloqueada) {
 		t.Fatalf("erro = %v, want ErrContaBloqueada mesmo com código correto", err)
 	}
 }
@@ -1905,7 +1913,7 @@ func TestConcluirLoginMFA_TokenExpirado(t *testing.T) {
 		t.Fatalf("falha ao forçar expiração: %v", err)
 	}
 
-	if _, err := ConcluirLoginMFA(db, token, codigoTOTPValidoAgora(t, segredo)); !errors.Is(err, ErrTokenExpirado) {
+	if _, err := ConcluirLoginMFA(db, empresaTeste, token, codigoTOTPValidoAgora(t, segredo)); !errors.Is(err, ErrTokenExpirado) {
 		t.Fatalf("erro = %v, want ErrTokenExpirado", err)
 	}
 }
@@ -1919,11 +1927,11 @@ func TestConcluirLoginMFA_TokenReusado(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IniciarLoginMFA falhou: %v", err)
 	}
-	if _, err := ConcluirLoginMFA(db, token, codigoTOTPValidoAgora(t, segredo)); err != nil {
+	if _, err := ConcluirLoginMFA(db, empresaTeste, token, codigoTOTPValidoAgora(t, segredo)); err != nil {
 		t.Fatalf("primeira conclusão falhou: %v", err)
 	}
 
-	if _, err := ConcluirLoginMFA(db, token, codigoTOTPValidoAgora(t, segredo)); !errors.Is(err, ErrTokenExpirado) {
+	if _, err := ConcluirLoginMFA(db, empresaTeste, token, codigoTOTPValidoAgora(t, segredo)); !errors.Is(err, ErrTokenExpirado) {
 		t.Fatalf("segunda conclusão: erro = %v, want ErrTokenExpirado", err)
 	}
 }
@@ -1942,7 +1950,7 @@ func TestConcluirLoginMFA_CodigoReusadoNaoAceitoEmNovoToken(t *testing.T) {
 		t.Fatalf("IniciarLoginMFA (1) falhou: %v", err)
 	}
 	codigo := codigoTOTPValidoAgora(t, segredo)
-	if _, err := ConcluirLoginMFA(db, token1, codigo); err != nil {
+	if _, err := ConcluirLoginMFA(db, empresaTeste, token1, codigo); err != nil {
 		t.Fatalf("primeira conclusão falhou: %v", err)
 	}
 
@@ -1950,7 +1958,7 @@ func TestConcluirLoginMFA_CodigoReusadoNaoAceitoEmNovoToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IniciarLoginMFA (2) falhou: %v", err)
 	}
-	if _, err := ConcluirLoginMFA(db, token2, codigo); !errors.Is(err, ErrMFACodigoInvalido) {
+	if _, err := ConcluirLoginMFA(db, empresaTeste, token2, codigo); !errors.Is(err, ErrMFACodigoInvalido) {
 		t.Fatalf("erro = %v, want ErrMFACodigoInvalido (reuso do mesmo código nesta janela)", err)
 	}
 }
@@ -1959,7 +1967,7 @@ func TestConcluirLoginMFA_CodigoReusadoNaoAceitoEmNovoToken(t *testing.T) {
 // devolve ErrTokenNaoEncontrado.
 func TestConcluirLoginMFA_TokenInexistente(t *testing.T) {
 	db := testDB(t)
-	if _, err := ConcluirLoginMFA(db, "token-nunca-existiu", "123456"); !errors.Is(err, ErrTokenNaoEncontrado) {
+	if _, err := ConcluirLoginMFA(db, empresaTeste, "token-nunca-existiu", "123456"); !errors.Is(err, ErrTokenNaoEncontrado) {
 		t.Fatalf("erro = %v, want ErrTokenNaoEncontrado", err)
 	}
 }
@@ -2077,7 +2085,7 @@ func TestRenovarSessao_PreservaOrigem(t *testing.T) {
 				t.Fatalf("EmitirSessao falhou: %v", err)
 			}
 
-			novoAccess, novoRefresh, _, err := RenovarSessao(db, testJWTSecret, refreshToken)
+			novoAccess, novoRefresh, _, err := RenovarSessao(db, testJWTSecret, empresaTeste, refreshToken)
 			if err != nil {
 				t.Fatalf("RenovarSessao falhou: %v", err)
 			}

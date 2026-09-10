@@ -107,6 +107,10 @@ func CriarProdutoHandler(db *sql.DB, registro *realtime.Registry) http.HandlerFu
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
 		var req criarProdutoRequest
@@ -130,11 +134,11 @@ func CriarProdutoHandler(db *sql.DB, registro *realtime.Registry) http.HandlerFu
 			Espessura:         req.Espessura.paraInput(),
 		}
 
-		produto, err := services.CriarProduto(db, input)
+		produto, err := services.CriarProduto(db, empresa.ID, input)
 		var erroValidacao *services.ErroProdutoValidacao
 		switch {
 		case err == nil:
-			registro.Publish("produtos", realtime.Evento{ID: produto.ID, Change: "created"})
+			registro.Publish(empresa.ID, "produtos", realtime.Evento{ID: produto.ID, Change: "created"})
 			escreverJSON(w, http.StatusCreated, map[string]any{"produto": produto})
 		case errors.As(err, &erroValidacao):
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
@@ -155,8 +159,12 @@ func ListarCategoriasHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
-		categorias, err := services.ListarCategorias(db)
+		categorias, err := services.ListarCategorias(db, empresa.ID)
 		if err != nil {
 			slog.Error("falha ao listar categorias", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao listar categorias")
@@ -192,6 +200,10 @@ func AtualizarNomeProdutoHandler(db *sql.DB, registro *realtime.Registry) http.H
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
 		var req renomearProdutoRequest
@@ -200,11 +212,11 @@ func AtualizarNomeProdutoHandler(db *sql.DB, registro *realtime.Registry) http.H
 			return
 		}
 
-		produto, err := services.AtualizarNomeProduto(db, r.PathValue("id"), req.Nome)
+		produto, err := services.AtualizarNomeProduto(db, empresa.ID, r.PathValue("id"), req.Nome)
 		var erroValidacao *services.ErroProdutoValidacao
 		switch {
 		case err == nil:
-			registro.Publish("produtos", realtime.Evento{ID: produto.ID, Change: "updated"})
+			registro.Publish(empresa.ID, "produtos", realtime.Evento{ID: produto.ID, Change: "updated"})
 			escreverJSON(w, http.StatusOK, map[string]any{"produto": produto})
 		case errors.As(err, &erroValidacao):
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
@@ -234,6 +246,10 @@ func BuscarProdutosHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		termo := strings.TrimSpace(r.URL.Query().Get("q"))
 		if termo == "" {
@@ -245,7 +261,7 @@ func BuscarProdutosHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		produtos, err := services.BuscarProdutos(db, termo)
+		produtos, err := services.BuscarProdutos(db, empresa.ID, termo)
 		if err != nil {
 			slog.Error("falha ao buscar produtos", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao buscar produtos")
@@ -275,6 +291,10 @@ func BuscarProdutoPorCodigoHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		codigo := strings.TrimSpace(r.URL.Query().Get("codigo"))
 		if codigo == "" {
@@ -286,7 +306,7 @@ func BuscarProdutoPorCodigoHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		produto, err := services.BuscarProdutoPorCodigo(db, codigo)
+		produto, err := services.BuscarProdutoPorCodigo(db, empresa.ID, codigo)
 		switch {
 		case err == nil:
 			escreverJSON(w, http.StatusOK, map[string]any{"produto": produto})
@@ -335,6 +355,10 @@ func ListarCatalogoHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		pagina := 1
 		if bruto := r.URL.Query().Get("pagina"); bruto != "" {
@@ -364,6 +388,7 @@ func ListarCatalogoHandler(db *sql.DB) http.HandlerFunc {
 		}
 
 		filtros := services.FiltrosCatalogo{
+			EmpresaID:   empresa.ID,
 			Q:           termo,
 			CategoriaID: r.URL.Query().Get("categoriaId"),
 			EstoqueID:   r.URL.Query().Get("estoqueId"),
@@ -427,6 +452,10 @@ func ExportarCatalogoHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		termo := strings.TrimSpace(r.URL.Query().Get("q"))
 		if utf8.RuneCountInString(termo) > 255 {
@@ -435,6 +464,7 @@ func ExportarCatalogoHandler(db *sql.DB) http.HandlerFunc {
 		}
 
 		filtros := services.FiltrosCatalogo{
+			EmpresaID:   empresa.ID,
 			Q:           termo,
 			CategoriaID: r.URL.Query().Get("categoriaId"),
 			EstoqueID:   r.URL.Query().Get("estoqueId"),
@@ -482,8 +512,12 @@ func ObterProdutoHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
-		produto, err := services.ObterProdutoDetalhe(db, r.PathValue("id"))
+		produto, err := services.ObterProdutoDetalhe(db, empresa.ID, r.PathValue("id"))
 		switch {
 		case err == nil:
 			escreverJSON(w, http.StatusOK, map[string]any{"produto": produto})
@@ -507,8 +541,12 @@ func ListarNomenclaturaTemplatesHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
-		templates, err := services.ListarNomenclaturaTemplates(db)
+		templates, err := services.ListarNomenclaturaTemplates(db, empresa.ID)
 		if err != nil {
 			slog.Error("falha ao listar templates de nomenclatura", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao listar templates de nomenclatura")

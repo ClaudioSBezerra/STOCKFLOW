@@ -1,4 +1,4 @@
-import { getAccessToken } from '@/lib/session';
+import { apiUrl, authHeaders } from '@/lib/api';
 
 /**
  * Cliente HTTP puro (sem Context) da exportação dos próprios dados pessoais
@@ -15,16 +15,11 @@ import { getAccessToken } from '@/lib/session';
  * servidor (ou MENSAGEM_ERRO_EXPORTAR).
  */
 
-function authHeaders(): Record<string, string> {
-  const token = getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
 export const MENSAGEM_ERRO_EXPORTAR =
   'Não foi possível baixar seus dados agora. Tente novamente em instantes.';
 
 export async function baixarMeusDadosBlob(): Promise<Blob> {
-  const res = await fetch('/api/usuarios/me/exportar-dados', {
+  const res = await fetch(apiUrl('/api/usuarios/me/exportar-dados'), {
     headers: authHeaders(),
   });
   if (!res.ok) {
@@ -66,7 +61,7 @@ async function mensagemDeErro(res: Response, fallback: string): Promise<string> 
 
 /** `POST /api/usuarios/me/solicitacao-exclusao` — registra a solicitação da própria conta. */
 export async function solicitarExclusaoConta(): Promise<void> {
-  const res = await fetch('/api/usuarios/me/solicitacao-exclusao', {
+  const res = await fetch(apiUrl('/api/usuarios/me/solicitacao-exclusao'), {
     method: 'POST',
     headers: authHeaders(),
   });
@@ -77,7 +72,7 @@ export async function solicitarExclusaoConta(): Promise<void> {
 
 /** `GET /api/solicitacoes-exclusao` — fila de pendentes (só `adm`). */
 export async function listarSolicitacoesExclusao(): Promise<SolicitacaoExclusao[]> {
-  const res = await fetch('/api/solicitacoes-exclusao', { headers: authHeaders() });
+  const res = await fetch(apiUrl('/api/solicitacoes-exclusao'), { headers: authHeaders() });
   if (!res.ok) {
     throw new Error(await mensagemDeErro(res, MENSAGEM_ERRO_LISTAR_EXCLUSAO));
   }
@@ -91,7 +86,7 @@ export async function listarSolicitacoesExclusao(): Promise<SolicitacaoExclusao[
  * mensagem do guard do último administrador vem do servidor.
  */
 export async function processarExclusaoConta(id: string): Promise<void> {
-  const res = await fetch(`/api/solicitacoes-exclusao/${id}/processamento`, {
+  const res = await fetch(apiUrl(`/api/solicitacoes-exclusao/${id}/processamento`), {
     method: 'POST',
     headers: authHeaders(),
   });

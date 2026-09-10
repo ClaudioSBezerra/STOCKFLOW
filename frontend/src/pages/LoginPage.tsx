@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { useAuth, type UsuarioSessao } from '@/lib/auth';
 import { fetchSSOConfig, type SSOConfig } from '@/lib/keycloak/config';
 import { buildLoginUrl } from '@/lib/keycloak/pkce';
+import { apiUrl } from '@/lib/api';
 
 /**
  * Envelope de erro fixo (AD-14): {"error":{"code","message"}}. Só o código é
@@ -129,7 +130,7 @@ export function LoginPage() {
     setEnviando(true);
 
     try {
-      const res = await fetch('/api/auth/login', {
+      const res = await fetch(apiUrl('/api/auth/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, senha }),
@@ -166,7 +167,7 @@ export function LoginPage() {
     setEnviando(true);
 
     try {
-      const res = await fetch('/api/auth/mfa/verificar', {
+      const res = await fetch(apiUrl('/api/auth/mfa/verificar'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mfaToken, codigo }),

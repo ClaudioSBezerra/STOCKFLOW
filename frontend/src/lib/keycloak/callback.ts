@@ -9,6 +9,7 @@
 import type { UsuarioSessao } from '@/lib/auth';
 import { fetchSSOConfig } from './config';
 import { SESSION_KEY_STATE, SESSION_KEY_VERIFIER } from './pkce';
+import { apiUrl } from '@/lib/api';
 
 export class ErroCallbackSSO extends Error {
   constructor(
@@ -77,7 +78,7 @@ export async function trocarCodePorSessao(searchParams: URLSearchParams): Promis
     throw new ErroCallbackSSO('TROCA_TOKEN', 'Resposta do Keycloak sem access_token.');
   }
 
-  const res = await fetch('/api/auth/sso/keycloak', {
+  const res = await fetch(apiUrl('/api/auth/sso/keycloak'), {
     method: 'POST',
     headers: { Authorization: `Bearer ${tokenData.access_token}` },
   });

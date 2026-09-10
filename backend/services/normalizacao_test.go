@@ -13,14 +13,14 @@ import (
 // quantidade inicial (irrelevante para a análise). Devolve o id.
 func seedProdutoNormalizacao(t *testing.T, db *sql.DB, nome string, dims CriarProdutoInput) string {
 	t.Helper()
-	estoque, err := CriarEstoque(db, "Estoque "+nome)
+	estoque, err := CriarEstoque(db, empresaTeste, "Estoque "+nome)
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	dims.Nome = nome
 	dims.CategoriaID = categoriaIDPorCodigo(t, db, "04.001")
 	dims.EstoqueID = estoque.ID
-	produto, err := CriarProduto(db, dims)
+	produto, err := CriarProduto(db, empresaTeste, dims)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestAnalisarInconsistencias_CampoEstruturadoValidoNuncaSugere(t *testing.T)
 	// vazio é testada ANTES de qualquer parsing.
 	setDimensoesPendentesRevisao(t, db, produtoID, `{"comprimento": "cerca de 3 metros"}`)
 
-	sugestoes, err := AnalisarInconsistencias(db)
+	sugestoes, err := AnalisarInconsistencias(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("AnalisarInconsistencias: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestAnalisarInconsistencias_MigracaoTextoReparseavel(t *testing.T) {
 	produtoID := seedProdutoNormalizacao(t, db, "Tubo Migracao Reparseavel", CriarProdutoInput{})
 	setDimensoesPendentesRevisao(t, db, produtoID, `{"comprimento": "cerca de 3 metros"}`)
 
-	sugestoes, err := AnalisarInconsistencias(db)
+	sugestoes, err := AnalisarInconsistencias(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("AnalisarInconsistencias: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestAnalisarInconsistencias_MigracaoTextoNaoParseavel(t *testing.T) {
 	produtoID := seedProdutoNormalizacao(t, db, "Tubo Migracao Nao Parseavel", CriarProdutoInput{})
 	setDimensoesPendentesRevisao(t, db, produtoID, `{"largura": "ver etiqueta"}`)
 
-	sugestoes, err := AnalisarInconsistencias(db)
+	sugestoes, err := AnalisarInconsistencias(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("AnalisarInconsistencias: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestAnalisarInconsistencias_NomeComValorImplicitoUnicoCampoVazio(t *testing
 		Espessura: &DimensaoInput{Valor: ptrFloat(5), Unidade: ptrStr("mm")},
 	})
 
-	sugestoes, err := AnalisarInconsistencias(db)
+	sugestoes, err := AnalisarInconsistencias(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("AnalisarInconsistencias: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestAnalisarInconsistencias_NomeComNumeroDoisCamposVaziosNuncaSugereDeNome(
 		Espessura: &DimensaoInput{Valor: ptrFloat(5), Unidade: ptrStr("mm")},
 	})
 
-	sugestoes, err := AnalisarInconsistencias(db)
+	sugestoes, err := AnalisarInconsistencias(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("AnalisarInconsistencias: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestAnalisarInconsistencias_MigracaoTemPrioridadeSobreNome(t *testing.T) {
 	})
 	setDimensoesPendentesRevisao(t, db, produtoID, `{"comprimento": "cerca de 3 metros"}`)
 
-	sugestoes, err := AnalisarInconsistencias(db)
+	sugestoes, err := AnalisarInconsistencias(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("AnalisarInconsistencias: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestAnalisarInconsistencias_CatalogoSemProdutoPendente(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	sugestoes, err := AnalisarInconsistencias(db)
+	sugestoes, err := AnalisarInconsistencias(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("AnalisarInconsistencias: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestAnalisarInconsistencias_NomeComDoisTokensNaoReatribuiCampoJaEstruturado
 		Espessura: &DimensaoInput{Valor: ptrFloat(5), Unidade: ptrStr("mm")},
 	})
 
-	sugestoes, err := AnalisarInconsistencias(db)
+	sugestoes, err := AnalisarInconsistencias(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("AnalisarInconsistencias: %v", err)
 	}
@@ -359,7 +359,7 @@ func TestAnalisarInconsistencias_DimensoesPendentesMalformadoNaoAbortaAnalise(t 
 	outroProdutoID := seedProdutoNormalizacao(t, db, "Cano Migracao Sadio", CriarProdutoInput{})
 	setDimensoesPendentesRevisao(t, db, outroProdutoID, `{"largura": "6 m"}`)
 
-	sugestoes, err := AnalisarInconsistencias(db)
+	sugestoes, err := AnalisarInconsistencias(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("AnalisarInconsistencias não deveria falhar com um dimensoes_pendentes_revisao malformado: %v", err)
 	}
@@ -415,7 +415,7 @@ func TestAplicarCorrecao_Individual(t *testing.T) {
 
 	produtoID := seedProdutoNormalizacao(t, db, "Tubo Aplicar Individual", CriarProdutoInput{})
 
-	aplicadas, err := AplicarCorrecoes(db, []CorrecaoInput{
+	aplicadas, err := AplicarCorrecoes(db, empresaTeste, []CorrecaoInput{
 		{ProdutoID: produtoID, Campo: "comprimento", Valor: 6, Unidade: "m"},
 	})
 	if err != nil {
@@ -446,7 +446,7 @@ func TestAplicarCorrecao_LoteComItemObsoleto(t *testing.T) {
 	})
 	produtoVazio := seedProdutoNormalizacao(t, db, "Tubo Vazio", CriarProdutoInput{})
 
-	aplicadas, err := AplicarCorrecoes(db, []CorrecaoInput{
+	aplicadas, err := AplicarCorrecoes(db, empresaTeste, []CorrecaoInput{
 		{ProdutoID: produtoJaPreenchido, Campo: "largura", Valor: 100, Unidade: "mm"},
 		{ProdutoID: produtoVazio, Campo: "comprimento", Valor: 6, Unidade: "m"},
 	})
@@ -477,7 +477,7 @@ func TestAplicarCorrecao_CampoInvalido(t *testing.T) {
 
 	produtoID := seedProdutoNormalizacao(t, db, "Tubo Campo Invalido", CriarProdutoInput{})
 
-	_, err := AplicarCorrecoes(db, []CorrecaoInput{
+	_, err := AplicarCorrecoes(db, empresaTeste, []CorrecaoInput{
 		{ProdutoID: produtoID, Campo: "peso", Valor: 6, Unidade: "m"},
 	})
 	var erroValidacao *ErroProdutoValidacao
@@ -497,7 +497,7 @@ func TestAplicarCorrecao_ListaVazia(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	_, err := AplicarCorrecoes(db, []CorrecaoInput{})
+	_, err := AplicarCorrecoes(db, empresaTeste, []CorrecaoInput{})
 	var erroValidacao *ErroProdutoValidacao
 	if !errors.As(err, &erroValidacao) {
 		t.Fatalf("err = %v, want *ErroProdutoValidacao", err)
@@ -519,7 +519,7 @@ func TestAplicarCorrecao_ValorZeroOuUnidadeInvalidaSaoRejeitados(t *testing.T) {
 		{ProdutoID: produtoID, Campo: "comprimento", Valor: limiteNumeric103 + 1, Unidade: "m"},
 	}
 	for _, c := range casos {
-		_, err := AplicarCorrecoes(db, []CorrecaoInput{c})
+		_, err := AplicarCorrecoes(db, empresaTeste, []CorrecaoInput{c})
 		var erroValidacao *ErroProdutoValidacao
 		if !errors.As(err, &erroValidacao) {
 			t.Errorf("caso %+v: err = %v, want *ErroProdutoValidacao", c, err)
@@ -539,7 +539,7 @@ func TestAplicarCorrecao_LoteTotalmenteObsoletoRetornaVazio(t *testing.T) {
 		Comprimento: &DimensaoInput{Valor: ptrFloat(6), Unidade: ptrStr("m")},
 	})
 
-	aplicadas, err := AplicarCorrecoes(db, []CorrecaoInput{
+	aplicadas, err := AplicarCorrecoes(db, empresaTeste, []CorrecaoInput{
 		{ProdutoID: produtoID, Campo: "comprimento", Valor: 9, Unidade: "m"},
 	})
 	if err != nil {
@@ -559,7 +559,7 @@ func TestSugestaoIgnorada_ValorAcimaDoLimiteRejeitado(t *testing.T) {
 
 	produtoID := seedProdutoNormalizacao(t, db, "Tubo Ignorar Valor Acima Limite", CriarProdutoInput{})
 
-	err := IgnorarSugestao(db, produtoID, "comprimento", limiteNumeric103+1, "m")
+	err := IgnorarSugestao(db, empresaTeste, produtoID, "comprimento", limiteNumeric103+1, "m")
 	var erroValidacao *ErroProdutoValidacao
 	if !errors.As(err, &erroValidacao) {
 		t.Fatalf("err = %v, want *ErroProdutoValidacao", err)
@@ -578,7 +578,7 @@ func TestSugestaoIgnorada_ProdutoIdMalformado(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	err := IgnorarSugestao(db, "id-nao-e-um-uuid", "comprimento", 6, "m")
+	err := IgnorarSugestao(db, empresaTeste, "id-nao-e-um-uuid", "comprimento", 6, "m")
 	if !errors.Is(err, ErrProdutoNaoEncontrado) {
 		t.Fatalf("err = %v, want ErrProdutoNaoEncontrado", err)
 	}
@@ -596,7 +596,7 @@ func TestAplicarCorrecao_LoteComProdutoIdMalformadoNaoAbortaLote(t *testing.T) {
 
 	produtoValido := seedProdutoNormalizacao(t, db, "Tubo ProdutoId Malformado", CriarProdutoInput{})
 
-	aplicadas, err := AplicarCorrecoes(db, []CorrecaoInput{
+	aplicadas, err := AplicarCorrecoes(db, empresaTeste, []CorrecaoInput{
 		{ProdutoID: "id-nao-e-um-uuid", Campo: "comprimento", Valor: 6, Unidade: "m"},
 		{ProdutoID: produtoValido, Campo: "comprimento", Valor: 6, Unidade: "m"},
 	})
@@ -624,7 +624,7 @@ func TestSugestaoIgnorada_RemoveDaProximaAnalise(t *testing.T) {
 	setDimensoesPendentesRevisao(t, db, produtoID, `{"comprimento": "cerca de 3 metros"}`)
 
 	// Confere que a sugestão existe ANTES de ignorar.
-	antes, err := AnalisarInconsistencias(db)
+	antes, err := AnalisarInconsistencias(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("AnalisarInconsistencias (antes): %v", err)
 	}
@@ -632,11 +632,11 @@ func TestSugestaoIgnorada_RemoveDaProximaAnalise(t *testing.T) {
 		t.Fatalf("sugestão deveria existir antes de ignorar")
 	}
 
-	if err := IgnorarSugestao(db, produtoID, "comprimento", 3, "m"); err != nil {
+	if err := IgnorarSugestao(db, empresaTeste, produtoID, "comprimento", 3, "m"); err != nil {
 		t.Fatalf("IgnorarSugestao: %v", err)
 	}
 
-	depois, err := AnalisarInconsistencias(db)
+	depois, err := AnalisarInconsistencias(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("AnalisarInconsistencias (depois): %v", err)
 	}
@@ -654,10 +654,10 @@ func TestSugestaoIgnorada_MesmaTuplaDuasVezesEIdempotente(t *testing.T) {
 
 	produtoID := seedProdutoNormalizacao(t, db, "Tubo Ignorar Duas Vezes", CriarProdutoInput{})
 
-	if err := IgnorarSugestao(db, produtoID, "comprimento", 3, "m"); err != nil {
+	if err := IgnorarSugestao(db, empresaTeste, produtoID, "comprimento", 3, "m"); err != nil {
 		t.Fatalf("IgnorarSugestao (1a chamada): %v", err)
 	}
-	if err := IgnorarSugestao(db, produtoID, "comprimento", 3, "m"); err != nil {
+	if err := IgnorarSugestao(db, empresaTeste, produtoID, "comprimento", 3, "m"); err != nil {
 		t.Fatalf("IgnorarSugestao (2a chamada, reenvio): %v", err)
 	}
 
@@ -677,14 +677,14 @@ func TestSugestaoIgnorada_ValorMudaParaOutroInconsistenteReaparece(t *testing.T)
 	produtoID := seedProdutoNormalizacao(t, db, "Tubo Valor Muda", CriarProdutoInput{})
 	setDimensoesPendentesRevisao(t, db, produtoID, `{"comprimento": "cerca de 3 metros"}`)
 
-	if err := IgnorarSugestao(db, produtoID, "comprimento", 3, "m"); err != nil {
+	if err := IgnorarSugestao(db, empresaTeste, produtoID, "comprimento", 3, "m"); err != nil {
 		t.Fatalf("IgnorarSugestao: %v", err)
 	}
 
 	// A origem "migracao" muda para um valor diferente do que foi ignorado.
 	setDimensoesPendentesRevisao(t, db, produtoID, `{"comprimento": "5 metros"}`)
 
-	sugestoes, err := AnalisarInconsistencias(db)
+	sugestoes, err := AnalisarInconsistencias(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("AnalisarInconsistencias: %v", err)
 	}
@@ -705,7 +705,7 @@ func TestSugestaoIgnorada_CampoInvalido(t *testing.T) {
 
 	produtoID := seedProdutoNormalizacao(t, db, "Tubo Ignorar Campo Invalido", CriarProdutoInput{})
 
-	err := IgnorarSugestao(db, produtoID, "peso", 6, "m")
+	err := IgnorarSugestao(db, empresaTeste, produtoID, "peso", 6, "m")
 	var erroValidacao *ErroProdutoValidacao
 	if !errors.As(err, &erroValidacao) {
 		t.Fatalf("err = %v, want *ErroProdutoValidacao", err)
@@ -722,7 +722,7 @@ func TestSugestaoIgnorada_ProdutoInexistente(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	err := IgnorarSugestao(db, "00000000-0000-0000-0000-000000000000", "comprimento", 6, "m")
+	err := IgnorarSugestao(db, empresaTeste, "00000000-0000-0000-0000-000000000000", "comprimento", 6, "m")
 	if !errors.Is(err, ErrProdutoNaoEncontrado) {
 		t.Fatalf("err = %v, want ErrProdutoNaoEncontrado", err)
 	}
@@ -740,7 +740,7 @@ func seedProdutoComEstoque(t *testing.T, db *sql.DB, nome, estoqueID string, dim
 	dims.Nome = nome
 	dims.CategoriaID = categoriaIDPorCodigo(t, db, "04.001")
 	dims.EstoqueID = estoqueID
-	produto, err := CriarProduto(db, dims)
+	produto, err := CriarProduto(db, empresaTeste, dims)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
@@ -802,7 +802,7 @@ func TestDetectarDuplicatas_DuplicataClara(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Estoque Duplicata Clara")
+	estoque, err := CriarEstoque(db, empresaTeste, "Estoque Duplicata Clara")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -814,7 +814,7 @@ func TestDetectarDuplicatas_DuplicataClara(t *testing.T) {
 		Diametro: &DimensaoInput{Valor: ptrFloat(2.5), Unidade: ptrStr("cm")},
 	})
 
-	grupos, err := DetectarDuplicatas(db)
+	grupos, err := DetectarDuplicatas(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("DetectarDuplicatas: %v", err)
 	}
@@ -848,7 +848,7 @@ func TestDetectarDuplicatas_MesmoNomeDimensaoDiferente(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Estoque Dimensao Diferente")
+	estoque, err := CriarEstoque(db, empresaTeste, "Estoque Dimensao Diferente")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -859,7 +859,7 @@ func TestDetectarDuplicatas_MesmoNomeDimensaoDiferente(t *testing.T) {
 		Comprimento: &DimensaoInput{Valor: ptrFloat(30), Unidade: ptrStr("mm")},
 	})
 
-	grupos, err := DetectarDuplicatas(db)
+	grupos, err := DetectarDuplicatas(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("DetectarDuplicatas: %v", err)
 	}
@@ -875,11 +875,11 @@ func TestDetectarDuplicatas_SemLocalEmComum(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoqueX, err := CriarEstoque(db, "Estoque X Sem Local Comum")
+	estoqueX, err := CriarEstoque(db, empresaTeste, "Estoque X Sem Local Comum")
 	if err != nil {
 		t.Fatalf("CriarEstoque X: %v", err)
 	}
-	estoqueY, err := CriarEstoque(db, "Estoque Y Sem Local Comum")
+	estoqueY, err := CriarEstoque(db, empresaTeste, "Estoque Y Sem Local Comum")
 	if err != nil {
 		t.Fatalf("CriarEstoque Y: %v", err)
 	}
@@ -891,7 +891,7 @@ func TestDetectarDuplicatas_SemLocalEmComum(t *testing.T) {
 		Diametro: &DimensaoInput{Valor: ptrFloat(4), Unidade: ptrStr("mm")},
 	})
 
-	grupos, err := DetectarDuplicatas(db)
+	grupos, err := DetectarDuplicatas(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("DetectarDuplicatas: %v", err)
 	}
@@ -907,7 +907,7 @@ func TestDetectarDuplicatas_CampoParcialmentePreenchido(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Estoque Campo Parcial")
+	estoque, err := CriarEstoque(db, empresaTeste, "Estoque Campo Parcial")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -917,7 +917,7 @@ func TestDetectarDuplicatas_CampoParcialmentePreenchido(t *testing.T) {
 	})
 	p2 := seedProdutoComEstoque(t, db, "Chapa Metalica", estoque.ID, CriarProdutoInput{})
 
-	grupos, err := DetectarDuplicatas(db)
+	grupos, err := DetectarDuplicatas(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("DetectarDuplicatas: %v", err)
 	}
@@ -934,7 +934,7 @@ func TestDetectarDuplicatas_NomeComAcentoECaseDiferentesAgrupa(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Estoque Acento")
+	estoque, err := CriarEstoque(db, empresaTeste, "Estoque Acento")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -942,7 +942,7 @@ func TestDetectarDuplicatas_NomeComAcentoECaseDiferentesAgrupa(t *testing.T) {
 	p1 := seedProdutoComEstoque(t, db, "Válvula Registro", estoque.ID, CriarProdutoInput{})
 	p2 := seedProdutoComEstoque(t, db, "valvula registro", estoque.ID, CriarProdutoInput{})
 
-	grupos, err := DetectarDuplicatas(db)
+	grupos, err := DetectarDuplicatas(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("DetectarDuplicatas: %v", err)
 	}
@@ -961,11 +961,11 @@ func TestDetectarDuplicatas_TresMembrosSemInterseccaoTotalNaoAgrupa(t *testing.T
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoqueAB, err := CriarEstoque(db, "Estoque AB")
+	estoqueAB, err := CriarEstoque(db, empresaTeste, "Estoque AB")
 	if err != nil {
 		t.Fatalf("CriarEstoque AB: %v", err)
 	}
-	estoqueBC, err := CriarEstoque(db, "Estoque BC")
+	estoqueBC, err := CriarEstoque(db, empresaTeste, "Estoque BC")
 	if err != nil {
 		t.Fatalf("CriarEstoque BC: %v", err)
 	}
@@ -976,7 +976,7 @@ func TestDetectarDuplicatas_TresMembrosSemInterseccaoTotalNaoAgrupa(t *testing.T
 	adicionarProdutoEstoque(t, db, produtoB, estoqueBC.ID, 1) // B também está no Estoque BC
 	produtoC := seedProdutoComEstoque(t, db, nome, estoqueBC.ID, CriarProdutoInput{})
 
-	grupos, err := DetectarDuplicatas(db)
+	grupos, err := DetectarDuplicatas(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("DetectarDuplicatas: %v", err)
 	}
@@ -998,19 +998,19 @@ func TestDetectarDuplicatas_TresMembrosComInterseccaoTotalAgrupaEmUmGrupo(t *tes
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoqueComum, err := CriarEstoque(db, "Estoque Comum Tres Membros")
+	estoqueComum, err := CriarEstoque(db, empresaTeste, "Estoque Comum Tres Membros")
 	if err != nil {
 		t.Fatalf("CriarEstoque comum: %v", err)
 	}
-	estoqueExtraA, err := CriarEstoque(db, "Estoque Extra A")
+	estoqueExtraA, err := CriarEstoque(db, empresaTeste, "Estoque Extra A")
 	if err != nil {
 		t.Fatalf("CriarEstoque extra A: %v", err)
 	}
-	estoqueExtraB, err := CriarEstoque(db, "Estoque Extra B")
+	estoqueExtraB, err := CriarEstoque(db, empresaTeste, "Estoque Extra B")
 	if err != nil {
 		t.Fatalf("CriarEstoque extra B: %v", err)
 	}
-	estoqueExtraC, err := CriarEstoque(db, "Estoque Extra C")
+	estoqueExtraC, err := CriarEstoque(db, empresaTeste, "Estoque Extra C")
 	if err != nil {
 		t.Fatalf("CriarEstoque extra C: %v", err)
 	}
@@ -1023,7 +1023,7 @@ func TestDetectarDuplicatas_TresMembrosComInterseccaoTotalAgrupaEmUmGrupo(t *tes
 	produtoC := seedProdutoComEstoque(t, db, nome, estoqueComum.ID, CriarProdutoInput{})
 	adicionarProdutoEstoque(t, db, produtoC, estoqueExtraC.ID, 1)
 
-	grupos, err := DetectarDuplicatas(db)
+	grupos, err := DetectarDuplicatas(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("DetectarDuplicatas: %v", err)
 	}
@@ -1054,11 +1054,11 @@ func TestDetectarDuplicatas_MultiplosGruposIndependentesNaoContaminam(t *testing
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoqueTubo, err := CriarEstoque(db, "Estoque Grupo Tubo")
+	estoqueTubo, err := CriarEstoque(db, empresaTeste, "Estoque Grupo Tubo")
 	if err != nil {
 		t.Fatalf("CriarEstoque tubo: %v", err)
 	}
-	estoqueParafuso, err := CriarEstoque(db, "Estoque Grupo Parafuso")
+	estoqueParafuso, err := CriarEstoque(db, empresaTeste, "Estoque Grupo Parafuso")
 	if err != nil {
 		t.Fatalf("CriarEstoque parafuso: %v", err)
 	}
@@ -1072,7 +1072,7 @@ func TestDetectarDuplicatas_MultiplosGruposIndependentesNaoContaminam(t *testing
 	parafusoC := seedProdutoComEstoque(t, db, "Parafuso M6", estoqueParafuso.ID, CriarProdutoInput{})
 	parafusoD := seedProdutoComEstoque(t, db, "Parafuso M6", estoqueParafuso.ID, CriarProdutoInput{})
 
-	grupos, err := DetectarDuplicatas(db)
+	grupos, err := DetectarDuplicatas(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("DetectarDuplicatas: %v", err)
 	}
@@ -1117,7 +1117,7 @@ func TestDetectarDuplicatas_CatalogoSemDuplicatas(t *testing.T) {
 	seedProdutoNormalizacao(t, db, "Produto Unico A", CriarProdutoInput{})
 	seedProdutoNormalizacao(t, db, "Produto Unico B", CriarProdutoInput{})
 
-	grupos, err := DetectarDuplicatas(db)
+	grupos, err := DetectarDuplicatas(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("DetectarDuplicatas: %v", err)
 	}
@@ -1142,7 +1142,7 @@ func TestDetectarDuplicatas_FalhaDeBanco(t *testing.T) {
 		}
 	})
 
-	if _, err := DetectarDuplicatas(db); err == nil {
+	if _, err := DetectarDuplicatas(db, empresaTeste); err == nil {
 		t.Fatal("DetectarDuplicatas deveria falhar com a tabela produtos indisponível")
 	}
 }
@@ -1155,7 +1155,7 @@ func TestDetectarDuplicatas_FalhaDeBanco(t *testing.T) {
 // carregarLocaisProduto consulta. Prova que uma falha NESSA consulta também
 // aborta DetectarDuplicatas com erro; sem este teste, uma regressão que
 // engolisse silenciosamente o erro de carregarLocaisProduto (ex.
-// `locais, _ := carregarLocaisProduto(db)`) passaria despercebida —
+// `locais, _ := carregarLocaisProduto(db, empresaTeste)`) passaria despercebida —
 // DetectarDuplicatas seguiria com locais == nil, todo par falharia
 // locaisEmComumPar, e a função devolveria erroneamente `200 {"grupos":[]}`
 // em vez do `500 INTERNAL_ERROR` correto.
@@ -1172,7 +1172,7 @@ func TestDetectarDuplicatas_FalhaDeBancoAoCarregarLocais(t *testing.T) {
 		}
 	})
 
-	if _, err := DetectarDuplicatas(db); err == nil {
+	if _, err := DetectarDuplicatas(db, empresaTeste); err == nil {
 		t.Fatal("DetectarDuplicatas deveria falhar com a tabela produto_estoque indisponível")
 	}
 }
@@ -1189,7 +1189,7 @@ func seedProdutoParaMesclagem(t *testing.T, db *sql.DB, nome, estoqueID string, 
 	dims.CategoriaID = categoriaIDPorCodigo(t, db, "04.001")
 	dims.EstoqueID = estoqueID
 	dims.QuantidadeInicial = quantidade
-	produto, err := CriarProduto(db, dims)
+	produto, err := CriarProduto(db, empresaTeste, dims)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
@@ -1253,7 +1253,7 @@ func TestMesclarDuplicatas_MesclagemSimples(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Estoque Mesclagem Simples")
+	estoque, err := CriarEstoque(db, empresaTeste, "Estoque Mesclagem Simples")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -1266,7 +1266,7 @@ func TestMesclarDuplicatas_MesclagemSimples(t *testing.T) {
 		Diametro: &DimensaoInput{Valor: ptrFloat(25), Unidade: ptrStr("mm")},
 	})
 
-	resultado, err := MesclarDuplicatas(db, produtoA, []string{produtoB}, usuarioID)
+	resultado, err := MesclarDuplicatas(db, empresaTeste, produtoA, []string{produtoB}, usuarioID)
 	if err != nil {
 		t.Fatalf("MesclarDuplicatas: %v", err)
 	}
@@ -1341,7 +1341,7 @@ func TestMesclarDuplicatas_RemovidoComHistoricoDeMovimentacoes(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Estoque Mesclagem Historico")
+	estoque, err := CriarEstoque(db, empresaTeste, "Estoque Mesclagem Historico")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -1354,10 +1354,10 @@ func TestMesclarDuplicatas_RemovidoComHistoricoDeMovimentacoes(t *testing.T) {
 		Diametro: &DimensaoInput{Valor: ptrFloat(4), Unidade: ptrStr("mm")},
 	})
 
-	if _, err := RegistrarBaixa(db, produtoB, estoque.ID, usuarioID, 1); err != nil {
+	if _, err := RegistrarBaixa(db, empresaTeste, produtoB, estoque.ID, usuarioID, 1); err != nil {
 		t.Fatalf("RegistrarBaixa 1: %v", err)
 	}
-	if _, err := RegistrarBaixa(db, produtoB, estoque.ID, usuarioID, 1); err != nil {
+	if _, err := RegistrarBaixa(db, empresaTeste, produtoB, estoque.ID, usuarioID, 1); err != nil {
 		t.Fatalf("RegistrarBaixa 2: %v", err)
 	}
 	// B agora tem 3 de saldo (5 - 1 - 1) e 2 linhas em movimentacoes.
@@ -1368,7 +1368,7 @@ func TestMesclarDuplicatas_RemovidoComHistoricoDeMovimentacoes(t *testing.T) {
 		t.Fatalf("movimentações de B antes da mesclagem = %d, want 2", n)
 	}
 
-	resultado, err := MesclarDuplicatas(db, produtoA, []string{produtoB}, usuarioID)
+	resultado, err := MesclarDuplicatas(db, empresaTeste, produtoA, []string{produtoB}, usuarioID)
 	if err != nil {
 		t.Fatalf("MesclarDuplicatas: %v", err)
 	}
@@ -1394,7 +1394,7 @@ func TestMesclarDuplicatas_GrupoDeTresLocaisEmIntersecaoTotal(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Estoque Mesclagem Tres Membros")
+	estoque, err := CriarEstoque(db, empresaTeste, "Estoque Mesclagem Tres Membros")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -1405,7 +1405,7 @@ func TestMesclarDuplicatas_GrupoDeTresLocaisEmIntersecaoTotal(t *testing.T) {
 	produtoB := seedProdutoParaMesclagem(t, db, nome, estoque.ID, 3, CriarProdutoInput{})
 	produtoC := seedProdutoParaMesclagem(t, db, nome, estoque.ID, 4, CriarProdutoInput{})
 
-	resultado, err := MesclarDuplicatas(db, produtoA, []string{produtoB, produtoC}, usuarioID)
+	resultado, err := MesclarDuplicatas(db, empresaTeste, produtoA, []string{produtoB, produtoC}, usuarioID)
 	if err != nil {
 		t.Fatalf("MesclarDuplicatas: %v", err)
 	}
@@ -1439,7 +1439,7 @@ func TestMesclarDuplicatas_ProdutoJaMescladoPorExecucaoConcorrente(t *testing.T)
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Estoque Mesclagem Ja Mesclado")
+	estoque, err := CriarEstoque(db, empresaTeste, "Estoque Mesclagem Ja Mesclado")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -1452,7 +1452,7 @@ func TestMesclarDuplicatas_ProdutoJaMescladoPorExecucaoConcorrente(t *testing.T)
 		t.Fatalf("falha ao simular mesclagem concorrente de B: %v", err)
 	}
 
-	_, err = MesclarDuplicatas(db, produtoA, []string{produtoB}, usuarioID)
+	_, err = MesclarDuplicatas(db, empresaTeste, produtoA, []string{produtoB}, usuarioID)
 	var erroInvalida *ErroMesclagemInvalida
 	if !errors.As(err, &erroInvalida) {
 		t.Fatalf("err = %v, want *ErroMesclagemInvalida", err)
@@ -1473,7 +1473,7 @@ func TestMesclarDuplicatas_GrupoNaoEhMaisValido(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Estoque Mesclagem Grupo Invalido")
+	estoque, err := CriarEstoque(db, empresaTeste, "Estoque Mesclagem Grupo Invalido")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -1494,7 +1494,7 @@ func TestMesclarDuplicatas_GrupoNaoEhMaisValido(t *testing.T) {
 		t.Fatalf("falha ao corrigir dimensão de B: %v", err)
 	}
 
-	_, err = MesclarDuplicatas(db, produtoA, []string{produtoB}, usuarioID)
+	_, err = MesclarDuplicatas(db, empresaTeste, produtoA, []string{produtoB}, usuarioID)
 	var erroInvalida *ErroMesclagemInvalida
 	if !errors.As(err, &erroInvalida) {
 		t.Fatalf("err = %v, want *ErroMesclagemInvalida", err)
@@ -1514,7 +1514,7 @@ func TestMesclarDuplicatas_FormaInvalida(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Estoque Mesclagem Forma Invalida")
+	estoque, err := CriarEstoque(db, empresaTeste, "Estoque Mesclagem Forma Invalida")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -1534,7 +1534,7 @@ func TestMesclarDuplicatas_FormaInvalida(t *testing.T) {
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
-			_, err := MesclarDuplicatas(db, c.produtoMantidoID, c.produtoRemovidoIDs, usuarioID)
+			_, err := MesclarDuplicatas(db, empresaTeste, c.produtoMantidoID, c.produtoRemovidoIDs, usuarioID)
 			var erroValidacao *ErroProdutoValidacao
 			if !errors.As(err, &erroValidacao) {
 				t.Fatalf("err = %v, want *ErroProdutoValidacao", err)
@@ -1552,7 +1552,7 @@ func TestMesclarDuplicatas_ProdutoIdMalformadoOuInexistenteEhGrupoInvalido(t *te
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Estoque Mesclagem Id Malformado")
+	estoque, err := CriarEstoque(db, empresaTeste, "Estoque Mesclagem Id Malformado")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -1565,7 +1565,7 @@ func TestMesclarDuplicatas_ProdutoIdMalformadoOuInexistenteEhGrupoInvalido(t *te
 	}
 	for nome, produtoRemovidoID := range casos {
 		t.Run(nome, func(t *testing.T) {
-			_, err := MesclarDuplicatas(db, produtoA, []string{produtoRemovidoID}, usuarioID)
+			_, err := MesclarDuplicatas(db, empresaTeste, produtoA, []string{produtoRemovidoID}, usuarioID)
 			var erroInvalida *ErroMesclagemInvalida
 			if !errors.As(err, &erroInvalida) {
 				t.Fatalf("err = %v, want *ErroMesclagemInvalida", err)
@@ -1584,7 +1584,7 @@ func TestMesclarDuplicatas_FalhaDeBanco(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Estoque Mesclagem Falha Banco")
+	estoque, err := CriarEstoque(db, empresaTeste, "Estoque Mesclagem Falha Banco")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -1601,7 +1601,7 @@ func TestMesclarDuplicatas_FalhaDeBanco(t *testing.T) {
 		}
 	})
 
-	_, err = MesclarDuplicatas(db, produtoA, []string{produtoB}, usuarioID)
+	_, err = MesclarDuplicatas(db, empresaTeste, produtoA, []string{produtoB}, usuarioID)
 	if err == nil {
 		t.Fatal("MesclarDuplicatas deveria falhar com a tabela mesclagens_duplicatas indisponível")
 	}
@@ -1624,7 +1624,7 @@ func TestMesclarDuplicatas_PedidoItensRewriteSemColisao(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Estoque Pedido Rewrite Sem Colisao")
+	estoque, err := CriarEstoque(db, empresaTeste, "Estoque Pedido Rewrite Sem Colisao")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -1634,10 +1634,10 @@ func TestMesclarDuplicatas_PedidoItensRewriteSemColisao(t *testing.T) {
 	produtoA := seedProdutoParaMesclagem(t, db, "Cimento CP II", estoque.ID, 5, CriarProdutoInput{})
 	produtoB := seedProdutoParaMesclagem(t, db, "Cimento CP II", estoque.ID, 3, CriarProdutoInput{})
 
-	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoB, estoque.ID, 2); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoB, estoque.ID, 2); err != nil {
 		t.Fatalf("seed AdicionarItemCarrinho: %v", err)
 	}
-	pedido, err := SubmeterPedido(db, usuarioID, "Fulano", "Obra X", "")
+	pedido, err := SubmeterPedido(db, empresaTeste, usuarioID, "Fulano", "Obra X", "")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedido: %v", err)
 	}
@@ -1647,7 +1647,7 @@ func TestMesclarDuplicatas_PedidoItensRewriteSemColisao(t *testing.T) {
 	}
 	nomeSnapshot := itensAntes[0].ProdutoNome
 
-	if _, err := MesclarDuplicatas(db, produtoA, []string{produtoB}, almoxarifeID); err != nil {
+	if _, err := MesclarDuplicatas(db, empresaTeste, produtoA, []string{produtoB}, almoxarifeID); err != nil {
 		t.Fatalf("MesclarDuplicatas: %v", err)
 	}
 
@@ -1680,7 +1680,7 @@ func TestMesclarDuplicatas_PedidoItensColisaoDeChaveComposta(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Estoque Pedido Colisao")
+	estoque, err := CriarEstoque(db, empresaTeste, "Estoque Pedido Colisao")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -1692,13 +1692,13 @@ func TestMesclarDuplicatas_PedidoItensColisaoDeChaveComposta(t *testing.T) {
 
 	// O MESMO usuário pede os dois "duplicados" (A e B) no MESMO Estoque, no
 	// MESMO Pedido — cenário exato da colisão de chave composta.
-	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoA, estoque.ID, 2); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoA, estoque.ID, 2); err != nil {
 		t.Fatalf("seed AdicionarItemCarrinho A: %v", err)
 	}
-	if _, err := AdicionarItemCarrinho(db, usuarioID, produtoB, estoque.ID, 4); err != nil {
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoB, estoque.ID, 4); err != nil {
 		t.Fatalf("seed AdicionarItemCarrinho B: %v", err)
 	}
-	pedido, err := SubmeterPedido(db, usuarioID, "Fulano", "Obra X", "")
+	pedido, err := SubmeterPedido(db, empresaTeste, usuarioID, "Fulano", "Obra X", "")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedido: %v", err)
 	}
@@ -1713,7 +1713,7 @@ func TestMesclarDuplicatas_PedidoItensColisaoDeChaveComposta(t *testing.T) {
 		}
 	}
 
-	resultado, err := MesclarDuplicatas(db, produtoA, []string{produtoB}, almoxarifeID)
+	resultado, err := MesclarDuplicatas(db, empresaTeste, produtoA, []string{produtoB}, almoxarifeID)
 	if err != nil {
 		t.Fatalf("MesclarDuplicatas deveria suceder (soma-e-descarta), erro: %v", err)
 	}

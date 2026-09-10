@@ -20,16 +20,17 @@ import (
 
 func postDesativacao(db *sql.DB, id, authHeader, body string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/usuarios/{id}/desativacao",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelGestor)(
-				DesativarUsuarioHandler(db))))
+	mux.HandleFunc("POST /e/{slug}/api/usuarios/{id}/desativacao",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelGestor)(
+					DesativarUsuarioHandler(db)))))
 	var r *http.Request
 	if body != "" {
-		r = httptest.NewRequest(http.MethodPost, "/api/usuarios/"+id+"/desativacao", strings.NewReader(body))
+		r = httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/usuarios/"+id+"/desativacao", strings.NewReader(body))
 		r.Header.Set("Content-Type", "application/json")
 	} else {
-		r = httptest.NewRequest(http.MethodPost, "/api/usuarios/"+id+"/desativacao", nil)
+		r = httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/usuarios/"+id+"/desativacao", nil)
 	}
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
@@ -41,11 +42,12 @@ func postDesativacao(db *sql.DB, id, authHeader, body string) *httptest.Response
 
 func postRebaixamento(db *sql.DB, id, authHeader string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/usuarios/{id}/rebaixamento",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelGestor)(
-				RebaixarUsuarioHandler(db))))
-	r := httptest.NewRequest(http.MethodPost, "/api/usuarios/"+id+"/rebaixamento", nil)
+	mux.HandleFunc("POST /e/{slug}/api/usuarios/{id}/rebaixamento",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelGestor)(
+					RebaixarUsuarioHandler(db)))))
+	r := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/usuarios/"+id+"/rebaixamento", nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
 	}

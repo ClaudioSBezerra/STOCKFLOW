@@ -164,7 +164,7 @@ func (e *ErroPedidoIndisponivel) Error() string {
 // resolvidos por ListarCarrinho) e `categoria_nome` via join com
 // `categorias` (Code Map de spec-7-2), esvazia `carrinho_itens` do usuário
 // e commita — tudo na MESMA transação (Always, spec-7-2).
-func SubmeterPedido(db *sql.DB, usuarioID, solicitante, obraCentroCusto, observacao string) (Pedido, error) {
+func SubmeterPedido(db *sql.DB, empresaID string, usuarioID, solicitante, obraCentroCusto, observacao string) (Pedido, error) {
 	solicitanteTrim := strings.TrimSpace(solicitante)
 	if solicitanteTrim == "" {
 		return Pedido{}, &ErroPedidoValidacao{Mensagem: "solicitante é obrigatório"}
@@ -174,7 +174,7 @@ func SubmeterPedido(db *sql.DB, usuarioID, solicitante, obraCentroCusto, observa
 		return Pedido{}, &ErroPedidoValidacao{Mensagem: "obra/centro de custo é obrigatório"}
 	}
 
-	itens, _, err := ListarCarrinho(db, usuarioID)
+	itens, _, err := ListarCarrinho(db, empresaID, usuarioID)
 	if err != nil {
 		return Pedido{}, fmt.Errorf("falha ao listar carrinho para envio de pedido: %w", err)
 	}
@@ -201,14 +201,20 @@ func SubmeterPedido(db *sql.DB, usuarioID, solicitante, obraCentroCusto, observa
 	}
 	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
 
+	// Os dois JOINs escopam a linha travada à Empresa da requisição (Story
+	// 9.1, AD-20); `FOR UPDATE OF pe` trava só `produto_estoque`. Um Produto
+	// ou Estoque de outra Empresa cai no mesmo `sql.ErrNoRows` de "par sem
+	// saldo" -> `disponivel = 0`, sem revelar existência.
 	const selectDisponivel = `
-		SELECT quantidade FROM produto_estoque
-		WHERE produto_id = $1 AND estoque_id = $2
-		FOR UPDATE`
+		SELECT pe.quantidade FROM produto_estoque pe
+		JOIN produtos p ON p.id = pe.produto_id AND p.empresa_id = $3
+		JOIN estoques e ON e.id = pe.estoque_id AND e.empresa_id = $3
+		WHERE pe.produto_id = $1 AND pe.estoque_id = $2
+		FOR UPDATE OF pe`
 	var indisponiveis []string
 	for _, item := range itensOrdenados {
 		var disponivel float64
-		if err := tx.QueryRow(selectDisponivel, item.ProdutoID, item.EstoqueID).Scan(&disponivel); err != nil {
+		if err := tx.QueryRow(selectDisponivel, item.ProdutoID, item.EstoqueID, empresaID).Scan(&disponivel); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				disponivel = 0
 			} else {
@@ -231,10 +237,10 @@ func SubmeterPedido(db *sql.DB, usuarioID, solicitante, obraCentroCusto, observa
 	var pedido Pedido
 	var observacaoGravada sql.NullString
 	const insertPedido = `
-		INSERT INTO pedidos (usuario_id, solicitante, obra_centro_custo, observacao)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO pedidos (usuario_id, solicitante, obra_centro_custo, observacao, empresa_id)
+		VALUES ($1, $2, $3, $4, $5)
 		RETURNING id, usuario_id, solicitante, obra_centro_custo, observacao, status, criado_em`
-	if err := tx.QueryRow(insertPedido, usuarioID, solicitanteTrim, obraTrim, observacaoNull).Scan(
+	if err := tx.QueryRow(insertPedido, usuarioID, solicitanteTrim, obraTrim, observacaoNull, empresaID).Scan(
 		&pedido.ID, &pedido.UsuarioID, &pedido.Solicitante, &pedido.ObraCentroCusto,
 		&observacaoGravada, &pedido.Status, &pedido.CriadoEm,
 	); err != nil {
@@ -244,18 +250,21 @@ func SubmeterPedido(db *sql.DB, usuarioID, solicitante, obraCentroCusto, observa
 		pedido.Observacao = &observacaoGravada.String
 	}
 
-	const selectCategoriaNome = `SELECT c.nome FROM produtos p JOIN categorias c ON c.id = p.categoria_id WHERE p.id = $1`
+	const selectCategoriaNome = `
+		SELECT c.nome FROM produtos p
+		JOIN categorias c ON c.id = p.categoria_id
+		WHERE p.id = $1 AND p.empresa_id = $2`
 	const insertItem = `
-		INSERT INTO pedido_itens (pedido_id, produto_id, produto_nome, categoria_nome, estoque_id, estoque_nome, quantidade)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`
+		INSERT INTO pedido_itens (pedido_id, produto_id, produto_nome, categoria_nome, estoque_id, estoque_nome, quantidade, empresa_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
 	for _, item := range itensOrdenados {
 		var categoriaNome string
-		if err := tx.QueryRow(selectCategoriaNome, item.ProdutoID).Scan(&categoriaNome); err != nil {
+		if err := tx.QueryRow(selectCategoriaNome, item.ProdutoID, empresaID).Scan(&categoriaNome); err != nil {
 			return Pedido{}, fmt.Errorf("falha ao resolver categoria do item de pedido: %w", err)
 		}
 		if _, err := tx.Exec(
 			insertItem,
-			pedido.ID, item.ProdutoID, item.ProdutoNome, categoriaNome, item.EstoqueID, item.EstoqueNome, item.Quantidade,
+			pedido.ID, item.ProdutoID, item.ProdutoNome, categoriaNome, item.EstoqueID, item.EstoqueNome, item.Quantidade, empresaID,
 		); err != nil {
 			return Pedido{}, fmt.Errorf("falha ao inserir item de pedido: %w", err)
 		}
@@ -284,7 +293,7 @@ func SubmeterPedido(db *sql.DB, usuarioID, solicitante, obraCentroCusto, observa
 // (movimentacoes.go) — `ORDER BY criado_em DESC` com desempate por `id` para
 // duas linhas no mesmo instante, `sql.NullString` para a `observacao`
 // anulável, SQL explícito sem ORM.
-func ListarPedidosProprios(db *sql.DB, usuarioID, filtroStatus string) ([]PedidoResumo, error) {
+func ListarPedidosProprios(db *sql.DB, empresaID string, usuarioID, filtroStatus string) ([]PedidoResumo, error) {
 	if filtroStatus != "" && !statusPedidoValido[filtroStatus] {
 		return nil, &ErroPedidoValidacao{Mensagem: "status inválido"}
 	}
@@ -294,10 +303,10 @@ func ListarPedidosProprios(db *sql.DB, usuarioID, filtroStatus string) ([]Pedido
 		       COALESCE(i.qtd, 0)
 		FROM pedidos p
 		LEFT JOIN (SELECT pedido_id, count(*) AS qtd FROM pedido_itens GROUP BY pedido_id) i ON i.pedido_id = p.id
-		WHERE p.usuario_id = $1`
-	args := []any{usuarioID}
+		WHERE p.usuario_id = $1 AND p.empresa_id = $2`
+	args := []any{usuarioID, empresaID}
 	if filtroStatus != "" {
-		q += " AND p.status = $2"
+		q += " AND p.status = $3"
 		args = append(args, filtroStatus)
 	}
 	q += " ORDER BY p.criado_em DESC, p.id DESC"
@@ -329,8 +338,8 @@ func ListarPedidosProprios(db *sql.DB, usuarioID, filtroStatus string) ([]Pedido
 	return resumos, nil
 }
 
-// ListarPedidosFila devolve TODOS os Pedidos da organização (sem filtro por
-// `usuario_id`), do mais recente ao mais antigo, cada um com a contagem de
+// ListarPedidosFila devolve TODOS os Pedidos DA EMPRESA `empresaID` (sem
+// filtro por `usuario_id`, mas SEMPRE com o de Empresa — Story 9.1, AD-20), do mais recente ao mais antigo, cada um com a contagem de
 // itens — a Fila do Almoxarife (Story 7.4, spec-7-4). Mesma
 // validação/projeção/scan/ordenação de ListarPedidosProprios (Story 7.3), só
 // sem a cláusula `WHERE p.usuario_id = $1`. `filtroStatus` vazio -> sem
@@ -338,7 +347,7 @@ func ListarPedidosProprios(db *sql.DB, usuarioID, filtroStatus string) ([]Pedido
 // (400 VALIDATION_ERROR) ANTES de qualquer query, mesmo contrato de
 // ListarPedidosProprios. Quem pode chamar esta função (autorização por
 // papel) é decidido por ListarPedidosParaSessao, nunca aqui.
-func ListarPedidosFila(db *sql.DB, filtroStatus string) ([]PedidoResumo, error) {
+func ListarPedidosFila(db *sql.DB, empresaID string, filtroStatus string) ([]PedidoResumo, error) {
 	if filtroStatus != "" && !statusPedidoValido[filtroStatus] {
 		return nil, &ErroPedidoValidacao{Mensagem: "status inválido"}
 	}
@@ -347,10 +356,11 @@ func ListarPedidosFila(db *sql.DB, filtroStatus string) ([]PedidoResumo, error) 
 		SELECT p.id, p.usuario_id, p.solicitante, p.obra_centro_custo, p.observacao, p.status, p.criado_em,
 		       COALESCE(i.qtd, 0)
 		FROM pedidos p
-		LEFT JOIN (SELECT pedido_id, count(*) AS qtd FROM pedido_itens GROUP BY pedido_id) i ON i.pedido_id = p.id`
-	args := []any{}
+		LEFT JOIN (SELECT pedido_id, count(*) AS qtd FROM pedido_itens GROUP BY pedido_id) i ON i.pedido_id = p.id
+		WHERE p.empresa_id = $1`
+	args := []any{empresaID}
 	if filtroStatus != "" {
-		q += " WHERE p.status = $1"
+		q += " AND p.status = $2"
 		args = append(args, filtroStatus)
 	}
 	q += " ORDER BY p.criado_em DESC, p.id DESC"
@@ -393,11 +403,11 @@ func ListarPedidosFila(db *sql.DB, filtroStatus string) ([]PedidoResumo, error) 
 // `escopoTodos` falso OU papel insuficiente — chama ListarPedidosProprios
 // inalterado: um Usuário sem papel almoxarife+ que force `?escopo=todos`
 // recebe só os próprios Pedidos, nunca um erro (epics.md Story 7.4 AC2).
-func ListarPedidosParaSessao(db *sql.DB, usuarioID, papel string, escopoTodos bool, filtroStatus string) ([]PedidoResumo, error) {
+func ListarPedidosParaSessao(db *sql.DB, empresaID string, usuarioID, papel string, escopoTodos bool, filtroStatus string) ([]PedidoResumo, error) {
 	if escopoTodos && RankPapel(papel) >= RankPapel(PapelAlmoxarife) {
-		return ListarPedidosFila(db, filtroStatus)
+		return ListarPedidosFila(db, empresaID, filtroStatus)
 	}
-	return ListarPedidosProprios(db, usuarioID, filtroStatus)
+	return ListarPedidosProprios(db, empresaID, usuarioID, filtroStatus)
 }
 
 // BuscarPedidoProprio devolve o cabeçalho + os itens em snapshot do Pedido
@@ -406,21 +416,22 @@ func ListarPedidosParaSessao(db *sql.DB, usuarioID, papel string, escopoTodos bo
 // precisa que um Almoxarife carregue um Pedido que não é dele — negar isso
 // agora obrigaria a reescrever a checagem depois).
 //
-// `sql.ErrNoRows` (id inexistente), SQLSTATE 22P02 (id malformado, não-UUID
-// — mesmo colapso de ObterProdutoDetalhe) e "Pedido de outro Usuário sem
+// `sql.ErrNoRows` (id inexistente OU de outra Empresa — Story 9.1),
+// SQLSTATE 22P02 (id malformado, não-UUID — mesmo colapso de
+// ObterProdutoDetalhe) e "Pedido de outro Usuário sem
 // papel suficiente" colapsam TODOS em ErrPedidoNaoEncontrado: a fronteira
 // HTTP traduz para um único 404 NOT_FOUND, nunca revelando a existência de
 // um Pedido alheio, nunca respondendo 403.
 //
 // Os itens vêm sempre do SNAPSHOT em `pedido_itens` (AD-17) — nunca um join
 // ao vivo com `produtos`/`estoques`.
-func BuscarPedidoProprio(db *sql.DB, pedidoID, usuarioID, papel string) (PedidoDetalhe, error) {
+func BuscarPedidoProprio(db *sql.DB, empresaID string, pedidoID, usuarioID, papel string) (PedidoDetalhe, error) {
 	var det PedidoDetalhe
 	var observacao sql.NullString
 	const selectPedido = `
 		SELECT id, usuario_id, solicitante, obra_centro_custo, observacao, status, criado_em
-		FROM pedidos WHERE id = $1`
-	if err := db.QueryRow(selectPedido, pedidoID).Scan(
+		FROM pedidos WHERE id = $1 AND empresa_id = $2`
+	if err := db.QueryRow(selectPedido, pedidoID, empresaID).Scan(
 		&det.ID, &det.UsuarioID, &det.Solicitante, &det.ObraCentroCusto,
 		&observacao, &det.Status, &det.CriadoEm,
 	); err != nil {
@@ -440,8 +451,8 @@ func BuscarPedidoProprio(db *sql.DB, pedidoID, usuarioID, papel string) (PedidoD
 
 	const selectItens = `
 		SELECT produto_id, produto_nome, categoria_nome, estoque_id, estoque_nome, quantidade, quantidade_aprovada
-		FROM pedido_itens WHERE pedido_id = $1 ORDER BY produto_nome`
-	rows, err := db.Query(selectItens, pedidoID)
+		FROM pedido_itens WHERE pedido_id = $1 AND empresa_id = $2 ORDER BY produto_nome`
+	rows, err := db.Query(selectItens, pedidoID, empresaID)
 	if err != nil {
 		return PedidoDetalhe{}, fmt.Errorf("falha ao listar itens do pedido: %w", err)
 	}
@@ -532,10 +543,10 @@ type itemPedidoParaDecisao struct {
 // cabeçalho vem do próprio `RETURNING` do UPDATE de decisão (abaixo) e os
 // itens vêm do snapshot lido no início da transação (`itemPedidoParaDecisao`)
 // combinado com `quantidadeAprovada` computado no loop.
-func DecidirPedido(db *sql.DB, pedidoID, decisorID, papelDecisor string, aprovar bool) (PedidoDetalhe, error) {
+func DecidirPedido(db *sql.DB, empresaID string, pedidoID, decisorID, papelDecisor string, aprovar bool) (PedidoDetalhe, error) {
 	var status string
-	const selectStatus = `SELECT status FROM pedidos WHERE id = $1`
-	if err := db.QueryRow(selectStatus, pedidoID).Scan(&status); err != nil {
+	const selectStatus = `SELECT status FROM pedidos WHERE id = $1 AND empresa_id = $2`
+	if err := db.QueryRow(selectStatus, pedidoID, empresaID).Scan(&status); err != nil {
 		var pqErr *pq.Error
 		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
 			return PedidoDetalhe{}, ErrPedidoNaoEncontrado
@@ -561,8 +572,8 @@ func DecidirPedido(db *sql.DB, pedidoID, decisorID, papelDecisor string, aprovar
 	// releitura pós-commit.
 	const selectItens = `
 		SELECT produto_id, produto_nome, categoria_nome, estoque_id, estoque_nome, quantidade
-		FROM pedido_itens WHERE pedido_id = $1 ORDER BY produto_id, estoque_id`
-	rows, err := tx.Query(selectItens, pedidoID)
+		FROM pedido_itens WHERE pedido_id = $1 AND empresa_id = $2 ORDER BY produto_id, estoque_id`
+	rows, err := tx.Query(selectItens, pedidoID, empresaID)
 	if err != nil {
 		return PedidoDetalhe{}, fmt.Errorf("falha ao listar itens do pedido para decisão: %w", err)
 	}
@@ -585,23 +596,25 @@ func DecidirPedido(db *sql.DB, pedidoID, decisorID, papelDecisor string, aprovar
 	itensResposta := make([]PedidoItem, 0, len(itens))
 	if aprovar {
 		const selectDisponivel = `
-			SELECT quantidade FROM produto_estoque
-			WHERE produto_id = $1 AND estoque_id = $2
-			FOR UPDATE`
+			SELECT pe.quantidade FROM produto_estoque pe
+			JOIN produtos p ON p.id = pe.produto_id AND p.empresa_id = $3
+			JOIN estoques e ON e.id = pe.estoque_id AND e.empresa_id = $3
+			WHERE pe.produto_id = $1 AND pe.estoque_id = $2
+			FOR UPDATE OF pe`
 		const updateEstoque = `
 			UPDATE produto_estoque SET quantidade = quantidade - $1
 			WHERE produto_id = $2 AND estoque_id = $3`
 		const insertMovimentacao = `
-			INSERT INTO movimentacoes (produto_id, tipo, estoque_origem_id, quantidade, usuario_id)
-			VALUES ($1, 'baixa', $2, $3, $4)`
+			INSERT INTO movimentacoes (produto_id, tipo, estoque_origem_id, quantidade, usuario_id, empresa_id)
+			VALUES ($1, 'baixa', $2, $3, $4, $5)`
 		const updateItem = `
 			UPDATE pedido_itens SET quantidade_aprovada = $1
-			WHERE pedido_id = $2 AND produto_id = $3 AND estoque_id = $4`
+			WHERE pedido_id = $2 AND produto_id = $3 AND estoque_id = $4 AND empresa_id = $5`
 
 		totalmenteAprovado := true
 		for _, it := range itens {
 			var disponivel float64
-			if err := tx.QueryRow(selectDisponivel, it.ProdutoID, it.EstoqueID).Scan(&disponivel); err != nil {
+			if err := tx.QueryRow(selectDisponivel, it.ProdutoID, it.EstoqueID, empresaID).Scan(&disponivel); err != nil {
 				if !errors.Is(err, sql.ErrNoRows) {
 					return PedidoDetalhe{}, fmt.Errorf("falha ao travar linha de produto_estoque na decisão: %w", err)
 				}
@@ -620,11 +633,11 @@ func DecidirPedido(db *sql.DB, pedidoID, decisorID, papelDecisor string, aprovar
 				if _, err := tx.Exec(updateEstoque, quantidadeAprovada, it.ProdutoID, it.EstoqueID); err != nil {
 					return PedidoDetalhe{}, fmt.Errorf("falha ao debitar produto_estoque na decisão: %w", err)
 				}
-				if _, err := tx.Exec(insertMovimentacao, it.ProdutoID, it.EstoqueID, quantidadeAprovada, decisorID); err != nil {
+				if _, err := tx.Exec(insertMovimentacao, it.ProdutoID, it.EstoqueID, quantidadeAprovada, decisorID, empresaID); err != nil {
 					return PedidoDetalhe{}, fmt.Errorf("falha ao inserir movimentação de baixa na decisão: %w", err)
 				}
 			}
-			if _, err := tx.Exec(updateItem, quantidadeAprovada, pedidoID, it.ProdutoID, it.EstoqueID); err != nil {
+			if _, err := tx.Exec(updateItem, quantidadeAprovada, pedidoID, it.ProdutoID, it.EstoqueID, empresaID); err != nil {
 				return PedidoDetalhe{}, fmt.Errorf("falha ao gravar quantidade aprovada do item na decisão: %w", err)
 			}
 
@@ -645,8 +658,8 @@ func DecidirPedido(db *sql.DB, pedidoID, decisorID, papelDecisor string, aprovar
 			novoStatus = "parcialmente_aprovado"
 		}
 	} else {
-		const zerarItens = `UPDATE pedido_itens SET quantidade_aprovada = 0 WHERE pedido_id = $1`
-		if _, err := tx.Exec(zerarItens, pedidoID); err != nil {
+		const zerarItens = `UPDATE pedido_itens SET quantidade_aprovada = 0 WHERE pedido_id = $1 AND empresa_id = $2`
+		if _, err := tx.Exec(zerarItens, pedidoID, empresaID); err != nil {
 			return PedidoDetalhe{}, fmt.Errorf("falha ao zerar quantidade aprovada na rejeição: %w", err)
 		}
 		for _, it := range itens {
@@ -672,9 +685,9 @@ func DecidirPedido(db *sql.DB, pedidoID, decisorID, papelDecisor string, aprovar
 	var decididoEm sql.NullTime
 	const registrarDecisao = `
 		UPDATE pedidos SET status = $2, decidido_por = $3, decidido_em = now()
-		WHERE id = $1 AND status = 'pendente'
+		WHERE id = $1 AND status = 'pendente' AND empresa_id = $4
 		RETURNING id, usuario_id, solicitante, obra_centro_custo, observacao, status, criado_em, decidido_por, decidido_em`
-	if err := tx.QueryRow(registrarDecisao, pedidoID, novoStatus, decisorID).Scan(
+	if err := tx.QueryRow(registrarDecisao, pedidoID, novoStatus, decisorID, empresaID).Scan(
 		&det.ID, &det.UsuarioID, &det.Solicitante, &det.ObraCentroCusto,
 		&observacao, &det.Status, &det.CriadoEm, &decididoPor, &decididoEm,
 	); err != nil {
@@ -775,8 +788,8 @@ type ReciboPedidoConteudo struct {
 // viola AD-17: essa invariante fixa só a imutabilidade do snapshot de
 // PEDIDO_ITENS contra PRODUTOS, não um join com `usuarios` (Design Notes de
 // spec-7-6).
-func MontarReciboPedidoConteudo(db *sql.DB, pedidoID, usuarioID, papel string) (ReciboPedidoConteudo, error) {
-	det, err := BuscarPedidoProprio(db, pedidoID, usuarioID, papel)
+func MontarReciboPedidoConteudo(db *sql.DB, empresaID string, pedidoID, usuarioID, papel string) (ReciboPedidoConteudo, error) {
+	det, err := BuscarPedidoProprio(db, empresaID, pedidoID, usuarioID, papel)
 	if err != nil {
 		return ReciboPedidoConteudo{}, err
 	}
@@ -790,8 +803,11 @@ func MontarReciboPedidoConteudo(db *sql.DB, pedidoID, usuarioID, papel string) (
 	// BuscarPedidoProprio deixa sempre nil).
 	var aprovador string
 	var decididoEm time.Time
-	const selectAprovadorEData = `SELECT u.nome, p.decidido_em FROM pedidos p JOIN usuarios u ON u.id = p.decidido_por WHERE p.id = $1`
-	if err := db.QueryRow(selectAprovadorEData, pedidoID).Scan(&aprovador, &decididoEm); err != nil {
+	const selectAprovadorEData = `
+		SELECT u.nome, p.decidido_em FROM pedidos p
+		JOIN usuarios u ON u.id = p.decidido_por AND u.empresa_id = $2
+		WHERE p.id = $1 AND p.empresa_id = $2`
+	if err := db.QueryRow(selectAprovadorEData, pedidoID, empresaID).Scan(&aprovador, &decididoEm); err != nil {
 		return ReciboPedidoConteudo{}, fmt.Errorf("falha ao resolver aprovador/data da decisão do recibo: %w", err)
 	}
 
@@ -936,8 +952,8 @@ func RenderizarReciboPedidoPDF(conteudo ReciboPedidoConteudo) ([]byte, error) {
 // (ErrPedidoNaoEncontrado / ErrPedidoSemRecibo); RenderizarReciboPedidoPDF só
 // pode falhar por erro de biblioteca (fonte/renderização), mapeado para 500
 // INTERNAL_ERROR pelo handler.
-func GerarReciboPedidoPDF(db *sql.DB, pedidoID, usuarioID, papel string) ([]byte, error) {
-	conteudo, err := MontarReciboPedidoConteudo(db, pedidoID, usuarioID, papel)
+func GerarReciboPedidoPDF(db *sql.DB, empresaID string, pedidoID, usuarioID, papel string) ([]byte, error) {
+	conteudo, err := MontarReciboPedidoConteudo(db, empresaID, pedidoID, usuarioID, papel)
 	if err != nil {
 		return nil, err
 	}

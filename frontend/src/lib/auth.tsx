@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { clearAccessToken, setAccessToken } from '@/lib/session';
 import { fetchSSOConfig } from '@/lib/keycloak/config';
+import { apiUrl } from '@/lib/api';
 
 // Marca gravada pelo callback de SSO (Story 1.9): decide se "Sair" dispara o
 // RP-initiated logout do Keycloak ou só volta para /login local.
@@ -122,7 +123,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearAccessToken();
     setUsuario(null);
     setEstado('anonimo');
-    void fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    void fetch(apiUrl('/api/auth/logout'), { method: 'POST' }).catch(() => {});
 
     const viaSSO = sessionStorage.getItem(SESSION_KEY_AUTH_VIA_SSO) === '1';
     if (!viaSSO) {
@@ -175,7 +176,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     async function bootstrap() {
       try {
-        const resRefresh = await fetch('/api/auth/refresh', { method: 'POST' });
+        const resRefresh = await fetch(apiUrl('/api/auth/refresh'), { method: 'POST' });
         if (!resRefresh.ok) {
           throw new Error('refresh falhou');
         }
@@ -188,7 +189,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         setAccessToken(token);
 
-        const resMe = await fetch('/api/auth/me', {
+        const resMe = await fetch(apiUrl('/api/auth/me'), {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (!resMe.ok) {

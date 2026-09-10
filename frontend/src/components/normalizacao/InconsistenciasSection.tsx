@@ -2,8 +2,8 @@ import { useCallback, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
-import { getAccessToken } from '@/lib/session';
 import { formatarQuantidade } from '@/components/catalogo/formatacao';
+import { apiUrl, authHeaders } from '@/lib/api';
 
 /**
  * Seção "Inconsistências" da página `/normalizacao` (Story 6.1, spec-6-1 +
@@ -41,11 +41,6 @@ interface Sugestao {
 interface CorrecaoAplicada {
   produtoId: string;
   campo: string;
-}
-
-function authHeaders(): Record<string, string> {
-  const token = getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 /** chave é o identificador estável de uma linha (produto+campo) — usado
@@ -95,7 +90,7 @@ export function InconsistenciasSection() {
     // combinação enganosa (dado velho aparentando ser a resposta atual).
     setSugestoes(null);
     try {
-      const res = await fetch('/api/normalizacao/inconsistencias', { headers: authHeaders() });
+      const res = await fetch(apiUrl('/api/normalizacao/inconsistencias'), { headers: authHeaders() });
       if (!res.ok) {
         setErro(MENSAGEM_ERRO_ANALISAR);
         return;
@@ -119,7 +114,7 @@ export function InconsistenciasSection() {
     setErroAcao(null);
     setProcessando(true);
     try {
-      const res = await fetch('/api/normalizacao/correcoes', {
+      const res = await fetch(apiUrl('/api/normalizacao/correcoes'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
@@ -156,7 +151,7 @@ export function InconsistenciasSection() {
     setErroAcao(null);
     setProcessando(true);
     try {
-      const res = await fetch('/api/normalizacao/ignoradas', {
+      const res = await fetch(apiUrl('/api/normalizacao/ignoradas'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({

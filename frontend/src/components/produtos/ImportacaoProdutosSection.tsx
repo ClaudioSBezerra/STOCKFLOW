@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { getAccessToken } from '@/lib/session';
+import { apiUrl, authHeaders } from '@/lib/api';
 
 /**
  * Seção "Importação" da `CatalogoPage` (Story 3.3, spec-3-3; Story 3.4,
@@ -76,11 +76,6 @@ interface RespostaImportacao {
   relatorio: RelatorioImportacao;
 }
 
-function authHeaders(): Record<string, string> {
-  const token = getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
 const MENSAGEM_ERRO_IMPORTAR =
   'Não foi possível importar a planilha agora. Tente novamente em instantes.';
 const MENSAGEM_ERRO_CONTINUAR =
@@ -102,7 +97,7 @@ export function ImportacaoProdutosSection() {
 
   const consultarUltima = useCallback(async () => {
     try {
-      const res = await fetch('/api/importacoes/ultima', { headers: authHeaders() });
+      const res = await fetch(apiUrl('/api/importacoes/ultima'), { headers: authHeaders() });
       if (!res.ok) {
         return;
       }
@@ -141,7 +136,7 @@ export function ImportacaoProdutosSection() {
     try {
       const formData = new FormData();
       formData.append('planilha', arquivo);
-      const res = await fetch('/api/importacoes', {
+      const res = await fetch(apiUrl('/api/importacoes'), {
         method: 'POST',
         headers: authHeaders(),
         body: formData,
@@ -173,7 +168,7 @@ export function ImportacaoProdutosSection() {
     setErro(null);
     setContinuando(true);
     try {
-      const res = await fetch(`/api/importacoes/${ultima.id}/continuar`, {
+      const res = await fetch(apiUrl(`/api/importacoes/${ultima.id}/continuar`), {
         method: 'POST',
         headers: authHeaders(),
       });

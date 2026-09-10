@@ -152,14 +152,21 @@ func gerarTokenAcao() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
-// Cadastrar cria uma conta de autocadastro público. O papel do usuário nunca
+// Cadastrar cria uma conta de autocadastro público DENTRO da Empresa
+// `empresaID` (Story 9.1, AD-20): o mesmo e-mail pode existir em Empresas
+// diferentes — a unicidade passou a ser `(empresa_id, lower(email))`
+// (migração 000032), então ErrEmailDuplicado só dispara para uma colisão
+// DENTRO da mesma Empresa. `empresaSlug` só monta o link do e-mail de
+// verificação (LinkDaEmpresa), nunca é usado para consultar nada.
+//
+// O papel do usuário nunca
 // é um parâmetro desta função — é sempre 'usuario' (FR-3), independente de
 // qualquer valor que o chamador HTTP tenha recebido no payload.
 //
 // Todo o trabalho (INSERT em usuarios, tokens_acao e emails_pendentes)
 // acontece em uma única transação (AD-4/AD-18): se qualquer passo falhar,
 // nenhuma linha órfã fica gravada em nenhuma das três tabelas.
-func Cadastrar(db *sql.DB, emailCfg EmailConfig, nome, email, senha string) (usuarioID string, err error) {
+func Cadastrar(db *sql.DB, emailCfg EmailConfig, empresaID, empresaSlug string, nome, email, senha string) (usuarioID string, err error) {
 	nomeTrimado := strings.TrimSpace(nome)
 	normalizedEmail := normalizeEmail(email)
 	if nomeTrimado == "" || normalizedEmail == "" || strings.TrimSpace(senha) == "" {
@@ -202,10 +209,10 @@ func Cadastrar(db *sql.DB, emailCfg EmailConfig, nome, email, senha string) (usu
 	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
 
 	const insertUsuario = `
-		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
-		VALUES ($1, $2, $3, 'usuario', false, true)
+		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, empresa_id)
+		VALUES ($1, $2, $3, 'usuario', false, true, $4)
 		RETURNING id`
-	if err := tx.QueryRow(insertUsuario, nomeTrimado, normalizedEmail, string(hash)).Scan(&usuarioID); err != nil {
+	if err := tx.QueryRow(insertUsuario, nomeTrimado, normalizedEmail, string(hash), empresaID).Scan(&usuarioID); err != nil {
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && pqErr.Code == pqUniqueViolation {
 			return "", ErrEmailDuplicado
@@ -221,7 +228,7 @@ func Cadastrar(db *sql.DB, emailCfg EmailConfig, nome, email, senha string) (usu
 		return "", fmt.Errorf("falha ao inserir token de verificação: %w", err)
 	}
 
-	link := fmt.Sprintf("%s/verificar-email?token=%s", emailCfg.AppURL, token)
+	link := LinkDaEmpresa(emailCfg.AppURL, empresaSlug, "/verificar-email", token)
 	variaveis := map[string]any{
 		"nome": nomeTrimado,
 		"link": link,
@@ -247,7 +254,7 @@ func Cadastrar(db *sql.DB, emailCfg EmailConfig, nome, email, senha string) (usu
 // usado) para fechar a janela de corrida entre o SELECT e o UPDATE: se
 // `RowsAffected() == 0` ali, outra requisição consumiu ou o prazo expirou
 // entre as duas consultas, e o resultado também é ErrTokenExpirado.
-func VerificarEmail(db *sql.DB, token string) error {
+func VerificarEmail(db *sql.DB, empresaID string, token string) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("falha ao iniciar transação: %w", err)
@@ -257,11 +264,18 @@ func VerificarEmail(db *sql.DB, token string) error {
 	var usuarioID string
 	var expiraEm time.Time
 	var usadoEm sql.NullTime
+	// O JOIN é o guard de Empresa (Story 9.1): `tokens_acao` é tabela FILHA
+	// e não ganhou `empresa_id` (o token continua um segredo opaco
+	// globalmente único), mas o DONO do token precisa pertencer à Empresa do
+	// slug — senão um link de verificação de outra Empresa seria consumível
+	// sob este prefixo. Token de outra Empresa colapsa no MESMO
+	// ErrTokenNaoEncontrado de um token inexistente.
 	const selectToken = `
-		SELECT usuario_id, expira_em, usado_em
-		FROM tokens_acao
-		WHERE token = $1 AND tipo = 'verificacao_email'`
-	err = tx.QueryRow(selectToken, token).Scan(&usuarioID, &expiraEm, &usadoEm)
+		SELECT t.usuario_id, t.expira_em, t.usado_em
+		FROM tokens_acao t
+		JOIN usuarios u ON u.id = t.usuario_id AND u.empresa_id = $2
+		WHERE t.token = $1 AND t.tipo = 'verificacao_email'`
+	err = tx.QueryRow(selectToken, token, empresaID).Scan(&usuarioID, &expiraEm, &usadoEm)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrTokenNaoEncontrado
@@ -285,7 +299,10 @@ func VerificarEmail(db *sql.DB, token string) error {
 		return ErrTokenExpirado
 	}
 
-	if _, err := tx.Exec(`UPDATE usuarios SET email_verificado = true WHERE id = $1`, usuarioID); err != nil {
+	if _, err := tx.Exec(
+		`UPDATE usuarios SET email_verificado = true WHERE id = $1 AND empresa_id = $2`,
+		usuarioID, empresaID,
+	); err != nil {
 		return fmt.Errorf("falha ao marcar e-mail verificado: %w", err)
 	}
 
@@ -328,9 +345,15 @@ func mustGerarDummyBcryptHash() []byte {
 // senha ou sso"), não estado de conta, e por isso é preenchida só pelo
 // middleware.RequireAuth a partir do claim `origem` do JWT (Story 1.11).
 type UsuarioSessao struct {
-	ID            string
-	Nome          string
-	Email         string
+	ID    string
+	Nome  string
+	Email string
+	// EmpresaID é a Empresa DONA da conta (Story 9.1). O middleware compara
+	// este valor com a Empresa resolvida do slug da URL e recusa a sessão com
+	// 401 SESSION_REVOKED quando divergem — é o que impede um token válido de
+	// uma Empresa de operar sob o slug de outra. Fica "" para uma conta
+	// legada, ainda sem Empresa (fase 1 de AD-23, `empresa_id` nullable).
+	EmpresaID     string
 	Papel         string
 	Ativo         bool
 	MFAHabilitado bool
@@ -355,7 +378,7 @@ type UsuarioSessao struct {
 // dummy) SEMPRE roda para uma linha encontrada, ANTES de qualquer return
 // (inclusive no caminho "conta bloqueada"), para não regredir a defesa contra
 // side-channel de tempo da Story 1.4.
-func Login(db *sql.DB, email, senha string) (usuarioID string, err error) {
+func Login(db *sql.DB, empresaID string, email, senha string) (usuarioID string, err error) {
 	normalizedEmail := normalizeEmail(email)
 	if normalizedEmail == "" || strings.TrimSpace(senha) == "" {
 		return "", ErrLoginValidacao
@@ -369,8 +392,8 @@ func Login(db *sql.DB, email, senha string) (usuarioID string, err error) {
 	const selectUsuario = `
 		SELECT id, senha_hash, ativo, email_verificado, tentativas_login_falhas, bloqueado_ate
 		FROM usuarios
-		WHERE lower(email) = $1`
-	err = db.QueryRow(selectUsuario, normalizedEmail).Scan(&id, &senhaHash, &ativo, &emailVerificado, &tentativas, &bloqueadoAte)
+		WHERE lower(email) = $1 AND empresa_id = $2`
+	err = db.QueryRow(selectUsuario, normalizedEmail, empresaID).Scan(&id, &senhaHash, &ativo, &emailVerificado, &tentativas, &bloqueadoAte)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			// Defesa contra side-channel de tempo: mesmo sem linha nenhuma para
@@ -547,7 +570,7 @@ func EmitirSessao(db *sql.DB, jwtSecret []byte, usuarioID, origem string) (acces
 // chamador HTTP montar o Set-Cookie com o prazo EFETIVAMENTE persistido, em
 // vez de recalcular `time.Now().Add(RefreshTokenExpiracao)` de novo e
 // arriscar divergir do valor gravado pelo round-trip ao banco.
-func RenovarSessao(db *sql.DB, jwtSecret []byte, refreshTokenAtual string) (novoAccess, novoRefresh string, expiraRefresh time.Time, err error) {
+func RenovarSessao(db *sql.DB, jwtSecret []byte, empresaID string, refreshTokenAtual string) (novoAccess, novoRefresh string, expiraRefresh time.Time, err error) {
 	if strings.TrimSpace(refreshTokenAtual) == "" {
 		return "", "", time.Time{}, ErrSessaoInvalida
 	}
@@ -558,13 +581,19 @@ func RenovarSessao(db *sql.DB, jwtSecret []byte, refreshTokenAtual string) (novo
 	}
 	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
 
+	// `sessoes` é tabela FILHA e não ganhou `empresa_id` (o refresh token
+	// continua um segredo opaco globalmente único — Never, spec-9-1); o guard
+	// de Empresa (Story 9.1) é o `EXISTS` sobre o DONO da sessão: um refresh
+	// token de outra Empresa não rotaciona nada sob este slug e colapsa no
+	// MESMO ErrSessaoInvalida de um token expirado.
 	const marcarRevogada = `
 		UPDATE sessoes
 		SET revogado_em = now()
 		WHERE refresh_token = $1 AND revogado_em IS NULL AND expira_em > now()
+		  AND EXISTS (SELECT 1 FROM usuarios u WHERE u.id = sessoes.usuario_id AND u.empresa_id = $2)
 		RETURNING usuario_id, origem`
 	var usuarioID, origem string
-	err = tx.QueryRow(marcarRevogada, refreshTokenAtual).Scan(&usuarioID, &origem)
+	err = tx.QueryRow(marcarRevogada, refreshTokenAtual, empresaID).Scan(&usuarioID, &origem)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", "", time.Time{}, ErrSessaoInvalida
@@ -646,14 +675,17 @@ func IniciarLoginMFA(db *sql.DB, usuarioID string) (string, error) {
 // marca `usado_em` guardado por `usado_em IS NULL AND expira_em > now()`
 // (fecha a mesma corrida de VerificarEmail/RedefinirSenha) e zera o
 // contador de falhas, se sujo.
-func ConcluirLoginMFA(db *sql.DB, mfaToken, codigo string) (usuarioID string, err error) {
+func ConcluirLoginMFA(db *sql.DB, empresaID string, mfaToken, codigo string) (usuarioID string, err error) {
 	var expiraEm time.Time
 	var usadoEm sql.NullTime
+	// Mesmo guard de Empresa por JOIN de VerificarEmail (Story 9.1): o dono
+	// do token de `mfa_login` tem de ser da Empresa do slug.
 	const selectToken = `
-		SELECT usuario_id, expira_em, usado_em
-		FROM tokens_acao
-		WHERE token = $1 AND tipo = 'mfa_login'`
-	if err := db.QueryRow(selectToken, mfaToken).Scan(&usuarioID, &expiraEm, &usadoEm); err != nil {
+		SELECT t.usuario_id, t.expira_em, t.usado_em
+		FROM tokens_acao t
+		JOIN usuarios u ON u.id = t.usuario_id AND u.empresa_id = $2
+		WHERE t.token = $1 AND t.tipo = 'mfa_login'`
+	if err := db.QueryRow(selectToken, mfaToken, empresaID).Scan(&usuarioID, &expiraEm, &usadoEm); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", ErrTokenNaoEncontrado
 		}
@@ -669,8 +701,8 @@ func ConcluirLoginMFA(db *sql.DB, mfaToken, codigo string) (usuarioID string, er
 	const selectUsuario = `
 		SELECT mfa_secret, tentativas_login_falhas, bloqueado_ate
 		FROM usuarios
-		WHERE id = $1`
-	if err := db.QueryRow(selectUsuario, usuarioID).Scan(&segredo, &tentativas, &bloqueadoAte); err != nil {
+		WHERE id = $1 AND empresa_id = $2`
+	if err := db.QueryRow(selectUsuario, usuarioID, empresaID).Scan(&segredo, &tentativas, &bloqueadoAte); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", ErrUsuarioSessaoNaoEncontrado
 		}
@@ -860,7 +892,7 @@ func ValidarForcaSenha(senha string) error {
 // `emails_pendentes` via EnfileirarEmail, com
 // link = "{APP_URL}/redefinir-senha?token={token}". Conta só-SSO
 // (senha_hash nulo) NÃO é exceção — recebe token e e-mail normalmente.
-func SolicitarRedefinicaoSenha(db *sql.DB, emailCfg EmailConfig, email string) error {
+func SolicitarRedefinicaoSenha(db *sql.DB, emailCfg EmailConfig, empresaID, empresaSlug string, email string) error {
 	normalizedEmail := normalizeEmail(email)
 	if normalizedEmail == "" {
 		return nil
@@ -870,8 +902,8 @@ func SolicitarRedefinicaoSenha(db *sql.DB, emailCfg EmailConfig, email string) e
 	const selectUsuario = `
 		SELECT id, nome
 		FROM usuarios
-		WHERE lower(email) = $1`
-	if err := db.QueryRow(selectUsuario, normalizedEmail).Scan(&usuarioID, &nome); err != nil {
+		WHERE lower(email) = $1 AND empresa_id = $2`
+	if err := db.QueryRow(selectUsuario, normalizedEmail, empresaID).Scan(&usuarioID, &nome); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
@@ -909,7 +941,7 @@ func SolicitarRedefinicaoSenha(db *sql.DB, emailCfg EmailConfig, email string) e
 		return fmt.Errorf("falha ao inserir token de redefinição: %w", err)
 	}
 
-	link := fmt.Sprintf("%s/redefinir-senha?token=%s", emailCfg.AppURL, token)
+	link := LinkDaEmpresa(emailCfg.AppURL, empresaSlug, "/redefinir-senha", token)
 	variaveis := map[string]any{
 		"nome": nome,
 		"link": link,
@@ -931,14 +963,16 @@ func SolicitarRedefinicaoSenha(db *sql.DB, emailCfg EmailConfig, email string) e
 // token inexistente -> ErrTokenNaoEncontrado; existente porém expirado ou já
 // usado -> ErrTokenExpirado; válido -> nil. O POST continua sendo a
 // autoridade (revalida e trata a corrida "expirou entre abrir e enviar").
-func ValidarTokenRedefinicao(db *sql.DB, token string) error {
+func ValidarTokenRedefinicao(db *sql.DB, empresaID string, token string) error {
 	var expiraEm time.Time
 	var usadoEm sql.NullTime
+	// Mesmo guard de Empresa por JOIN de VerificarEmail (Story 9.1).
 	const selectToken = `
-		SELECT expira_em, usado_em
-		FROM tokens_acao
-		WHERE token = $1 AND tipo = 'redefinicao_senha'`
-	if err := db.QueryRow(selectToken, token).Scan(&expiraEm, &usadoEm); err != nil {
+		SELECT t.expira_em, t.usado_em
+		FROM tokens_acao t
+		JOIN usuarios u ON u.id = t.usuario_id AND u.empresa_id = $2
+		WHERE t.token = $1 AND t.tipo = 'redefinicao_senha'`
+	if err := db.QueryRow(selectToken, token, empresaID).Scan(&expiraEm, &usadoEm); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrTokenNaoEncontrado
 		}
@@ -967,7 +1001,7 @@ func ValidarTokenRedefinicao(db *sql.DB, token string) error {
 // 401. Nenhum outro campo de `usuarios` muda (email_verificado/ativo
 // intactos): uma conta só-SSO que passa por aqui ganha os dois caminhos de
 // login.
-func RedefinirSenha(db *sql.DB, token, senha string) error {
+func RedefinirSenha(db *sql.DB, empresaID string, token, senha string) error {
 	if err := ValidarForcaSenha(senha); err != nil {
 		return err
 	}
@@ -981,11 +1015,13 @@ func RedefinirSenha(db *sql.DB, token, senha string) error {
 	var usuarioID string
 	var expiraEm time.Time
 	var usadoEm sql.NullTime
+	// Mesmo guard de Empresa por JOIN de VerificarEmail (Story 9.1).
 	const selectToken = `
-		SELECT usuario_id, expira_em, usado_em
-		FROM tokens_acao
-		WHERE token = $1 AND tipo = 'redefinicao_senha'`
-	if err := tx.QueryRow(selectToken, token).Scan(&usuarioID, &expiraEm, &usadoEm); err != nil {
+		SELECT t.usuario_id, t.expira_em, t.usado_em
+		FROM tokens_acao t
+		JOIN usuarios u ON u.id = t.usuario_id AND u.empresa_id = $2
+		WHERE t.token = $1 AND t.tipo = 'redefinicao_senha'`
+	if err := tx.QueryRow(selectToken, token, empresaID).Scan(&usuarioID, &expiraEm, &usadoEm); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrTokenNaoEncontrado
 		}
@@ -1000,7 +1036,10 @@ func RedefinirSenha(db *sql.DB, token, senha string) error {
 		return fmt.Errorf("falha ao gerar hash da nova senha: %w", err)
 	}
 
-	if _, err := tx.Exec(`UPDATE usuarios SET senha_hash = $1 WHERE id = $2`, string(hash), usuarioID); err != nil {
+	if _, err := tx.Exec(
+		`UPDATE usuarios SET senha_hash = $1 WHERE id = $2 AND empresa_id = $3`,
+		string(hash), usuarioID, empresaID,
+	); err != nil {
 		return fmt.Errorf("falha ao atualizar senha_hash: %w", err)
 	}
 
@@ -1036,11 +1075,13 @@ func RedefinirSenha(db *sql.DB, token, senha string) error {
 // desativação derruba acesso já na próxima requisição.
 func BuscarUsuarioSessao(db *sql.DB, usuarioID string) (UsuarioSessao, error) {
 	var u UsuarioSessao
+	var empresaID sql.NullString
 	const selectUsuario = `
-		SELECT id, nome, email, papel, ativo, mfa_habilitado
+		SELECT id, nome, email, papel, ativo, mfa_habilitado, empresa_id
 		FROM usuarios
 		WHERE id = $1`
-	err := db.QueryRow(selectUsuario, usuarioID).Scan(&u.ID, &u.Nome, &u.Email, &u.Papel, &u.Ativo, &u.MFAHabilitado)
+	err := db.QueryRow(selectUsuario, usuarioID).Scan(&u.ID, &u.Nome, &u.Email, &u.Papel, &u.Ativo, &u.MFAHabilitado, &empresaID)
+	u.EmpresaID = empresaID.String
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return UsuarioSessao{}, ErrUsuarioSessaoNaoEncontrado

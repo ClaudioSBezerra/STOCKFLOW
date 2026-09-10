@@ -48,6 +48,10 @@ func CriarEstoqueHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
 		var req criarEstoqueRequest
@@ -56,7 +60,7 @@ func CriarEstoqueHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		estoque, err := services.CriarEstoque(db, req.Nome)
+		estoque, err := services.CriarEstoque(db, empresa.ID, req.Nome)
 		switch {
 		case err == nil:
 			escreverJSON(w, http.StatusCreated, map[string]any{"estoque": estoque})
@@ -81,8 +85,12 @@ func ListarEstoquesHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
-		estoques, err := services.ListarEstoques(db)
+		estoques, err := services.ListarEstoques(db, empresa.ID)
 		if err != nil {
 			slog.Error("falha ao listar estoques", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao listar estoques")
@@ -110,8 +118,12 @@ func ExcluirEstoqueHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
-		err := services.ExcluirEstoque(db, r.PathValue("id"))
+		err := services.ExcluirEstoque(db, empresa.ID, r.PathValue("id"))
 		var residuo *services.ErroEstoqueComResiduo
 		var pedidoPendente *services.ErroEstoqueComPedidoPendente
 		switch {

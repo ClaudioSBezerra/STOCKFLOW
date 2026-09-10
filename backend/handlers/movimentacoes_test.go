@@ -22,11 +22,12 @@ import (
 
 func postBaixa(db *sql.DB, authHeader, produtoID, estoqueID, body string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/produtos/{id}/estoques/{estoqueId}/baixa",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelAlmoxarife)(
-				RegistrarBaixaHandler(db, realtime.NewRegistry()))))
-	caminho := "/api/produtos/" + produtoID + "/estoques/" + estoqueID + "/baixa"
+	mux.HandleFunc("POST /e/{slug}/api/produtos/{id}/estoques/{estoqueId}/baixa",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					RegistrarBaixaHandler(db, realtime.NewRegistry())))))
+	caminho := prefixoEmpresaTeste + "/api/produtos/" + produtoID + "/estoques/" + estoqueID + "/baixa"
 	var r *http.Request
 	if body != "" {
 		r = httptest.NewRequest(http.MethodPost, caminho, strings.NewReader(body))
@@ -46,12 +47,12 @@ func postBaixa(db *sql.DB, authHeader, produtoID, estoqueID, body string) *httpt
 // Estoque novo — devolve (produtoID, estoqueID).
 func seedProdutoComSaldoHandler(t *testing.T, db *sql.DB, nomeEstoque string, quantidadeInicial float64) (produtoID, estoqueID string) {
 	t.Helper()
-	estoque, err := services.CriarEstoque(db, nomeEstoque)
+	estoque, err := services.CriarEstoque(db, empresaTeste, nomeEstoque)
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
-	produto, err := services.CriarProduto(db, services.CriarProdutoInput{
+	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
 		Nome:              "Produto " + nomeEstoque,
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -122,16 +123,17 @@ func TestRegistrarBaixaHandler_PublicaEventoNoSucesso(t *testing.T) {
 	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, "Canteiro Baixa Evento", 10)
 
 	registro := realtime.NewRegistry()
-	eventos, cancelar := registro.Subscribe()
+	eventos, cancelar := registro.Subscribe(empresaTeste)
 	defer cancelar()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/produtos/{id}/estoques/{estoqueId}/baixa",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelAlmoxarife)(
-				RegistrarBaixaHandler(db, registro))))
+	mux.HandleFunc("POST /e/{slug}/api/produtos/{id}/estoques/{estoqueId}/baixa",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					RegistrarBaixaHandler(db, registro)))))
 
-	caminho := "/api/produtos/" + produtoID + "/estoques/" + estoqueID + "/baixa"
+	caminho := prefixoEmpresaTeste + "/api/produtos/" + produtoID + "/estoques/" + estoqueID + "/baixa"
 	r := httptest.NewRequest(http.MethodPost, caminho, strings.NewReader(`{"quantidade": 4}`))
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+token)
@@ -278,11 +280,12 @@ func TestRegistrarBaixaHandler_401SemToken(t *testing.T) {
 
 func postTransferencia(db *sql.DB, authHeader, produtoID, estoqueOrigemID, body string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/produtos/{id}/estoques/{estoqueId}/transferencia",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelAlmoxarife)(
-				RegistrarTransferenciaHandler(db, realtime.NewRegistry()))))
-	caminho := "/api/produtos/" + produtoID + "/estoques/" + estoqueOrigemID + "/transferencia"
+	mux.HandleFunc("POST /e/{slug}/api/produtos/{id}/estoques/{estoqueId}/transferencia",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					RegistrarTransferenciaHandler(db, realtime.NewRegistry())))))
+	caminho := prefixoEmpresaTeste + "/api/produtos/" + produtoID + "/estoques/" + estoqueOrigemID + "/transferencia"
 	var r *http.Request
 	if body != "" {
 		r = httptest.NewRequest(http.MethodPost, caminho, strings.NewReader(body))
@@ -308,7 +311,7 @@ func TestRegistrarTransferenciaHandler_201(t *testing.T) {
 	token := tokenDeLogin(t, db, "transf-201-almox@empresa.com", "senha-123456")
 
 	produtoID, estoqueOrigemID := seedProdutoComSaldoHandler(t, db, "Canteiro Transf 201 Origem", 10)
-	estoqueDestino, err := services.CriarEstoque(db, "Canteiro Transf 201 Destino")
+	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, "Canteiro Transf 201 Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
@@ -367,22 +370,23 @@ func TestRegistrarTransferenciaHandler_PublicaEventoNoSucesso(t *testing.T) {
 	token := tokenDeLogin(t, db, "transf-evento-almox@empresa.com", "senha-123456")
 
 	produtoID, estoqueOrigemID := seedProdutoComSaldoHandler(t, db, "Canteiro Transf Evento Origem", 10)
-	estoqueDestino, err := services.CriarEstoque(db, "Canteiro Transf Evento Destino")
+	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, "Canteiro Transf Evento Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
 
 	registro := realtime.NewRegistry()
-	eventos, cancelar := registro.Subscribe()
+	eventos, cancelar := registro.Subscribe(empresaTeste)
 	defer cancelar()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/produtos/{id}/estoques/{estoqueId}/transferencia",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelAlmoxarife)(
-				RegistrarTransferenciaHandler(db, registro))))
+	mux.HandleFunc("POST /e/{slug}/api/produtos/{id}/estoques/{estoqueId}/transferencia",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					RegistrarTransferenciaHandler(db, registro)))))
 
-	caminho := "/api/produtos/" + produtoID + "/estoques/" + estoqueOrigemID + "/transferencia"
+	caminho := prefixoEmpresaTeste + "/api/produtos/" + produtoID + "/estoques/" + estoqueOrigemID + "/transferencia"
 	corpo := `{"estoqueDestinoId":"` + estoqueDestino.ID + `","quantidade":4}`
 	r := httptest.NewRequest(http.MethodPost, caminho, strings.NewReader(corpo))
 	r.Header.Set("Content-Type", "application/json")
@@ -420,7 +424,7 @@ func TestRegistrarTransferenciaHandler_400QuantidadeInvalida(t *testing.T) {
 	token := tokenDeLogin(t, db, "transf-400q-almox@empresa.com", "senha-123456")
 
 	produtoID, estoqueOrigemID := seedProdutoComSaldoHandler(t, db, "Canteiro Transf 400q Origem", 10)
-	estoqueDestino, err := services.CriarEstoque(db, "Canteiro Transf 400q Destino")
+	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, "Canteiro Transf 400q Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
@@ -490,7 +494,7 @@ func TestRegistrarTransferenciaHandler_409QuantidadeIndisponivel(t *testing.T) {
 	token := tokenDeLogin(t, db, "transf-409-almox@empresa.com", "senha-123456")
 
 	produtoID, estoqueOrigemID := seedProdutoComSaldoHandler(t, db, "Canteiro Transf 409 Origem", 2.5)
-	estoqueDestino, err := services.CriarEstoque(db, "Canteiro Transf 409 Destino")
+	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, "Canteiro Transf 409 Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
@@ -565,7 +569,7 @@ func TestRegistrarTransferenciaHandler_403PapelUsuario(t *testing.T) {
 	token := tokenDeLogin(t, db, "transf-403-usuario@empresa.com", "senha-123456")
 
 	produtoID, estoqueOrigemID := seedProdutoComSaldoHandler(t, db, "Canteiro Transf 403 Origem", 10)
-	estoqueDestino, err := services.CriarEstoque(db, "Canteiro Transf 403 Destino")
+	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, "Canteiro Transf 403 Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
@@ -599,7 +603,7 @@ func TestRegistrarTransferenciaHandler_401SemToken(t *testing.T) {
 	limparProdutosHandler(t, db)
 
 	produtoID, estoqueOrigemID := seedProdutoComSaldoHandler(t, db, "Canteiro Transf 401 Origem", 10)
-	estoqueDestino, err := services.CriarEstoque(db, "Canteiro Transf 401 Destino")
+	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, "Canteiro Transf 401 Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
@@ -618,11 +622,12 @@ func TestRegistrarTransferenciaHandler_401SemToken(t *testing.T) {
 
 func getMovimentacoes(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/movimentacoes",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelAlmoxarife)(
-				ListarMovimentacoesHandler(db))))
-	r := httptest.NewRequest(http.MethodGet, "/api/movimentacoes", nil)
+	mux.HandleFunc("GET /e/{slug}/api/movimentacoes",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					ListarMovimentacoesHandler(db)))))
+	r := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/movimentacoes", nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
 	}
@@ -643,15 +648,15 @@ func TestListarMovimentacoesHandler_200ComCampos(t *testing.T) {
 	token := tokenDeLogin(t, db, "hist-200-almox@empresa.com", "senha-123456")
 
 	produtoID, estoqueOrigemID := seedProdutoComSaldoHandler(t, db, "Canteiro Hist 200 Origem", 20)
-	estoqueDestino, err := services.CriarEstoque(db, "Canteiro Hist 200 Destino")
+	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, "Canteiro Hist 200 Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
 
-	if _, err := services.RegistrarBaixa(db, produtoID, estoqueOrigemID, usuarioID, 3); err != nil {
+	if _, err := services.RegistrarBaixa(db, empresaTeste, produtoID, estoqueOrigemID, usuarioID, 3); err != nil {
 		t.Fatalf("RegistrarBaixa: %v", err)
 	}
-	if _, err := services.RegistrarTransferencia(db, produtoID, estoqueOrigemID, estoqueDestino.ID, usuarioID, 4); err != nil {
+	if _, err := services.RegistrarTransferencia(db, empresaTeste, produtoID, estoqueOrigemID, estoqueDestino.ID, usuarioID, 4); err != nil {
 		t.Fatalf("RegistrarTransferencia: %v", err)
 	}
 

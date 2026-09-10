@@ -21,11 +21,12 @@ import (
 
 func getInconsistencias(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/normalizacao/inconsistencias",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelAlmoxarife)(
-				AnalisarInconsistenciasHandler(db))))
-	r := httptest.NewRequest(http.MethodGet, "/api/normalizacao/inconsistencias", nil)
+	mux.HandleFunc("GET /e/{slug}/api/normalizacao/inconsistencias",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					AnalisarInconsistenciasHandler(db)))))
+	r := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/normalizacao/inconsistencias", nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
 	}
@@ -39,14 +40,14 @@ func getInconsistencias(db *sql.DB, authHeader string) *httptest.ResponseRecorde
 // EstoqueID/Nome são preenchidos aqui) e devolve seu id.
 func seedProdutoComPendenciaHandler(t *testing.T, db *sql.DB, nome string, dims services.CriarProdutoInput) string {
 	t.Helper()
-	estoque, err := services.CriarEstoque(db, "Estoque "+nome)
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Estoque "+nome)
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	dims.Nome = nome
 	dims.CategoriaID = categoriaIDPorCodigoHandler(t, db, "04.001")
 	dims.EstoqueID = estoque.ID
-	produto, err := services.CriarProduto(db, dims)
+	produto, err := services.CriarProduto(db, empresaTeste, dims)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
@@ -63,7 +64,7 @@ func seedProdutoComEstoqueHandler(t *testing.T, db *sql.DB, nome, estoqueID stri
 	dims.Nome = nome
 	dims.CategoriaID = categoriaIDPorCodigoHandler(t, db, "04.001")
 	dims.EstoqueID = estoqueID
-	produto, err := services.CriarProduto(db, dims)
+	produto, err := services.CriarProduto(db, empresaTeste, dims)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
@@ -75,11 +76,12 @@ func seedProdutoComEstoqueHandler(t *testing.T, db *sql.DB, nome, estoqueID stri
 // DetectarDuplicatasHandler. Mesmo molde de getInconsistencias.
 func getDuplicatas(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/normalizacao/duplicatas",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelAlmoxarife)(
-				DetectarDuplicatasHandler(db))))
-	r := httptest.NewRequest(http.MethodGet, "/api/normalizacao/duplicatas", nil)
+	mux.HandleFunc("GET /e/{slug}/api/normalizacao/duplicatas",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					DetectarDuplicatasHandler(db)))))
+	r := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/normalizacao/duplicatas", nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
 	}
@@ -97,7 +99,7 @@ func TestDetectarDuplicatasHandler_200ComGrupos(t *testing.T) {
 	criarContaComPapel(t, db, "Almox Duplicatas 200", "duplicatas-200-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "duplicatas-200-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Estoque Duplicatas Handler 200")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Estoque Duplicatas Handler 200")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -189,7 +191,7 @@ func TestDetectarDuplicatasHandler_200ListaVaziaComProdutosNaoDuplicados(t *test
 	criarContaComPapel(t, db, "Almox Duplicatas Nao Qualificam", "duplicatas-nao-qualificam-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "duplicatas-nao-qualificam-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Estoque Duplicatas Nao Qualificam")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Estoque Duplicatas Nao Qualificam")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -465,11 +467,12 @@ func ptrStrHandler(v string) *string     { return &v }
 
 func postCorrecoes(db *sql.DB, registro *realtime.Registry, authHeader, body string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/normalizacao/correcoes",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelAlmoxarife)(
-				AplicarCorrecoesHandler(db, registro))))
-	r := httptest.NewRequest(http.MethodPost, "/api/normalizacao/correcoes", strings.NewReader(body))
+	mux.HandleFunc("POST /e/{slug}/api/normalizacao/correcoes",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					AplicarCorrecoesHandler(db, registro)))))
+	r := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/normalizacao/correcoes", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
@@ -629,7 +632,7 @@ func TestAplicarCorrecaoHandler_PublicaUmEventoPorProdutoDistinto(t *testing.T) 
 	produtoID := seedProdutoComPendenciaHandler(t, db, "Tubo Correcao Evento", services.CriarProdutoInput{})
 
 	registro := realtime.NewRegistry()
-	eventos, cancelar := registro.Subscribe()
+	eventos, cancelar := registro.Subscribe(empresaTeste)
 	defer cancelar()
 
 	body := `{"correcoes":[` +
@@ -745,11 +748,12 @@ func TestAplicarCorrecaoHandler_400CorpoAcimaDoLimite(t *testing.T) {
 
 func postIgnoradas(db *sql.DB, authHeader, body string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/normalizacao/ignoradas",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelAlmoxarife)(
-				IgnorarSugestaoHandler(db))))
-	r := httptest.NewRequest(http.MethodPost, "/api/normalizacao/ignoradas", strings.NewReader(body))
+	mux.HandleFunc("POST /e/{slug}/api/normalizacao/ignoradas",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					IgnorarSugestaoHandler(db)))))
+	r := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/normalizacao/ignoradas", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
@@ -911,11 +915,12 @@ func TestSugestaoIgnoradaHandler_500FalhaDeBanco(t *testing.T) {
 // MesclarDuplicatasHandler. Mesmo molde de postCorrecoes.
 func postMesclar(db *sql.DB, registro *realtime.Registry, authHeader, body string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/normalizacao/mesclar",
-		middleware.RequireAuth(db, testJWTSecret)(
-			middleware.RequireRole(services.PapelAlmoxarife)(
-				MesclarDuplicatasHandler(db, registro))))
-	r := httptest.NewRequest(http.MethodPost, "/api/normalizacao/mesclar", strings.NewReader(body))
+	mux.HandleFunc("POST /e/{slug}/api/normalizacao/mesclar",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					MesclarDuplicatasHandler(db, registro)))))
+	r := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/normalizacao/mesclar", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
@@ -935,7 +940,7 @@ func TestMesclarDuplicatasHandler_200(t *testing.T) {
 	criarContaComPapel(t, db, "Almox Mesclar 200", "mesclar-200-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "mesclar-200-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Estoque Mesclar Handler 200")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Estoque Mesclar Handler 200")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -949,7 +954,7 @@ func TestMesclarDuplicatasHandler_200(t *testing.T) {
 	})
 
 	registro := realtime.NewRegistry()
-	eventos, cancelar := registro.Subscribe()
+	eventos, cancelar := registro.Subscribe(empresaTeste)
 	defer cancelar()
 
 	body := `{"produtoMantidoId":"` + produtoA + `","produtoRemovidoIds":["` + produtoB + `"]}`
@@ -1051,7 +1056,7 @@ func TestMesclarDuplicatasHandler_403PapelUsuario(t *testing.T) {
 	criarContaComPapel(t, db, "Usuario Mesclar 403", "mesclar-403-usuario@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "mesclar-403-usuario@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Estoque Mesclar Handler 403")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Estoque Mesclar Handler 403")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -1094,7 +1099,7 @@ func TestMesclarDuplicatasHandler_409ProdutoJaMesclado(t *testing.T) {
 	criarContaComPapel(t, db, "Almox Mesclar 409", "mesclar-409-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "mesclar-409-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, "Estoque Mesclar Handler 409")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Estoque Mesclar Handler 409")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -1131,7 +1136,7 @@ func TestMesclarDuplicatasHandler_409ProdutoJaMesclado(t *testing.T) {
 // Produto válido, sem se importar com dimensões/local.
 func seedProdutoComEstoqueHandlerSimples(t *testing.T, db *sql.DB, nome string) string {
 	t.Helper()
-	estoque, err := services.CriarEstoque(db, "Estoque "+nome)
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Estoque "+nome)
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}

@@ -35,7 +35,7 @@ func limparProdutos(t *testing.T, db *sql.DB) {
 func categoriaIDPorCodigo(t *testing.T, db *sql.DB, codigo string) string {
 	t.Helper()
 	var id string
-	if err := db.QueryRow(`SELECT id FROM categorias WHERE codigo = $1`, codigo).Scan(&id); err != nil {
+	if err := db.QueryRow(`SELECT id FROM categorias WHERE codigo = $1 AND empresa_id = $2`, codigo, empresaTeste).Scan(&id); err != nil {
 		t.Fatalf("falha ao buscar categoria %q: %v", codigo, err)
 	}
 	return id
@@ -46,8 +46,12 @@ func categoriaIDPorCodigo(t *testing.T, db *sql.DB, codigo string) string {
 // `template_id`/texto esperado nos testes de Nomenclatura Guiada.
 func templatePorSubtipo(t *testing.T, db *sql.DB, subtipo string) (id, texto string) {
 	t.Helper()
+	// Story 9.1: ProvisionarEmpresa copia os 28 templates de seed para cada
+	// Empresa, então o `subtipo` sozinho casaria também a linha padrão
+	// (`empresa_id IS NULL`), cujo id CriarProduto recusaria — o template
+	// tem de ser o da Empresa sob a qual o teste opera.
 	if err := db.QueryRow(
-		`SELECT id, template FROM nomenclatura_templates WHERE subtipo = $1`, subtipo,
+		`SELECT id, template FROM nomenclatura_templates WHERE subtipo = $1 AND empresa_id = $2`, subtipo, empresaTeste,
 	).Scan(&id, &texto); err != nil {
 		t.Fatalf("falha ao buscar template %q: %v", subtipo, err)
 	}
@@ -83,7 +87,7 @@ func TestCriarProduto_SucessoCompleto(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro Produtos")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Produtos")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -103,7 +107,7 @@ func TestCriarProduto_SucessoCompleto(t *testing.T) {
 		Espessura:         &DimensaoInput{Valor: ptrFloat(5), Unidade: ptrStr("mm")},
 	}
 
-	p, err := CriarProduto(db, input)
+	p, err := CriarProduto(db, empresaTeste, input)
 	if err != nil {
 		t.Fatalf("CriarProduto erro inesperado: %v", err)
 	}
@@ -159,13 +163,13 @@ func TestCriarProduto_SucessoSemDimensoes(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro Sem Dimensao")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Sem Dimensao")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.002")
 
-	p, err := CriarProduto(db, CriarProdutoInput{
+	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "Produto Simples",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -234,7 +238,7 @@ func TestCriarProduto_DimensaoParIncompleto(t *testing.T) {
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
 			limparProdutos(t, db)
-			estoque, err := CriarEstoque(db, "Canteiro "+c.nome)
+			estoque, err := CriarEstoque(db, empresaTeste, "Canteiro "+c.nome)
 			if err != nil {
 				t.Fatalf("seed CriarEstoque: %v", err)
 			}
@@ -248,7 +252,7 @@ func TestCriarProduto_DimensaoParIncompleto(t *testing.T) {
 			}
 			c.apply(&input)
 
-			_, err = CriarProduto(db, input)
+			_, err = CriarProduto(db, empresaTeste, input)
 			var erroValidacao *ErroProdutoValidacao
 			if !errors.As(err, &erroValidacao) {
 				t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
@@ -361,12 +365,12 @@ func TestCriarProduto_CategoriaInexistente(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro Categoria Ausente")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Categoria Ausente")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 
-	_, err = CriarProduto(db, CriarProdutoInput{
+	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "Produto Categoria Ausente",
 		CategoriaID:       "00000000-0000-4000-8000-000000000000",
 		EstoqueID:         estoque.ID,
@@ -392,7 +396,7 @@ func TestCriarProduto_EstoqueInexistente(t *testing.T) {
 
 	categoriaID := categoriaIDPorCodigo(t, db, "04.004")
 
-	_, err := CriarProduto(db, CriarProdutoInput{
+	_, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "Produto Estoque Ausente",
 		CategoriaID:       categoriaID,
 		EstoqueID:         "00000000-0000-4000-8000-000000000000",
@@ -416,13 +420,13 @@ func TestCriarProduto_QuantidadeInicialNegativa(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro Quantidade Negativa")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Quantidade Negativa")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.005")
 
-	_, err = CriarProduto(db, CriarProdutoInput{
+	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "Produto Quantidade Negativa",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -446,13 +450,13 @@ func TestCriarProduto_QuantidadeInicialAcimaDoLimite(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro Quantidade Acima Limite")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Quantidade Acima Limite")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.007")
 
-	_, err = CriarProduto(db, CriarProdutoInput{
+	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "Produto Quantidade Acima Limite",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -479,13 +483,13 @@ func TestCriarProduto_CodigoAcimaDe255Caracteres(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro Codigo Longo")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Codigo Longo")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "05.002")
 
-	_, err = CriarProduto(db, CriarProdutoInput{
+	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "Produto Codigo Longo",
 		Codigo:            strings.Repeat("x", 256),
 		CategoriaID:       categoriaID,
@@ -504,7 +508,7 @@ func TestCriarProduto_CodigoAcimaDe255Caracteres(t *testing.T) {
 	}
 
 	// 255 runes exatos é válido.
-	_, err = CriarProduto(db, CriarProdutoInput{
+	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "Produto Codigo No Limite",
 		Codigo:            strings.Repeat("y", 255),
 		CategoriaID:       categoriaID,
@@ -525,13 +529,13 @@ func TestCriarProduto_CodigoJaCadastrado(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro Codigo Duplicado")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Codigo Duplicado")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 
-	_, err = CriarProduto(db, CriarProdutoInput{
+	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "Produto Codigo Original",
 		Codigo:            "SKU-DUP-MANUAL",
 		CategoriaID:       categoriaID,
@@ -542,7 +546,7 @@ func TestCriarProduto_CodigoJaCadastrado(t *testing.T) {
 		t.Fatalf("seed CriarProduto (primeiro): %v", err)
 	}
 
-	_, err = CriarProduto(db, CriarProdutoInput{
+	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "Produto Codigo Repetido",
 		Codigo:            "SKU-DUP-MANUAL",
 		CategoriaID:       categoriaID,
@@ -567,13 +571,13 @@ func TestCriarProduto_NomeInvalido(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro Nome Invalido")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Nome Invalido")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.006")
 
-	_, err = CriarProduto(db, CriarProdutoInput{
+	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "   ",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -594,7 +598,7 @@ func TestCriarProduto_NomeInvalido(t *testing.T) {
 func TestListarCategorias_Todas25OrdenadasPorCodigo(t *testing.T) {
 	db := testDB(t)
 
-	categorias, err := ListarCategorias(db)
+	categorias, err := ListarCategorias(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -621,14 +625,14 @@ func TestCriarProduto_ComTemplateNomeCompleto(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro Template Completo")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Template Completo")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.002")
 	templateID, _ := templatePorSubtipo(t, db, "Tubo — PEAD/PPR")
 
-	p, err := CriarProduto(db, CriarProdutoInput{
+	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "TUBO PEAD PN80 DN50",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -655,14 +659,14 @@ func TestCriarProduto_ComTemplatePlaceholderFaltando(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro Template Incompleto")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Template Incompleto")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.002")
 	templateID, _ := templatePorSubtipo(t, db, "Tubo — PEAD/PPR")
 
-	_, err = CriarProduto(db, CriarProdutoInput{
+	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "TUBO PEAD PN80", // falta o segmento DN[XX]
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -694,13 +698,13 @@ func TestCriarProduto_TemplateInexistente(t *testing.T) {
 	for nome, templateID := range casos {
 		t.Run(nome, func(t *testing.T) {
 			limparProdutos(t, db)
-			estoque, err := CriarEstoque(db, "Canteiro Template Ausente "+nome)
+			estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Template Ausente "+nome)
 			if err != nil {
 				t.Fatalf("seed CriarEstoque: %v", err)
 			}
 			categoriaID := categoriaIDPorCodigo(t, db, "04.003")
 
-			_, err = CriarProduto(db, CriarProdutoInput{
+			_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
 				Nome:              "Produto Template Ausente",
 				CategoriaID:       categoriaID,
 				EstoqueID:         estoque.ID,
@@ -728,13 +732,13 @@ func TestCriarProduto_SemTemplateGravaTemplateIDNulo(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro Sem Template")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Sem Template")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.004")
 
-	p, err := CriarProduto(db, CriarProdutoInput{
+	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "qualquer texto livre, sem estrutura nenhuma",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -760,12 +764,12 @@ func TestAtualizarNomeProduto_SemTemplateAceitaQualquerNome(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro Renomear Sem Template")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Renomear Sem Template")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.005")
-	p, err := CriarProduto(db, CriarProdutoInput{
+	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "Nome Original",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -775,7 +779,7 @@ func TestAtualizarNomeProduto_SemTemplateAceitaQualquerNome(t *testing.T) {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
 
-	atualizado, err := AtualizarNomeProduto(db, p.ID, "Qualquer Nome Novo Sem Estrutura")
+	atualizado, err := AtualizarNomeProduto(db, empresaTeste, p.ID, "Qualquer Nome Novo Sem Estrutura")
 	if err != nil {
 		t.Fatalf("AtualizarNomeProduto erro inesperado: %v", err)
 	}
@@ -800,14 +804,14 @@ func TestAtualizarNomeProduto_ComTemplateRevalida(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro Renomear Com Template")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Renomear Com Template")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.006")
 	templateID, _ := templatePorSubtipo(t, db, "Tubo — PEAD/PPR")
 
-	p, err := CriarProduto(db, CriarProdutoInput{
+	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "TUBO PEAD PN80 DN50",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -819,7 +823,7 @@ func TestAtualizarNomeProduto_ComTemplateRevalida(t *testing.T) {
 	}
 
 	// Nome inválido contra o mesmo template -> erro, nome antigo preservado.
-	_, err = AtualizarNomeProduto(db, p.ID, "TUBO PEAD PN80")
+	_, err = AtualizarNomeProduto(db, empresaTeste, p.ID, "TUBO PEAD PN80")
 	var erroValidacao *ErroProdutoValidacao
 	if !errors.As(err, &erroValidacao) {
 		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
@@ -836,7 +840,7 @@ func TestAtualizarNomeProduto_ComTemplateRevalida(t *testing.T) {
 	}
 
 	// Nome válido contra o mesmo template -> sucesso.
-	atualizado, err := AtualizarNomeProduto(db, p.ID, "TUBO PEAD PN100 DN75")
+	atualizado, err := AtualizarNomeProduto(db, empresaTeste, p.ID, "TUBO PEAD PN100 DN75")
 	if err != nil {
 		t.Fatalf("AtualizarNomeProduto erro inesperado: %v", err)
 	}
@@ -856,7 +860,7 @@ func TestAtualizarNomeProduto_IDInexistente(t *testing.T) {
 	}
 	for nome, id := range casos {
 		t.Run(nome, func(t *testing.T) {
-			_, err := AtualizarNomeProduto(db, id, "Nome Qualquer")
+			_, err := AtualizarNomeProduto(db, empresaTeste, id, "Nome Qualquer")
 			if !errors.Is(err, ErrProdutoNaoEncontrado) {
 				t.Fatalf("erro = %v, want ErrProdutoNaoEncontrado", err)
 			}
@@ -870,12 +874,12 @@ func TestAtualizarNomeProduto_NomeInvalido(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro Renomear Nome Invalido")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Renomear Nome Invalido")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.007")
-	p, err := CriarProduto(db, CriarProdutoInput{
+	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "Nome Original",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -885,7 +889,7 @@ func TestAtualizarNomeProduto_NomeInvalido(t *testing.T) {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
 
-	_, err = AtualizarNomeProduto(db, p.ID, "   ")
+	_, err = AtualizarNomeProduto(db, empresaTeste, p.ID, "   ")
 	var erroValidacao *ErroProdutoValidacao
 	if !errors.As(err, &erroValidacao) {
 		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
@@ -899,7 +903,7 @@ func TestAtualizarNomeProduto_NomeInvalido(t *testing.T) {
 // suíte (a busca não depende de Estoque/quantidade).
 func criarProdutoBusca(t *testing.T, db *sql.DB, estoqueID, nome, codigo, categoriaID string) ProdutoBusca {
 	t.Helper()
-	p, err := CriarProduto(db, CriarProdutoInput{
+	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              nome,
 		Codigo:            codigo,
 		CategoriaID:       categoriaID,
@@ -925,7 +929,7 @@ func TestBuscarProdutos_MatchExatoVemPrimeiro(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro Busca 1")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Busca 1")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -934,7 +938,7 @@ func TestBuscarProdutos_MatchExatoVemPrimeiro(t *testing.T) {
 	criarProdutoBusca(t, db, estoque.ID, "Parafuso Sextavado M8", "PAR-0010", categoriaID)
 	exato := criarProdutoBusca(t, db, estoque.ID, "Outro Nome Qualquer", "par-001", categoriaID)
 
-	resultado, err := BuscarProdutos(db, "PAR-001")
+	resultado, err := BuscarProdutos(db, empresaTeste, "PAR-001")
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -953,7 +957,7 @@ func TestBuscarProdutos_MatchPorPrefixo(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro Busca 2")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Busca 2")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -963,7 +967,7 @@ func TestBuscarProdutos_MatchPorPrefixo(t *testing.T) {
 	criarProdutoBusca(t, db, estoque.ID, "Parafina", "", categoriaID)
 	criarProdutoBusca(t, db, estoque.ID, "Sem Relação Nenhuma", "", categoriaID)
 
-	resultado, err := BuscarProdutos(db, "paraf")
+	resultado, err := BuscarProdutos(db, empresaTeste, "paraf")
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -984,7 +988,7 @@ func TestBuscarProdutos_MatchSoPorCategoria(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro Busca 3")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Busca 3")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -994,7 +998,7 @@ func TestBuscarProdutos_MatchSoPorCategoria(t *testing.T) {
 	semRelacao := criarProdutoBusca(t, db, estoque.ID, "Disjuntor Bipolar", "DISJ-1", categoriaEletrica)
 	criarProdutoBusca(t, db, estoque.ID, "Tubo PVC", "TUBO-1", categoriaCivil)
 
-	resultado, err := BuscarProdutos(db, "elétric")
+	resultado, err := BuscarProdutos(db, empresaTeste, "elétric")
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -1015,7 +1019,7 @@ func TestBuscarProdutos_MaisDe7MatchesLimitaA7(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro Busca 4")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Busca 4")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1025,7 +1029,7 @@ func TestBuscarProdutos_MaisDe7MatchesLimitaA7(t *testing.T) {
 		criarProdutoBusca(t, db, estoque.ID, fmt.Sprintf("Parafuso Tipo %02d", i), "", categoriaID)
 	}
 
-	resultado, err := BuscarProdutos(db, "parafuso")
+	resultado, err := BuscarProdutos(db, empresaTeste, "parafuso")
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -1042,7 +1046,7 @@ func TestBuscarProdutos_NenhumMatchDevolveSliceVazio(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	resultado, err := BuscarProdutos(db, "xyzxyz-inexistente")
+	resultado, err := BuscarProdutos(db, empresaTeste, "xyzxyz-inexistente")
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -1063,7 +1067,7 @@ func TestBuscarProdutos_CoringasLiteraisNaoViramWildcard(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro Busca 5")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Busca 5")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1072,7 +1076,7 @@ func TestBuscarProdutos_CoringasLiteraisNaoViramWildcard(t *testing.T) {
 	comPorcentagem := criarProdutoBusca(t, db, estoque.ID, "Desconto Especial", "50%OFF", categoriaID)
 	criarProdutoBusca(t, db, estoque.ID, "Outro Produto Qualquer", "5XOFF", categoriaID)
 
-	resultado, err := BuscarProdutos(db, "50%")
+	resultado, err := BuscarProdutos(db, empresaTeste, "50%")
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -1087,7 +1091,7 @@ func TestBuscarProdutos_CoringasLiteraisNaoViramWildcard(t *testing.T) {
 	// wildcard de 1 caractere sem escaping) — usa um código próprio com `_`
 	// literal para provar o mesmo ponto do lado do `_`.
 	comUnderscore := criarProdutoBusca(t, db, estoque.ID, "Produto Com Underscore", "SKU_123", categoriaID)
-	resultadoUnderscore, err := BuscarProdutos(db, "SKU_1")
+	resultadoUnderscore, err := BuscarProdutos(db, empresaTeste, "SKU_1")
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -1103,7 +1107,7 @@ func TestBuscarProdutos_CoringasLiteraisNaoViramWildcard(t *testing.T) {
 	// "SKUX123" (sem underscore, com X no lugar) NÃO deveria casar "SKU_1" se
 	// o `_` estivesse sendo tratado como caractere literal e não wildcard.
 	semUnderscore := criarProdutoBusca(t, db, estoque.ID, "Produto Sem Underscore", "SKUX123", categoriaID)
-	resultadoUnderscore2, err := BuscarProdutos(db, "SKU_1")
+	resultadoUnderscore2, err := BuscarProdutos(db, empresaTeste, "SKU_1")
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -1121,7 +1125,7 @@ func TestBuscarProdutos_CodigoAusenteDevolveNilNoPonteiro(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro Busca 6")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Busca 6")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1129,7 +1133,7 @@ func TestBuscarProdutos_CodigoAusenteDevolveNilNoPonteiro(t *testing.T) {
 
 	criarProdutoBusca(t, db, estoque.ID, "Produto Sem Codigo Nenhum", "", categoriaID)
 
-	resultado, err := BuscarProdutos(db, "Produto Sem Codigo")
+	resultado, err := BuscarProdutos(db, empresaTeste, "Produto Sem Codigo")
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -1153,7 +1157,7 @@ func TestBuscarProdutos_EmpateDeRankENomeDesempataPorID(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro Busca Empate")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Busca Empate")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1165,7 +1169,7 @@ func TestBuscarProdutos_EmpateDeRankENomeDesempataPorID(t *testing.T) {
 	idsEsperados := []string{primeiro.ID, segundo.ID}
 	sort.Strings(idsEsperados)
 
-	resultado, err := BuscarProdutos(db, "empate duplicado")
+	resultado, err := BuscarProdutos(db, empresaTeste, "empate duplicado")
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -1188,7 +1192,7 @@ func TestBuscarProdutoPorCodigo_MatchExatoEncontrado(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro PorCodigo 1")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro PorCodigo 1")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1197,7 +1201,7 @@ func TestBuscarProdutoPorCodigo_MatchExatoEncontrado(t *testing.T) {
 	criarProdutoBusca(t, db, estoque.ID, "Outro Produto Qualquer", "CAB-999", categoriaID)
 	alvo := criarProdutoBusca(t, db, estoque.ID, "Cabo Flexível 4mm", "CAB-004", categoriaID)
 
-	resultado, err := BuscarProdutoPorCodigo(db, "CAB-004")
+	resultado, err := BuscarProdutoPorCodigo(db, empresaTeste, "CAB-004")
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -1223,14 +1227,14 @@ func TestBuscarProdutoPorCodigo_CodigoInexistente(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro PorCodigo 2")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro PorCodigo 2")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 	criarProdutoBusca(t, db, estoque.ID, "Produto Com Outro Codigo", "XYZ-001", categoriaID)
 
-	_, err = BuscarProdutoPorCodigo(db, "NAO-EXISTE-999")
+	_, err = BuscarProdutoPorCodigo(db, empresaTeste, "NAO-EXISTE-999")
 	if !errors.Is(err, ErrProdutoNaoEncontrado) {
 		t.Fatalf("erro = %v, want ErrProdutoNaoEncontrado", err)
 	}
@@ -1244,14 +1248,14 @@ func TestBuscarProdutoPorCodigo_CaseSensitive(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, "Canteiro PorCodigo 3")
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro PorCodigo 3")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 	alvo := criarProdutoBusca(t, db, estoque.ID, "Cabo Flexível 4mm", "CAB-004", categoriaID)
 
-	resultado, err := BuscarProdutoPorCodigo(db, "CAB-004")
+	resultado, err := BuscarProdutoPorCodigo(db, empresaTeste, "CAB-004")
 	if err != nil {
 		t.Fatalf("match exato deveria funcionar: %v", err)
 	}
@@ -1259,7 +1263,7 @@ func TestBuscarProdutoPorCodigo_CaseSensitive(t *testing.T) {
 		t.Fatalf("ID = %q, want %q", resultado.ID, alvo.ID)
 	}
 
-	_, err = BuscarProdutoPorCodigo(db, "cab-004")
+	_, err = BuscarProdutoPorCodigo(db, empresaTeste, "cab-004")
 	if !errors.Is(err, ErrProdutoNaoEncontrado) {
 		t.Errorf("erro = %v, want ErrProdutoNaoEncontrado ('cab-004' != 'CAB-004', case-sensitive)", err)
 	}

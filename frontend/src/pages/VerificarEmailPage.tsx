@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { apiUrl } from '@/lib/api';
 
 type Estado = 'carregando' | 'sucesso' | 'expirado' | 'nao-encontrado' | 'erro';
 
@@ -54,7 +55,7 @@ export function VerificarEmailPage() {
     (async () => {
       let estadoResultante: Estado;
       try {
-        const res = await fetch(`/api/auth/verificar-email?token=${encodeURIComponent(token)}`);
+        const res = await fetch(apiUrl(`/api/auth/verificar-email?token=${encodeURIComponent(token)}`));
         if (res.ok) {
           estadoResultante = 'sucesso';
         } else {

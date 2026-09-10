@@ -17,12 +17,12 @@ import (
 // `almoxarife` semeada (mesmo padrão de semearConta, usuarios_test.go).
 func seedProdutoComSaldo(t *testing.T, db *sql.DB, nomeEstoque string, quantidadeInicial float64) (produtoID, estoqueID, usuarioID string) {
 	t.Helper()
-	estoque, err := CriarEstoque(db, nomeEstoque)
+	estoque, err := CriarEstoque(db, empresaTeste, nomeEstoque)
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
-	produto, err := CriarProduto(db, CriarProdutoInput{
+	produto, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "Produto " + nomeEstoque,
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -66,7 +66,7 @@ func TestRegistrarBaixa_Sucesso(t *testing.T) {
 
 	produtoID, estoqueID, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Baixa Sucesso", 10)
 
-	mov, err := RegistrarBaixa(db, produtoID, estoqueID, usuarioID, 3)
+	mov, err := RegistrarBaixa(db, empresaTeste, produtoID, estoqueID, usuarioID, 3)
 	if err != nil {
 		t.Fatalf("RegistrarBaixa erro inesperado: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestRegistrarBaixa_QuantidadeZeroOuNegativa(t *testing.T) {
 	produtoID, estoqueID, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Baixa Invalida", 10)
 
 	for _, quantidade := range []float64{0, -5} {
-		_, err := RegistrarBaixa(db, produtoID, estoqueID, usuarioID, quantidade)
+		_, err := RegistrarBaixa(db, empresaTeste, produtoID, estoqueID, usuarioID, quantidade)
 		var erroValidacao *ErroMovimentacaoValidacao
 		if !errors.As(err, &erroValidacao) {
 			t.Fatalf("quantidade=%v: erro = %v, want *ErroMovimentacaoValidacao", quantidade, err)
@@ -144,7 +144,7 @@ func TestRegistrarBaixa_QuantidadeMaiorQueDisponivel(t *testing.T) {
 
 	produtoID, estoqueID, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Baixa Excede", 4.5)
 
-	_, err := RegistrarBaixa(db, produtoID, estoqueID, usuarioID, 10)
+	_, err := RegistrarBaixa(db, empresaTeste, produtoID, estoqueID, usuarioID, 10)
 	var erroIndisponivel *ErroQuantidadeIndisponivel
 	if !errors.As(err, &erroIndisponivel) {
 		t.Fatalf("erro = %v, want *ErroQuantidadeIndisponivel", err)
@@ -176,12 +176,12 @@ func TestRegistrarBaixa_ProdutoSemSaldoNesteEstoque(t *testing.T) {
 	// Produto cadastrado num Estoque A; tenta baixa num Estoque B onde nunca
 	// teve saldo — nenhuma linha em produto_estoque para esse par.
 	produtoID, _, usuarioID := seedProdutoComSaldo(t, db, "Canteiro A Sem Saldo", 5)
-	outroEstoque, err := CriarEstoque(db, "Canteiro B Sem Saldo")
+	outroEstoque, err := CriarEstoque(db, empresaTeste, "Canteiro B Sem Saldo")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 
-	_, err = RegistrarBaixa(db, produtoID, outroEstoque.ID, usuarioID, 1)
+	_, err = RegistrarBaixa(db, empresaTeste, produtoID, outroEstoque.ID, usuarioID, 1)
 	var erroIndisponivel *ErroQuantidadeIndisponivel
 	if !errors.As(err, &erroIndisponivel) {
 		t.Fatalf("erro = %v, want *ErroQuantidadeIndisponivel", err)
@@ -204,7 +204,7 @@ func TestRegistrarBaixa_IDMalformadoColapsaEmIndisponivel(t *testing.T) {
 
 	usuarioID := semearConta(t, db, "Almox ID Malformado", "id-malformado-almox@empresa.com", PapelAlmoxarife, 0)
 
-	_, err := RegistrarBaixa(db, "abc", "xyz", usuarioID, 1)
+	_, err := RegistrarBaixa(db, empresaTeste, "abc", "xyz", usuarioID, 1)
 	var erroIndisponivel *ErroQuantidadeIndisponivel
 	if !errors.As(err, &erroIndisponivel) {
 		t.Fatalf("erro = %v, want *ErroQuantidadeIndisponivel", err)
@@ -237,12 +237,12 @@ func TestRegistrarBaixa_ConcorrenciaDuasBaixasMesmaLinha(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		<-start
-		_, err1 = RegistrarBaixa(db, produtoID, estoqueID, usuarioID, 6)
+		_, err1 = RegistrarBaixa(db, empresaTeste, produtoID, estoqueID, usuarioID, 6)
 	}()
 	go func() {
 		defer wg.Done()
 		<-start
-		_, err2 = RegistrarBaixa(db, produtoID, estoqueID, usuarioID, 6)
+		_, err2 = RegistrarBaixa(db, empresaTeste, produtoID, estoqueID, usuarioID, 6)
 	}()
 	close(start)
 	wg.Wait()
@@ -295,21 +295,21 @@ func TestListarMovimentacoes_MaisRecentePrimeiroComNomesResolvidos(t *testing.T)
 	limparProdutos(t, db)
 
 	produtoID, estoqueOrigemID, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Hist Origem", 20)
-	estoqueDestino, err := CriarEstoque(db, "Canteiro Hist Destino")
+	estoqueDestino, err := CriarEstoque(db, empresaTeste, "Canteiro Hist Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
 
 	// Ordem de criação: Baixa primeiro, Transferência depois — a lista deve
 	// vir na ordem inversa (mais recente primeiro).
-	if _, err := RegistrarBaixa(db, produtoID, estoqueOrigemID, usuarioID, 3); err != nil {
+	if _, err := RegistrarBaixa(db, empresaTeste, produtoID, estoqueOrigemID, usuarioID, 3); err != nil {
 		t.Fatalf("RegistrarBaixa: %v", err)
 	}
-	if _, err := RegistrarTransferencia(db, produtoID, estoqueOrigemID, estoqueDestino.ID, usuarioID, 4); err != nil {
+	if _, err := RegistrarTransferencia(db, empresaTeste, produtoID, estoqueOrigemID, estoqueDestino.ID, usuarioID, 4); err != nil {
 		t.Fatalf("RegistrarTransferencia: %v", err)
 	}
 
-	lista, err := ListarMovimentacoes(db)
+	lista, err := ListarMovimentacoes(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("ListarMovimentacoes erro inesperado: %v", err)
 	}
@@ -386,7 +386,7 @@ func TestListarMovimentacoes_ListaVaziaNaoEErro(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	lista, err := ListarMovimentacoes(db)
+	lista, err := ListarMovimentacoes(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("ListarMovimentacoes erro inesperado: %v", err)
 	}
@@ -412,12 +412,12 @@ func TestListarMovimentacoes_TetoDe500(t *testing.T) {
 
 	const total = maxMovimentacoesPorConsulta + 5
 	for i := 0; i < total; i++ {
-		if _, err := RegistrarBaixa(db, produtoID, estoqueID, usuarioID, 1); err != nil {
+		if _, err := RegistrarBaixa(db, empresaTeste, produtoID, estoqueID, usuarioID, 1); err != nil {
 			t.Fatalf("RegistrarBaixa #%d: %v", i, err)
 		}
 	}
 
-	lista, err := ListarMovimentacoes(db)
+	lista, err := ListarMovimentacoes(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("ListarMovimentacoes erro inesperado: %v", err)
 	}
@@ -446,18 +446,18 @@ func TestListarMovimentacoes_DesempatePorIDQuandoCriadoEmIgual(t *testing.T) {
 
 	const instante = "2026-08-15T12:00:00Z"
 	const insert = `
-		INSERT INTO movimentacoes (produto_id, tipo, estoque_origem_id, quantidade, usuario_id, criado_em)
-		VALUES ($1, 'baixa', $2, 1, $3, $4)
+		INSERT INTO movimentacoes (produto_id, tipo, estoque_origem_id, quantidade, usuario_id, criado_em, empresa_id)
+		VALUES ($1, 'baixa', $2, 1, $3, $4, $5)
 		RETURNING id`
 	var id1, id2 string
-	if err := db.QueryRow(insert, produtoID, estoqueID, usuarioID, instante).Scan(&id1); err != nil {
+	if err := db.QueryRow(insert, produtoID, estoqueID, usuarioID, instante, empresaTeste).Scan(&id1); err != nil {
 		t.Fatalf("insert movimentação 1: %v", err)
 	}
-	if err := db.QueryRow(insert, produtoID, estoqueID, usuarioID, instante).Scan(&id2); err != nil {
+	if err := db.QueryRow(insert, produtoID, estoqueID, usuarioID, instante, empresaTeste).Scan(&id2); err != nil {
 		t.Fatalf("insert movimentação 2: %v", err)
 	}
 
-	lista, err := ListarMovimentacoes(db)
+	lista, err := ListarMovimentacoes(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("ListarMovimentacoes erro inesperado: %v", err)
 	}
@@ -490,18 +490,18 @@ func TestListarMovimentacoesDoUsuario_EscopadoAoUsuarioSemLimite(t *testing.T) {
 	produtoID, estoqueID, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Export Mov", 50)
 	_, _, outroUsuarioID := seedProdutoComSaldo(t, db, "Canteiro Export Mov Outro", 50)
 
-	if _, err := RegistrarBaixa(db, produtoID, estoqueID, usuarioID, 2); err != nil {
+	if _, err := RegistrarBaixa(db, empresaTeste, produtoID, estoqueID, usuarioID, 2); err != nil {
 		t.Fatalf("RegistrarBaixa (usuário): %v", err)
 	}
-	if _, err := RegistrarBaixa(db, produtoID, estoqueID, usuarioID, 3); err != nil {
+	if _, err := RegistrarBaixa(db, empresaTeste, produtoID, estoqueID, usuarioID, 3); err != nil {
 		t.Fatalf("RegistrarBaixa (usuário) 2: %v", err)
 	}
 	produtoOutro, estoqueOutro, _ := seedProdutoComSaldo(t, db, "Canteiro Export Mov Outro Prod", 50)
-	if _, err := RegistrarBaixa(db, produtoOutro, estoqueOutro, outroUsuarioID, 1); err != nil {
+	if _, err := RegistrarBaixa(db, empresaTeste, produtoOutro, estoqueOutro, outroUsuarioID, 1); err != nil {
 		t.Fatalf("RegistrarBaixa (outro usuário): %v", err)
 	}
 
-	lista, err := ListarMovimentacoesDoUsuario(db, usuarioID)
+	lista, err := ListarMovimentacoesDoUsuario(db, empresaTeste, usuarioID)
 	if err != nil {
 		t.Fatalf("ListarMovimentacoesDoUsuario: %v", err)
 	}
@@ -527,7 +527,7 @@ func TestListarMovimentacoesDoUsuario_SemMovimentacaoNaoEErro(t *testing.T) {
 
 	_, _, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Export Mov Vazio", 10)
 
-	lista, err := ListarMovimentacoesDoUsuario(db, usuarioID)
+	lista, err := ListarMovimentacoesDoUsuario(db, empresaTeste, usuarioID)
 	if err != nil {
 		t.Fatalf("ListarMovimentacoesDoUsuario: %v", err)
 	}
@@ -550,7 +550,7 @@ func TestRegistrarTransferencia_Sucesso(t *testing.T) {
 	limparProdutos(t, db)
 
 	produtoID, estoqueOrigemID, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Transf Sucesso Origem", 10)
-	estoqueDestino, err := CriarEstoque(db, "Canteiro Transf Sucesso Destino")
+	estoqueDestino, err := CriarEstoque(db, empresaTeste, "Canteiro Transf Sucesso Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
@@ -562,7 +562,7 @@ func TestRegistrarTransferencia_Sucesso(t *testing.T) {
 		t.Fatalf("seed linha destino: %v", err)
 	}
 
-	mov, err := RegistrarTransferencia(db, produtoID, estoqueOrigemID, estoqueDestino.ID, usuarioID, 3)
+	mov, err := RegistrarTransferencia(db, empresaTeste, produtoID, estoqueOrigemID, estoqueDestino.ID, usuarioID, 3)
 	if err != nil {
 		t.Fatalf("RegistrarTransferencia erro inesperado: %v", err)
 	}
@@ -605,12 +605,12 @@ func TestRegistrarTransferencia_DestinoSemLinhaAinda(t *testing.T) {
 	limparProdutos(t, db)
 
 	produtoID, estoqueOrigemID, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Transf SemLinha Origem", 10)
-	estoqueDestino, err := CriarEstoque(db, "Canteiro Transf SemLinha Destino")
+	estoqueDestino, err := CriarEstoque(db, empresaTeste, "Canteiro Transf SemLinha Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
 
-	mov, err := RegistrarTransferencia(db, produtoID, estoqueOrigemID, estoqueDestino.ID, usuarioID, 4)
+	mov, err := RegistrarTransferencia(db, empresaTeste, produtoID, estoqueOrigemID, estoqueDestino.ID, usuarioID, 4)
 	if err != nil {
 		t.Fatalf("RegistrarTransferencia erro inesperado: %v", err)
 	}
@@ -635,7 +635,7 @@ func TestRegistrarTransferencia_OrigemIgualDestino(t *testing.T) {
 
 	produtoID, estoqueID, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Transf OrigemDestino", 10)
 
-	_, err := RegistrarTransferencia(db, produtoID, estoqueID, estoqueID, usuarioID, 1)
+	_, err := RegistrarTransferencia(db, empresaTeste, produtoID, estoqueID, estoqueID, usuarioID, 1)
 	var erroValidacao *ErroMovimentacaoValidacao
 	if !errors.As(err, &erroValidacao) {
 		t.Fatalf("erro = %v, want *ErroMovimentacaoValidacao", err)
@@ -663,7 +663,7 @@ func TestRegistrarTransferencia_OrigemIgualDestinoCaseInsensitive(t *testing.T) 
 
 	produtoID, estoqueID, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Transf OrigemDestinoCase", 10)
 
-	_, err := RegistrarTransferencia(db, produtoID, estoqueID, strings.ToUpper(estoqueID), usuarioID, 1)
+	_, err := RegistrarTransferencia(db, empresaTeste, produtoID, estoqueID, strings.ToUpper(estoqueID), usuarioID, 1)
 	var erroValidacao *ErroMovimentacaoValidacao
 	if !errors.As(err, &erroValidacao) {
 		t.Fatalf("erro = %v, want *ErroMovimentacaoValidacao", err)
@@ -690,13 +690,13 @@ func TestRegistrarTransferencia_QuantidadeZeroOuNegativa(t *testing.T) {
 	limparProdutos(t, db)
 
 	produtoID, estoqueOrigemID, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Transf QtdInvalida Origem", 10)
-	estoqueDestino, err := CriarEstoque(db, "Canteiro Transf QtdInvalida Destino")
+	estoqueDestino, err := CriarEstoque(db, empresaTeste, "Canteiro Transf QtdInvalida Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
 
 	for _, quantidade := range []float64{0, -5, limiteNumeric103 + 0.001, limiteNumeric103 * 10} {
-		_, err := RegistrarTransferencia(db, produtoID, estoqueOrigemID, estoqueDestino.ID, usuarioID, quantidade)
+		_, err := RegistrarTransferencia(db, empresaTeste, produtoID, estoqueOrigemID, estoqueDestino.ID, usuarioID, quantidade)
 		var erroValidacao *ErroMovimentacaoValidacao
 		if !errors.As(err, &erroValidacao) {
 			t.Fatalf("quantidade=%v: erro = %v, want *ErroMovimentacaoValidacao", quantidade, err)
@@ -719,12 +719,12 @@ func TestRegistrarTransferencia_QuantidadeMaiorQueDisponivel(t *testing.T) {
 	limparProdutos(t, db)
 
 	produtoID, estoqueOrigemID, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Transf Excede Origem", 4.5)
-	estoqueDestino, err := CriarEstoque(db, "Canteiro Transf Excede Destino")
+	estoqueDestino, err := CriarEstoque(db, empresaTeste, "Canteiro Transf Excede Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
 
-	_, err = RegistrarTransferencia(db, produtoID, estoqueOrigemID, estoqueDestino.ID, usuarioID, 10)
+	_, err = RegistrarTransferencia(db, empresaTeste, produtoID, estoqueOrigemID, estoqueDestino.ID, usuarioID, 10)
 	var erroIndisponivel *ErroQuantidadeIndisponivel
 	if !errors.As(err, &erroIndisponivel) {
 		t.Fatalf("erro = %v, want *ErroQuantidadeIndisponivel", err)
@@ -766,7 +766,7 @@ func TestRegistrarTransferencia_EstoqueDestinoMalformadoOuInexistente(t *testing
 	}
 	for nome, destino := range casos {
 		t.Run(nome, func(t *testing.T) {
-			_, err := RegistrarTransferencia(db, produtoID, estoqueOrigemID, destino, usuarioID, 1)
+			_, err := RegistrarTransferencia(db, empresaTeste, produtoID, estoqueOrigemID, destino, usuarioID, 1)
 			var erroIndisponivel *ErroQuantidadeIndisponivel
 			if !errors.As(err, &erroIndisponivel) {
 				t.Fatalf("erro = %v, want *ErroQuantidadeIndisponivel", err)
@@ -805,7 +805,7 @@ func TestRegistrarTransferencia_ConcorrenciaSemDeadlock(t *testing.T) {
 	limparProdutos(t, db)
 
 	produtoID, estoqueA, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Transf Corrida A", 20)
-	estoqueBRow, err := CriarEstoque(db, "Canteiro Transf Corrida B")
+	estoqueBRow, err := CriarEstoque(db, empresaTeste, "Canteiro Transf Corrida B")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque B: %v", err)
 	}
@@ -827,12 +827,12 @@ func TestRegistrarTransferencia_ConcorrenciaSemDeadlock(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, err1 = RegistrarTransferencia(db, produtoID, estoqueA, estoqueB, usuarioID, 3) // A -> B
+			_, err1 = RegistrarTransferencia(db, empresaTeste, produtoID, estoqueA, estoqueB, usuarioID, 3) // A -> B
 		}()
 		go func() {
 			defer wg.Done()
 			<-start
-			_, err2 = RegistrarTransferencia(db, produtoID, estoqueB, estoqueA, usuarioID, 3) // B -> A
+			_, err2 = RegistrarTransferencia(db, empresaTeste, produtoID, estoqueB, estoqueA, usuarioID, 3) // B -> A
 		}()
 		close(start)
 		wg.Wait()
@@ -876,11 +876,11 @@ func TestRegistrarTransferencia_ConcorrenciaMesmaOrigemNuncaFicaNegativo(t *test
 	limparProdutos(t, db)
 
 	produtoID, estoqueOrigem, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Transf DrenaOrigem", 10)
-	destino1, err := CriarEstoque(db, "Canteiro Transf Drena Destino 1")
+	destino1, err := CriarEstoque(db, empresaTeste, "Canteiro Transf Drena Destino 1")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino1: %v", err)
 	}
-	destino2, err := CriarEstoque(db, "Canteiro Transf Drena Destino 2")
+	destino2, err := CriarEstoque(db, empresaTeste, "Canteiro Transf Drena Destino 2")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino2: %v", err)
 	}
@@ -893,12 +893,12 @@ func TestRegistrarTransferencia_ConcorrenciaMesmaOrigemNuncaFicaNegativo(t *test
 	go func() {
 		defer wg.Done()
 		<-start
-		_, err1 = RegistrarTransferencia(db, produtoID, estoqueOrigem, destino1.ID, usuarioID, 6)
+		_, err1 = RegistrarTransferencia(db, empresaTeste, produtoID, estoqueOrigem, destino1.ID, usuarioID, 6)
 	}()
 	go func() {
 		defer wg.Done()
 		<-start
-		_, err2 = RegistrarTransferencia(db, produtoID, estoqueOrigem, destino2.ID, usuarioID, 6)
+		_, err2 = RegistrarTransferencia(db, empresaTeste, produtoID, estoqueOrigem, destino2.ID, usuarioID, 6)
 	}()
 	close(start)
 	wg.Wait()

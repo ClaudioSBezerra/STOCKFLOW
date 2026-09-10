@@ -27,18 +27,25 @@ const realtimeTicketExpiracao = 30 * time.Second
 // requisito de segurança (AD-18) exige essa invalidação para este `tipo`
 // especificamente (só para `mfa_login`, onde um código antigo válido é um
 // risco real de conta).
-func EmitirTicketRealtime(db *sql.DB, usuarioID string) (string, error) {
+func EmitirTicketRealtime(db *sql.DB, empresaID string, usuarioID string) (string, error) {
 	token, err := gerarTokenAcao()
 	if err != nil {
 		return "", err
 	}
 
 	expiraEm := time.Now().UTC().Add(realtimeTicketExpiracao)
+	// `tokens_acao` é tabela FILHA e não ganhou `empresa_id`; o guard de
+	// Empresa (Story 9.1) é o `SELECT` no lugar do `VALUES` — um `usuarioID`
+	// de outra Empresa não emite ticket nenhum.
 	const insertToken = `
 		INSERT INTO tokens_acao (usuario_id, token, tipo, expira_em)
-		VALUES ($1, $2, 'realtime_ticket', $3)`
-	if _, err := db.Exec(insertToken, usuarioID, token, expiraEm); err != nil {
+		SELECT u.id, $2, 'realtime_ticket', $3 FROM usuarios u WHERE u.id = $1 AND u.empresa_id = $4`
+	res, err := db.Exec(insertToken, usuarioID, token, expiraEm, empresaID)
+	if err != nil {
 		return "", fmt.Errorf("falha ao emitir ticket de conexão em tempo real: %w", err)
+	}
+	if linhas, errLinhas := res.RowsAffected(); errLinhas == nil && linhas == 0 {
+		return "", ErrUsuarioSessaoNaoEncontrado
 	}
 	return token, nil
 }
@@ -53,7 +60,7 @@ func EmitirTicketRealtime(db *sql.DB, usuarioID string) (string, error) {
 // outra requisição (outra aba abrindo a MESMA conexão duas vezes, por
 // exemplo) já consumiu ou o prazo expirou nesse meio-tempo, e o resultado
 // também é ErrTokenExpirado.
-func ConsumirTicketRealtime(db *sql.DB, token string) (usuarioID string, err error) {
+func ConsumirTicketRealtime(db *sql.DB, empresaID string, token string) (usuarioID string, err error) {
 	tx, err := db.Begin()
 	if err != nil {
 		return "", fmt.Errorf("falha ao iniciar transação: %w", err)
@@ -62,11 +69,15 @@ func ConsumirTicketRealtime(db *sql.DB, token string) (usuarioID string, err err
 
 	var expiraEm time.Time
 	var usadoEm sql.NullTime
+	// Mesmo guard de Empresa por JOIN dos demais consumos de token (Story
+	// 9.1): um ticket emitido sob o slug de outra Empresa colapsa em
+	// ErrTokenNaoEncontrado aqui.
 	const selectToken = `
-		SELECT usuario_id, expira_em, usado_em
-		FROM tokens_acao
-		WHERE token = $1 AND tipo = 'realtime_ticket'`
-	if err := tx.QueryRow(selectToken, token).Scan(&usuarioID, &expiraEm, &usadoEm); err != nil {
+		SELECT t.usuario_id, t.expira_em, t.usado_em
+		FROM tokens_acao t
+		JOIN usuarios u ON u.id = t.usuario_id AND u.empresa_id = $2
+		WHERE t.token = $1 AND t.tipo = 'realtime_ticket'`
+	if err := tx.QueryRow(selectToken, token, empresaID).Scan(&usuarioID, &expiraEm, &usadoEm); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", ErrTokenNaoEncontrado
 		}

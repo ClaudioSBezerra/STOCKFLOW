@@ -102,6 +102,10 @@ func CriarImportacaoHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
 		r.Body = http.MaxBytesReader(w, r.Body, importacaoRequestMaxBytes)
 		if err := r.ParseMultipartForm(importacaoRequestMaxBytes); err != nil {
@@ -150,7 +154,7 @@ func CriarImportacaoHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		importacao, relatorio, err := services.CriarImportacao(db, usuario.ID, fileHeader.Filename, linhas)
+		importacao, relatorio, err := services.CriarImportacao(db, empresa.ID, usuario.ID, fileHeader.Filename, linhas)
 		if err != nil {
 			slog.Error("falha ao criar importação", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao processar importação")
@@ -172,8 +176,12 @@ func ContinuarImportacaoHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
-		importacao, relatorio, err := services.ContinuarImportacao(db, r.PathValue("id"))
+		importacao, relatorio, err := services.ContinuarImportacao(db, empresa.ID, r.PathValue("id"))
 		switch {
 		case err == nil:
 			escreverJSON(w, http.StatusOK, map[string]any{"importacao": importacao, "relatorio": relatorio})
@@ -199,8 +207,12 @@ func UltimaImportacaoHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
 
-		importacao, relatorio, err := services.ObterUltimaImportacao(db)
+		importacao, relatorio, err := services.ObterUltimaImportacao(db, empresa.ID)
 		if err != nil {
 			slog.Error("falha ao buscar última importação", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao buscar última importação")

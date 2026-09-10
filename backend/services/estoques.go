@@ -43,15 +43,15 @@ var (
 // sinal de nome duplicado: traduzida para ErrNomeEstoqueDuplicado, sem
 // nenhum SELECT-antes-de-INSERT que teria janela de corrida sob requisições
 // concorrentes.
-func CriarEstoque(db *sql.DB, nome string) (Estoque, error) {
+func CriarEstoque(db *sql.DB, empresaID string, nome string) (Estoque, error) {
 	nomeTrimado := strings.TrimSpace(nome)
 	if nomeTrimado == "" || utf8.RuneCountInString(nomeTrimado) > 255 {
 		return Estoque{}, ErrEstoqueValidacao
 	}
 
 	var e Estoque
-	const insert = `INSERT INTO estoques (nome) VALUES ($1) RETURNING id, nome`
-	if err := db.QueryRow(insert, nomeTrimado).Scan(&e.ID, &e.Nome); err != nil {
+	const insert = `INSERT INTO estoques (nome, empresa_id) VALUES ($1, $2) RETURNING id, nome`
+	if err := db.QueryRow(insert, nomeTrimado, empresaID).Scan(&e.ID, &e.Nome); err != nil {
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && pqErr.Code == pqUniqueViolation {
 			return Estoque{}, ErrNomeEstoqueDuplicado
@@ -61,13 +61,16 @@ func CriarEstoque(db *sql.DB, nome string) (Estoque, error) {
 	return e, nil
 }
 
-// ListarEstoques devolve todos os locais de estoque ordenados por
-// `nome_normalizado` ascendente (Story 2.1, AC4). Sem filtro de escopo:
-// qualquer conta autenticada vê todos os Estoques (o gate de leitura é só
-// RequireAuth em newMux). Lista vazia não é erro — devolve um slice vazio,
-// nunca nil.
-func ListarEstoques(db *sql.DB) ([]Estoque, error) {
-	rows, err := db.Query(`SELECT id, nome FROM estoques ORDER BY nome_normalizado ASC`)
+// ListarEstoques devolve os locais de estoque da Empresa `empresaID`
+// ordenados por `nome_normalizado` ascendente (Story 2.1, AC4). Sem filtro de
+// PAPEL: qualquer conta autenticada vê todos os Estoques DA PRÓPRIA EMPRESA
+// (o gate de leitura é só RequireAuth em newMux); o recorte por Empresa vem
+// do `empresaID` resolvido pelo middleware (Story 9.1, AD-20). Lista vazia
+// não é erro — devolve um slice vazio, nunca nil.
+func ListarEstoques(db *sql.DB, empresaID string) ([]Estoque, error) {
+	rows, err := db.Query(
+		`SELECT id, nome FROM estoques WHERE empresa_id = $1 ORDER BY nome_normalizado ASC`,
+		empresaID)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao listar estoques: %w", err)
 	}
@@ -87,8 +90,11 @@ func ListarEstoques(db *sql.DB) ([]Estoque, error) {
 	return estoques, nil
 }
 
-// ExcluirEstoque remove o local de estoque de `id` (DELETE /api/estoques/{id},
-// Story 2.2, FR12). Um `id` não-UUID (`pq` SQLSTATE 22P02, reusa a constante
+// ExcluirEstoque remove o local de estoque de `id` DENTRO da Empresa
+// `empresaID` (DELETE /e/{slug}/api/estoques/{id}, Story 2.2, FR12; escopo de
+// Empresa da Story 9.1). Um `id` de outra Empresa colapsa no MESMO
+// ErrEstoqueNaoEncontrado de um `id` inexistente — nunca 403, nunca revela
+// existência. Um `id` não-UUID (`pq` SQLSTATE 22P02, reusa a constante
 // de pacote pqInvalidTextRepresentation) ou um `id` UUID válido sem linha
 // correspondente (`RowsAffected() == 0`) colapsam em ErrEstoqueNaoEncontrado —
 // a mesma decisão de carregarAlvoParaGestao (gestao_usuarios.go) e
@@ -124,7 +130,7 @@ func ListarEstoques(db *sql.DB) ([]Estoque, error) {
 // que já teria sido refeito, pois só roda depois do lock ser adquirido —
 // enxerga a linha nova). As duas ordens de chegada são seguras; a janela que
 // perdia dado silenciosamente deixa de existir.
-func ExcluirEstoque(db *sql.DB, id string) error {
+func ExcluirEstoque(db *sql.DB, empresaID string, id string) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("falha ao iniciar transação: %w", err)
@@ -132,7 +138,9 @@ func ExcluirEstoque(db *sql.DB, id string) error {
 	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
 
 	var idTravado string
-	if err := tx.QueryRow(`SELECT id FROM estoques WHERE id = $1 FOR UPDATE`, id).Scan(&idTravado); err != nil {
+	if err := tx.QueryRow(
+		`SELECT id FROM estoques WHERE id = $1 AND empresa_id = $2 FOR UPDATE`, id, empresaID,
+	).Scan(&idTravado); err != nil {
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation {
 			return ErrEstoqueNaoEncontrado
@@ -221,7 +229,7 @@ func ExcluirEstoque(db *sql.DB, id string) error {
 		return &ErroEstoqueComPedidoPendente{Produtos: produtosPedidoPendente}
 	}
 
-	res, err := tx.Exec(`DELETE FROM estoques WHERE id = $1`, id)
+	res, err := tx.Exec(`DELETE FROM estoques WHERE id = $1 AND empresa_id = $2`, id, empresaID)
 	if err != nil {
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation {

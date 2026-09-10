@@ -1042,7 +1042,7 @@ func TestMigrarPedidos_SeedUsuarioAusente(t *testing.T) {
 		alvo.Exec(`
 			INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
 			VALUES ('Migração do sistema legado', $1, NULL, 'almoxarife', false, false)
-			ON CONFLICT (lower(email)) DO NOTHING`, emailUsuarioMigracaoLegado)
+			ON CONFLICT (empresa_id, lower(email)) DO NOTHING`, emailUsuarioMigracaoLegado)
 	})
 
 	seedProdutoMigrado(t, alvo, "p1", "Cimento")

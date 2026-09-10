@@ -4,8 +4,8 @@ import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/lib/auth';
-import { getAccessToken } from '@/lib/session';
 import { rankPapel } from '@/components/shell/nav-items';
+import { apiUrl, authHeaders } from '@/lib/api';
 
 /**
  * Seção "Log de Acesso" (`/configuracoes`, Story 1.12, spec-1-12). Montada só
@@ -38,11 +38,6 @@ interface LogAcesso {
   sucesso: boolean;
   ip: string;
   criadoEm: string;
-}
-
-function authHeaders(): Record<string, string> {
-  const token = getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 const MENSAGEM_ERRO_CARREGAR =
@@ -100,7 +95,7 @@ export function LogAcessoSection() {
         params.set('fim', isoFim);
       }
       const qs = params.toString();
-      const res = await fetch(`/api/logs-acesso${qs ? `?${qs}` : ''}`, {
+      const res = await fetch(apiUrl(`/api/logs-acesso${qs ? `?${qs}` : ''}`), {
         headers: authHeaders(),
       });
       if (seq !== seqRef.current) {
