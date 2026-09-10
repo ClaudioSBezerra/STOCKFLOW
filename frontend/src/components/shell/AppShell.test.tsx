@@ -11,12 +11,22 @@ import { AppShell } from './AppShell';
 const authState = vi.hoisted(() => ({
   papel: 'adm' as string,
   logout: vi.fn(),
+  // Story 9.2: undefined = usuário SEM os campos novos (o mock de sempre).
+  ambienteTreinamento: undefined as boolean | undefined,
 }));
 
 vi.mock('@/lib/auth', () => ({
   useAuth: () => ({
     estado: 'autenticado',
-    usuario: { id: '1', nome: 'Teste', email: 'teste@empresa.com', papel: authState.papel },
+    usuario: {
+      id: '1',
+      nome: 'Teste',
+      email: 'teste@empresa.com',
+      papel: authState.papel,
+      ...(authState.ambienteTreinamento === undefined
+        ? {}
+        : { ambienteTreinamento: authState.ambienteTreinamento, empresaNome: 'Acme - Treinamento' }),
+    },
     definirSessao: vi.fn(),
     logout: authState.logout,
   }),
@@ -42,6 +52,7 @@ vi.mock('@/lib/carrinho', () => ({
 // cart-badge.
 beforeEach(() => {
   carrinhoState.count = 0;
+  authState.ambienteTreinamento = undefined;
 });
 
 function renderShell(initialPath = '/') {
@@ -357,6 +368,40 @@ describe('AppShell — cart-badge (Story 7.1)', () => {
     // O rail inteiro tem exatamente UM "4" (o badge do Carrinho) — não duas
     // ocorrências (o que aconteceria se outro item também ganhasse badge).
     expect(within(rail).getAllByText('4')).toHaveLength(1);
+  });
+});
+
+describe('AppShell — Ambiente de Treinamento (Story 9.2)', () => {
+  const TEXTO_FAIXA =
+    'AMBIENTE DE TREINAMENTO — dados de exemplo, nada aqui afeta a operação real';
+
+  it('sem o flag (usuário sem os campos novos), não há faixa e o header continua "stockflow"', () => {
+    renderShell();
+
+    expect(screen.queryByRole('note')).not.toBeInTheDocument();
+    expect(screen.queryByText(TEXTO_FAIXA)).not.toBeInTheDocument();
+    expect(screen.getByText('stockflow')).toBeInTheDocument();
+  });
+
+  it('com ambienteTreinamento:false, também não há faixa', () => {
+    authState.ambienteTreinamento = false;
+    renderShell();
+
+    expect(screen.queryByText(TEXTO_FAIXA)).not.toBeInTheDocument();
+  });
+
+  it('com ambienteTreinamento:true, mostra a faixa persistente em todas as larguras e o header "stockflow · Treinamento"', () => {
+    authState.ambienteTreinamento = true;
+    renderShell();
+
+    const faixa = screen.getByRole('note');
+    expect(faixa).toHaveTextContent(TEXTO_FAIXA);
+    expect(faixa.className).toContain('bg-warning');
+    expect(faixa.className).not.toMatch(/(^|\s)(hidden|md:hidden|md:flex)(\s|$)/);
+    expect(faixa.parentElement?.className).toContain('border-warning');
+    expect(screen.getByText('stockflow · Treinamento')).toBeInTheDocument();
+    // A navegação continua a mesma dentro da moldura.
+    expect(screen.getAllByRole('navigation', { name: 'Navegação principal' })).toHaveLength(2);
   });
 });
 

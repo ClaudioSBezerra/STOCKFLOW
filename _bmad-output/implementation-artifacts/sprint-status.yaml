@@ -106,7 +106,7 @@ development_status:
 
   epic-9: in-progress
   9-1-fundação-multi-empresa-schema-e-isolamento-por-empresa: done
-  9-2-dono-da-plataforma-cria-empresas-com-ambiente-de-treinamento-automático: backlog
+  9-2-dono-da-plataforma-cria-empresas-com-ambiente-de-treinamento-automático: done
   9-3-convite-nominal-de-acesso-a-uma-empresa: backlog
   9-4-migração-da-ferreira-costa-para-o-modelo-multi-empresa: backlog
   epic-9-retrospective: optional

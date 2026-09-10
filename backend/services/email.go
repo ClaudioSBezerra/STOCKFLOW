@@ -142,6 +142,28 @@ func renderizarTemplate(tipo string, variaveis map[string]any) (templateRenderiz
 			Assunto:   "Redefinição de senha — stockflow",
 			CorpoHTML: corpo,
 		}, nil
+	case "primeiro_acesso":
+		// Story 9.2: o `adm` provisionado pelo Dono da Plataforma nasce sem
+		// senha — este e-mail leva o link de definição (token de 7 dias) sob
+		// o slug da própria Empresa.
+		nome, _ := variaveis["nome"].(string)
+		empresa, _ := variaveis["empresa"].(string)
+		link, _ := variaveis["link"].(string)
+		corpo := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="font-family: Arial, sans-serif; color: #333333;">
+	<p>Olá, %s.</p>
+	<p>Você é o administrador da empresa <strong>%s</strong> no stockflow. Para começar, defina a sua senha pelo link abaixo:</p>
+	<p><a href="%s">Definir minha senha</a></p>
+	<p>Ou copie e cole no navegador: %s</p>
+	<p style="font-size: 12px; color: #999999;">Este link expira em 7 dias. Se ele expirar, use "Esqueci minha senha" na tela de login da sua empresa para receber um novo.</p>
+</body>
+</html>`, html.EscapeString(nome), html.EscapeString(empresa), link, link)
+		return templateRenderizado{
+			Assunto:   "Seu acesso de administrador — stockflow",
+			CorpoHTML: corpo,
+		}, nil
 	default:
 		return templateRenderizado{}, fmt.Errorf("tipo de e-mail desconhecido: %q", tipo)
 	}

@@ -466,6 +466,57 @@ func TestNewMux_RegistraRotasDeAutenticacao(t *testing.T) {
 			caminho:      prefixoEmpresaTeste + "/api/auth/logout",
 			statusQuerAo: http.StatusNoContent,
 		},
+		// Área do Dono da Plataforma (Story 9.2): fora do prefixo de Empresa.
+		{
+			nome:         "plataforma/auth/login com payload invalido chega no PlataformaLoginHandler",
+			metodo:       http.MethodPost,
+			caminho:      "/api/plataforma/auth/login",
+			corpo:        `{isto nao e json`,
+			statusQuerAo: http.StatusBadRequest,
+		},
+		{
+			nome:         "plataforma/auth/refresh sem cookie chega no PlataformaRefreshHandler",
+			metodo:       http.MethodPost,
+			caminho:      "/api/plataforma/auth/refresh",
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
+			nome:         "plataforma/auth/logout sem cookie -> 204",
+			metodo:       http.MethodPost,
+			caminho:      "/api/plataforma/auth/logout",
+			statusQuerAo: http.StatusNoContent,
+		},
+		{
+			nome:         "plataforma/auth/me sem token chega no RequireDonoPlataforma",
+			metodo:       http.MethodGet,
+			caminho:      "/api/plataforma/auth/me",
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
+			nome:         "plataforma/empresas GET sem token chega no RequireDonoPlataforma",
+			metodo:       http.MethodGet,
+			caminho:      "/api/plataforma/empresas",
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
+			nome:         "plataforma/empresas POST sem token chega no RequireDonoPlataforma",
+			metodo:       http.MethodPost,
+			caminho:      "/api/plataforma/empresas",
+			corpo:        `{}`,
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
+			nome:         "plataforma/empresas/{id}/desativacao sem token chega no RequireDonoPlataforma",
+			metodo:       http.MethodPost,
+			caminho:      "/api/plataforma/empresas/qualquer-id/desativacao",
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
+			nome:         "plataforma/empresas/{id}/reativacao sem token chega no RequireDonoPlataforma",
+			metodo:       http.MethodPost,
+			caminho:      "/api/plataforma/empresas/qualquer-id/reativacao",
+			statusQuerAo: http.StatusUnauthorized,
+		},
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
@@ -482,6 +533,208 @@ func TestNewMux_RegistraRotasDeAutenticacao(t *testing.T) {
 				t.Fatalf("status = %d, want %d (body=%s)", w.Code, c.statusQuerAo, w.Body.String())
 			}
 		})
+	}
+}
+
+// removerEmpresaPlataformaMux apaga a Empresa `slug` com todas as linhas que
+// existem por causa dela (ARMADILHA da spec-9-2: DELETE, nunca TRUNCATE ...
+// CASCADE sobre tabela referenciada).
+func removerEmpresaPlataformaMux(t *testing.T, db *sql.DB, slug string) {
+	t.Helper()
+	var id string
+	if err := db.QueryRow(`SELECT id FROM empresas WHERE slug = $1`, slug).Scan(&id); err != nil {
+		if err == sql.ErrNoRows {
+			return
+		}
+		t.Fatalf("remover empresa %s: %v", slug, err)
+	}
+	for _, stmt := range []string{
+		`DELETE FROM produto_estoque WHERE produto_id IN (SELECT id FROM produtos WHERE empresa_id = $1)`,
+		`DELETE FROM produtos WHERE empresa_id = $1`,
+		`DELETE FROM estoques WHERE empresa_id = $1`,
+		`DELETE FROM logs_acesso WHERE empresa_id = $1`,
+		`DELETE FROM usuarios WHERE empresa_id = $1`,
+		`DELETE FROM categorias WHERE empresa_id = $1`,
+		`DELETE FROM nomenclatura_templates WHERE empresa_id = $1`,
+		`DELETE FROM empresas WHERE id = $1`,
+	} {
+		if _, err := db.Exec(stmt, id); err != nil {
+			t.Fatalf("remover empresa %s [%s]: %v", slug, stmt, err)
+		}
+	}
+}
+
+// TestNewMux_PlataformaPontaAPonta prova as AC 5 e 6 pela composição real de
+// newMux (Story 9.2): o Dono entra com e-mail + senha + código, cria a Empresa
+// (com o Treinamento), o `adm` do Treinamento faz o primeiro acesso pelo link
+// e vê `ambienteTreinamento:true`; nenhum token vale na área do outro; a
+// desativação derruba o login das duas Empresas sem apagar dado, e a
+// reativação o devolve.
+func TestNewMux_PlataformaPontaAPonta(t *testing.T) {
+	db := testDB(t)
+	const slug = "plat-e2e"
+	const slugTreino = slug + "-treinamento"
+	remover := func() {
+		removerEmpresaPlataformaMux(t, db, slugTreino)
+		removerEmpresaPlataformaMux(t, db, slug)
+	}
+	remover()
+	t.Cleanup(remover)
+	if _, err := db.Exec(`DELETE FROM donos_plataforma`); err != nil {
+		t.Fatalf("limpar donos_plataforma: %v", err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM donos_plataforma`) })
+
+	mux := newMux(db, services.CarregarEmailConfig(), []byte("segredo-de-teste-nao-usar-em-producao"), iam.Config{}, t.TempDir())
+	despachar := func(metodo, caminho, token, corpo string) *httptest.ResponseRecorder {
+		var req *http.Request
+		if corpo != "" {
+			req = httptest.NewRequest(metodo, caminho, strings.NewReader(corpo))
+			req.Header.Set("Content-Type", "application/json")
+		} else {
+			req = httptest.NewRequest(metodo, caminho, nil)
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+	codigoDeErro := func(w *httptest.ResponseRecorder) string {
+		var env struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &env)
+		return env.Error.Code
+	}
+
+	const senhaDono = "senha-dono-123"
+	_, segredo, err := services.CriarPrimeiroDonoPlataforma(db, "Dona E2E", "dona-e2e@plataforma.com", senhaDono)
+	if err != nil {
+		t.Fatalf("CriarPrimeiroDonoPlataforma: %v", err)
+	}
+
+	w := despachar(http.MethodPost, "/api/plataforma/auth/login", "",
+		`{"email":"dona-e2e@plataforma.com","senha":"`+senhaDono+`","codigo":"`+totpCodigoTesteAtual(t, segredo)+`"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("login do Dono: status = %d (body=%s)", w.Code, w.Body.String())
+	}
+	var loginDono struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &loginDono); err != nil || loginDono.Token == "" {
+		t.Fatalf("login do Dono sem token: %v (body=%s)", err, w.Body.String())
+	}
+	tokenDono := loginDono.Token
+
+	corpo := `{"nomeFantasia":"Cliente E2E","razaoSocial":"Cliente E2E LTDA","cnpj":"94.567.890/0001-61","slug":"` + slug + `",` +
+		`"endereco":{"logradouro":"Rua B","numero":"2","bairro":"Centro","cidade":"Recife","cep":"50000000","uf":"PE"},` +
+		`"admNome":"Adm E2E","admEmail":"adm-e2e@cliente.com"}`
+	w = despachar(http.MethodPost, "/api/plataforma/empresas", tokenDono, corpo)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("criar empresa: status = %d (body=%s)", w.Code, w.Body.String())
+	}
+	var criada struct {
+		Empresa struct {
+			ID string `json:"id"`
+		} `json:"empresa"`
+		Treinamento struct {
+			ID string `json:"id"`
+		} `json:"treinamento"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &criada); err != nil {
+		t.Fatalf("decode criação: %v", err)
+	}
+
+	// AC 6: o token do Dono não vale sob uma Empresa.
+	for _, caminho := range []string{"/e/" + slug + "/api/auth/me", "/e/" + slug + "/api/usuarios"} {
+		w := despachar(http.MethodGet, caminho, tokenDono, "")
+		if w.Code != http.StatusUnauthorized || codigoDeErro(w) != "SESSION_REVOKED" {
+			t.Errorf("token do Dono em %s: status/code = %d/%s, want 401/SESSION_REVOKED", caminho, w.Code, codigoDeErro(w))
+		}
+	}
+
+	// Primeiro acesso do `adm` do Treinamento pelo link do e-mail.
+	var tokenAcao string
+	if err := db.QueryRow(`SELECT t.token FROM tokens_acao t JOIN usuarios u ON u.id = t.usuario_id
+		WHERE u.empresa_id = $1 AND t.tipo = 'redefinicao_senha'`, criada.Treinamento.ID).Scan(&tokenAcao); err != nil {
+		t.Fatalf("ler token de primeiro acesso: %v", err)
+	}
+	w = despachar(http.MethodPost, "/e/"+slugTreino+"/api/auth/redefinir-senha", "", `{"token":"`+tokenAcao+`","senha":"Senha-adm-1"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("definir senha (primeiro acesso): status = %d (body=%s)", w.Code, w.Body.String())
+	}
+	loginAdm := func(s string) *httptest.ResponseRecorder {
+		return despachar(http.MethodPost, "/e/"+s+"/api/auth/login", "", `{"email":"adm-e2e@cliente.com","senha":"Senha-adm-1"}`)
+	}
+	w = loginAdm(slugTreino)
+	if w.Code != http.StatusOK {
+		t.Fatalf("login do adm no treino: status = %d (body=%s)", w.Code, w.Body.String())
+	}
+	var sessaoAdm struct {
+		Token   string `json:"token"`
+		Usuario struct {
+			AmbienteTreinamento bool `json:"ambienteTreinamento"`
+		} `json:"usuario"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &sessaoAdm); err != nil {
+		t.Fatalf("decode login do adm: %v", err)
+	}
+	if !sessaoAdm.Usuario.AmbienteTreinamento {
+		t.Error("login no treino: ambienteTreinamento = false, want true")
+	}
+	w = despachar(http.MethodGet, "/e/"+slugTreino+"/api/auth/me", sessaoAdm.Token, "")
+	var me struct {
+		AmbienteTreinamento bool   `json:"ambienteTreinamento"`
+		EmpresaNome         string `json:"empresaNome"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &me) != nil || !me.AmbienteTreinamento || me.EmpresaNome != "Cliente E2E - Treinamento" {
+		t.Errorf("/me no treino: status = %d body=%s", w.Code, w.Body.String())
+	}
+
+	// AC 6: o token de uma conta de Empresa não vale na área do Dono.
+	if w := despachar(http.MethodGet, "/api/plataforma/empresas", sessaoAdm.Token, ""); w.Code != http.StatusUnauthorized || codigoDeErro(w) != "TOKEN_EXPIRED" {
+		t.Errorf("token do adm na área do Dono: status/code = %d/%s, want 401/TOKEN_EXPIRED", w.Code, codigoDeErro(w))
+	}
+
+	// A listagem traz o par, sem conteúdo operacional.
+	w = despachar(http.MethodGet, "/api/plataforma/empresas", tokenDono, "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"slug":"`+slugTreino+`"`) || strings.Contains(w.Body.String(), "Cimento") {
+		t.Errorf("listar: status = %d body=%s", w.Code, w.Body.String())
+	}
+
+	// AC 5: desativar derruba o login das duas Empresas, sem apagar nada.
+	if w := despachar(http.MethodPost, "/api/plataforma/empresas/"+criada.Empresa.ID+"/desativacao", tokenDono, ""); w.Code != http.StatusOK {
+		t.Fatalf("desativar: status = %d (body=%s)", w.Code, w.Body.String())
+	}
+	for _, s := range []string{slug, slugTreino} {
+		if w := loginAdm(s); w.Code != http.StatusNotFound || codigoDeErro(w) != "NOT_FOUND" {
+			t.Errorf("login em %s desativada: status/code = %d/%s, want 404/NOT_FOUND", s, w.Code, codigoDeErro(w))
+		}
+	}
+	if w := despachar(http.MethodGet, "/e/"+slugTreino+"/api/auth/me", sessaoAdm.Token, ""); w.Code != http.StatusNotFound {
+		t.Errorf("/me no treino desativado: status = %d, want 404", w.Code)
+	}
+	var produtos int
+	if err := db.QueryRow(`SELECT count(*) FROM produtos WHERE empresa_id = $1`, criada.Treinamento.ID).Scan(&produtos); err != nil || produtos != 5 {
+		t.Errorf("produtos do treino após desativar = %d (%v), want 5", produtos, err)
+	}
+
+	// Reativar: o slug volta a resolver.
+	if w := despachar(http.MethodPost, "/api/plataforma/empresas/"+criada.Empresa.ID+"/reativacao", tokenDono, ""); w.Code != http.StatusOK {
+		t.Fatalf("reativar: status = %d (body=%s)", w.Code, w.Body.String())
+	}
+	if w := loginAdm(slugTreino); w.Code != http.StatusOK {
+		t.Errorf("login no treino reativado: status = %d (body=%s)", w.Code, w.Body.String())
+	}
+
+	// AC 1: nenhuma rota exercida acima criou um Dono.
+	var donos int
+	if err := db.QueryRow(`SELECT count(*) FROM donos_plataforma`).Scan(&donos); err != nil || donos != 1 {
+		t.Errorf("donos_plataforma = %d (%v), want 1", donos, err)
 	}
 }
 

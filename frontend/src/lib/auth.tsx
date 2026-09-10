@@ -48,6 +48,17 @@ export interface UsuarioSessao {
    * servidor em middleware.RequireRole.
    */
   origem: string;
+  /**
+   * Nome fantasia da Empresa do slug da sessão (Story 9.2). Opcional: uma
+   * resposta sem o campo (ou um mock de teste) mantém o layout de sempre.
+   */
+  empresaNome?: string;
+  /**
+   * `true` quando a sessão vive num Ambiente de Treinamento (Story 9.2) — só
+   * flag de EXIBIÇÃO: o `AppShell` mostra a faixa de treinamento. Nenhuma
+   * regra de acesso depende dele.
+   */
+  ambienteTreinamento?: boolean;
 }
 
 export type EstadoAuth = 'carregando' | 'autenticado' | 'anonimo';

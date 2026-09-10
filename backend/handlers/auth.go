@@ -186,17 +186,24 @@ func refreshTokenCookiePath(r *http.Request) string {
 // UsuarioSessao: o frontend usa os dois para decidir o gate de navegação
 // para Configurações → Segurança (RotaProtegida, App.tsx) — mesma regra do
 // backend em middleware.RequireRole, nunca reimplementada com dado próprio.
+//
+// EmpresaNome/AmbienteTreinamento (Story 9.2) vêm da Empresa que
+// RequireEmpresa resolveu do slug: o frontend usa o flag para mostrar a faixa
+// de Ambiente de Treinamento. É o ÚNICO uso de `empresa_origem_id` fora da
+// gestão de Empresas — nenhum service de domínio o consulta (AD-23).
 type usuarioResposta struct {
-	ID            string `json:"id"`
-	Nome          string `json:"nome"`
-	Email         string `json:"email"`
-	Papel         string `json:"papel"`
-	MfaHabilitado bool   `json:"mfaHabilitado"`
-	Origem        string `json:"origem"`
+	ID                  string `json:"id"`
+	Nome                string `json:"nome"`
+	Email               string `json:"email"`
+	Papel               string `json:"papel"`
+	MfaHabilitado       bool   `json:"mfaHabilitado"`
+	Origem              string `json:"origem"`
+	EmpresaNome         string `json:"empresaNome"`
+	AmbienteTreinamento bool   `json:"ambienteTreinamento"`
 }
 
-func usuarioRespostaDe(usuario services.UsuarioSessao) usuarioResposta {
-	return usuarioResposta{
+func usuarioRespostaDe(r *http.Request, usuario services.UsuarioSessao) usuarioResposta {
+	resposta := usuarioResposta{
 		ID:            usuario.ID,
 		Nome:          usuario.Nome,
 		Email:         usuario.Email,
@@ -204,6 +211,11 @@ func usuarioRespostaDe(usuario services.UsuarioSessao) usuarioResposta {
 		MfaHabilitado: usuario.MFAHabilitado,
 		Origem:        usuario.Origem,
 	}
+	if empresa, ok := middleware.EmpresaDaRequisicao(r.Context()); ok {
+		resposta.EmpresaNome = empresa.NomeFantasia
+		resposta.AmbienteTreinamento = empresa.EmpresaOrigemID != nil
+	}
+	return resposta
 }
 
 // cookieEhSeguro decide a flag Secure do cookie de refresh (AD-6): true
@@ -252,7 +264,7 @@ func emitirSessaoEResponder(w http.ResponseWriter, r *http.Request, db *sql.DB, 
 	setRefreshCookie(w, r, refreshToken, expiraRefresh)
 	escreverJSON(w, http.StatusOK, map[string]any{
 		"token":   accessToken,
-		"usuario": usuarioRespostaDe(usuario),
+		"usuario": usuarioRespostaDe(r, usuario),
 	})
 }
 
@@ -543,6 +555,6 @@ func MeHandler() http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
 		}
-		escreverJSON(w, http.StatusOK, usuarioRespostaDe(usuario))
+		escreverJSON(w, http.StatusOK, usuarioRespostaDe(r, usuario))
 	}
 }

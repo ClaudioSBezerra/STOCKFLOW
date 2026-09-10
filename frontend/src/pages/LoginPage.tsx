@@ -47,6 +47,13 @@ function mensagemDeErro(codigo: string | undefined): string {
   if (codigo === 'MFA_TOKEN_INVALIDO') {
     return 'Código de login expirado. Faça login novamente.';
   }
+  // NOT_FOUND (Story 9.2): o slug da URL não resolve — Empresa inexistente
+  // ou desativada pelo Dono da Plataforma (RequireEmpresa responde 404 antes
+  // de olhar qualquer credencial). Uma mensagem honesta, não "tente em
+  // instantes": repetir não vai adiantar.
+  if (codigo === 'NOT_FOUND') {
+    return 'Este endereço de acesso não está disponível. Confira o endereço com o administrador da sua empresa.';
+  }
   return 'Não foi possível entrar. Tente novamente em instantes.';
 }
 

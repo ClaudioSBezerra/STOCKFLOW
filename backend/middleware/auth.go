@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -76,6 +77,15 @@ func RequireAuth(db *sql.DB, jwtSecret []byte) func(http.HandlerFunc) http.Handl
 			})
 			if err != nil || !parsedToken.Valid || claims.Subject == "" {
 				escreverErro(w, http.StatusUnauthorized, "TOKEN_EXPIRED", "token de acesso inválido ou expirado")
+				return
+			}
+
+			// Identidades disjuntas (Story 9.2, AD-21): o access token do Dono
+			// da Plataforma tem o mesmo formato e segredo, mas carrega
+			// `aud = "plataforma"`. Ele é recusado aqui explicitamente — antes
+			// de consultar `usuarios` —, e não só pela ausência do id.
+			if slices.Contains(claims.Audience, services.AudienciaPlataforma) {
+				escreverErro(w, http.StatusUnauthorized, "SESSION_REVOKED", "sessão revogada")
 				return
 			}
 

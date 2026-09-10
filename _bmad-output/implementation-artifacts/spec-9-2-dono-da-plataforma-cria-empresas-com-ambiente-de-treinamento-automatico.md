@@ -2,7 +2,7 @@
 title: 'Story 9.2: Dono da Plataforma cria Empresas com Ambiente de Treinamento automático'
 type: 'feature'
 created: '2026-09-10'
-status: 'blocked'
+status: 'done'
 baseline_revision: 'af36b307e4a2119eb8d641df4492a2f25e6aa9fe'
 review_loop_iteration: 0
 followup_review_recommended: false
@@ -233,25 +233,35 @@ Produtos (categoria por código na cópia do Treinamento):
 
 ## Auto Run Result
 
-Status: blocked
-Blocking condition: limite de sessão da API (HTTP 429) interrompeu o subagente de implementação
+Status: done (retomada manual)
 
-O planejamento foi concluído por completo: a investigação do código está drenada no
-**Code Map**, e as seções **Tasks & Acceptance**, **Design Notes** e **Verification**
-passaram no padrão "Ready for Development". A spec ficou `ready-for-dev`,
-`baseline_revision` foi fixado em `af36b307e4a2119eb8d641df4492a2f25e6aa9fe` e o
-status avançou para `in-progress`.
+A execução automática (`20260910-160254-c1a1`) parou duas vezes no limite de sessão
+da API. O primeiro registro escrito aqui dizia que "nenhuma linha de produção ou de
+teste foi escrita" e ficou DESATUALIZADO: depois dele a sessão voltou a rodar,
+implementou a story inteira e foi interrompida na fase de verificação, deixando o
+código na árvore de trabalho (não commitado) e a spec ainda em `blocked`. O commit
+`0c272c3` carregou apenas a spec. Esta passagem foi a retomada manual: nada foi
+descartado, o trabalho foi verificado de ponta a ponta e a story fechada.
 
-O subagente de implementação foi lançado e terminou antes de escrever qualquer
-arquivo, com `rate_limit` / HTTP 429 ("session limit", request id
-`req_011CevNEJaLHtxc6Do3AcJ8Q`). **Nenhuma linha de produção ou de teste foi
-escrita** — a árvore de trabalho contém apenas esta spec. Nada foi descartado e
-nada ficou pela metade.
+Entregue (conforme Tasks & Acceptance, sem desvio):
+- Schema `000033`: `donos_plataforma` (com `CHECK (mfa_habilitado)` — não existe
+  Dono sem segundo fator) e `sessoes_plataforma`; `empresas_cnpj_unico` passa a
+  valer só entre Empresas reais, e `empresas_treinamento_unico` garante no máximo
+  um Treinamento por Empresa; `emails_pendentes` aceita `primeiro_acesso`.
+- Services `plataforma.go` (login com MFA, rotação de sessão, bootstrap) e
+  `empresas_plataforma.go` (Empresa + Treinamento + os dois `adm` em UMA
+  transação, listagem só de metadado, desativação em par).
+- `RequireDonoPlataforma` e a recusa explícita, em `RequireAuth`, de um token com
+  `aud=plataforma`; handlers de login e de Empresas; rotas `/api/plataforma/*`
+  registradas FORA de `RequireEmpresa`.
+- CLI `seed-dono-plataforma` (única forma de criar o primeiro Dono) e Dockerfile.
+- Frontend: `escolherApp` separando as três entradas, app própria da Plataforma
+  (login + Empresas), `SemEmpresaPage`, e a faixa persistente de Ambiente de
+  Treinamento no shell.
 
-Retomada: redespachar a story. O passo 1 encontra este arquivo, e o status
-`blocked` faz o run parar de novo — então a retomada precisa reabrir o status para
-`ready-for-dev` (a spec já está validada; nada nela precisa ser refeito) e seguir
-direto para a implementação, exatamente como foi feito na retomada da Story 9.1.
-Convém rodar depois do reset do limite de sessão: a implementação é grande
-(migration, CLI, autenticação de um sujeito novo, gestão de Empresas, e uma
-segunda app no frontend).
+Verificação independente desta passagem (não só "os testes passaram"): as
+invariantes de AD-21/AD-23 foram conferidas direto no código — MFA obrigatório
+no banco, identidade disjunta de `usuarios`, bootstrap inexistente por HTTP,
+listagem sem nenhuma coluna operacional, ausência total de `if eh_treinamento`
+(`grep` vazio) e desativação atingindo Empresa e Treinamento na mesma transação.
+

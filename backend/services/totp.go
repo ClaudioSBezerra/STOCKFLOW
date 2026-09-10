@@ -113,13 +113,25 @@ func PassoAtualTOTP() int64 {
 // totpDigitos dígitos numéricos nunca casam — devolve false, nunca erro:
 // quem chama só precisa saber "válido ou não".
 func ValidarCodigoTOTP(segredo, codigo string) bool {
+	_, ok := passoDoCodigoTOTP(segredo, codigo)
+	return ok
+}
+
+// passoDoCodigoTOTP é o núcleo de ValidarCodigoTOTP: além de dizer se o
+// código casa (mesma janela de ±1 passo, mesma comparação em tempo
+// constante), devolve O PASSO que casou. O login do Dono da Plataforma (Story
+// 9.2) grava esse passo — e não o passo do relógio — em
+// `mfa_ultimo_passo_usado` e exige que o próximo seja estritamente maior:
+// assim um código aceito com a tolerância de relógio não pode ser reapresentado
+// no passo seguinte.
+func passoDoCodigoTOTP(segredo, codigo string) (int64, bool) {
 	codigoNormalizado := strings.TrimSpace(codigo)
 	if len(codigoNormalizado) != totpDigitos {
-		return false
+		return 0, false
 	}
 	for _, r := range codigoNormalizado {
 		if r < '0' || r > '9' {
-			return false
+			return 0, false
 		}
 	}
 
@@ -138,11 +150,11 @@ func ValidarCodigoTOTP(segredo, codigo string) bool {
 
 		candidato, err := gerarCodigoHOTP(segredo, contador)
 		if err != nil {
-			return false
+			return 0, false
 		}
 		if subtle.ConstantTimeCompare([]byte(candidato), []byte(codigoNormalizado)) == 1 {
-			return true
+			return int64(contador), true
 		}
 	}
-	return false
+	return 0, false
 }

@@ -323,6 +323,25 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	}
 
 	mux.HandleFunc("GET /api/health", healthHandler(db))
+
+	// Área do Dono da Plataforma — Story 9.2 (Epic 9, AD-21), spec-9-2. A
+	// segunda (e última) exceção ao prefixo de Empresa: o Dono não pertence a
+	// Empresa nenhuma, então estas rotas vão direto no mux, SEM o wrapper de
+	// Empresa. Login/refresh/logout são públicos (o login exige e-mail + senha
+	// + código TOTP numa única chamada); o resto fica atrás de
+	// RequireDonoPlataforma, que só aceita o access token com
+	// `aud = "plataforma"`. Nenhuma rota aqui cria um Dono — isso é só o CLI
+	// cmd/seed-dono-plataforma.
+	requireDono := middleware.RequireDonoPlataforma(db, jwtSecret)
+	mux.HandleFunc("POST /api/plataforma/auth/login", handlers.PlataformaLoginHandler(db, jwtSecret))
+	mux.HandleFunc("POST /api/plataforma/auth/refresh", handlers.PlataformaRefreshHandler(db, jwtSecret))
+	mux.HandleFunc("POST /api/plataforma/auth/logout", handlers.PlataformaLogoutHandler(db))
+	mux.HandleFunc("GET /api/plataforma/auth/me", requireDono(handlers.PlataformaMeHandler()))
+	mux.HandleFunc("GET /api/plataforma/empresas", requireDono(handlers.ListarEmpresasHandler(db)))
+	mux.HandleFunc("POST /api/plataforma/empresas", requireDono(handlers.CriarEmpresaHandler(db, emailCfg)))
+	mux.HandleFunc("POST /api/plataforma/empresas/{id}/desativacao", requireDono(handlers.DesativarEmpresaHandler(db)))
+	mux.HandleFunc("POST /api/plataforma/empresas/{id}/reativacao", requireDono(handlers.ReativarEmpresaHandler(db)))
+
 	registrar("POST /e/{slug}/api/auth/cadastro", handlers.CadastroHandler(db, emailCfg))
 	registrar("GET /e/{slug}/api/auth/verificar-email", handlers.VerificarEmailHandler(db))
 	registrar("POST /e/{slug}/api/auth/login", handlers.LoginHandler(db, jwtSecret))

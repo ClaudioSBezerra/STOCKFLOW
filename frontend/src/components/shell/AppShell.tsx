@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { NavLink, Outlet, useMatch } from 'react-router-dom';
-import { Menu } from 'lucide-react';
+import { Menu, TriangleAlert } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
   Tooltip,
@@ -139,6 +139,24 @@ function SheetNavRow({ item, onNavigate }: { item: NavItem; onNavigate: () => vo
 }
 
 /**
+ * Faixa do Ambiente de Treinamento (Story 9.2, UX do épico 9): persistente no
+ * topo, em TODAS as larguras (sem `hidden`/`md:`), fundo warning com texto
+ * escuro — difícil de ignorar, para ninguém confundir o Treinamento com a
+ * operação real.
+ */
+function FaixaTreinamento() {
+  return (
+    <div
+      role="note"
+      className="sticky top-0 z-50 flex items-center justify-center gap-2 bg-warning px-4 py-2 text-center text-body font-semibold text-foreground"
+    >
+      <TriangleAlert className="size-5 shrink-0" aria-hidden="true" />
+      <span>AMBIENTE DE TREINAMENTO — dados de exemplo, nada aqui afeta a operação real</span>
+    </div>
+  );
+}
+
+/**
  * Layout raiz do stockflow: rail + header no desktop (`>= md`, 768px),
  * bottom nav + "Mais" no mobile (`< md`, a partir de 360px). Ver
  * EXPERIENCE.md (Information Architecture, Responsive & Platform) e
@@ -165,10 +183,17 @@ export function AppShell({ children, tabs, sideNav }: AppShellProps) {
   // Mesma regra de visibilidade que os demais itens usam — uma única
   // implementação (`filtrarNavPorPapel`), nunca uma comparação de rank inline.
   const mostrarPerfil = filtrarNavPorPapel([profileNavItem], papel).length > 0;
+  // Ambiente de Treinamento (Story 9.2): só flag de exibição, vindo da
+  // resposta de sessão. Ausente -> o layout de sempre, sem nenhuma mudança.
+  const emTreinamento = usuario?.ambienteTreinamento === true;
 
-  return (
-    <TooltipProvider>
-      <div className="flex min-h-svh flex-col bg-background text-foreground md:flex-row">
+  const shell = (
+      <div
+        className={cn(
+          'flex flex-col bg-background text-foreground md:flex-row',
+          emTreinamento ? 'min-h-0 flex-1' : 'min-h-svh',
+        )}
+      >
         {/* Rail — desktop (>= md) */}
         <nav
           aria-label="Navegação principal"
@@ -217,7 +242,9 @@ export function AppShell({ children, tabs, sideNav }: AppShellProps) {
         <div className="flex min-w-0 flex-1 flex-col">
           {/* Header fino — desktop */}
           <header className="hidden h-12 shrink-0 items-center border-b border-border bg-card px-4 md:flex">
-            <span className="text-heading-md">stockflow</span>
+            <span className="text-heading-md">
+              {emTreinamento ? 'stockflow · Treinamento' : 'stockflow'}
+            </span>
           </header>
 
           {tabs ? <div className="border-b border-border">{tabs}</div> : null}
@@ -293,6 +320,18 @@ export function AppShell({ children, tabs, sideNav }: AppShellProps) {
           </Sheet>
         </nav>
       </div>
+  );
+
+  return (
+    <TooltipProvider>
+      {emTreinamento ? (
+        <div className="flex min-h-svh flex-col border-4 border-warning">
+          <FaixaTreinamento />
+          {shell}
+        </div>
+      ) : (
+        shell
+      )}
     </TooltipProvider>
   );
 }

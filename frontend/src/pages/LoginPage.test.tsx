@@ -160,6 +160,25 @@ describe('LoginPage', () => {
     expect(navigateMock).not.toHaveBeenCalled();
   });
 
+  it('mostra a mensagem de endereço indisponível no 404 NOT_FOUND (Empresa desativada)', async () => {
+    const user = userEvent.setup();
+    loginResp = () =>
+      Promise.resolve({
+        ok: false,
+        status: 404,
+        json: async () => ({ error: { code: 'NOT_FOUND', message: 'empresa não encontrada' } }),
+      });
+    renderPage();
+
+    await preencherEEnviar(user);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Este endereço de acesso não está disponível. Confira o endereço com o administrador da sua empresa.',
+    );
+    expect(definirSessaoMock).not.toHaveBeenCalled();
+    expect(navigateMock).not.toHaveBeenCalled();
+  });
+
   it('mostra a mensagem de bloqueio (sem tempo restante) no 429 ACCOUNT_LOCKED', async () => {
     const user = userEvent.setup();
     loginResp = () =>

@@ -9,6 +9,7 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -o /out/api .
 RUN CGO_ENABLED=0 go build -o /out/seed-admin ./cmd/seed-admin
+RUN CGO_ENABLED=0 go build -o /out/seed-dono-plataforma ./cmd/seed-dono-plataforma
 
 FROM alpine:3.20
 
@@ -18,6 +19,7 @@ RUN adduser -D -u 10001 appuser
 WORKDIR /app
 COPY --from=build /out/api ./api
 COPY --from=build /out/seed-admin ./seed-admin
+COPY --from=build /out/seed-dono-plataforma ./seed-dono-plataforma
 
 USER appuser
 
