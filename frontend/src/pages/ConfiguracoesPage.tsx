@@ -9,6 +9,7 @@ import { useAuth } from '@/lib/auth';
 import { rankPapel } from '@/components/shell/nav-items';
 import { proximoPapel, rotuloPapel } from '@/lib/promocao';
 import { GestaoUsuariosSection } from '@/components/usuarios/GestaoUsuariosSection';
+import { ConvitesSection } from '@/components/usuarios/ConvitesSection';
 import { SolicitacoesExclusaoSection } from '@/components/usuarios/SolicitacoesExclusaoSection';
 import { LogAcessoSection } from '@/components/logs/LogAcessoSection';
 import { PrivacidadeSection } from '@/components/privacidade/PrivacidadeSection';
@@ -31,6 +32,13 @@ import { apiUrl, authHeaders } from '@/lib/api';
  *    `gestor`/`adm`. Lista `GET /api/usuarios` com "Desativar"/"Reativar"/
  *    "Rebaixar" por linha, chamando `POST /api/usuarios/{id}/desativacao` e
  *    `POST /api/usuarios/{id}/rebaixamento`.
+ *  - "Convites" (`ConvitesSection`, Story 9.3): só montada para `gestor`/`adm`,
+ *    sob o mesmo gate de "Gestão de Usuários". Emite convites nominais
+ *    (`POST /api/convites`) e devolve o LINK para o gestor compartilhar — o
+ *    produto não envia esse e-mail. Lista `GET /api/convites` com a `situacao`
+ *    de cada convite e cancela os pendentes com
+ *    `POST /api/convites/{id}/revogacao`. Desde esta story o autocadastro só
+ *    acontece a partir de um convite válido.
  *  - "Log de Acesso" (`LogAcessoSection`, Story 1.12): só montada para `adm`.
  *    Tabela somente-leitura de `GET /api/logs-acesso` (toda tentativa de login
  *    por senha ou SSO, sucesso ou falha), filtrável por período. Nenhuma ação
@@ -527,6 +535,8 @@ export function ConfiguracoesPage() {
       <SegurancaCard />
 
       {podeDecidir && <GestaoUsuariosSection />}
+
+      {podeDecidir && <ConvitesSection />}
 
       {rankPapel(papel) >= rankPapel('adm') && <LogAcessoSection />}
 

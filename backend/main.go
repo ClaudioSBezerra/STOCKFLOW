@@ -351,6 +351,23 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	registrar("POST /e/{slug}/api/auth/redefinir-senha", handlers.RedefinirSenhaHandler(db))
 	registrar("GET /e/{slug}/api/auth/me", middleware.RequireAuth(db, jwtSecret)(handlers.MeHandler()))
 
+	// Convite nominal de acesso — Story 9.3 (FR-42, AD-22). O `GET` de
+	// validação é PÚBLICO (quem abre o link ainda não tem conta), ao lado de
+	// verificar-email/redefinir-senha; a emissão, a listagem e a revogação
+	// ficam atrás de RequireAuth + RequireRole(gestor) — o gate de papel é do
+	// middleware, nunca do handler. Todas passam por `registrar`, então
+	// RequireEmpresa continua por fora: o slug decide a Empresa do convite.
+	registrar("GET /e/{slug}/api/auth/convite", handlers.ValidarConviteHandler(db))
+	registrar("POST /e/{slug}/api/convites", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelGestor)(
+			handlers.EmitirConviteHandler(db, emailCfg))))
+	registrar("GET /e/{slug}/api/convites", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelGestor)(
+			handlers.ListarConvitesHandler(db, emailCfg))))
+	registrar("POST /e/{slug}/api/convites/{id}/revogacao", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelGestor)(
+			handlers.RevogarConviteHandler(db))))
+
 	// MFA obrigatório para papéis administrativos — Story 1.11 (FR-37/SM-2).
 	// /mfa/verificar é pública (troca o token de login pendente por sessão,
 	// ainda sem sessão nenhuma nesse ponto); /mfa/iniciar e /mfa/confirmar

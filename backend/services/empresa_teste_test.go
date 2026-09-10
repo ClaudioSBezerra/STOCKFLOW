@@ -114,6 +114,11 @@ func removerEmpresaDeTeste(t *testing.T, db *sql.DB, slug string) {
 	}
 
 	for _, stmt := range []string{
+		// Story 9.3: `convites_empresa` tem FK para `empresas` — sem apagá-los
+		// primeiro, o DELETE da Empresa falharia. (Entre testes eles já somem
+		// pelo TRUNCATE usuarios CASCADE, mas este helper roda no fim do
+		// teste, com as linhas ainda vivas.)
+		`DELETE FROM convites_empresa WHERE empresa_id = $1`,
 		`DELETE FROM categorias WHERE empresa_id = $1`,
 		`DELETE FROM nomenclatura_templates WHERE empresa_id = $1`,
 		`DELETE FROM empresas WHERE id = $1`,

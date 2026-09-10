@@ -321,6 +321,57 @@ func TestIsolamentoPorEmpresa_LeituraNuncaCruza(t *testing.T) {
 		}
 	})
 
+	// Story 9.3 (convite nominal, AD-22): o convite é a porta de entrada de
+	// contas novas, então cruzar a fronteira aqui criaria uma conta na Empresa
+	// errada. As duas metades: a listagem de B não vê o convite de A, e o
+	// token de A não resolve — nem no GET de validação, nem no cadastro — sob
+	// a Empresa B.
+	t.Run("convites", func(t *testing.T) {
+		tokenAlfa := conviteDeTeste(t, db, alfa.empresa.ID, "convidado-iso@empresa.com")
+
+		convitesAlfa, err := ListarConvites(db, testEmailCfg, alfa.empresa.ID, alfa.empresa.Slug)
+		if err != nil {
+			t.Fatalf("ListarConvites(alfa): %v", err)
+		}
+		if len(convitesAlfa) != 1 {
+			t.Fatalf("len(convites da Alfa) = %d, want 1", len(convitesAlfa))
+		}
+		convitesBeta, err := ListarConvites(db, testEmailCfg, beta.empresa.ID, beta.empresa.Slug)
+		if err != nil {
+			t.Fatalf("ListarConvites(beta): %v", err)
+		}
+		if len(convitesBeta) != 0 {
+			t.Fatalf("len(convites da Beta) = %d, want 0 — o convite da Alfa não pode aparecer aqui", len(convitesBeta))
+		}
+
+		if _, err := ValidarTokenConvite(db, beta.empresa.ID, tokenAlfa); !errors.Is(err, ErrConviteNaoEncontrado) {
+			t.Errorf("ValidarTokenConvite(beta, token da Alfa) = %v, want ErrConviteNaoEncontrado", err)
+		}
+
+		// Revogar também é escrita: um `gestor` da Beta não pode cancelar o
+		// convite da Alfa nem descobrir que ele existe.
+		var idAlfa string
+		if err := db.QueryRow(`SELECT id FROM convites_empresa WHERE token = $1`, tokenAlfa).Scan(&idAlfa); err != nil {
+			t.Fatalf("ler id do convite da Alfa: %v", err)
+		}
+		if err := RevogarConvite(db, beta.empresa.ID, idAlfa); !errors.Is(err, ErrConviteNaoEncontrado) {
+			t.Errorf("RevogarConvite(beta, convite da Alfa) = %v, want ErrConviteNaoEncontrado", err)
+		}
+
+		antes := contarLinhas(t, db, "usuarios")
+		if _, err := Cadastrar(db, testEmailCfg, beta.empresa.ID, beta.empresa.Slug,
+			"Invasor", "convidado-iso@empresa.com", "senha-123456", tokenAlfa); !errors.Is(err, ErrConviteNaoEncontrado) {
+			t.Fatalf("Cadastrar(beta, token da Alfa) = %v, want ErrConviteNaoEncontrado", err)
+		}
+		if depois := contarLinhas(t, db, "usuarios"); depois != antes {
+			t.Errorf("count(usuarios) = %d, want %d — nenhuma conta pode nascer de um convite de outra Empresa", depois, antes)
+		}
+		// E o convite da Alfa continua intacto, pendente para o dono legítimo.
+		if _, usadoEm, _ := lerConvite(t, db, tokenAlfa); usadoEm.Valid {
+			t.Error("o convite da Alfa foi consumido por uma tentativa sob a Empresa Beta")
+		}
+	})
+
 	t.Run("promoção", func(t *testing.T) {
 		pendentes, err := ListarSolicitacoesPendentes(db, alfa.empresa.ID, PapelAdm)
 		if err != nil {

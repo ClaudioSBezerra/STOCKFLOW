@@ -382,6 +382,34 @@ func TestNewMux_RegistraRotasDeAutenticacao(t *testing.T) {
 			statusQuerAo: http.StatusBadRequest,
 		},
 		{
+			// Story 9.3: o GET de validação do convite é público (quem abre o
+			// link ainda não tem conta), então sem `?token=` ele chega ao
+			// handler e responde 404 — nunca 401.
+			nome:         "convite GET sem token chega no ValidarConviteHandler",
+			metodo:       http.MethodGet,
+			caminho:      prefixoEmpresaTeste + "/api/auth/convite",
+			statusQuerAo: http.StatusNotFound,
+		},
+		{
+			nome:         "convites POST sem token chega no RequireAuth antes de RequireRole",
+			metodo:       http.MethodPost,
+			caminho:      prefixoEmpresaTeste + "/api/convites",
+			corpo:        `{"email":"alguem@x.com"}`,
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
+			nome:         "convites GET sem token chega no RequireAuth antes de RequireRole",
+			metodo:       http.MethodGet,
+			caminho:      prefixoEmpresaTeste + "/api/convites",
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
+			nome:         "revogacao de convite sem token chega no RequireAuth",
+			metodo:       http.MethodPost,
+			caminho:      prefixoEmpresaTeste + "/api/convites/11111111-1111-1111-1111-111111111111/revogacao",
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
 			nome:         "usuarios sem token chega no RequireAuth antes de RequireRole",
 			metodo:       http.MethodGet,
 			caminho:      prefixoEmpresaTeste + "/api/usuarios",

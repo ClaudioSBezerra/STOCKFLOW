@@ -189,6 +189,7 @@ describe('ConfiguracoesPage — Meu Perfil', () => {
       if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
       if (url === '/api/promocoes') return jsonOk({ solicitacoes: [] });
       if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+      if (url === '/api/convites') return jsonOk({ convites: [] });
       throw new Error(`URL inesperada: ${url}`);
     });
 
@@ -207,6 +208,7 @@ describe('ConfiguracoesPage — Meu Perfil', () => {
       if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
       if (url === '/api/promocoes') return jsonOk({ solicitacoes: [] });
       if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+      if (url === '/api/convites') return jsonOk({ convites: [] });
       throw new Error(`URL inesperada: ${url}`);
     });
 
@@ -315,6 +317,7 @@ describe('ConfiguracoesPage — Decidir promoções', () => {
         return Promise.resolve({ ok: true, json: async () => ({ solicitacao: { id: 'p1', status: 'aprovada' } }) });
       }
       if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+      if (url === '/api/convites') return jsonOk({ convites: [] });
       throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
     });
 
@@ -363,6 +366,7 @@ describe('ConfiguracoesPage — Decidir promoções', () => {
         return Promise.resolve({ ok: false, status: 409, json: async () => ({ error: { code: 'CONFLICT' } }) });
       }
       if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+      if (url === '/api/convites') return jsonOk({ convites: [] });
       throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
     });
 
@@ -383,6 +387,7 @@ describe('ConfiguracoesPage — Decidir promoções', () => {
         return Promise.resolve({ ok: false, status: 500, json: async () => ({ error: { code: 'INTERNAL_ERROR' } }) });
       }
       if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+      if (url === '/api/convites') return jsonOk({ convites: [] });
       throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
     });
 
@@ -420,6 +425,7 @@ describe('ConfiguracoesPage — Decidir promoções', () => {
         return Promise.reject(new Error('falha de rede'));
       }
       if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+      if (url === '/api/convites') return jsonOk({ convites: [] });
       throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
     });
 
@@ -440,6 +446,7 @@ describe('ConfiguracoesPage — Segurança (MFA, Story 1.11)', () => {
       if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
       if (url === '/api/promocoes' && (!init || init.method === undefined)) return jsonOk({ solicitacoes: [] });
       if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+      if (url === '/api/convites') return jsonOk({ convites: [] });
       return extra(url, init);
     });
   }
@@ -623,6 +630,7 @@ describe('ConfiguracoesPage — Log de Acesso (Story 1.12)', () => {
       if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
       if (url === '/api/promocoes') return jsonOk({ solicitacoes: [] });
       if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+      if (url === '/api/convites') return jsonOk({ convites: [] });
       if (url.startsWith('/api/logs-acesso')) return jsonOk({ logs: [] });
       if (url === '/api/solicitacoes-exclusao') return jsonOk({ solicitacoes: [] });
       throw new Error(`URL inesperada: ${url}`);
@@ -641,6 +649,7 @@ describe('ConfiguracoesPage — Log de Acesso (Story 1.12)', () => {
       if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
       if (url === '/api/promocoes') return jsonOk({ solicitacoes: [] });
       if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+      if (url === '/api/convites') return jsonOk({ convites: [] });
       throw new Error(`URL inesperada: ${url}`);
     });
 
@@ -677,6 +686,7 @@ describe('ConfiguracoesPage — Privacidade (Story 8.1)', () => {
         if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
         if (url === '/api/promocoes') return jsonOk({ solicitacoes: [] });
         if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+        if (url === '/api/convites') return jsonOk({ convites: [] });
         if (url.startsWith('/api/logs-acesso')) return jsonOk({ logs: [] });
         if (url === '/api/solicitacoes-exclusao') return jsonOk({ solicitacoes: [] });
         throw new Error(`URL inesperada: ${url}`);
@@ -713,6 +723,7 @@ describe('ConfiguracoesPage — Solicitações de exclusão (Story 8.2)', () => 
       if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
       if (url === '/api/promocoes') return jsonOk({ solicitacoes: [] });
       if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+      if (url === '/api/convites') return jsonOk({ convites: [] });
       if (url.startsWith('/api/logs-acesso')) return jsonOk({ logs: [] });
       if (url === '/api/solicitacoes-exclusao') return jsonOk({ solicitacoes: [] });
       throw new Error(`URL inesperada: ${url}`);
@@ -733,6 +744,7 @@ describe('ConfiguracoesPage — Solicitações de exclusão (Story 8.2)', () => 
         if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
         if (url === '/api/promocoes') return jsonOk({ solicitacoes: [] });
         if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+        if (url === '/api/convites') return jsonOk({ convites: [] });
         throw new Error(`URL inesperada: ${url}`);
       });
 

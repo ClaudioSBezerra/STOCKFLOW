@@ -112,7 +112,8 @@ func contarLinhas(t *testing.T, db *sql.DB, tabela string) int {
 func TestCadastrar_Sucesso(t *testing.T) {
 	db := testDB(t)
 
-	id, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "  Fulano de Tal  ", "Fulano@Empresa.COM", "senha-123456")
+	id, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "  Fulano de Tal  ", "Fulano@Empresa.COM", "senha-123456",
+		conviteDeTeste(t, db, empresaTeste, "fulano@empresa.com"))
 	if err != nil {
 		t.Fatalf("Cadastrar retornou erro inesperado: %v", err)
 	}
@@ -205,7 +206,8 @@ func TestCadastrar_Sucesso(t *testing.T) {
 func TestCadastrar_EmailDuplicado(t *testing.T) {
 	db := testDB(t)
 
-	if _, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Primeiro", "duplicado@empresa.com", "senha-123456"); err != nil {
+	if _, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Primeiro", "duplicado@empresa.com", "senha-123456",
+		conviteDeTeste(t, db, empresaTeste, "duplicado@empresa.com")); err != nil {
 		t.Fatalf("primeiro Cadastrar falhou: %v", err)
 	}
 
@@ -213,7 +215,8 @@ func TestCadastrar_EmailDuplicado(t *testing.T) {
 	tokensAntes := contarLinhas(t, db, "tokens_acao")
 	emailsAntes := contarLinhas(t, db, "emails_pendentes")
 
-	_, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Segundo", "DUPLICADO@Empresa.com", "outra-senha1")
+	_, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Segundo", "DUPLICADO@Empresa.com", "outra-senha1",
+		conviteDeTeste(t, db, empresaTeste, "duplicado@empresa.com"))
 	if !errors.Is(err, ErrEmailDuplicado) {
 		t.Fatalf("erro = %v, want ErrEmailDuplicado", err)
 	}
@@ -247,7 +250,10 @@ func TestCadastrar_CampoObrigatorioAusente(t *testing.T) {
 	for _, c := range casos {
 		t.Run(fmt.Sprintf("nome=%q email=%q senha=%q", c.nome, c.email, c.senha), func(t *testing.T) {
 			antes := contarLinhas(t, db, "usuarios")
-			_, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, c.nome, c.email, c.senha)
+			// Token vazio de propósito: a validação de campos/força/tamanho
+			// vence ANTES da resolução do convite, então um payload inválido
+			// nunca chega a consultar (nem a queimar) um convite.
+			_, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, c.nome, c.email, c.senha, "")
 			if !errors.Is(err, ErrCadastroValidacao) {
 				t.Fatalf("erro = %v, want ErrCadastroValidacao", err)
 			}
@@ -286,7 +292,10 @@ func TestCadastrar_ValidacaoDeTamanho(t *testing.T) {
 	for _, c := range casos {
 		t.Run(c.desc, func(t *testing.T) {
 			antes := contarLinhas(t, db, "usuarios")
-			_, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, c.nome, c.email, c.senha)
+			// Token vazio de propósito: a validação de campos/força/tamanho
+			// vence ANTES da resolução do convite, então um payload inválido
+			// nunca chega a consultar (nem a queimar) um convite.
+			_, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, c.nome, c.email, c.senha, "")
 			if !errors.Is(err, c.wantErr) {
 				t.Fatalf("erro = %v, want %v", err, c.wantErr)
 			}
@@ -310,7 +319,8 @@ func TestCadastrar_NomeComAcentosDentroDoLimiteDeCaracteres(t *testing.T) {
 		t.Fatalf("nome de teste deveria ter mais de 255 bytes, tem %d", len(nome))
 	}
 
-	usuarioID, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, nome, "nomeacentuado@empresa.com", "senha-123456")
+	usuarioID, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, nome, "nomeacentuado@empresa.com", "senha-123456",
+		conviteDeTeste(t, db, empresaTeste, "nomeacentuado@empresa.com"))
 	if err != nil {
 		t.Fatalf("Cadastrar retornou erro inesperado para nome de 255 caracteres: %v", err)
 	}
@@ -323,7 +333,8 @@ func TestCadastrar_NomeComAcentosDentroDoLimiteDeCaracteres(t *testing.T) {
 // e retorna o id do usuário e o token de verificação gerado.
 func criarUsuarioComToken(t *testing.T, db *sql.DB, email string) (usuarioID, token string) {
 	t.Helper()
-	usuarioID, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Usuário Teste", email, "senha-123456")
+	usuarioID, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Usuário Teste", email, "senha-123456",
+		conviteDeTeste(t, db, empresaTeste, email))
 	if err != nil {
 		t.Fatalf("Cadastrar falhou: %v", err)
 	}
@@ -1627,7 +1638,7 @@ func TestCadastrar_SenhaFraca(t *testing.T) {
 	for nome, senha := range map[string]string{"curta (<8)": "abc", "sem dígito": "abcdefgh"} {
 		t.Run(nome, func(t *testing.T) {
 			db := testDB(t)
-			_, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Fulano", "fraca@empresa.com", senha)
+			_, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Fulano", "fraca@empresa.com", senha, "")
 			if !errors.Is(err, ErrSenhaFraca) {
 				t.Fatalf("erro = %v, want ErrSenhaFraca", err)
 			}
@@ -1645,7 +1656,8 @@ func TestCadastrar_SenhaFraca(t *testing.T) {
 // email_verificado=false.
 func TestCadastrar_SenhaForteCriaConta(t *testing.T) {
 	db := testDB(t)
-	id, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Fulano", "forte@empresa.com", "abcd1234")
+	id, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Fulano", "forte@empresa.com", "abcd1234",
+		conviteDeTeste(t, db, empresaTeste, "forte@empresa.com"))
 	if err != nil {
 		t.Fatalf("Cadastrar retornou erro inesperado: %v", err)
 	}

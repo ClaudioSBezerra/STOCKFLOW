@@ -112,7 +112,8 @@ func postCadastro(db *sql.DB, jsonBody string) *httptest.ResponseRecorder {
 func TestCadastroHandler_Sucesso(t *testing.T) {
 	db := testDB(t)
 
-	w := postCadastro(db, `{"nome":"Fulano de Tal","email":"fulano@empresa.com","senha":"senha-123456"}`)
+	token := conviteDeTeste(t, db, empresaTeste, "fulano@empresa.com")
+	w := postCadastro(db, `{"token":"`+token+`","nome":"Fulano de Tal","email":"fulano@empresa.com","senha":"senha-123456"}`)
 
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
@@ -124,7 +125,8 @@ func TestCadastroHandler_Sucesso(t *testing.T) {
 func TestCadastroHandler_PapelForjadoIgnorado(t *testing.T) {
 	db := testDB(t)
 
-	w := postCadastro(db, `{"nome":"Forjador","email":"forjador@empresa.com","senha":"senha-123456","papel":"adm"}`)
+	token := conviteDeTeste(t, db, empresaTeste, "forjador@empresa.com")
+	w := postCadastro(db, `{"token":"`+token+`","nome":"Forjador","email":"forjador@empresa.com","senha":"senha-123456","papel":"adm"}`)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
 	}
@@ -144,12 +146,19 @@ func TestCadastroHandler_PapelForjadoIgnorado(t *testing.T) {
 func TestCadastroHandler_EmailDuplicado(t *testing.T) {
 	db := testDB(t)
 
-	w1 := postCadastro(db, `{"nome":"Primeiro","email":"Duplicado@Empresa.com","senha":"senha-123456"}`)
+	// Os DOIS convites são emitidos antes do primeiro cadastro: depois dele o
+	// e-mail já teria conta, e EmitirConvite recusaria o segundo (409). O
+	// helper grava direto na tabela justamente por ser setup, não o objeto
+	// sob teste — o ponto aqui continua sendo o 409 de e-mail duplicado.
+	token1 := conviteDeTeste(t, db, empresaTeste, "duplicado@empresa.com")
+	token2 := conviteDeTeste(t, db, empresaTeste, "duplicado@empresa.com")
+
+	w1 := postCadastro(db, `{"token":"`+token1+`","nome":"Primeiro","email":"Duplicado@Empresa.com","senha":"senha-123456"}`)
 	if w1.Code != http.StatusCreated {
 		t.Fatalf("primeiro cadastro: status = %d, want %d", w1.Code, http.StatusCreated)
 	}
 
-	w2 := postCadastro(db, `{"nome":"Segundo","email":"duplicado@empresa.com","senha":"outra-senha1"}`)
+	w2 := postCadastro(db, `{"token":"`+token2+`","nome":"Segundo","email":"duplicado@empresa.com","senha":"outra-senha1"}`)
 	if w2.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d (body=%s)", w2.Code, http.StatusConflict, w2.Body.String())
 	}
@@ -218,7 +227,8 @@ func getVerificarEmail(db *sql.DB, token string) *httptest.ResponseRecorder {
 // válido" na fronteira HTTP: 200 e email_verificado=true no banco.
 func TestVerificarEmailHandler_Sucesso(t *testing.T) {
 	db := testDB(t)
-	usuarioID, err := services.Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Verificando", "verificando@empresa.com", "senha-123456")
+	usuarioID, err := services.Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Verificando", "verificando@empresa.com", "senha-123456",
+		conviteDeTeste(t, db, empresaTeste, "verificando@empresa.com"))
 	if err != nil {
 		t.Fatalf("Cadastrar falhou: %v", err)
 	}
@@ -281,7 +291,8 @@ func TestVerificarEmailHandler_TokenAusente(t *testing.T) {
 // (AD-14) para o cenário "Link expirado".
 func TestVerificarEmailHandler_TokenExpirado(t *testing.T) {
 	db := testDB(t)
-	usuarioID, err := services.Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Expirando", "expirando@empresa.com", "senha-123456")
+	usuarioID, err := services.Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Expirando", "expirando@empresa.com", "senha-123456",
+		conviteDeTeste(t, db, empresaTeste, "expirando@empresa.com"))
 	if err != nil {
 		t.Fatalf("Cadastrar falhou: %v", err)
 	}
@@ -308,7 +319,8 @@ func TestVerificarEmailHandler_TokenExpirado(t *testing.T) {
 // efeito.
 func TestVerificarEmailHandler_TokenJaUsado(t *testing.T) {
 	db := testDB(t)
-	usuarioID, err := services.Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Reusando", "reusando@empresa.com", "senha-123456")
+	usuarioID, err := services.Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Reusando", "reusando@empresa.com", "senha-123456",
+		conviteDeTeste(t, db, empresaTeste, "reusando@empresa.com"))
 	if err != nil {
 		t.Fatalf("Cadastrar falhou: %v", err)
 	}
@@ -1133,7 +1145,8 @@ func TestRedefinirSenhaHandler_TokenExpiradoEReuso(t *testing.T) {
 // tipo='verificacao_email' -> 404 NOT_FOUND.
 func TestRedefinirSenhaHandler_TokenDeVerificacaoEmail(t *testing.T) {
 	db := testDB(t)
-	usuarioID, err := services.Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "isola-handler", "isola-handler@empresa.com", "senha-123456")
+	usuarioID, err := services.Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "isola-handler", "isola-handler@empresa.com", "senha-123456",
+		conviteDeTeste(t, db, empresaTeste, "isola-handler@empresa.com"))
 	if err != nil {
 		t.Fatalf("Cadastrar falhou: %v", err)
 	}

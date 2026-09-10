@@ -17,7 +17,8 @@ import (
 
 func seedUsuarioRealtime(t *testing.T, db *sql.DB, email string) string {
 	t.Helper()
-	usuarioID, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Usuário Realtime", email, "senha-123456")
+	usuarioID, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "Usuário Realtime", email, "senha-123456",
+		conviteDeTeste(t, db, empresaTeste, email))
 	if err != nil {
 		t.Fatalf("seed Cadastrar: %v", err)
 	}

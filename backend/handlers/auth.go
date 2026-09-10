@@ -70,6 +70,10 @@ const cadastroRequestMaxBytes = 64 * 1024
 // vindo do formulário jamais decide o papel da conta criada (FR-3) — mesmo
 // que o payload envie, por exemplo, `"papel":"adm"`.
 type cadastroRequest struct {
+	// Token é o convite nominal (Story 9.3, FR-42/AD-22) — obrigatório desde
+	// que o autocadastro deixou de ser aberto. Vem do `?token=` do link que o
+	// `gestor` compartilhou; ausente/vazio -> 404 NOT_FOUND, sem criar conta.
+	Token string `json:"token"`
 	Nome  string `json:"nome"`
 	Email string `json:"email"`
 	Senha string `json:"senha"`
@@ -81,6 +85,10 @@ type cadastroRequest struct {
 // que não cumpre a política mínima de força (Story 1.10) -> 400
 // VALIDATION_ERROR com o mesmo critério exibido em RedefinirSenhaHandler, sem
 // criar nenhuma linha.
+//
+// Desde a Story 9.3 a rota EXIGE `token` (o convite nominal): sem um convite
+// válido da Empresa do slug, nenhuma conta nasce. A Empresa da conta é sempre
+// a do convite/slug — nunca um campo do formulário.
 func CadastroHandler(db *sql.DB, emailCfg services.EmailConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		empresa, ok := empresaDaRequisicao(w, r)
@@ -99,7 +107,7 @@ func CadastroHandler(db *sql.DB, emailCfg services.EmailConfig) http.HandlerFunc
 		// req.Papel é lido acima apenas para existir no struct de decodificação
 		// — deliberadamente nunca repassado a services.Cadastrar, que não tem
 		// sequer um parâmetro de papel.
-		_, err := services.Cadastrar(db, emailCfg, empresa.ID, empresa.Slug, req.Nome, req.Email, req.Senha)
+		_, err := services.Cadastrar(db, emailCfg, empresa.ID, empresa.Slug, req.Nome, req.Email, req.Senha, req.Token)
 		switch {
 		case err == nil:
 			escreverJSON(w, http.StatusCreated, map[string]string{
@@ -111,6 +119,20 @@ func CadastroHandler(db *sql.DB, emailCfg services.EmailConfig) http.HandlerFunc
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "A senha deve ter ao menos 8 caracteres, incluindo uma letra e um número.")
 		case errors.Is(err, services.ErrEmailDuplicado):
 			escreverErro(w, http.StatusConflict, "CONFLICT", "Este e-mail já está cadastrado.")
+		// Ramos do convite (Story 9.3), na ordem da I/O Matrix. Cada motivo tem
+		// código e mensagem PRÓPRIOS: o AC exige que quem abre um link morto
+		// entenda por quê (expirou / já foi usado / foi cancelado / não é para
+		// este e-mail), nunca um "não foi possível" genérico.
+		case errors.Is(err, services.ErrConviteNaoEncontrado):
+			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "Este convite não é válido.")
+		case errors.Is(err, services.ErrConviteExpirado):
+			escreverErro(w, http.StatusBadRequest, "TOKEN_EXPIRED", "Este convite expirou.")
+		case errors.Is(err, services.ErrConviteJaUsado):
+			escreverErro(w, http.StatusConflict, "CONFLICT", "Este convite já foi utilizado.")
+		case errors.Is(err, services.ErrConviteRevogado):
+			escreverErro(w, http.StatusForbidden, "FORBIDDEN", "Este convite foi cancelado pela empresa.")
+		case errors.Is(err, services.ErrConviteEmailDivergente):
+			escreverErro(w, http.StatusForbidden, "FORBIDDEN", "Este convite foi emitido para outro e-mail.")
 		default:
 			slog.Error("falha ao processar cadastro", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao processar cadastro")
@@ -466,6 +488,40 @@ func EsqueciSenhaHandler(db *sql.DB, emailCfg services.EmailConfig) http.Handler
 		}
 
 		escreverJSON(w, http.StatusOK, map[string]string{"mensagem": mensagemEsqueciSenha})
+	}
+}
+
+// ValidarConviteHandler expõe GET /api/auth/convite?token=... (Story 9.3):
+// checa a validade do link SEM consumi-lo e devolve o e-mail convidado, para a
+// tela de cadastro pré-preencher o campo somente-leitura e explicar um link
+// morto já ao abrir. Molde de ValidarRedefinicaoSenhaHandler (abaixo).
+//
+// Rota PÚBLICA (sem RequireAuth): quem a chama ainda não tem conta. O token de
+// 32 bytes é a credencial, e a Empresa vem do slug — um token da Empresa A
+// consultado sob o slug da Empresa B é 404, igual a um token inexistente.
+func ValidarConviteHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
+		email, err := services.ValidarTokenConvite(db, empresa.ID, r.URL.Query().Get("token"))
+		switch {
+		case err == nil:
+			escreverJSON(w, http.StatusOK, map[string]string{"email": email})
+		case errors.Is(err, services.ErrConviteNaoEncontrado):
+			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "Este convite não é válido.")
+		case errors.Is(err, services.ErrConviteExpirado):
+			escreverErro(w, http.StatusBadRequest, "TOKEN_EXPIRED", "Este convite expirou.")
+		case errors.Is(err, services.ErrConviteJaUsado):
+			escreverErro(w, http.StatusConflict, "CONFLICT", "Este convite já foi utilizado.")
+		case errors.Is(err, services.ErrConviteRevogado):
+			escreverErro(w, http.StatusForbidden, "FORBIDDEN", "Este convite foi cancelado pela empresa.")
+		default:
+			slog.Error("falha ao validar convite", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao validar convite")
+		}
 	}
 }
 

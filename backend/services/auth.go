@@ -152,21 +152,38 @@ func gerarTokenAcao() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
-// Cadastrar cria uma conta de autocadastro público DENTRO da Empresa
-// `empresaID` (Story 9.1, AD-20): o mesmo e-mail pode existir em Empresas
-// diferentes — a unicidade passou a ser `(empresa_id, lower(email))`
-// (migração 000032), então ErrEmailDuplicado só dispara para uma colisão
-// DENTRO da mesma Empresa. `empresaSlug` só monta o link do e-mail de
-// verificação (LinkDaEmpresa), nunca é usado para consultar nada.
+// Cadastrar cria uma conta de autocadastro DENTRO da Empresa `empresaID`
+// (Story 9.1, AD-20): o mesmo e-mail pode existir em Empresas diferentes — a
+// unicidade passou a ser `(empresa_id, lower(email))` (migração 000032),
+// então ErrEmailDuplicado só dispara para uma colisão DENTRO da mesma
+// Empresa. `empresaSlug` só monta o link do e-mail de verificação
+// (LinkDaEmpresa), nunca é usado para consultar nada.
 //
-// O papel do usuário nunca
-// é um parâmetro desta função — é sempre 'usuario' (FR-3), independente de
-// qualquer valor que o chamador HTTP tenha recebido no payload.
+// A partir da Story 9.3 (FR-42, AD-22) o autocadastro NÃO é mais aberto:
+// `tokenConvite` é obrigatório e resolvido em `convites_empresa` SEMPRE
+// dentro da Empresa do slug da URL (`WHERE token = $1 AND empresa_id = $2`).
+// Sem convite válido nenhuma conta nasce, e a Empresa da conta é sempre a do
+// convite — nunca um campo do formulário.
 //
-// Todo o trabalho (INSERT em usuarios, tokens_acao e emails_pendentes)
-// acontece em uma única transação (AD-4/AD-18): se qualquer passo falhar,
-// nenhuma linha órfã fica gravada em nenhuma das três tabelas.
-func Cadastrar(db *sql.DB, emailCfg EmailConfig, empresaID, empresaSlug string, nome, email, senha string) (usuarioID string, err error) {
+// O convite é NOMINAL: o e-mail do formulário, normalizado, tem de ser
+// exatamente o do convite (ErrConviteEmailDivergente). E é de USO ÚNICO: o
+// `UPDATE ... usado_em` acontece na MESMA transação do INSERT em `usuarios`,
+// guardado por `usado_em IS NULL AND revogado_em IS NULL AND expira_em > now()`
+// e exigindo RowsAffected()==1 — dois cadastros simultâneos com o mesmo token
+// produzem exatamente uma conta.
+//
+// ORDEM deliberada: nome/e-mail/senha/força/tamanho são validados ANTES de o
+// convite ser sequer consultado — um payload inválido nunca queima um convite.
+//
+// O papel do usuário nunca é um parâmetro desta função — é sempre 'usuario'
+// (FR-3/FR-42), independente de qualquer valor que o chamador HTTP tenha
+// recebido no payload, e o convite tampouco concede papel.
+//
+// Todo o trabalho (resolução/consumo do convite, INSERT em usuarios,
+// tokens_acao e emails_pendentes) acontece em uma única transação
+// (AD-4/AD-18): se qualquer passo falhar, nenhuma linha órfã fica gravada em
+// nenhuma das tabelas e o convite permanece pendente.
+func Cadastrar(db *sql.DB, emailCfg EmailConfig, empresaID, empresaSlug string, nome, email, senha, tokenConvite string) (usuarioID string, err error) {
 	nomeTrimado := strings.TrimSpace(nome)
 	normalizedEmail := normalizeEmail(email)
 	if nomeTrimado == "" || normalizedEmail == "" || strings.TrimSpace(senha) == "" {
@@ -208,6 +225,40 @@ func Cadastrar(db *sql.DB, emailCfg EmailConfig, empresaID, empresaSlug string, 
 	}
 	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
 
+	// Resolução do convite (Story 9.3). `FOR UPDATE` serializa dois resgates
+	// concorrentes do MESMO token: o segundo bloqueia aqui e, quando o
+	// primeiro commita, relê a linha já com `usado_em` preenchido (READ
+	// COMMITTED reavalia a condição após o lock) e sai em ErrConviteJaUsado.
+	// O filtro por `empresa_id` é o guard de fronteira: um token da Empresa A
+	// apresentado sob o slug da Empresa B não casa nenhuma linha e colapsa em
+	// ErrConviteNaoEncontrado — nunca cria conta, nunca revela que existe.
+	var conviteID, emailConvidado string
+	var conviteExpiraEm time.Time
+	var conviteUsadoEm, conviteRevogadoEm sql.NullTime
+	const selectConvite = `
+		SELECT id, email, expira_em, usado_em, revogado_em
+		FROM convites_empresa
+		WHERE token = $1 AND empresa_id = $2
+		FOR UPDATE`
+	err = tx.QueryRow(selectConvite, tokenConvite, empresaID).
+		Scan(&conviteID, &emailConvidado, &conviteExpiraEm, &conviteUsadoEm, &conviteRevogadoEm)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrConviteNaoEncontrado
+		}
+		return "", fmt.Errorf("falha ao consultar convite: %w", err)
+	}
+	if errSituacao := erroDaSituacaoConvite(
+		situacaoConvite(conviteExpiraEm, conviteUsadoEm, conviteRevogadoEm, time.Now()),
+	); errSituacao != nil {
+		return "", errSituacao
+	}
+	// O convite é NOMINAL: token certo com outro e-mail é recusado, e o
+	// convite permanece pendente (a transação inteira é revertida).
+	if emailConvidado != normalizedEmail {
+		return "", ErrConviteEmailDivergente
+	}
+
 	const insertUsuario = `
 		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, empresa_id)
 		VALUES ($1, $2, $3, 'usuario', false, true, $4)
@@ -218,6 +269,22 @@ func Cadastrar(db *sql.DB, emailCfg EmailConfig, empresaID, empresaSlug string, 
 			return "", ErrEmailDuplicado
 		}
 		return "", fmt.Errorf("falha ao inserir usuario: %w", err)
+	}
+
+	// Consumo do convite na MESMA transação do INSERT acima: a conta e a
+	// marca de uso nascem juntas ou nenhuma das duas existe. As condições do
+	// SELECT são repetidas aqui de propósito — RowsAffected()!=1 significa que
+	// o convite deixou de ser resgatável entre as duas declarações.
+	resConvite, err := tx.Exec(
+		`UPDATE convites_empresa SET usado_em = now()
+		 WHERE id = $1 AND usado_em IS NULL AND revogado_em IS NULL AND expira_em > now()`,
+		conviteID,
+	)
+	if err != nil {
+		return "", fmt.Errorf("falha ao consumir convite: %w", err)
+	}
+	if n, _ := resConvite.RowsAffected(); n != 1 {
+		return "", ErrConviteJaUsado
 	}
 
 	expiraEm := time.Now().UTC().Add(tokenVerificacaoExpiracao)
@@ -242,6 +309,38 @@ func Cadastrar(db *sql.DB, emailCfg EmailConfig, empresaID, empresaSlug string, 
 	}
 
 	return usuarioID, nil
+}
+
+// ValidarTokenConvite checa a validade de um link de convite SEM consumi-lo
+// (GET /api/auth/convite?token=..., Story 9.3) e devolve o e-mail convidado,
+// para a tela de cadastro pré-preencher o campo somente-leitura. Molde exato
+// de ValidarTokenRedefinicao (Story 1.6): a tela explica um link morto já ao
+// abrir, em vez de só depois do submit.
+//
+// O e-mail sair na resposta é deliberado: o token JÁ é o segredo — quem o tem
+// é o destinatário pretendido —, e pré-preencher elimina o erro honesto de
+// digitação, tornando o caso "e-mail diferente" um ataque e não um acidente.
+// O servidor continua sendo a autoridade e revalida tudo no POST.
+//
+// Filtra por `empresa_id`: um token de outra Empresa é ErrConviteNaoEncontrado.
+func ValidarTokenConvite(db *sql.DB, empresaID, token string) (string, error) {
+	var email string
+	var expiraEm time.Time
+	var usadoEm, revogadoEm sql.NullTime
+	const selectConvite = `
+		SELECT email, expira_em, usado_em, revogado_em
+		FROM convites_empresa
+		WHERE token = $1 AND empresa_id = $2`
+	if err := db.QueryRow(selectConvite, token, empresaID).Scan(&email, &expiraEm, &usadoEm, &revogadoEm); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrConviteNaoEncontrado
+		}
+		return "", fmt.Errorf("falha ao consultar convite: %w", err)
+	}
+	if err := erroDaSituacaoConvite(situacaoConvite(expiraEm, usadoEm, revogadoEm, time.Now())); err != nil {
+		return "", err
+	}
+	return email, nil
 }
 
 // VerificarEmail consome um token de verificação de e-mail: se válido,
