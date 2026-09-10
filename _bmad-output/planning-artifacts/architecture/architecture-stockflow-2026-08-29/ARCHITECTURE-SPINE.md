@@ -7,8 +7,8 @@ paradigm: 'Layered Go (pragmático, sem framework/ORM) — ratificado do FB_APU0
 scope: 'Backend Go + PostgreSQL e frontend React do stockflow (migração do Catálogo de Materiais), incluindo Keycloak SSO'
 status: final
 created: '2026-08-29'
-updated: '2026-08-29'
-binds: ['FR-1..FR-39', 'NFR (§8 do PRD)']
+updated: '2026-09-10'
+binds: ['FR-1..FR-44', 'NFR (§8 do PRD)']
 sources: ['_bmad-output/planning-artifacts/prds/prd-stockflow-2026-08-29/prd.md', '_bmad-output/planning-artifacts/prds/prd-stockflow-2026-08-29/addendum.md', '/home/claudio/projetos/FB_APU02 (código real, referência de stack e Keycloak)']
 companions: []
 ---
@@ -170,6 +170,7 @@ graph TD
 | Naming (entidades, tabelas, colunas) | Português, nomes já estabelecidos (AD-14); pacotes/tipos Go em inglês |
 | Data & formatos (ids, datas, erro, e-mail) | UUID v4; `timestamptz` UTC; envelope de erro com vocabulário fixo de `code`; e-mail normalizado lowercase (AD-14) |
 | Autorização | Decisão (allow/deny) sempre em middleware; escopo de listagem sempre em service, nunca re-derivando o papel (AD-8) |
+| Escopo de Empresa | `empresa_id` resolvido uma vez no middleware a partir do slug da URL (AD-19); toda query de service filtra por ele (AD-20); nunca aceito de body/query do cliente |
 | Concorrência e propriedade de escrita | `SELECT ... FOR UPDATE` + ordem de lote ascendente; toda escrita em `quantidade` gera Movimentação, sem exceção (AD-10) |
 | Tempo real | Envelope de evento fixo, um canal por domínio, autenticação via ticket de curta duração (AD-3) |
 | Logging | `log/slog` estruturado, nunca `fmt.Print` (AD-14) |
@@ -206,6 +207,7 @@ backend/
   cmd/
     seed-admin/         # bootstrap do primeiro Adm (AD-12)
     migrate-legado/      # script one-off de migração de dados (AD-15)
+    seed-dono-plataforma/  # bootstrap do primeiro Dono da Plataforma (AD-21)
 frontend/
   src/
     pages/              # uma página por rota
@@ -216,6 +218,12 @@ frontend/
 
 ```mermaid
 erDiagram
+  EMPRESAS ||--o{ USUARIOS : escopa
+  EMPRESAS ||--o{ PRODUTOS : escopa
+  EMPRESAS ||--o{ ESTOQUES : escopa
+  EMPRESAS ||--o{ CONVITES_EMPRESA : emite
+  EMPRESAS |o--o| EMPRESAS : "empresa_origem_id (Treinamento)"
+  DONOS_PLATAFORMA ||--o{ EMPRESAS : cria
   USUARIOS ||--o{ SOLICITACOES_PROMOCAO : solicita
   USUARIOS ||--o{ PEDIDOS : cria
   USUARIOS ||--o{ EMAILS_PENDENTES : gera
@@ -232,6 +240,8 @@ erDiagram
   MESCLAGENS_DUPLICATAS ||--o{ MESCLAGEM_PRODUTOS_REMOVIDOS : remove
   IMPORTACOES ||--o{ IMPORTACAO_LINHAS : contem
 ```
+
+*Nota: `PRODUTOS`, `ESTOQUES`, `MOVIMENTACOES`, `PEDIDOS`, `PEDIDO_ITENS`, `CATEGORIAS`, `LOGS_ACESSO`, `SOLICITACOES_PROMOCAO`, `MESCLAGENS_DUPLICATAS`, `IMPORTACOES` e `NOMENCLATURA_TEMPLATES` também carregam `empresa_id` (AD-20) — omitido do diagrama acima por brevidade, já que toda tabela de domínio é escopada da mesma forma.*
 
 ## Capability → Architecture Map
 
@@ -257,6 +267,11 @@ erDiagram
 | Tempo real (todas as features acima) | `realtime/` | AD-3 |
 | Migração de dados legados | `cmd/migrate-legado` | AD-15 |
 | Operação (ambientes, backup, CI/CD, observabilidade) | infraestrutura, `.github/workflows` | AD-13, AD-16 |
+| Isolamento por Empresa (FR-40) | `middleware/`, `services/` (toda tabela de domínio) | AD-19, AD-20 |
+| Gestão de Empresas (FR-41) | `handlers/empresas.go`, `handlers/plataforma_auth.go`, tabela `donos_plataforma` | AD-21 |
+| Convite/vínculo a Empresa (FR-42) | `handlers/convites.go`, `services/`, tabela `convites_empresa` | AD-22, AD-14 (e-mail normalizado) |
+| Ambiente de Treinamento (FR-43) | `services/empresas.go` (provisionamento), tabela `empresas` | AD-23, AD-20 |
+| Migração multi-Empresa (FR-44) | `cmd/migrate-empresa` ou migration SQL + script de backfill | AD-20 |
 
 ### AD-17 — Recibo PDF sempre renderiza do snapshot em PEDIDO_ITENS
 
@@ -270,6 +285,40 @@ erDiagram
 - **Prevents:** um token de verificação de conta ainda válido ser aceito por engano no endpoint de redefinição de senha (confusão de fluxo entre dois usos do mesmo mecanismo).
 - **Rule:** `TOKENS_ACAO` tem coluna `tipo` (enum: `verificacao_email` | `redefinicao_senha`). Validação sempre filtra por `token + usuario_id + tipo + não expirado + não usado`; token é marcado usado (ou apagado) atomicamente na primeira validação bem-sucedida — nunca reutilizável, nunca aceito por um fluxo diferente do que o gerou.
 
+### AD-19 — Empresa resolvida no middleware por slug de URL, nunca re-derivada
+
+- **Binds:** FR-40 a FR-44 (Multi-Empresa) — toda rota autenticada de Usuário/`adm`.
+- **Prevents:** dois services decidindo "qual Empresa" de formas incompatíveis (um lendo do e-mail, outro de um header); ambiguidade de login com e-mail não mais globalmente único (FR-42); reintrodução de subdomínio/DNS wildcard não planejado para esta fase.
+- **Rule:** URL de acesso carrega um path prefix com o slug da Empresa (ex. `/e/ferreira-costa/...`); `middleware/` resolve `empresa_id` a partir desse slug **uma vez**, popula o contexto da requisição junto com o papel já resolvido (mesmo padrão de AD-8) — nenhum `service` re-deriva ou aceita `empresa_id` vindo de body/query. Login (FR-1, FR-34) e todo endpoint de domínio vivem sob esse prefixo. Divergência deliberada de um subdomínio por Empresa (mais comum no mercado, `addendum.md` §I): exigiria DNS wildcard + certificado wildcard, infraestrutura nova incompatível com a urgência da V1 e com AD-13 (single-host simples); o path prefix funciona sobre a infraestrutura HTTP já existente sem mudança de DNS/certificado.
+
+### AD-20 — Isolamento por Empresa via `empresa_id` em toda tabela de domínio, migração aditiva
+
+- **Binds:** FR-40, SM-7 — Catálogo, Estoques, Movimentações, Pedidos, Categorias, Log de Acesso, Normalização/Duplicatas, Gestão de Contas/Promoção; FR-44 (migração da Ferreira Costa).
+- **Prevents:** uma área nova (ou uma query de relatório/agregação futura) esquecer o filtro de Empresa e vazar dado entre clientes; a migração da Ferreira Costa travar o sistema em produção ou ficar num estado parcial sem caminho de retomada.
+- **Rule:**
+  - Coluna `empresa_id UUID NOT NULL REFERENCES empresas(id)` em toda tabela de domínio hoje existente (`produtos`, `estoques`, `movimentacoes`, `pedidos`, `pedido_itens`, `categorias`, `logs_acesso`, `solicitacoes_promocao`, `mesclagens_duplicatas`, `mesclagem_produtos_removidos`, `importacoes`, `nomenclatura_templates`) e em `usuarios`.
+  - Toda query de `service` que lê ou escreve uma dessas tabelas inclui `WHERE empresa_id = $1` (ou equivalente na escrita) usando o `empresa_id` do contexto da requisição (AD-19) — nunca um `service` monta uma query sem essa cláusula, nem mesmo em agregações/relatórios.
+  - **Migração da Ferreira Costa (FR-44) é aditiva em duas fases, nunca um único `ALTER ... NOT NULL` direto sobre produção viva:** (1) coluna `empresa_id` nasce `NULL`able, backfill em lote (resumível — reexecutar não duplica, não perde linha, idempotente por chave primária já existente) atribuindo o id da Empresa "Ferreira Costa" a toda linha hoje sem dono; (2) só depois de backfill 100% confirmado, `ALTER COLUMN empresa_id SET NOT NULL` + índice. Sem downtime obrigatório entre as duas fases — a aplicação continua servindo tráfego normalmente enquanto a coluna ainda aceita `NULL`.
+  - `adm` (AD-8) deixa de ser único globalmente e passa a ser único por `empresa_id` — índice único parcial trocado de `WHERE papel='adm'` para `WHERE papel='adm'` particionado por `empresa_id` (ex. índice único composto `(empresa_id) WHERE papel='adm'`).
+
+### AD-21 — "Dono da Plataforma" em tabela própria, disjunta de `usuarios`
+
+- **Binds:** FR-41.
+- **Prevents:** a identidade mais privilegiada do sistema colapsar com a de um `adm` de Empresa (achado da revisão adversarial do PRD); alguém estender a escala de rank de AD-8 (`adm=4 > gestor=3 > ...`) com um quinto nível para este papel, misturando uma hierarquia intra-Empresa com um papel que é cross-Empresa por definição.
+- **Rule:** tabela `donos_plataforma` (id, e-mail, senha_hash, mfa_habilitado, mfa_secret — mesmo formato de MFA de `usuarios`/AD-8, nunca opcional aqui), completamente disjunta de `usuarios`. Rota de login própria (`POST /api/plataforma/auth/login`, fora do prefixo `/e/{slug}` de AD-19). Primeiro registro em `donos_plataforma` é bootstrap por CLI (mesmo padrão de AD-12) — nenhuma rota HTTP cria a primeira linha dessa tabela. Rotas de gestão de Empresas (criar Empresa + primeiro `adm`) exigem sessão autenticada de `donos_plataforma`, nunca aceitam elevação a partir de uma sessão de `usuarios`. Formato de token reaproveita AD-6 (JWT curto + refresh rotativo) — só o *sujeito* do token (linha de `donos_plataforma`, não de `usuarios`) e a rota de emissão mudam, nunca dois formatos de sessão divergentes.
+
+### AD-22 — Convite de acesso: tabela própria, nominal e de uso único
+
+- **Binds:** FR-42.
+- **Prevents:** um link de convite genérico e reutilizável permitindo autocadastro por qualquer pessoa que o obtenha (achado da revisão adversarial); confusão com o mecanismo de `TOKENS_ACAO` (AD-18), que pressupõe um `usuario_id` já existente.
+- **Rule:** tabela `convites_empresa` (id, empresa_id, email, token, expira_em, usado_em, criado_por) — mesmo espírito de AD-18 (tipado, uso único, expira) mas tabela separada porque não existe `usuario_id` no momento da criação do convite. Autocadastro (FR-3) a partir de um convite só é aceito se o e-mail do formulário bater exatamente com `convites_empresa.email`; convite marcado `usado_em` atomicamente na primeira criação de conta bem-sucedida, nunca reutilizável depois.
+
+### AD-23 — Ambiente de Treinamento é uma Empresa comum, sem código de isolamento separado
+
+- **Binds:** FR-43.
+- **Prevents:** um segundo mecanismo de isolamento construído só para "empresas de treinamento", divergindo de AD-20 e duplicando superfície de risco de vazamento.
+- **Rule:** `empresas.empresa_origem_id UUID NULL REFERENCES empresas(id)` — `NULL` para uma Empresa real, preenchido com o id da Empresa real quando a linha é um Ambiente de Treinamento. Todo o resto (isolamento AD-20, resolução de slug AD-19, papéis intra-Empresa AD-8) trata a Empresa de Treinamento exatamente como trataria uma segunda Empresa de cliente qualquer — nenhuma condicional `if eh_treinamento` em `service` algum.
+
 ## Deferred
 
 - **Contador/bloqueio de força bruta (FR-36) e biblioteca TOTP (FR-37):** mecanismo de contagem de tentativas/duração de bloqueio e a biblioteca TOTP não foram fixados nesta spine — `pquerna/otp` é candidata, mas não teve manutenção ativa confirmada nesta pesquisa; escolher e verificar no momento da story.
@@ -278,3 +327,7 @@ erDiagram
 - **Escopo exato de "configurar tudo" do papel `adm`:** ainda genérico no PRD (§11, pergunta 7) — sem AD até haver capacidade concreta.
 - **Ambiente de staging dedicado:** assumido ausente em v1 (AD-16); revisitar se o volume de mudanças justificar.
 - **Relação com os épicos/stories já existentes no repositório `Catalogo-Obras`:** decisão de reaproveitar ou não fica para a fase de Épicos/Stories, não para esta spine.
+- **Validação de CNPJ (FR-41):** algoritmo de dígito verificador é conhecido/padrão (não precisa de biblioteca externa), mas confirmar na story se algum pacote Go já maduro cobre isso (ex. `klassmann/cpfcnpj`) ou se a validação é implementada inline — decisão de implementação, não de arquitetura.
+- **Rate limit de emissão de convites (AD-22) e de tentativas de login do Dono da Plataforma (AD-21):** mecanismo concreto (contador em Postgres, mesmo espírito do Deferred de FR-36) não fixado nesta rodada — resolver junto do Deferred já existente de bloqueio de força bruta.
+- **Tamanho de lote do backfill de `empresa_id` (AD-20):** não fixado — depende do volume real de linhas em produção no momento da execução; decisão de implementação da story de migração, não de arquitetura.
+- **Conjunto de dados de exemplo do Ambiente de Treinamento (FR-43):** quantidade/conteúdo exato dos Produtos/Estoques semeados não fixado nesta spine — decisão de conteúdo/UX, não de arquitetura.
