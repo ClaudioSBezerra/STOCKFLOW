@@ -2,8 +2,8 @@
 title: 'Story 9.1: Fundação Multi-Empresa — schema e isolamento por Empresa'
 type: 'feature'
 created: '2026-09-10'
-status: 'in-progress'
-baseline_revision: '6e2ce21a41f168c9a7a36a1ebdb792e22e3d3a7e'
+status: 'blocked'
+baseline_revision: '9e33b2e0938d7ca657d667e669b4b6076872506e'
 review_loop_iteration: 0
 followup_review_recommended: false
 context: []
@@ -187,6 +187,26 @@ deferred: []
 **Fotos em disco.** `fotosDir` é plano, com nomes `<produtoID>-<unix>.jpg`, e `produtoID` é UUID. Com a checagem de posse do Produto no banco (em `SalvarFotoProduto`, `ListarFotosProduto` e no handler que serve o arquivo), não há leitura cruzada pela API e não é preciso particionar o diretório.
 
 **Handoffs registrados.** (a) `cmd/migrate-legado` continua gravando `empresa_id` NULL — a Story 9.4 precisa passar a Empresa nos seus ~15 INSERTs antes do `SET NOT NULL`. (b) Acessar o app sem slug (`/`) não tem tela própria nesta story; a 9.2, que passa a conhecer os slugs, é o lugar natural para a página de entrada. (c) `IAM_REDIRECT_URI` do Keycloak passa a precisar do prefixo de slug da Ferreira Costa quando a 9.4 definir o slug dela.
+
+## Auto Run Result
+
+Status: blocked
+Blocking condition: no subagents — o subagente de implementação foi encerrado pela API com HTTP 429 (`rate_limit`, "You've hit your session limit", modelo `claude-opus-5`, request `req_011CeurA3bL2N7YbxFXgEGNF`). O limite só é liberado às 14:40 (America/Sao_Paulo) e a tentativa aconteceu às 10:47 — quase 4h de espera, incompatível com um run não assistido. A etapa de implementação exige subagente; sem ele o workflow não pode avançar.
+
+O que foi feito nesta passagem (nenhum código commitado — ver o parcial preservado abaixo):
+- Roteamento retomou esta spec já existente (`status: in-progress`), como previsto pelo commit `9e33b2e`.
+- Árvore de trabalho limpa e metadados do Git graváveis; branch `main`, coerente com o épico.
+- `baseline_revision` atualizado de `6e2ce21a41f168c9a7a36a1ebdb792e22e3d3a7e` para `9e33b2e0938d7ca657d667e669b4b6076872506e` (HEAD no início desta passagem).
+- Postgres local confirmado em `127.0.0.1:5432` (`pg_isready`: accepting connections), então a verificação de banco poderá rodar com `DATABASE_URL=postgres://stockflow:stockflow@127.0.0.1:5432/stockflow?sslmode=disable`, o mesmo DSN usado nas stories 7.5, 8.1 e 8.2.
+
+Trabalho parcial desta passagem, preservado em stash (a árvore ficou limpa):
+- Antes de morrer, o subagente escreveu 18 arquivos: as migrations `000031_create_empresas.{up,down}.sql` e `000032_add_empresa_id_dominio.{up,down}.sql`, o novo `backend/services/empresas.go` e 13 services já com `empresaID` (`auth`, `auth_sso`, `carrinho`, `catalogo`, `email`, `estoques`, `fotos`, `logs_acesso`, `movimentacoes`, `nomenclatura`, `produtos`, `relatorios`, `usuarios`).
+- Está **incompleto e não compila** — `go build ./...` acusa 4 call sites com a assinatura antiga: `services/normalizacao.go:1213` (`travarLinhaProdutoEstoque`), `services/pedidos.go:177` (`ListarCarrinho`), `services/privacidade.go:39` (`ListarLogsAcessoDoUsuario`) e `services/privacidade.go:44` (`ListarMovimentacoesDoUsuario`). Faltam ainda `middleware/empresa.go`, o reroteamento de `main.go`, handlers, realtime, CLI, todo o frontend e todos os testes.
+- Preservado como `stash@{0}` — "9.1 tentativa 2 (subagente morreu no 429; nao compila) - preservado", com só os arquivos desta tentativa enumerados. Nada foi commitado.
+
+Para a próxima passagem:
+- Reexecutar depois das 14:40; a spec volta a rotear para a etapa de implementação assim que o `status` for devolvido a `in-progress` (ou `ready-for-dev`) por quem retomar o run.
+- Há agora **dois** stashes da 9.1: `stash@{0}` é o desta passagem (acima) e `stash@{1}` é o da sessão anterior ("9.1 interrompido (não compila) - preservado por segurança", 19 arquivos de `backend/services/` + `middleware/auth.go`). Nenhum dos dois foi aplicado: ambos não compilam e a spec é a fonte de verdade. Aplicá-los ou descartá-los é decisão do operador — uma implementação nova a partir da spec tende a ser mais barata do que reconciliar as duas tentativas.
 
 ## Verification
 
