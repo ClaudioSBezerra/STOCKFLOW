@@ -31,6 +31,10 @@
     "epic-8": {
       "issue_number": 9,
       "project_item_id": "PVTI_lAHOBon9h84Bh1SUzg4jP44"
+    },
+    "epic-9": {
+      "issue_number": 55,
+      "project_item_id": "PVTI_lAHOBon9h84Bh1SUzg6U_Uo"
     }
   },
   "stories": {
@@ -213,6 +217,22 @@
     "8.2": {
       "issue_number": 54,
       "project_item_id": "PVTI_lAHOBon9h84Bh1SUzg4jQXg"
+    },
+    "9.1": {
+      "issue_number": 56,
+      "project_item_id": "PVTI_lAHOBon9h84Bh1SUzg6U_dM"
+    },
+    "9.2": {
+      "issue_number": 57,
+      "project_item_id": "PVTI_lAHOBon9h84Bh1SUzg6U_ns"
+    },
+    "9.3": {
+      "issue_number": 58,
+      "project_item_id": "PVTI_lAHOBon9h84Bh1SUzg6U_uk"
+    },
+    "9.4": {
+      "issue_number": 59,
+      "project_item_id": "PVTI_lAHOBon9h84Bh1SUzg6U_1k"
     }
   }
 }
