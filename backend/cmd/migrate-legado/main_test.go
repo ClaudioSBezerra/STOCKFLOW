@@ -163,6 +163,11 @@ func testDB(t *testing.T) (alvo, legado *sql.DB) {
 		t.Fatalf("falha ao adicionar legado.historico.pedido: %v", err)
 	}
 
+	// Story 9.4: a Empresa do corte. Resolvida ANTES do seed do usuário
+	// sintético, que agora nasce DENTRO dela (migrarMovimentacoes/migrarPedidos
+	// resolvem o autor por `lower(email) AND empresa_id`).
+	empresaTeste = garantirEmpresaTeste(t, alvo)
+
 	// Garante o usuário sintético "Migração do sistema legado" (seed da
 	// migration 000022) — autor NOT NULL de toda Movimentação migrada. Outras
 	// suítes (services/handlers/middleware) fazem `TRUNCATE usuarios CASCADE`,
@@ -171,9 +176,9 @@ func testDB(t *testing.T) (alvo, legado *sql.DB) {
 	// NOTHING) e NUNCA apaga nada — `usuarios` continua sem `DELETE`/`TRUNCATE`
 	// nesta suíte.
 	if _, err := alvo.Exec(`
-		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
-		VALUES ('Migração do sistema legado', $1, NULL, 'almoxarife', false, false)
-		ON CONFLICT (empresa_id, lower(email)) DO NOTHING`, emailUsuarioMigracaoLegado); err != nil {
+		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, empresa_id)
+		VALUES ('Migração do sistema legado', $1, NULL, 'almoxarife', false, false, $2)
+		ON CONFLICT (empresa_id, lower(email)) DO NOTHING`, emailUsuarioMigracaoLegado, empresaTeste); err != nil {
 		t.Fatalf("falha ao garantir o usuário sintético de migração: %v", err)
 	}
 
@@ -299,7 +304,7 @@ func TestMigrarEstoques_CorteInicial(t *testing.T) {
 		inserirLegado(t, alvo, id, nome)
 	}
 
-	res, err := migrarEstoques(alvo, legado, true)
+	res, err := migrarEstoques(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("migrarEstoques retornou erro inesperado: %v", err)
 	}
@@ -342,11 +347,11 @@ func TestMigrarEstoques_Idempotente(t *testing.T) {
 	inserirLegado(t, alvo, "doc-1", "Canteiro A")
 	inserirLegado(t, alvo, "doc-2", "Canteiro B")
 
-	if _, err := migrarEstoques(alvo, legado, true); err != nil {
+	if _, err := migrarEstoques(alvo, legado, empresaTeste, true); err != nil {
 		t.Fatalf("primeira execução falhou: %v", err)
 	}
 
-	res, err := migrarEstoques(alvo, legado, true)
+	res, err := migrarEstoques(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("segunda execução retornou erro: %v", err)
 	}
@@ -368,12 +373,12 @@ func TestMigrarEstoques_ExecutarMapaMisto(t *testing.T) {
 	alvo, legado := testDB(t)
 
 	inserirLegado(t, alvo, "doc-1", "Canteiro A")
-	if _, err := migrarEstoques(alvo, legado, true); err != nil {
+	if _, err := migrarEstoques(alvo, legado, empresaTeste, true); err != nil {
 		t.Fatalf("corte inicial falhou: %v", err)
 	}
 
 	inserirLegado(t, alvo, "doc-2", "Canteiro B")
-	res, err := migrarEstoques(alvo, legado, true)
+	res, err := migrarEstoques(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("segunda execução retornou erro: %v", err)
 	}
@@ -399,7 +404,7 @@ func TestMigrarEstoques_NomesEquivalentes(t *testing.T) {
 			inserirLegado(t, alvo, "doc-2", "canteiro  a")
 			inserirLegado(t, alvo, "doc-3", "Depósito Único")
 
-			res, err := migrarEstoques(alvo, legado, executar)
+			res, err := migrarEstoques(alvo, legado, empresaTeste, executar)
 			if err == nil {
 				t.Fatalf("migrarEstoques deveria abortar com erro; res=%+v", res)
 			}
@@ -443,7 +448,7 @@ func TestMigrarEstoques_NomesInvalidos(t *testing.T) {
 			inserirLegado(t, alvo, "doc-longo", strings.Repeat("x", 256))
 			inserirLegado(t, alvo, "doc-ok", "Canteiro Válido")
 
-			res, err := migrarEstoques(alvo, legado, executar)
+			res, err := migrarEstoques(alvo, legado, empresaTeste, executar)
 			if err == nil {
 				t.Fatalf("migrarEstoques deveria abortar; res=%+v", res)
 			}
@@ -480,7 +485,7 @@ func TestMigrarEstoques_DryRun(t *testing.T) {
 	inserirLegado(t, alvo, "doc-2", "Canteiro B")
 	inserirLegado(t, alvo, "doc-3", "Canteiro C")
 
-	res, err := migrarEstoques(alvo, legado, false)
+	res, err := migrarEstoques(alvo, legado, empresaTeste, false)
 	if err != nil {
 		t.Fatalf("dry-run retornou erro: %v", err)
 	}
@@ -502,12 +507,12 @@ func TestMigrarEstoques_DryRunContabilizaJaMigrados(t *testing.T) {
 	alvo, legado := testDB(t)
 
 	inserirLegado(t, alvo, "doc-1", "Canteiro A")
-	if _, err := migrarEstoques(alvo, legado, true); err != nil {
+	if _, err := migrarEstoques(alvo, legado, empresaTeste, true); err != nil {
 		t.Fatalf("corte inicial falhou: %v", err)
 	}
 	inserirLegado(t, alvo, "doc-2", "Canteiro B")
 
-	res, err := migrarEstoques(alvo, legado, false)
+	res, err := migrarEstoques(alvo, legado, empresaTeste, false)
 	if err != nil {
 		t.Fatalf("dry-run retornou erro: %v", err)
 	}
@@ -532,7 +537,7 @@ func TestMigrarEstoques_ColisaoComAlvo(t *testing.T) {
 			alvo, legado := testDB(t)
 
 			// Estoque pré-existente no alvo, criado "pela tela", sem linha no mapa.
-			if _, err := alvo.Exec(`INSERT INTO estoques (nome) VALUES ($1)`, "Canteiro A"); err != nil {
+			if _, err := alvo.Exec(`INSERT INTO estoques (nome, empresa_id) VALUES ($1, $2)`, "Canteiro A", empresaTeste); err != nil {
 				t.Fatalf("falha ao pré-criar estoque no alvo: %v", err)
 			}
 
@@ -540,7 +545,7 @@ func TestMigrarEstoques_ColisaoComAlvo(t *testing.T) {
 			inserirLegado(t, alvo, "doc-a", "Canteiro B")
 			inserirLegado(t, alvo, "doc-b", "Canteiro A")
 
-			res, err := migrarEstoques(alvo, legado, executar)
+			res, err := migrarEstoques(alvo, legado, empresaTeste, executar)
 			if err == nil {
 				t.Fatalf("migrarEstoques deveria falhar por colisão; res=%+v", res)
 			}
@@ -566,7 +571,7 @@ func TestMigrarEstoques_ColisaoComAlvo(t *testing.T) {
 func TestMigrarEstoques_LegadoVazio(t *testing.T) {
 	alvo, legado := testDB(t)
 
-	res, err := migrarEstoques(alvo, legado, true)
+	res, err := migrarEstoques(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("migrarEstoques retornou erro para legado vazio: %v", err)
 	}
@@ -613,7 +618,7 @@ func TestMain_Processo(t *testing.T) {
 	// --- casos que não precisam de banco ---
 
 	t.Run("DATABASE_URL ausente", func(t *testing.T) {
-		out, code := runChild(t, map[string]string{"DATABASE_URL": "", "LEGADO_DATABASE_URL": "postgres://x"})
+		out, code := runChild(t, map[string]string{"DATABASE_URL": "", "LEGADO_DATABASE_URL": "postgres://x", "SUBPROC_ARGS": "--empresa-slug " + slugEmpresaTeste})
 		if code != 1 {
 			t.Fatalf("exit code = %d, want 1; saída=%s", code, out)
 		}
@@ -623,7 +628,7 @@ func TestMain_Processo(t *testing.T) {
 	})
 
 	t.Run("LEGADO_DATABASE_URL ausente", func(t *testing.T) {
-		out, code := runChild(t, map[string]string{"DATABASE_URL": "postgres://x", "LEGADO_DATABASE_URL": ""})
+		out, code := runChild(t, map[string]string{"DATABASE_URL": "postgres://x", "LEGADO_DATABASE_URL": "", "SUBPROC_ARGS": "--empresa-slug " + slugEmpresaTeste})
 		if code != 1 {
 			t.Fatalf("exit code = %d, want 1; saída=%s", code, out)
 		}
@@ -636,6 +641,7 @@ func TestMain_Processo(t *testing.T) {
 		out, code := runChild(t, map[string]string{
 			"DATABASE_URL":        "postgres://mesmo",
 			"LEGADO_DATABASE_URL": "postgres://mesmo",
+			"SUBPROC_ARGS":        "--empresa-slug " + slugEmpresaTeste,
 		})
 		if code != 1 {
 			t.Fatalf("exit code = %d, want 1; saída=%s", code, out)
@@ -666,7 +672,7 @@ func TestMain_Processo(t *testing.T) {
 		out, code := runChild(t, map[string]string{
 			"DATABASE_URL":        dsn,
 			"LEGADO_DATABASE_URL": comSearchPath(dsn, "legado"),
-			"SUBPROC_ARGS":        "--executar",
+			"SUBPROC_ARGS":        "--executar --empresa-slug " + slugEmpresaTeste,
 		})
 		if code != 1 {
 			t.Fatalf("exit code = %d, want 1; saída=%s", code, out)
@@ -691,7 +697,7 @@ func TestMain_Processo(t *testing.T) {
 		out, code := runChild(t, map[string]string{
 			"DATABASE_URL":        dsn,
 			"LEGADO_DATABASE_URL": comSearchPath(dsn, "legado"),
-			"SUBPROC_ARGS":        "--executar",
+			"SUBPROC_ARGS":        "--executar --empresa-slug " + slugEmpresaTeste,
 		})
 		if code != 0 {
 			t.Fatalf("exit code = %d, want 0; saída=%s", code, out)
@@ -705,6 +711,46 @@ func TestMain_Processo(t *testing.T) {
 		if n := contar(t, alvo, `SELECT count(*) FROM migracao_id_map WHERE entidade='estoque'`); n != 2 {
 			t.Errorf("count(migracao_id_map estoque) = %d, want 2", n)
 		}
+		// Story 9.4: toda linha gravada pelo corte nasce DENTRO da Empresa.
+		if n := contarComArgs(t, alvo, `SELECT count(*) FROM estoques WHERE empresa_id = $1`, empresaTeste); n != 2 {
+			t.Errorf("estoques da Empresa = %d, want 2 — o corte gravou fora dela", n)
+		}
+		if n := contar(t, alvo, `SELECT count(*) FROM estoques WHERE empresa_id IS NULL`); n != 0 {
+			t.Errorf("estoques órfãos = %d, want 0", n)
+		}
+	})
+
+	// Story 9.4: sem --empresa-slug o corte nem chega a olhar o ambiente.
+	t.Run("empresa-slug ausente", func(t *testing.T) {
+		out, code := runChild(t, map[string]string{"SUBPROC_ARGS": ""})
+		if code != 1 {
+			t.Fatalf("exit code = %d, want 1; saída=%s", code, out)
+		}
+		if !strings.Contains(out, "--empresa-slug é obrigatório") {
+			t.Errorf("saída = %q, quer conter %q", out, "--empresa-slug é obrigatório")
+		}
+	})
+
+	// Story 9.4: slug que não resolve aborta antes de qualquer escrita.
+	t.Run("empresa-slug inexistente", func(t *testing.T) {
+		alvo, _ := testDB(t)
+		dsn := os.Getenv("DATABASE_URL")
+		inserirLegado(t, alvo, "doc-1", "Canteiro A")
+
+		out, code := runChild(t, map[string]string{
+			"DATABASE_URL":        dsn,
+			"LEGADO_DATABASE_URL": comSearchPath(dsn, "legado"),
+			"SUBPROC_ARGS":        "--executar --empresa-slug empresa-que-nao-existe-94",
+		})
+		if code != 1 {
+			t.Fatalf("exit code = %d, want 1; saída=%s", code, out)
+		}
+		if !strings.Contains(out, "nenhuma Empresa ativa") {
+			t.Errorf("saída = %q, quer conter %q", out, "nenhuma Empresa ativa")
+		}
+		if n := contar(t, alvo, `SELECT count(*) FROM estoques`); n != 0 {
+			t.Errorf("count(estoques) = %d, want 0 — abortou antes de escrever", n)
+		}
 	})
 
 	t.Run("sucesso dry-run", func(t *testing.T) {
@@ -716,7 +762,7 @@ func TestMain_Processo(t *testing.T) {
 		out, code := runChild(t, map[string]string{
 			"DATABASE_URL":        dsn,
 			"LEGADO_DATABASE_URL": comSearchPath(dsn, "legado"),
-			"SUBPROC_ARGS":        "",
+			"SUBPROC_ARGS":        "--empresa-slug " + slugEmpresaTeste,
 		})
 		if code != 0 {
 			t.Fatalf("exit code = %d, want 0; saída=%s", code, out)
@@ -745,7 +791,7 @@ func TestMain_Processo(t *testing.T) {
 		out, code := runChild(t, map[string]string{
 			"DATABASE_URL":        dsn,
 			"LEGADO_DATABASE_URL": comSearchPath(dsn, "legado"),
-			"SUBPROC_ARGS":        "--executar",
+			"SUBPROC_ARGS":        "--executar --empresa-slug " + slugEmpresaTeste,
 		})
 		if code != 0 {
 			t.Fatalf("exit code = %d, want 0; saída=%s", code, out)
@@ -773,9 +819,9 @@ func TestMain_Processo(t *testing.T) {
 		}
 		t.Cleanup(func() {
 			alvo.Exec(`
-				INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
-				VALUES ('Migração do sistema legado', $1, NULL, 'almoxarife', false, false)
-				ON CONFLICT (empresa_id, lower(email)) DO NOTHING`, emailUsuarioMigracaoLegado)
+				INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, empresa_id)
+				VALUES ('Migração do sistema legado', $1, NULL, 'almoxarife', false, false, $2)
+				ON CONFLICT (empresa_id, lower(email)) DO NOTHING`, emailUsuarioMigracaoLegado, empresaTeste)
 		})
 
 		inserirLegado(t, alvo, "e1", "Almox Central")
@@ -783,7 +829,7 @@ func TestMain_Processo(t *testing.T) {
 		out, code := runChild(t, map[string]string{
 			"DATABASE_URL":        dsn,
 			"LEGADO_DATABASE_URL": comSearchPath(dsn, "legado"),
-			"SUBPROC_ARGS":        "--executar",
+			"SUBPROC_ARGS":        "--executar --empresa-slug " + slugEmpresaTeste,
 		})
 		if code == 0 {
 			t.Fatalf("exit code = 0, want != 0; saída=%s", out)
@@ -815,7 +861,7 @@ func TestMain_Processo(t *testing.T) {
 		out, code := runChild(t, map[string]string{
 			"DATABASE_URL":        dsn,
 			"LEGADO_DATABASE_URL": comSearchPath(dsn, "legado"),
-			"SUBPROC_ARGS":        "--executar",
+			"SUBPROC_ARGS":        "--executar --empresa-slug " + slugEmpresaTeste,
 		})
 		if code != 0 {
 			t.Fatalf("exit code = %d, want 0; saída=%s", code, out)
@@ -830,4 +876,15 @@ func TestMain_Processo(t *testing.T) {
 			t.Errorf("count(pedidos) = %d, want 0", n)
 		}
 	})
+}
+
+// contarComArgs é `contar` com parâmetros — usado pelas asserções de Empresa
+// da Story 9.4.
+func contarComArgs(t *testing.T, db *sql.DB, query string, args ...any) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(query, args...).Scan(&n); err != nil {
+		t.Fatalf("contar (%s): %v", query, err)
+	}
+	return n
 }

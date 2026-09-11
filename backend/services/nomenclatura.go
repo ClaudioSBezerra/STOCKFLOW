@@ -80,9 +80,9 @@ func nomeValidoParaTemplate(templateTexto, nome string) bool {
 // (addendum §G) DA EMPRESA `empresaID`, ordenados por `subtipo` ascendente —
 // a lista da qual o formulário de cadastro seleciona (opcional), molde direto
 // de ListarCategorias (produtos.go). Cada Empresa recebe a própria cópia da
-// lista padrão em services.ProvisionarEmpresa (Story 9.1); as linhas semeadas
-// pela migração 000013 (`empresa_id IS NULL`) são só o molde e nunca aparecem
-// aqui.
+// lista padrão em services.ProvisionarEmpresa (Story 9.1); o molde vive em
+// `nomenclatura_templates_padrao`, tabela própria desde a Story 9.4
+// (migration 000035), e nunca aparece aqui.
 func ListarNomenclaturaTemplates(db *sql.DB, empresaID string) ([]NomenclaturaTemplate, error) {
 	rows, err := db.Query(
 		`SELECT id, subtipo, template FROM nomenclatura_templates

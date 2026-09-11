@@ -406,8 +406,12 @@ func TestIsolamentoPorEmpresa_LeituraNuncaCruza(t *testing.T) {
 		if len(categorias) == 0 {
 			t.Fatal("nenhuma categoria para a Alfa — ProvisionarEmpresa deveria ter copiado a lista padrão")
 		}
+		// `categorias_padrao` (Story 9.4, migration 000035): a lista molde
+		// mudou de casa — deixou de ser um punhado de linhas
+		// `empresa_id IS NULL` DENTRO de `categorias` (o que impedia
+		// `SET NOT NULL`) e passou a ter tabela própria.
 		var padrao int
-		if err := db.QueryRow(`SELECT count(*) FROM categorias WHERE empresa_id IS NULL`).Scan(&padrao); err != nil {
+		if err := db.QueryRow(`SELECT count(*) FROM categorias_padrao`).Scan(&padrao); err != nil {
 			t.Fatalf("contar categorias padrão: %v", err)
 		}
 		if len(categorias) != padrao {

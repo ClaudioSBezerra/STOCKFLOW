@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/joho/godotenv"
@@ -86,10 +87,21 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
 
 	executar := flag.Bool("executar", false, "aplica a migração; sem a flag o binário roda em dry-run e não escreve nada")
+	// --empresa-slug é OBRIGATÓRIA desde a Story 9.4: toda linha escrita pelo
+	// corte nasce dentro de uma Empresa (`empresa_id`), e toda resolução
+	// (Estoque por nome, Categoria, autor por e-mail, código de Produto) é
+	// recortada por ela. Sem a flag o binário gravaria linhas órfãs, que o
+	// endurecimento (`migrar-multi-empresa --etapa endurecimento`) recusaria.
+	empresaSlug := flag.String("empresa-slug", "", "slug da Empresa que recebe os dados legados (obrigatório; ex.: ferreira-costa)")
 	flag.Parse()
 
 	if flag.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "erro: argumento inesperado %q — use a flag --executar (com os dois hifens)\n", flag.Arg(0))
+		fmt.Fprintf(os.Stderr, "erro: argumento inesperado %q — use as flags com os dois hifens\n", flag.Arg(0))
+		os.Exit(1)
+	}
+
+	if strings.TrimSpace(*empresaSlug) == "" {
+		fmt.Fprintln(os.Stderr, "erro: --empresa-slug é obrigatório — o corte grava DENTRO de uma Empresa (Story 9.4). Rode antes `migrar-multi-empresa --etapa empresa --executar` e depois `--etapa backfill`.")
 		os.Exit(1)
 	}
 
@@ -135,18 +147,40 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Empresa do corte (Story 9.4): resolvida UMA vez, aqui, e passada como
+	// argumento explícito às quatro fases — nenhuma delas a re-deriva, e
+	// nenhuma aceita `empresa_id` de outra fonte (AD-8 forma 3, AD-19).
+	// `status = 'ativa'` é o mesmo recorte de services.BuscarEmpresaPorSlug:
+	// uma Empresa desativada não recebe dado nenhum.
+	var empresaID string
+	switch err := alvo.QueryRow(
+		`SELECT id FROM empresas WHERE slug = $1 AND status = 'ativa'`, strings.TrimSpace(*empresaSlug),
+	).Scan(&empresaID); {
+	case errors.Is(err, sql.ErrNoRows):
+		fmt.Fprintf(os.Stderr, "erro: nenhuma Empresa ativa com slug %q no banco alvo — crie-a antes com `migrar-multi-empresa --etapa empresa --executar`. Nada foi escrito.\n", *empresaSlug)
+		os.Exit(1)
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "erro: falha ao resolver a Empresa do corte: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Pré-condição de seed do corte de Movimentações (Story 5.4), checada
 	// AGORA — antes de migrarEstoques/migrarProdutos, que escrevem e
 	// commitam (produtos commita por linha). A checagem definitiva vive
 	// dentro de migrarMovimentacoes (ponto testável), mas falhar só lá
 	// deixaria o alvo meio-migrado e a mensagem "nada foi escrito" seria
 	// mentira. Aqui, nada foi escrito de fato.
+	//
+	// Recortada pela Empresa desde a 9.4: a conta sintética da migration
+	// 000022 nasce sem Empresa e só passa a pertencer à Ferreira Costa depois
+	// do backfill — é por isso que o runbook manda rodar
+	// `migrar-multi-empresa --etapa backfill` ANTES deste corte.
 	var seedMigracaoOK int
 	switch err := alvo.QueryRow(
-		`SELECT 1 FROM usuarios WHERE lower(email) = lower($1)`, emailUsuarioMigracaoLegado,
+		`SELECT 1 FROM usuarios WHERE lower(email) = lower($1) AND empresa_id = $2`, emailUsuarioMigracaoLegado, empresaID,
 	).Scan(&seedMigracaoOK); {
 	case errors.Is(err, sql.ErrNoRows):
-		fmt.Fprintln(os.Stderr, "erro: o seed da migration 000022 (usuário \"Migração do sistema legado\") está ausente no banco alvo — aplique todas as migrations antes do corte. Nada foi escrito.")
+		fmt.Fprintln(os.Stderr, "erro: o seed da migration 000022 (usuário \"Migração do sistema legado\") não existe DENTRO da Empresa informada — aplique todas as migrations e rode `migrar-multi-empresa --etapa backfill --executar` antes do corte. Nada foi escrito.")
 		os.Exit(1)
 	case err != nil:
 		fmt.Fprintf(os.Stderr, "erro: falha ao verificar o seed do usuário de migração: %v\n", err)
@@ -165,7 +199,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	res, err := migrarEstoques(alvo, legado, *executar)
+	res, err := migrarEstoques(alvo, legado, empresaID, *executar)
 	if err != nil {
 		switch {
 		case len(res.NomesInvalidos) > 0:
@@ -208,7 +242,7 @@ func main() {
 	// Estoques pelo nome (addendum §F) — migrarEstoques precisa ter rodado
 	// primeiro para que a pré-checagem de Estoque desconhecido tenha o que
 	// casar.
-	resProdutos, err := migrarProdutos(alvo, legado, fotosDir, *executar)
+	resProdutos, err := migrarProdutos(alvo, legado, empresaID, fotosDir, *executar)
 	if err != nil {
 		switch {
 		case len(resProdutos.NomesInvalidos) > 0:
@@ -279,7 +313,7 @@ func main() {
 	// Produtos pelo nome desnormalizado e Estoques pelo nome — migrarEstoques
 	// e migrarProdutos precisam ter rodado para que a resolução por
 	// migracao_id_map / estoques.nome_normalizado tenha o que casar.
-	resMov, err := migrarMovimentacoes(alvo, legado, *executar)
+	resMov, err := migrarMovimentacoes(alvo, legado, empresaID, *executar)
 	if err != nil {
 		if errors.Is(err, errSeedUsuarioMigracaoAusente) {
 			fmt.Fprintln(os.Stderr, "erro: seed do usuário de migração ausente — a migration 000022 (usuário \"Migração do sistema legado\") não foi aplicada no banco alvo. Aplique todas as migrations antes do corte. Nada foi escrito.")
@@ -310,7 +344,7 @@ func main() {
 	// execução (Story 7.7, spec-7-7): o vínculo Movimentação↔Pedido precisa
 	// das Movimentações já em migracao_id_map. Um erro anterior já saiu com
 	// os.Exit(1) antes de chegar aqui.
-	resPed, err := migrarPedidos(alvo, legado, *executar)
+	resPed, err := migrarPedidos(alvo, legado, empresaID, *executar)
 	if err != nil {
 		if errors.Is(err, errSeedUsuarioMigracaoAusente) {
 			fmt.Fprintln(os.Stderr, "erro: seed do usuário de migração ausente — a migration 000022 (usuário \"Migração do sistema legado\") não foi aplicada no banco alvo. Aplique todas as migrations antes do corte. Nada foi escrito.")
@@ -370,7 +404,7 @@ func main() {
 // colidente escapar da pré-checagem (criada por outra sessão no intervalo), a
 // transação sofre rollback (via defer) e o erro identifica id_legado + nome —
 // nada parcial do lote fica gravado.
-func migrarEstoques(alvo, legado *sql.DB, executar bool) (ResultadoMigracao, error) {
+func migrarEstoques(alvo, legado *sql.DB, empresaID string, executar bool) (ResultadoMigracao, error) {
 	var res ResultadoMigracao
 
 	// 1) Carrega as linhas legadas, com o nome normalizado calculado pelo
@@ -494,9 +528,13 @@ func migrarEstoques(alvo, legado *sql.DB, executar bool) (ResultadoMigracao, err
 		normsNaoMapeados = append(normsNaoMapeados, l.norm)
 	}
 	if len(normsNaoMapeados) > 0 {
+		// `AND empresa_id = $2` (Story 9.4): a colisão que importa é dentro da
+		// Empresa do corte — `idx_estoques_nome_normalizado` é
+		// `(empresa_id, nome_normalizado)`, então o mesmo nome em OUTRA
+		// Empresa não colide e não pode abortar este corte.
 		colideRows, err := alvo.Query(
-			`SELECT nome_normalizado FROM estoques WHERE nome_normalizado = ANY($1)`,
-			pq.Array(normsNaoMapeados),
+			`SELECT nome_normalizado FROM estoques WHERE nome_normalizado = ANY($1) AND empresa_id = $2`,
+			pq.Array(normsNaoMapeados), empresaID,
 		)
 		if err != nil {
 			return res, fmt.Errorf("falha na pré-checagem de colisão com o banco alvo: %w", err)
@@ -576,7 +614,7 @@ func migrarEstoques(alvo, legado *sql.DB, executar bool) (ResultadoMigracao, err
 		}
 
 		var novoID string
-		err = tx.QueryRow(`INSERT INTO estoques (nome) VALUES ($1) RETURNING id`, l.nome).Scan(&novoID)
+		err = tx.QueryRow(`INSERT INTO estoques (nome, empresa_id) VALUES ($1, $2) RETURNING id`, l.nome, empresaID).Scan(&novoID)
 		if err != nil {
 			var pqErr *pq.Error
 			if errors.As(err, &pqErr) && pqErr.Code == pqUniqueViolation {

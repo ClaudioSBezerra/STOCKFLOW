@@ -10,6 +10,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o /out/api .
 RUN CGO_ENABLED=0 go build -o /out/seed-admin ./cmd/seed-admin
 RUN CGO_ENABLED=0 go build -o /out/seed-dono-plataforma ./cmd/seed-dono-plataforma
+RUN CGO_ENABLED=0 go build -o /out/migrar-multi-empresa ./cmd/migrar-multi-empresa
 
 FROM alpine:3.20
 
@@ -20,6 +21,7 @@ WORKDIR /app
 COPY --from=build /out/api ./api
 COPY --from=build /out/seed-admin ./seed-admin
 COPY --from=build /out/seed-dono-plataforma ./seed-dono-plataforma
+COPY --from=build /out/migrar-multi-empresa ./migrar-multi-empresa
 
 USER appuser
 

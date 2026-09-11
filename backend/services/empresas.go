@@ -8,12 +8,14 @@
 // nenhum handler a aceita de body/query/header (AD-8 forma 3: esta camada não
 // importa net/http nem context).
 //
-// ProvisionarEmpresa é o ÚNICO caminho de criação de uma Empresa: grava a
-// linha e copia para ela as listas padrão de Categoria e de Nomenclatura
-// Guiada (as linhas semeadas pelas migrações 000010/000013, que continuam com
-// `empresa_id IS NULL` e servem de molde). A Story 9.2 (criação pela UI) e a
-// Story 9.4 (Empresa "Ferreira Costa") reutilizam esta função em vez de
-// duplicar o provisionamento. Esta story não cria nenhuma Empresa.
+// ProvisionarEmpresa é o caminho normal de criação de uma Empresa: grava a
+// linha (InserirEmpresa) e copia para ela as listas padrão de Categoria e de
+// Nomenclatura Guiada (CopiarListasPadrao, hoje lidas de
+// `categorias_padrao`/`nomenclatura_templates_padrao` — migration 000035).
+// A Story 9.2 (criação pela UI) reutiliza esta função em vez de duplicar o
+// provisionamento; a Story 9.4 (Empresa "Ferreira Costa") usa as DUAS metades
+// separadas, porque a Empresa fundadora nasce sem cópia (ela adota as listas
+// legadas no backfill) e só depois completa o que faltar.
 package services
 
 import (
@@ -304,11 +306,14 @@ func validarDadosEmpresa(d DadosEmpresa) (dadosEmpresaValidados, error) {
 	return v, nil
 }
 
-// ProvisionarEmpresa cria uma Empresa `ativa` dentro da transação `tx` do
-// chamador e copia para ela as listas padrão de Categoria (25) e de
-// Nomenclatura Guiada (28) — as linhas com `empresa_id IS NULL` semeadas
-// pelas migrações 000010/000013. Tudo na MESMA transação do chamador: um
-// provisionamento que falhe no meio nunca deixa uma Empresa sem suas listas.
+// InserirEmpresa valida `dados` e grava a linha em `empresas` dentro da
+// transação `tx` do chamador — SEM copiar as listas padrão. É a metade
+// "cadastral" de ProvisionarEmpresa, extraída na Story 9.4: a Empresa
+// fundadora (Ferreira Costa) precisa nascer sem cópia alguma, porque ela
+// ADOTA as linhas de `categorias`/`nomenclatura_templates` legadas no
+// backfill e só depois completa o que faltar (CopiarListasPadrao). Receber a
+// cópia antes duplicaria cada `codigo` dentro da Empresa e violaria
+// `idx_categorias_empresa_codigo`.
 //
 // Validação completa ANTES de qualquer escrita (*ErroEmpresaValidacao). CNPJ
 // ou slug já usados -> ErrCNPJDuplicado / ErrSlugDuplicado (colisão dos
@@ -318,7 +323,7 @@ func validarDadosEmpresa(d DadosEmpresa) (dadosEmpresaValidados, error) {
 // Uma violação de unicidade dentro de `tx` deixa a transação abortada no
 // Postgres: o chamador deve desfazê-la (o padrão `defer tx.Rollback()` da
 // casa já cobre isso).
-func ProvisionarEmpresa(tx *sql.Tx, dados DadosEmpresa) (Empresa, error) {
+func InserirEmpresa(tx *sql.Tx, dados DadosEmpresa) (Empresa, error) {
 	v, err := validarDadosEmpresa(dados)
 	if err != nil {
 		return Empresa{}, err
@@ -350,20 +355,65 @@ func ProvisionarEmpresa(tx *sql.Tx, dados DadosEmpresa) (Empresa, error) {
 		}
 		return Empresa{}, fmt.Errorf("falha ao inserir empresa: %w", err)
 	}
+	return e, nil
+}
 
+// CopiarListasPadrao copia para `empresaID` as listas padrão de Categoria
+// (25) e de Nomenclatura Guiada (28) — desde a Story 9.4 lidas das tabelas
+// `categorias_padrao`/`nomenclatura_templates_padrao` (migration 000035), não
+// mais de linhas `empresa_id IS NULL` dentro das próprias tabelas de domínio.
+//
+// IDEMPOTENTE por construção (`WHERE NOT EXISTS` dentro da Empresa): chamar
+// duas vezes não duplica nada. É isso que permite ao backfill da Story 9.4
+// COMPLETAR a lista da Empresa fundadora depois de ela já ter adotado as
+// linhas legadas — só entra o que ainda falta. O guard casa por `codigo` E
+// por `nome` (e por `subtipo` nos templates) porque os dois são únicos por
+// Empresa (`idx_categorias_empresa_codigo`/`idx_categorias_empresa_nome`):
+// uma linha adotada com o mesmo nome sob outro código faria o INSERT falhar
+// se só o código fosse checado.
+func CopiarListasPadrao(tx *sql.Tx, empresaID string) error {
 	const copiarCategorias = `
 		INSERT INTO categorias (codigo, nome, empresa_id)
-		SELECT codigo, nome, $1 FROM categorias WHERE empresa_id IS NULL`
-	if _, err := tx.Exec(copiarCategorias, e.ID); err != nil {
-		return Empresa{}, fmt.Errorf("falha ao copiar categorias padrão para a empresa: %w", err)
+		SELECT p.codigo, p.nome, $1
+		FROM categorias_padrao p
+		WHERE NOT EXISTS (
+			SELECT 1 FROM categorias c
+			WHERE c.empresa_id = $1 AND (c.codigo = p.codigo OR c.nome = p.nome)
+		)`
+	if _, err := tx.Exec(copiarCategorias, empresaID); err != nil {
+		return fmt.Errorf("falha ao copiar categorias padrão para a empresa: %w", err)
 	}
 
 	const copiarTemplates = `
 		INSERT INTO nomenclatura_templates (subtipo, template, empresa_id)
-		SELECT subtipo, template, $1 FROM nomenclatura_templates WHERE empresa_id IS NULL`
-	if _, err := tx.Exec(copiarTemplates, e.ID); err != nil {
-		return Empresa{}, fmt.Errorf("falha ao copiar templates de nomenclatura padrão para a empresa: %w", err)
+		SELECT p.subtipo, p.template, $1
+		FROM nomenclatura_templates_padrao p
+		WHERE NOT EXISTS (
+			SELECT 1 FROM nomenclatura_templates t
+			WHERE t.empresa_id = $1 AND t.subtipo = p.subtipo
+		)`
+	if _, err := tx.Exec(copiarTemplates, empresaID); err != nil {
+		return fmt.Errorf("falha ao copiar templates de nomenclatura padrão para a empresa: %w", err)
 	}
+	return nil
+}
 
+// ProvisionarEmpresa cria uma Empresa `ativa` dentro da transação `tx` do
+// chamador e copia para ela as listas padrão de Categoria (25) e de
+// Nomenclatura Guiada (28). Desde a Story 9.4 é a simples composição de
+// InserirEmpresa + CopiarListasPadrao — mesma assinatura e mesmo
+// comportamento de antes. Tudo na MESMA transação do chamador: um
+// provisionamento que falhe no meio nunca deixa uma Empresa sem suas listas.
+//
+// Erros: os mesmos de InserirEmpresa (*ErroEmpresaValidacao,
+// ErrCNPJDuplicado, ErrSlugDuplicado).
+func ProvisionarEmpresa(tx *sql.Tx, dados DadosEmpresa) (Empresa, error) {
+	e, err := InserirEmpresa(tx, dados)
+	if err != nil {
+		return Empresa{}, err
+	}
+	if err := CopiarListasPadrao(tx, e.ID); err != nil {
+		return Empresa{}, err
+	}
 	return e, nil
 }

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"stockflow/backend/services"
 )
 
 // Testes de migrarProdutos — Story 3.7 (spec-3-7). Cobre toda a I/O &
@@ -86,10 +88,10 @@ func inserirLegadoProduto(t *testing.T, alvo *sql.DB, in legadoProdutoInput) {
 // hardcodar um dos 25 nomes.
 func categoriaExistente(t *testing.T, alvo *sql.DB) (id, nome string) {
 	t.Helper()
-	// `empresa_id IS NULL` (Story 9.1): a lista de Categorias passou a ter
-	// uma cópia por Empresa, e este binário resolve nome -> id no escopo
-	// legado — o teste tem de esperar o id da MESMA linha padrão.
-	if err := alvo.QueryRow(`SELECT id, nome FROM categorias WHERE empresa_id IS NULL ORDER BY codigo LIMIT 1`).Scan(&id, &nome); err != nil {
+	// `empresa_id = $1` (Story 9.4): o corte resolve nome -> id DENTRO da
+	// Empresa que recebe os dados — o teste tem de esperar o id da cópia
+	// dela, nunca de uma linha de outra Empresa.
+	if err := alvo.QueryRow(`SELECT id, nome FROM categorias WHERE empresa_id = $1 ORDER BY codigo LIMIT 1`, empresaTeste).Scan(&id, &nome); err != nil {
 		t.Fatalf("falha ao buscar categoria de seed: %v", err)
 	}
 	return id, nome
@@ -101,7 +103,7 @@ func categoriaExistente(t *testing.T, alvo *sql.DB) (id, nome string) {
 func criarEstoqueAlvo(t *testing.T, alvo *sql.DB, nome string) string {
 	t.Helper()
 	var id string
-	if err := alvo.QueryRow(`INSERT INTO estoques (nome) VALUES ($1) RETURNING id`, nome).Scan(&id); err != nil {
+	if err := alvo.QueryRow(`INSERT INTO estoques (nome, empresa_id) VALUES ($1, $2) RETURNING id`, nome, empresaTeste).Scan(&id); err != nil {
 		t.Fatalf("falha ao pré-criar estoque no alvo (%s): %v", nome, err)
 	}
 	return id
@@ -180,7 +182,7 @@ func TestMigrarProdutos_CorteInicial(t *testing.T) {
 		Estoques:  map[string]float64{"Canteiro A": 1},
 	})
 
-	res, err := migrarProdutos(alvo, legado, fotosDir, true)
+	res, err := migrarProdutos(alvo, legado, empresaTeste, fotosDir, true)
 	if err != nil {
 		t.Fatalf("migrarProdutos retornou erro inesperado: %v", err)
 	}
@@ -272,12 +274,12 @@ func TestMigrarProdutos_Idempotente(t *testing.T) {
 		Estoques:  map[string]float64{"Canteiro A": 5},
 	})
 
-	if _, err := migrarProdutos(alvo, legado, fotosDir, true); err != nil {
+	if _, err := migrarProdutos(alvo, legado, empresaTeste, fotosDir, true); err != nil {
 		t.Fatalf("primeira execução falhou: %v", err)
 	}
 	achadosAntes := arquivosComPrefixo(t, fotosDir, "")
 
-	res, err := migrarProdutos(alvo, legado, fotosDir, true)
+	res, err := migrarProdutos(alvo, legado, empresaTeste, fotosDir, true)
 	if err != nil {
 		t.Fatalf("segunda execução retornou erro: %v", err)
 	}
@@ -322,8 +324,8 @@ func TestMigrarProdutos_FotoReprocessadaEmLinhaJaMigrada(t *testing.T) {
 	// Produto e o mapa já existem, mas a foto nunca foi processada.
 	var produtoID string
 	if err := alvo.QueryRow(
-		`INSERT INTO produtos (nome, categoria_id) VALUES ($1, $2) RETURNING id`,
-		"Item Interrompido", categoriaID,
+		`INSERT INTO produtos (nome, categoria_id, empresa_id) VALUES ($1, $2, $3) RETURNING id`,
+		"Item Interrompido", categoriaID, empresaTeste,
 	).Scan(&produtoID); err != nil {
 		t.Fatalf("falha ao simular produto pré-migrado: %v", err)
 	}
@@ -336,7 +338,7 @@ func TestMigrarProdutos_FotoReprocessadaEmLinhaJaMigrada(t *testing.T) {
 		t.Fatalf("pré-condição inválida: já existe foto para %s", produtoID)
 	}
 
-	res, err := migrarProdutos(alvo, legado, fotosDir, true)
+	res, err := migrarProdutos(alvo, legado, empresaTeste, fotosDir, true)
 	if err != nil {
 		t.Fatalf("migrarProdutos retornou erro inesperado: %v", err)
 	}
@@ -352,7 +354,7 @@ func TestMigrarProdutos_FotoReprocessadaEmLinhaJaMigrada(t *testing.T) {
 	}
 
 	// Reexecutar de novo NÃO pode reprocessar de novo — a foto já existe.
-	res2, err := migrarProdutos(alvo, legado, fotosDir, true)
+	res2, err := migrarProdutos(alvo, legado, empresaTeste, fotosDir, true)
 	if err != nil {
 		t.Fatalf("terceira execução retornou erro: %v", err)
 	}
@@ -379,7 +381,7 @@ func TestMigrarProdutos_DimensaoAmbigua(t *testing.T) {
 		Largura:     strPtr("50mm"),
 	})
 
-	res, err := migrarProdutos(alvo, legado, t.TempDir(), true)
+	res, err := migrarProdutos(alvo, legado, empresaTeste, t.TempDir(), true)
 	if err != nil {
 		t.Fatalf("migrarProdutos retornou erro inesperado: %v", err)
 	}
@@ -428,7 +430,7 @@ func TestMigrarProdutos_CampoLateral(t *testing.T) {
 		Obs:       strPtr("observação original"),
 	})
 
-	res, err := migrarProdutos(alvo, legado, t.TempDir(), true)
+	res, err := migrarProdutos(alvo, legado, empresaTeste, t.TempDir(), true)
 	if err != nil {
 		t.Fatalf("migrarProdutos retornou erro inesperado: %v", err)
 	}
@@ -465,7 +467,7 @@ func TestMigrarProdutos_NomeInvalido(t *testing.T) {
 	inserirLegadoProduto(t, alvo, legadoProdutoInput{ID: "prod-longo", Nome: strings.Repeat("x", 256), Categoria: strPtr(categoriaNome)})
 	inserirLegadoProduto(t, alvo, legadoProdutoInput{ID: "prod-ok", Nome: "Produto Válido", Categoria: strPtr(categoriaNome)})
 
-	res, err := migrarProdutos(alvo, legado, t.TempDir(), true)
+	res, err := migrarProdutos(alvo, legado, empresaTeste, t.TempDir(), true)
 	if err == nil {
 		t.Fatalf("migrarProdutos deveria abortar; res=%+v", res)
 	}
@@ -503,7 +505,7 @@ func TestMigrarProdutos_CategoriaDesconhecida(t *testing.T) {
 		Categoria: strPtr("Categoria Que Não Existe"),
 	})
 
-	res, err := migrarProdutos(alvo, legado, t.TempDir(), true)
+	res, err := migrarProdutos(alvo, legado, empresaTeste, t.TempDir(), true)
 	if err == nil {
 		t.Fatalf("migrarProdutos deveria abortar; res=%+v", res)
 	}
@@ -532,7 +534,7 @@ func TestMigrarProdutos_CategoriaComPrefixoDeCodigoEAcentoResolve(t *testing.T) 
 
 	var categoriaID, categoriaNome string
 	if err := alvo.QueryRow(
-		`SELECT id, nome FROM categorias WHERE empresa_id IS NULL AND nome ~ '[áéíóúâêôãõç]' ORDER BY codigo LIMIT 1`,
+		`SELECT id, nome FROM categorias WHERE empresa_id = $1 AND nome ~ '[áéíóúâêôãõç]' ORDER BY codigo LIMIT 1`, empresaTeste,
 	).Scan(&categoriaID, &categoriaNome); err != nil {
 		t.Fatalf("falha ao buscar categoria de seed com acento: %v", err)
 	}
@@ -547,7 +549,7 @@ func TestMigrarProdutos_CategoriaComPrefixoDeCodigoEAcentoResolve(t *testing.T) 
 		Categoria: strPtr("04.999 - " + categoriaSemAcento),
 	})
 
-	res, err := migrarProdutos(alvo, legado, t.TempDir(), true)
+	res, err := migrarProdutos(alvo, legado, empresaTeste, t.TempDir(), true)
 	if err != nil {
 		t.Fatalf("migrarProdutos não deveria abortar (prefixo de código + sem acento deve resolver): %v (res=%+v)", err, res)
 	}
@@ -579,7 +581,7 @@ func TestMigrarProdutos_EstoqueDesconhecido(t *testing.T) {
 		Estoques:  map[string]float64{"Estoque Inexistente": 1},
 	})
 
-	res, err := migrarProdutos(alvo, legado, t.TempDir(), true)
+	res, err := migrarProdutos(alvo, legado, empresaTeste, t.TempDir(), true)
 	if err == nil {
 		t.Fatalf("migrarProdutos deveria abortar; res=%+v", res)
 	}
@@ -604,7 +606,7 @@ func TestMigrarProdutos_CodigoDuplicadoLegado(t *testing.T) {
 	inserirLegadoProduto(t, alvo, legadoProdutoInput{ID: "prod-1", Nome: "A", Codigo: strPtr("DUP"), Categoria: strPtr(categoriaNome)})
 	inserirLegadoProduto(t, alvo, legadoProdutoInput{ID: "prod-2", Nome: "B", Codigo: strPtr("DUP"), Categoria: strPtr(categoriaNome)})
 
-	res, err := migrarProdutos(alvo, legado, t.TempDir(), true)
+	res, err := migrarProdutos(alvo, legado, empresaTeste, t.TempDir(), true)
 	if err == nil {
 		t.Fatalf("migrarProdutos deveria abortar; res=%+v", res)
 	}
@@ -627,15 +629,15 @@ func TestMigrarProdutos_CodigoColisaoAlvo(t *testing.T) {
 
 	categoriaID, categoriaNome := categoriaExistente(t, alvo)
 	if _, err := alvo.Exec(
-		`INSERT INTO produtos (nome, codigo, categoria_id) VALUES ($1, $2, $3)`,
-		"Já Existente", "COD-X", categoriaID,
+		`INSERT INTO produtos (nome, codigo, categoria_id, empresa_id) VALUES ($1, $2, $3, $4)`,
+		"Já Existente", "COD-X", categoriaID, empresaTeste,
 	); err != nil {
 		t.Fatalf("falha ao pré-criar produto no alvo: %v", err)
 	}
 
 	inserirLegadoProduto(t, alvo, legadoProdutoInput{ID: "prod-1", Nome: "Novo", Codigo: strPtr("COD-X"), Categoria: strPtr(categoriaNome)})
 
-	res, err := migrarProdutos(alvo, legado, t.TempDir(), true)
+	res, err := migrarProdutos(alvo, legado, empresaTeste, t.TempDir(), true)
 	if err == nil {
 		t.Fatalf("migrarProdutos deveria abortar; res=%+v", res)
 	}
@@ -665,7 +667,7 @@ func TestMigrarProdutos_QuantidadeNegativa(t *testing.T) {
 		Estoques:  map[string]float64{"Canteiro A": -5},
 	})
 
-	res, err := migrarProdutos(alvo, legado, t.TempDir(), true)
+	res, err := migrarProdutos(alvo, legado, empresaTeste, t.TempDir(), true)
 	if err == nil {
 		t.Fatalf("migrarProdutos deveria abortar; res=%+v", res)
 	}
@@ -697,7 +699,7 @@ func TestMigrarProdutos_QuantidadeNaoNumerica(t *testing.T) {
 		EstoquesTexto: map[string]string{"Canteiro A": "dez"},
 	})
 
-	res, err := migrarProdutos(alvo, legado, t.TempDir(), true)
+	res, err := migrarProdutos(alvo, legado, empresaTeste, t.TempDir(), true)
 	if err == nil {
 		t.Fatalf("migrarProdutos deveria abortar; res=%+v", res)
 	}
@@ -737,7 +739,7 @@ func TestMigrarProdutos_EstoqueColisaoNoProduto(t *testing.T) {
 		Categoria: strPtr(categoriaNome),
 	})
 
-	res, err := migrarProdutos(alvo, legado, t.TempDir(), true)
+	res, err := migrarProdutos(alvo, legado, empresaTeste, t.TempDir(), true)
 	if err == nil {
 		t.Fatalf("migrarProdutos deveria abortar; res=%+v", res)
 	}
@@ -768,7 +770,7 @@ func TestMigrarProdutos_FotoCorrompida(t *testing.T) {
 		Foto:      strPtr(fotoCorrompida),
 	})
 
-	res, err := migrarProdutos(alvo, legado, fotosDir, true)
+	res, err := migrarProdutos(alvo, legado, empresaTeste, fotosDir, true)
 	if err != nil {
 		t.Fatalf("migrarProdutos retornou erro inesperado: %v", err)
 	}
@@ -803,7 +805,7 @@ func TestMigrarProdutos_ProdutoSemFoto(t *testing.T) {
 	_, categoriaNome := categoriaExistente(t, alvo)
 	inserirLegadoProduto(t, alvo, legadoProdutoInput{ID: "prod-1", Nome: "Sem Foto", Categoria: strPtr(categoriaNome)})
 
-	res, err := migrarProdutos(alvo, legado, fotosDir, true)
+	res, err := migrarProdutos(alvo, legado, empresaTeste, fotosDir, true)
 	if err != nil {
 		t.Fatalf("migrarProdutos retornou erro inesperado: %v", err)
 	}
@@ -818,60 +820,52 @@ func TestMigrarProdutos_ProdutoSemFoto(t *testing.T) {
 	}
 }
 
-// TestMigrarProdutos_SeedAusente — cenário "Seed ausente": categorias (ou
-// nomenclatura_templates) vazia aborta ANTES de ler qualquer linha legada.
-// Restaura o seed compartilhado ao final via t.Cleanup, mesmo se o teste
-// falhar — Boundaries desta story proíbem re-semear categorias/templates
-// como parte do CÓDIGO de produção, mas este teste precisa do estado vazio
-// temporariamente, sempre devolvido ao normal.
+// TestMigrarProdutos_SeedAusente — cenário "Seed ausente": uma Empresa sem
+// Categoria/Template nenhum aborta ANTES de ler qualquer linha legada.
+//
+// Story 9.4: o teste não apaga mais `categorias` (o snapshot/restore antigo
+// era um risco real para as outras suítes que compartilham este banco). Em
+// vez disso cria uma Empresa PELADA — services.InserirEmpresa é exatamente a
+// metade de ProvisionarEmpresa que NÃO copia as listas padrão — e roda o
+// corte contra ela.
 func TestMigrarProdutos_SeedAusente(t *testing.T) {
 	alvo, legado := testDB(t)
 
-	// Story 9.1: `categorias` deixou de ser uma lista só global — cada
-	// Empresa recebe a própria cópia (services.ProvisionarEmpresa). O
-	// snapshot PRECISA carregar `empresa_id`, senão o cleanup devolveria
-	// apenas as linhas padrão e apagaria as cópias das Empresas criadas por
-	// outras suítes contra o mesmo banco (nenhuma migration as recriaria).
-	type categoriaRow struct {
-		codigo, nome string
-		empresaID    sql.NullString
-	}
-	var originais []categoriaRow
-	rows, err := alvo.Query(`SELECT codigo, nome, empresa_id FROM categorias`)
-	if err != nil {
-		t.Fatalf("falha ao capturar snapshot de categorias: %v", err)
-	}
-	for rows.Next() {
-		var c categoriaRow
-		if err := rows.Scan(&c.codigo, &c.nome, &c.empresaID); err != nil {
-			rows.Close()
-			t.Fatalf("falha ao ler snapshot de categorias: %v", err)
-		}
-		originais = append(originais, c)
-	}
-	rows.Close()
-	if len(originais) == 0 {
-		t.Fatal("seed de categorias já está vazio antes do teste — não deveria acontecer (migration 000010)")
-	}
-
+	const slugPelada = "empresa-sem-listas-94"
 	t.Cleanup(func() {
-		for _, c := range originais {
-			if _, err := alvo.Exec(
-				`INSERT INTO categorias (codigo, nome, empresa_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-				c.codigo, c.nome, c.empresaID,
-			); err != nil {
-				t.Errorf("falha ao restaurar categoria %q no cleanup: %v", c.codigo, err)
-			}
+		if _, err := alvo.Exec(`DELETE FROM empresas WHERE slug = $1`, slugPelada); err != nil {
+			t.Errorf("falha ao remover a Empresa pelada: %v", err)
 		}
 	})
 
-	if _, err := alvo.Exec(`DELETE FROM categorias`); err != nil {
-		t.Fatalf("falha ao esvaziar categorias para o teste: %v", err)
+	tx, err := alvo.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	pelada, err := services.InserirEmpresa(tx, services.DadosEmpresa{
+		NomeFantasia: "Empresa Sem Listas",
+		RazaoSocial:  "Empresa Sem Listas LTDA",
+		CNPJ:         "94750001000105",
+		Slug:         slugPelada,
+		Endereco: services.EnderecoEmpresa{
+			Logradouro: "Rua de Teste", Numero: "1", Bairro: "Centro",
+			Cidade: "Recife", CEP: "50000000", UF: "PE",
+		},
+	})
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("InserirEmpresa: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
 	}
 
-	res, err := migrarProdutos(alvo, legado, t.TempDir(), true)
+	res, err := migrarProdutos(alvo, legado, pelada.ID, t.TempDir(), true)
 	if err == nil {
 		t.Fatalf("migrarProdutos deveria abortar com seed ausente; res=%+v", res)
+	}
+	if !strings.Contains(err.Error(), "seed ausente") {
+		t.Errorf("erro = %v, quer citar o seed ausente", err)
 	}
 	if res.Migrados != 0 || res.JaMigrados != 0 {
 		t.Errorf("resultado = %+v, want tudo zero (abortou antes de ler legado)", res)
@@ -896,7 +890,7 @@ func TestMigrarProdutos_DryRun(t *testing.T) {
 	})
 	inserirLegadoProduto(t, alvo, legadoProdutoInput{ID: "prod-2", Nome: "Item 2", Categoria: strPtr(categoriaNome)})
 
-	res, err := migrarProdutos(alvo, legado, fotosDir, false)
+	res, err := migrarProdutos(alvo, legado, empresaTeste, fotosDir, false)
 	if err != nil {
 		t.Fatalf("dry-run retornou erro: %v", err)
 	}

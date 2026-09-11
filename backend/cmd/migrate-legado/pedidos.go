@@ -133,19 +133,20 @@ type pedidoResolvido struct {
 const insertPedido = `
 	INSERT INTO pedidos (
 		usuario_id, solicitante, obra_centro_custo, observacao, status,
-		criado_em, decidido_por, decidido_em
+		criado_em, decidido_por, decidido_em, empresa_id
 	) VALUES (
 		$1, $2, $3, $4, $5,
 		COALESCE($6, now()), $7,
-		CASE WHEN $5 = 'pendente' THEN NULL ELSE COALESCE($8, now()) END
+		CASE WHEN $5 = 'pendente' THEN NULL ELSE COALESCE($8, now()) END,
+		$9
 	)
 	RETURNING id`
 
 const insertPedidoItem = `
 	INSERT INTO pedido_itens (
 		pedido_id, produto_id, produto_nome, categoria_nome,
-		estoque_id, estoque_nome, quantidade, quantidade_aprovada
-	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
+		estoque_id, estoque_nome, quantidade, quantidade_aprovada, empresa_id
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
 
 // migrarPedidos é o ponto testável da migração de Pedidos legados. `alvo` é
 // o pool para o schema novo (DATABASE_URL); `legado` é o pool para o espelho
@@ -179,15 +180,17 @@ const insertPedidoItem = `
 // criada por outra sessão entre a checagem e a transação): a transação sofre
 // rollback via defer e o erro identifica id_legado — nada parcial fica
 // gravado.
-func migrarPedidos(alvo, legado *sql.DB, executar bool) (ResultadoMigracaoPedidos, error) {
+func migrarPedidos(alvo, legado *sql.DB, empresaID string, executar bool) (ResultadoMigracaoPedidos, error) {
 	var res ResultadoMigracaoPedidos
 
 	// 1) Pré-condição de seed — ANTES de ler qualquer linha legada. É o
 	//    fallback de autor e o `decidido_por` de todo Pedido migrado já
 	//    decidido; sem ele nada pode ser escrito.
 	var usuarioMigracaoID string
+	// `AND empresa_id = $2` (Story 9.4): mesmo recorte de migrarMovimentacoes
+	// — o fallback de autor e o `decidido_por` são contas DESTA Empresa.
 	err := alvo.QueryRow(
-		`SELECT id FROM usuarios WHERE lower(email) = lower($1)`, emailUsuarioMigracaoLegado,
+		`SELECT id FROM usuarios WHERE lower(email) = lower($1) AND empresa_id = $2`, emailUsuarioMigracaoLegado, empresaID,
 	).Scan(&usuarioMigracaoID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return res, errSeedUsuarioMigracaoAusente
@@ -244,7 +247,7 @@ func migrarPedidos(alvo, legado *sql.DB, executar bool) (ResultadoMigracaoPedido
 
 	// 3c) estoques do alvo: nome_normalizado -> id (populado pela 2.3).
 	estoqueIDPorNorm := make(map[string]string)
-	estRows, err := alvo.Query(`SELECT nome_normalizado, id FROM estoques`)
+	estRows, err := alvo.Query(`SELECT nome_normalizado, id FROM estoques WHERE empresa_id = $1`, empresaID)
 	if err != nil {
 		return res, fmt.Errorf("falha ao carregar estoques do banco alvo: %w", err)
 	}
@@ -265,7 +268,7 @@ func migrarPedidos(alvo, legado *sql.DB, executar bool) (ResultadoMigracaoPedido
 	// 3d) usuarios do alvo: lower(email) -> id (índice único
 	//     idx_usuarios_email_lower — lower(email) é único).
 	usuarioIDPorEmail := make(map[string]string)
-	usrRows, err := alvo.Query(`SELECT lower(email), id FROM usuarios WHERE email IS NOT NULL`)
+	usrRows, err := alvo.Query(`SELECT lower(email), id FROM usuarios WHERE email IS NOT NULL AND empresa_id = $1`, empresaID)
 	if err != nil {
 		return res, fmt.Errorf("falha ao carregar usuarios do banco alvo: %w", err)
 	}
@@ -530,7 +533,7 @@ func migrarPedidos(alvo, legado *sql.DB, executar bool) (ResultadoMigracaoPedido
 		if err := tx.QueryRow(
 			insertPedido,
 			r.usuarioID, r.solicitante, r.obra, r.observacao, r.status,
-			r.criadoEm, r.decididoPor, r.decididoEm,
+			r.criadoEm, r.decididoPor, r.decididoEm, empresaID,
 		).Scan(&pedidoNovoID); err != nil {
 			return res, fmt.Errorf("falha ao inserir pedido para id_legado=%s: %w", p.id, err)
 		}
@@ -539,7 +542,7 @@ func migrarPedidos(alvo, legado *sql.DB, executar bool) (ResultadoMigracaoPedido
 			if _, err := tx.Exec(
 				insertPedidoItem,
 				pedidoNovoID, item.produtoID, item.produtoNome, item.categoriaNome,
-				item.estoqueID, item.estoqueNome, item.quantidade, item.quantidadeAprovada,
+				item.estoqueID, item.estoqueNome, item.quantidade, item.quantidadeAprovada, empresaID,
 			); err != nil {
 				return res, fmt.Errorf("falha ao inserir item do pedido id_legado=%s: %w", p.id, err)
 			}
@@ -564,8 +567,8 @@ func migrarPedidos(alvo, legado *sql.DB, executar bool) (ResultadoMigracaoPedido
 		novoIDs, _ := vinculoMovimentacoesDoPedido(p, historicoPorPedidoLegado, movIDNovoPorLegado)
 		if len(novoIDs) > 0 {
 			if _, err := tx.Exec(
-				`UPDATE movimentacoes SET pedido_id = $1 WHERE id = ANY($2::uuid[])`,
-				pedidoNovoID, pq.Array(novoIDs),
+				`UPDATE movimentacoes SET pedido_id = $1 WHERE id = ANY($2::uuid[]) AND empresa_id = $3`,
+				pedidoNovoID, pq.Array(novoIDs), empresaID,
 			); err != nil {
 				return res, fmt.Errorf("falha ao vincular movimentações ao pedido id_legado=%s: %w", p.id, err)
 			}

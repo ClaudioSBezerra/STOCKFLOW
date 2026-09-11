@@ -152,10 +152,10 @@ func TestProvisionarEmpresa_CopiaListasPadrao(t *testing.T) {
 	db := testDB(t)
 
 	var categoriasPadrao, templatesPadrao int
-	if err := db.QueryRow(`SELECT count(*) FROM categorias WHERE empresa_id IS NULL`).Scan(&categoriasPadrao); err != nil {
+	if err := db.QueryRow(`SELECT count(*) FROM categorias_padrao`).Scan(&categoriasPadrao); err != nil {
 		t.Fatalf("contar categorias padrão: %v", err)
 	}
-	if err := db.QueryRow(`SELECT count(*) FROM nomenclatura_templates WHERE empresa_id IS NULL`).Scan(&templatesPadrao); err != nil {
+	if err := db.QueryRow(`SELECT count(*) FROM nomenclatura_templates_padrao`).Scan(&templatesPadrao); err != nil {
 		t.Fatalf("contar templates padrão: %v", err)
 	}
 	if categoriasPadrao == 0 || templatesPadrao == 0 {
@@ -294,4 +294,86 @@ func provisionar(t *testing.T, db *sql.DB, dados DadosEmpresa) Empresa {
 		t.Fatalf("commit: %v", err)
 	}
 	return e
+}
+
+// TestInserirEmpresa_NaoCopiaListas prova a metade "cadastral" extraída na
+// Story 9.4: a Empresa fundadora nasce SEM nenhuma Categoria/Template,
+// porque ela adota as linhas legadas no backfill — receber a cópia antes
+// duplicaria cada código dentro dela.
+func TestInserirEmpresa_NaoCopiaListas(t *testing.T) {
+	db := testDB(t)
+	const slug = "empresa-94-insere"
+	t.Cleanup(func() { removerEmpresaDeTeste(t, db, slug) })
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	e, err := InserirEmpresa(tx, DadosEmpresa{
+		NomeFantasia: "Empresa 94 Insere",
+		RazaoSocial:  "Empresa 94 Insere LTDA",
+		CNPJ:         cnpjDeTeste("947300010001"),
+		Slug:         slug,
+		Endereco: EnderecoEmpresa{
+			Logradouro: "Rua de Teste", Numero: "100", Bairro: "Centro",
+			Cidade: "Recife", CEP: "50000000", UF: "PE",
+		},
+	})
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("InserirEmpresa: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	var categorias, templates int
+	if err := db.QueryRow(`SELECT count(*) FROM categorias WHERE empresa_id = $1`, e.ID).Scan(&categorias); err != nil {
+		t.Fatalf("contar categorias: %v", err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM nomenclatura_templates WHERE empresa_id = $1`, e.ID).Scan(&templates); err != nil {
+		t.Fatalf("contar templates: %v", err)
+	}
+	if categorias != 0 || templates != 0 {
+		t.Errorf("InserirEmpresa copiou listas: categorias=%d templates=%d, want 0 e 0", categorias, templates)
+	}
+}
+
+// TestCopiarListasPadrao_Idempotente prova o `WHERE NOT EXISTS` que permite
+// ao backfill da Story 9.4 COMPLETAR a lista de uma Empresa que já adotou
+// parte dela: a segunda chamada não insere nada.
+func TestCopiarListasPadrao_Idempotente(t *testing.T) {
+	db := testDB(t)
+	const slug = "empresa-94-copia"
+	t.Cleanup(func() { removerEmpresaDeTeste(t, db, slug) })
+
+	e := criarEmpresaDeTeste(t, db, slug, "947300020001", "Empresa 94 Copia")
+
+	var depoisDaPrimeira int
+	if err := db.QueryRow(`SELECT count(*) FROM categorias WHERE empresa_id = $1`, e.ID).Scan(&depoisDaPrimeira); err != nil {
+		t.Fatalf("contar categorias: %v", err)
+	}
+	if depoisDaPrimeira == 0 {
+		t.Fatal("pré-condição: ProvisionarEmpresa não copiou nenhuma categoria")
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := CopiarListasPadrao(tx, e.ID); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("CopiarListasPadrao (2a vez): %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	var depoisDaSegunda int
+	if err := db.QueryRow(`SELECT count(*) FROM categorias WHERE empresa_id = $1`, e.ID).Scan(&depoisDaSegunda); err != nil {
+		t.Fatalf("contar categorias: %v", err)
+	}
+	if depoisDaSegunda != depoisDaPrimeira {
+		t.Errorf("categorias depois da 2a cópia = %d, want %d (idempotente)", depoisDaSegunda, depoisDaPrimeira)
+	}
 }

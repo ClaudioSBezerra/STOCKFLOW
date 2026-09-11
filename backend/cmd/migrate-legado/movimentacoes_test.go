@@ -66,7 +66,7 @@ func seedProdutoMigrado(t *testing.T, alvo *sql.DB, idLegado, nome string) strin
 	categoriaID, _ := categoriaExistente(t, alvo)
 	var produtoID string
 	if err := alvo.QueryRow(
-		`INSERT INTO produtos (nome, categoria_id) VALUES ($1, $2) RETURNING id`, nome, categoriaID,
+		`INSERT INTO produtos (nome, categoria_id, empresa_id) VALUES ($1, $2, $3) RETURNING id`, nome, categoriaID, empresaTeste,
 	).Scan(&produtoID); err != nil {
 		t.Fatalf("falha ao criar produto no alvo (%s): %v", nome, err)
 	}
@@ -130,7 +130,7 @@ func TestMigrarMovimentacoes_CorteInicial(t *testing.T) {
 		Origem: "Almox Central", Destino: "Canteiro Norte", Qtd: "3", Timestamp: &ts,
 	})
 
-	res, err := migrarMovimentacoes(alvo, legado, true)
+	res, err := migrarMovimentacoes(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -176,11 +176,11 @@ func TestMigrarMovimentacoes_Idempotente(t *testing.T) {
 		ID: "h1", Produto: "Areia Média", Tipo: "baixa", Origem: "Almox", Destino: "—", Qtd: "2",
 	})
 
-	if _, err := migrarMovimentacoes(alvo, legado, true); err != nil {
+	if _, err := migrarMovimentacoes(alvo, legado, empresaTeste, true); err != nil {
 		t.Fatalf("primeira execução falhou: %v", err)
 	}
 
-	res, err := migrarMovimentacoes(alvo, legado, true)
+	res, err := migrarMovimentacoes(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("segunda execução retornou erro: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestMigrarMovimentacoes_BaixaIgnoraDestino(t *testing.T) {
 				ID: "h1", Produto: "Prego 17x27", Tipo: "baixa", Origem: "Almox", Destino: destino, Qtd: "5",
 			})
 
-			res, err := migrarMovimentacoes(alvo, legado, true)
+			res, err := migrarMovimentacoes(alvo, legado, empresaTeste, true)
 			if err != nil {
 				t.Fatalf("erro inesperado: %v", err)
 			}
@@ -242,7 +242,7 @@ func TestMigrarMovimentacoes_ProdutoNaoMigrado(t *testing.T) {
 		ID: "h-bad", Produto: "Brita 1", Tipo: "baixa", Origem: "Almox", Destino: "—", Qtd: "1",
 	})
 
-	res, err := migrarMovimentacoes(alvo, legado, true)
+	res, err := migrarMovimentacoes(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("erro inesperado (o lote não pode abortar): %v", err)
 	}
@@ -271,7 +271,7 @@ func TestMigrarMovimentacoes_ProdutoNaoEncontrado(t *testing.T) {
 		ID: "h1", Produto: "Coisa Inexistente", Tipo: "baixa", Origem: "Almox", Destino: "—", Qtd: "1",
 	})
 
-	res, err := migrarMovimentacoes(alvo, legado, true)
+	res, err := migrarMovimentacoes(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestMigrarMovimentacoes_ProdutoAmbiguo(t *testing.T) {
 		ID: "h1", Produto: "Tinta Branca", Tipo: "baixa", Origem: "Almox", Destino: "—", Qtd: "1",
 	})
 
-	res, err := migrarMovimentacoes(alvo, legado, true)
+	res, err := migrarMovimentacoes(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestMigrarMovimentacoes_EstoqueNaoEncontrado(t *testing.T) {
 		ID: "h1", Produto: "Cabo 2.5mm", Tipo: "baixa", Origem: "Almox Fantasma", Destino: "—", Qtd: "1",
 	})
 
-	res, err := migrarMovimentacoes(alvo, legado, true)
+	res, err := migrarMovimentacoes(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -334,7 +334,7 @@ func TestMigrarMovimentacoes_OrigemAusente(t *testing.T) {
 		ID: "h1", Produto: "Cimento CP-II", Tipo: "baixa", Origem: "", Destino: "—", Qtd: "1",
 	})
 
-	res, err := migrarMovimentacoes(alvo, legado, true)
+	res, err := migrarMovimentacoes(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -354,7 +354,7 @@ func TestMigrarMovimentacoes_DestinoAusenteEmTransferencia(t *testing.T) {
 		ID: "h1", Produto: "Vergalhão 10mm", Tipo: "transferencia", Origem: "Almox", Destino: "", Qtd: "1",
 	})
 
-	res, err := migrarMovimentacoes(alvo, legado, true)
+	res, err := migrarMovimentacoes(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestMigrarMovimentacoes_TransferenciaDestinoDesconhecido(t *testing.T) {
 		ID: "h1", Produto: "Viga W", Tipo: "transferencia", Origem: "Almox", Destino: "Canteiro X", Qtd: "1",
 	})
 
-	res, err := migrarMovimentacoes(alvo, legado, true)
+	res, err := migrarMovimentacoes(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -391,7 +391,7 @@ func TestMigrarMovimentacoes_TipoInvalido(t *testing.T) {
 		ID: "h1", Produto: "Parafuso", Tipo: "ajuste", Origem: "Almox", Destino: "—", Qtd: "1",
 	})
 
-	res, err := migrarMovimentacoes(alvo, legado, true)
+	res, err := migrarMovimentacoes(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -432,7 +432,7 @@ func TestMigrarMovimentacoes_QuantidadeInvalida(t *testing.T) {
 				Qtd: c.qtd, QtdNulo: c.nulo,
 			})
 
-			res, err := migrarMovimentacoes(alvo, legado, true)
+			res, err := migrarMovimentacoes(alvo, legado, empresaTeste, true)
 			if err != nil {
 				t.Fatalf("erro inesperado: %v", err)
 			}
@@ -458,7 +458,7 @@ func TestMigrarMovimentacoes_TransferenciaOrigemIgualDestino(t *testing.T) {
 		Origem: "Almox Central", Destino: "  almox   central ", Qtd: "1",
 	})
 
-	res, err := migrarMovimentacoes(alvo, legado, true)
+	res, err := migrarMovimentacoes(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -479,7 +479,7 @@ func TestMigrarMovimentacoes_TimestampAusente(t *testing.T) {
 	})
 
 	antes := time.Now().Add(-2 * time.Second)
-	res, err := migrarMovimentacoes(alvo, legado, true)
+	res, err := migrarMovimentacoes(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -510,9 +510,9 @@ func TestMigrarMovimentacoes_SeedUsuarioAusente(t *testing.T) {
 		// Restaura o seed (limparTabelas nunca toca usuarios; outras suítes
 		// contam com a linha presente na 1ª execução da migration).
 		alvo.Exec(`
-			INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
-			VALUES ('Migração do sistema legado', $1, NULL, 'almoxarife', false, false)
-			ON CONFLICT (empresa_id, lower(email)) DO NOTHING`, emailUsuarioMigracaoLegado)
+			INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, empresa_id)
+			VALUES ('Migração do sistema legado', $1, NULL, 'almoxarife', false, false, $2)
+			ON CONFLICT (empresa_id, lower(email)) DO NOTHING`, emailUsuarioMigracaoLegado, empresaTeste)
 	})
 
 	seedProdutoMigrado(t, alvo, "p1", "Cimento CP-II")
@@ -521,7 +521,7 @@ func TestMigrarMovimentacoes_SeedUsuarioAusente(t *testing.T) {
 		ID: "h1", Produto: "Cimento CP-II", Tipo: "baixa", Origem: "Almox", Destino: "—", Qtd: "5",
 	})
 
-	res, err := migrarMovimentacoes(alvo, legado, true)
+	res, err := migrarMovimentacoes(alvo, legado, empresaTeste, true)
 	if !errors.Is(err, errSeedUsuarioMigracaoAusente) {
 		t.Fatalf("erro = %v, want errSeedUsuarioMigracaoAusente", err)
 	}
@@ -550,7 +550,7 @@ func TestMigrarMovimentacoes_HistoricoIlegivel(t *testing.T) {
 			qtd text, unidade text, obs text, "timestamp" timestamptz)`)
 	})
 
-	res, err := migrarMovimentacoes(alvo, legado, true)
+	res, err := migrarMovimentacoes(alvo, legado, empresaTeste, true)
 	if err == nil {
 		t.Fatalf("migrarMovimentacoes deveria falhar com historico ausente; res=%+v", res)
 	}
@@ -574,7 +574,7 @@ func TestMigrarMovimentacoes_DryRun(t *testing.T) {
 		ID: "h2", Produto: "Sem Mapa", Tipo: "baixa", Origem: "Almox", Destino: "—", Qtd: "1",
 	})
 
-	res, err := migrarMovimentacoes(alvo, legado, false)
+	res, err := migrarMovimentacoes(alvo, legado, empresaTeste, false)
 	if err != nil {
 		t.Fatalf("dry-run retornou erro: %v", err)
 	}
@@ -598,7 +598,7 @@ func TestMigrarMovimentacoes_DryRunContabilizaJaMigrados(t *testing.T) {
 	inserirLegadoHistorico(t, alvo, legadoHistoricoInput{
 		ID: "h1", Produto: "Bloco Cerâmico", Tipo: "baixa", Origem: "Almox", Destino: "—", Qtd: "1",
 	})
-	if _, err := migrarMovimentacoes(alvo, legado, true); err != nil {
+	if _, err := migrarMovimentacoes(alvo, legado, empresaTeste, true); err != nil {
 		t.Fatalf("corte inicial falhou: %v", err)
 	}
 
@@ -607,7 +607,7 @@ func TestMigrarMovimentacoes_DryRunContabilizaJaMigrados(t *testing.T) {
 		ID: "h2", Produto: "Telha Colonial", Tipo: "baixa", Origem: "Almox", Destino: "—", Qtd: "1",
 	})
 
-	res, err := migrarMovimentacoes(alvo, legado, false)
+	res, err := migrarMovimentacoes(alvo, legado, empresaTeste, false)
 	if err != nil {
 		t.Fatalf("dry-run retornou erro: %v", err)
 	}
@@ -631,7 +631,7 @@ func TestMigrarMovimentacoes_DryRunAvisaTimestampAusente(t *testing.T) {
 		// Timestamp nil
 	})
 
-	res, err := migrarMovimentacoes(alvo, legado, false)
+	res, err := migrarMovimentacoes(alvo, legado, empresaTeste, false)
 	if err != nil {
 		t.Fatalf("dry-run retornou erro: %v", err)
 	}
@@ -650,7 +650,7 @@ func TestMigrarMovimentacoes_DryRunAvisaTimestampAusente(t *testing.T) {
 // erro.
 func TestMigrarMovimentacoes_LegadoVazio(t *testing.T) {
 	alvo, legado := testDB(t)
-	res, err := migrarMovimentacoes(alvo, legado, true)
+	res, err := migrarMovimentacoes(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("erro inesperado para historico vazio: %v", err)
 	}
@@ -683,7 +683,7 @@ func TestMigrarMovimentacoes_FalhaInesperadaNoInsert(t *testing.T) {
 		}
 	})
 
-	res, err := migrarMovimentacoes(alvo, legado, true)
+	res, err := migrarMovimentacoes(alvo, legado, empresaTeste, true)
 	if err == nil {
 		t.Fatalf("esperava erro com movimentacoes ausente; res=%+v", res)
 	}

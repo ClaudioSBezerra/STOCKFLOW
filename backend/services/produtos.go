@@ -572,8 +572,10 @@ func BuscarProdutoPorCodigo(db *sql.DB, empresaID string, codigo string) (Produt
 // por `codigo` ascendente (Story 3.1, AC4) — a lista da qual o formulário de
 // cadastro seleciona, nunca digitável livremente. Cada Empresa recebe a
 // própria cópia das 25 linhas padrão em services.ProvisionarEmpresa (Story
-// 9.1); as linhas semeadas pela migração 000010 (`empresa_id IS NULL`) são só
-// o molde dessa cópia e nunca aparecem aqui. Lista vazia não é erro.
+// 9.1); o molde dessa cópia vive em `categorias_padrao`, tabela própria desde
+// a Story 9.4 (migration 000035) — antes eram linhas `empresa_id IS NULL`
+// dentro desta mesma tabela, o que impedia `empresa_id` de virar NOT NULL.
+// Molde nenhum aparece aqui. Lista vazia não é erro.
 func ListarCategorias(db *sql.DB, empresaID string) ([]Categoria, error) {
 	rows, err := db.Query(
 		`SELECT id, codigo, nome FROM categorias WHERE empresa_id = $1 ORDER BY codigo ASC`,

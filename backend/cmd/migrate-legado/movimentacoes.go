@@ -133,15 +133,18 @@ type movimentacaoResolvida struct {
 // id_legado) criada por outra sessão entre a checagem e a transação): a
 // transação sofre rollback via defer e o erro identifica id_legado — nada
 // parcial do lote fica gravado.
-func migrarMovimentacoes(alvo, legado *sql.DB, executar bool) (ResultadoMigracaoMovimentacoes, error) {
+func migrarMovimentacoes(alvo, legado *sql.DB, empresaID string, executar bool) (ResultadoMigracaoMovimentacoes, error) {
 	var res ResultadoMigracaoMovimentacoes
 
 	// 1) Pré-condição de seed — ANTES de ler qualquer linha legada. O usuário
 	//    sintético é o autor NOT NULL de TODA Movimentação migrada; sem ele,
 	//    nada pode ser escrito e nem faz sentido continuar.
 	var usuarioMigracaoID string
+	// `AND empresa_id = $2` (Story 9.4): o autor sintético tem de ser a conta
+	// DA EMPRESA do corte — uma conta de outra Empresa jamais pode assinar
+	// Movimentação desta.
 	err := alvo.QueryRow(
-		`SELECT id FROM usuarios WHERE lower(email) = lower($1)`, emailUsuarioMigracaoLegado,
+		`SELECT id FROM usuarios WHERE lower(email) = lower($1) AND empresa_id = $2`, emailUsuarioMigracaoLegado, empresaID,
 	).Scan(&usuarioMigracaoID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return res, errSeedUsuarioMigracaoAusente
@@ -230,7 +233,7 @@ func migrarMovimentacoes(alvo, legado *sql.DB, executar bool) (ResultadoMigracao
 
 	// 3c) estoques do alvo: nome_normalizado -> id (populado pela 2.3).
 	estoqueIDPorNorm := make(map[string]string)
-	estRows, err := alvo.Query(`SELECT nome_normalizado, id FROM estoques`)
+	estRows, err := alvo.Query(`SELECT nome_normalizado, id FROM estoques WHERE empresa_id = $1`, empresaID)
 	if err != nil {
 		return res, fmt.Errorf("falha ao carregar estoques do banco alvo: %w", err)
 	}
@@ -407,11 +410,11 @@ func migrarMovimentacoes(alvo, legado *sql.DB, executar bool) (ResultadoMigracao
 		err := tx.QueryRow(`
 			INSERT INTO movimentacoes (
 				produto_id, tipo, estoque_origem_id, estoque_destino_id,
-				quantidade, usuario_id, criado_em
-			) VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, now()))
+				quantidade, usuario_id, criado_em, empresa_id
+			) VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, now()), $8)
 			RETURNING id`,
 			r.produtoID, r.tipo, r.estoqueOrigemID, r.estoqueDestinoID,
-			r.quantidade, usuarioMigracaoID, r.criadoEm,
+			r.quantidade, usuarioMigracaoID, r.criadoEm, empresaID,
 		).Scan(&movID)
 		if err != nil {
 			return res, fmt.Errorf("falha ao inserir movimentacao para id_legado=%s: %w", l.id, err)

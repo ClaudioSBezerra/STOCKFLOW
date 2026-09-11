@@ -110,9 +110,9 @@ func seedMovimentacaoComVinculoPedido(t *testing.T, alvo *sql.DB, histID, produt
 	t.Helper()
 	var movID string
 	if err := alvo.QueryRow(`
-		INSERT INTO movimentacoes (produto_id, tipo, estoque_origem_id, quantidade, usuario_id)
-		VALUES ($1, 'baixa', $2, 1, $3) RETURNING id`,
-		produtoID, estoqueID, usuarioMigracaoID(t, alvo),
+		INSERT INTO movimentacoes (produto_id, tipo, estoque_origem_id, quantidade, usuario_id, empresa_id)
+		VALUES ($1, 'baixa', $2, 1, $3, $4) RETURNING id`,
+		produtoID, estoqueID, usuarioMigracaoID(t, alvo), empresaTeste,
 	).Scan(&movID); err != nil {
 		t.Fatalf("falha ao criar movimentacao migrada (%s): %v", histID, err)
 	}
@@ -228,7 +228,7 @@ func TestMigrarPedidos_CorteInicial(t *testing.T) {
 		Itens: []map[string]any{itemPedido("prod-1", "Cimento CP-II", "Almox Central", cat, 2)},
 	})
 
-	res, err := migrarPedidos(alvo, legado, true)
+	res, err := migrarPedidos(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestMigrarPedidos_Idempotente(t *testing.T) {
 		Itens: []map[string]any{itemPedido("p1", "Areia Média", "Almox", cat, 3)},
 	})
 
-	if _, err := migrarPedidos(alvo, legado, true); err != nil {
+	if _, err := migrarPedidos(alvo, legado, empresaTeste, true); err != nil {
 		t.Fatalf("1ª execução falhou: %v", err)
 	}
 	pidApos1 := pedidoIDDaMov(t, alvo, movID)
@@ -298,7 +298,7 @@ func TestMigrarPedidos_Idempotente(t *testing.T) {
 		t.Fatalf("pedido_id não foi vinculado na 1ª execução")
 	}
 
-	res, err := migrarPedidos(alvo, legado, true)
+	res, err := migrarPedidos(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("2ª execução retornou erro: %v", err)
 	}
@@ -346,7 +346,7 @@ func TestMigrarPedidos_DecisaoPorStatus(t *testing.T) {
 				Itens: []map[string]any{itemPedido("p1", "Brita 1", "Almox", cat, 4)},
 			})
 
-			res, err := migrarPedidos(alvo, legado, true)
+			res, err := migrarPedidos(alvo, legado, empresaTeste, true)
 			if err != nil {
 				t.Fatalf("erro inesperado: %v", err)
 			}
@@ -395,7 +395,7 @@ func TestMigrarPedidos_DecididoEmCaiParaCriadoEm(t *testing.T) {
 		Itens: []map[string]any{itemPedido("p1", "Cal Hidratada", "Almox", cat, 1)},
 	})
 
-	res, err := migrarPedidos(alvo, legado, true)
+	res, err := migrarPedidos(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -419,9 +419,9 @@ func TestMigrarPedidos_AutorResolvidoPorEmail(t *testing.T) {
 
 	var autorID string
 	if err := alvo.QueryRow(`
-		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
-		VALUES ('Fulano Solicitante', $1, NULL, 'usuario', true, true)
-		RETURNING id`, "solicitante-7-7@teste.local",
+		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, empresa_id)
+		VALUES ('Fulano Solicitante', $1, NULL, 'usuario', true, true, $2)
+		RETURNING id`, "solicitante-7-7@teste.local", empresaTeste,
 	).Scan(&autorID); err != nil {
 		t.Fatalf("falha ao criar usuário autor: %v", err)
 	}
@@ -440,7 +440,7 @@ func TestMigrarPedidos_AutorResolvidoPorEmail(t *testing.T) {
 		Itens: []map[string]any{itemPedido("p1", "Cal", "Almox", cat, 1)},
 	})
 
-	res, err := migrarPedidos(alvo, legado, true)
+	res, err := migrarPedidos(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -478,7 +478,7 @@ func TestMigrarPedidos_AutorNaoResolvido(t *testing.T) {
 			in.Itens = []map[string]any{itemPedido("p1", "Tinta", "Almox", cat, 1)}
 			inserirLegadoPedido(t, alvo, in)
 
-			res, err := migrarPedidos(alvo, legado, true)
+			res, err := migrarPedidos(alvo, legado, empresaTeste, true)
 			if err != nil {
 				t.Fatalf("erro inesperado: %v", err)
 			}
@@ -518,7 +518,7 @@ func TestMigrarPedidos_ItemComProdutoNaoMigrado(t *testing.T) {
 		},
 	})
 
-	res, err := migrarPedidos(alvo, legado, true)
+	res, err := migrarPedidos(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("o lote não pode abortar por Pedido irresolúvel: %v", err)
 	}
@@ -555,7 +555,7 @@ func TestMigrarPedidos_ItemComEstoqueDesconhecido(t *testing.T) {
 		Itens: []map[string]any{itemPedido("p1", "Prego", "Estoque Fantasma", cat, 1)},
 	})
 
-	res, err := migrarPedidos(alvo, legado, true)
+	res, err := migrarPedidos(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -590,7 +590,7 @@ func TestMigrarPedidos_ItemSemNomeOuCategoria(t *testing.T) {
 				Itens: []map[string]any{it},
 			})
 
-			res, err := migrarPedidos(alvo, legado, true)
+			res, err := migrarPedidos(alvo, legado, empresaTeste, true)
 			if err != nil {
 				t.Fatalf("erro inesperado: %v", err)
 			}
@@ -630,7 +630,7 @@ func TestMigrarPedidos_QuantidadeInvalida(t *testing.T) {
 				Itens: []map[string]any{itemPedido("p1", "Areia", "Almox", cat, c.qtd)},
 			})
 
-			res, err := migrarPedidos(alvo, legado, true)
+			res, err := migrarPedidos(alvo, legado, empresaTeste, true)
 			if err != nil {
 				t.Fatalf("erro inesperado: %v", err)
 			}
@@ -657,7 +657,7 @@ func TestMigrarPedidos_QuantidadeComoString(t *testing.T) {
 		Itens: []map[string]any{itemPedido("p1", "Cimento", "Almox", cat, "3")}, // string, não número
 	})
 
-	res, err := migrarPedidos(alvo, legado, true)
+	res, err := migrarPedidos(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -697,7 +697,7 @@ func TestMigrarPedidos_QuantidadeSomadaForaDaFaixa(t *testing.T) {
 		Itens: []map[string]any{itemPedido("p2", "Areia", "Almox", cat, 1)},
 	})
 
-	res, err := migrarPedidos(alvo, legado, true)
+	res, err := migrarPedidos(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("o lote não pode abortar: %v", err)
 	}
@@ -728,7 +728,7 @@ func TestMigrarPedidos_StatusInvalido(t *testing.T) {
 				Itens: []map[string]any{itemPedido("p1", "Cimento", "Almox", cat, 1)},
 			})
 
-			res, err := migrarPedidos(alvo, legado, true)
+			res, err := migrarPedidos(alvo, legado, empresaTeste, true)
 			if err != nil {
 				t.Fatalf("erro inesperado: %v", err)
 			}
@@ -761,7 +761,7 @@ func TestMigrarPedidos_PedidoSemItens(t *testing.T) {
 		Itens: []map[string]any{itemPedido("p1", "Cimento", "Almox", cat, 1)},
 	})
 
-	res, err := migrarPedidos(alvo, legado, true)
+	res, err := migrarPedidos(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("o lote não pode abortar: %v", err)
 	}
@@ -793,7 +793,7 @@ func TestMigrarPedidos_ItensIlegivel(t *testing.T) {
 		ItensRaw: `{}`, // objeto onde se espera um array
 	})
 
-	res, err := migrarPedidos(alvo, legado, true)
+	res, err := migrarPedidos(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("o lote não pode abortar: %v", err)
 	}
@@ -826,7 +826,7 @@ func TestMigrarPedidos_ItensColidindoNoPar(t *testing.T) {
 		},
 	})
 
-	res, err := migrarPedidos(alvo, legado, true)
+	res, err := migrarPedidos(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -859,7 +859,7 @@ func TestMigrarPedidos_CriadoEmAusente(t *testing.T) {
 	})
 
 	antes := time.Now().Add(-2 * time.Second)
-	res, err := migrarPedidos(alvo, legado, true)
+	res, err := migrarPedidos(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -898,7 +898,7 @@ func TestMigrarPedidos_VinculoMovimentacaoPedido(t *testing.T) {
 		Itens: []map[string]any{itemPedido("p1", "Cimento", "Almox", cat, 1)},
 	})
 
-	res, err := migrarPedidos(alvo, legado, true)
+	res, err := migrarPedidos(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -936,7 +936,7 @@ func TestMigrarPedidos_MovimentacaoDoVinculoNaoMigrada(t *testing.T) {
 		Itens: []map[string]any{itemPedido("p1", "Cimento", "Almox", cat, 1)},
 	})
 
-	res, err := migrarPedidos(alvo, legado, true)
+	res, err := migrarPedidos(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("o lote não pode abortar: %v", err)
 	}
@@ -973,7 +973,7 @@ func TestMigrarPedidos_DryRun(t *testing.T) {
 		Itens: []map[string]any{itemPedido("inexistente", "X", "Almox", cat, 1)},
 	})
 
-	res, err := migrarPedidos(alvo, legado, false)
+	res, err := migrarPedidos(alvo, legado, empresaTeste, false)
 	if err != nil {
 		t.Fatalf("dry-run retornou erro: %v", err)
 	}
@@ -1005,7 +1005,7 @@ func TestMigrarPedidos_DryRunContabilizaJaMigrados(t *testing.T) {
 		ID: "ped-1", Solicitante: "S", Obra: "O", Status: "pendente",
 		Itens: []map[string]any{itemPedido("p1", "Cimento", "Almox", cat, 1)},
 	})
-	if _, err := migrarPedidos(alvo, legado, true); err != nil {
+	if _, err := migrarPedidos(alvo, legado, empresaTeste, true); err != nil {
 		t.Fatalf("corte inicial falhou: %v", err)
 	}
 
@@ -1015,7 +1015,7 @@ func TestMigrarPedidos_DryRunContabilizaJaMigrados(t *testing.T) {
 		Itens: []map[string]any{itemPedido("p2", "Areia", "Almox", cat, 1)},
 	})
 
-	res, err := migrarPedidos(alvo, legado, false)
+	res, err := migrarPedidos(alvo, legado, empresaTeste, false)
 	if err != nil {
 		t.Fatalf("dry-run retornou erro: %v", err)
 	}
@@ -1040,9 +1040,9 @@ func TestMigrarPedidos_SeedUsuarioAusente(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		alvo.Exec(`
-			INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
-			VALUES ('Migração do sistema legado', $1, NULL, 'almoxarife', false, false)
-			ON CONFLICT (empresa_id, lower(email)) DO NOTHING`, emailUsuarioMigracaoLegado)
+			INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, empresa_id)
+			VALUES ('Migração do sistema legado', $1, NULL, 'almoxarife', false, false, $2)
+			ON CONFLICT (empresa_id, lower(email)) DO NOTHING`, emailUsuarioMigracaoLegado, empresaTeste)
 	})
 
 	seedProdutoMigrado(t, alvo, "p1", "Cimento")
@@ -1052,7 +1052,7 @@ func TestMigrarPedidos_SeedUsuarioAusente(t *testing.T) {
 		Itens: []map[string]any{itemPedido("p1", "Cimento", "Almox", cat, 1)},
 	})
 
-	res, err := migrarPedidos(alvo, legado, true)
+	res, err := migrarPedidos(alvo, legado, empresaTeste, true)
 	if !errors.Is(err, errSeedUsuarioMigracaoAusente) {
 		t.Fatalf("erro = %v, want errSeedUsuarioMigracaoAusente", err)
 	}
@@ -1090,7 +1090,7 @@ func TestMigrarPedidos_LegadoPedidosIlegivel(t *testing.T) {
 		)`)
 	})
 
-	res, err := migrarPedidos(alvo, legado, true)
+	res, err := migrarPedidos(alvo, legado, empresaTeste, true)
 	if err == nil {
 		t.Fatalf("migrarPedidos deveria falhar com legado.pedidos ausente; res=%+v", res)
 	}
@@ -1122,7 +1122,7 @@ func TestMigrarPedidos_FalhaInesperadaNoInsert(t *testing.T) {
 		}
 	})
 
-	res, err := migrarPedidos(alvo, legado, true)
+	res, err := migrarPedidos(alvo, legado, empresaTeste, true)
 	if err == nil {
 		t.Fatalf("esperava erro com pedidos ausente; res=%+v", res)
 	}
@@ -1138,7 +1138,7 @@ func TestMigrarPedidos_FalhaInesperadaNoInsert(t *testing.T) {
 // erro.
 func TestMigrarPedidos_LegadoVazio(t *testing.T) {
 	alvo, legado := testDB(t)
-	res, err := migrarPedidos(alvo, legado, true)
+	res, err := migrarPedidos(alvo, legado, empresaTeste, true)
 	if err != nil {
 		t.Fatalf("erro inesperado para legado.pedidos vazio: %v", err)
 	}

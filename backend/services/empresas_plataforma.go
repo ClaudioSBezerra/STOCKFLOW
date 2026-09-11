@@ -113,11 +113,16 @@ var (
 	}
 )
 
-// validarNovaEmpresa aplica, ANTES de qualquer escrita, as regras próprias
-// da criação pelo Dono (nome fantasia até 241, slug até 51, nome/e-mail do
-// `adm`) e a validação completa de ProvisionarEmpresa. Devolve os dados da
-// Empresa real já com nome fantasia trimado e slug normalizado.
-func validarNovaEmpresa(input NovaEmpresaInput) (DadosEmpresa, string, string, error) {
+// ValidarDadosNovaEmpresa aplica, ANTES de qualquer escrita, as regras
+// próprias da criação de uma Empresa com Ambiente de Treinamento (nome
+// fantasia até 241, slug até 51, nome/e-mail do `adm`) e a validação completa
+// de ProvisionarEmpresa. Devolve os dados da Empresa real já com nome
+// fantasia trimado e slug normalizado.
+//
+// Exportada na Story 9.4: `cmd/migrar-multi-empresa` valida os dados do
+// operador com EXATAMENTE os mesmos limites da criação pela UI (Story 9.2),
+// nunca com uma cópia deles.
+func ValidarDadosNovaEmpresa(input NovaEmpresaInput) (DadosEmpresa, string, string, error) {
 	nomeFantasia, err := campoObrigatorio("nome fantasia", input.NomeFantasia, nomeFantasiaRealMaxRunes)
 	if err != nil {
 		return DadosEmpresa{}, "", "", err
@@ -171,7 +176,7 @@ func validarNovaEmpresa(input NovaEmpresaInput) (DadosEmpresa, string, string, e
 // outra Empresa real -> ErrCNPJDuplicado; slug em uso -> ErrSlugDuplicado;
 // `{slug}-treinamento` em uso -> ErrSlugTreinamentoDuplicado.
 func CriarEmpresaComTreinamento(db *sql.DB, emailCfg EmailConfig, input NovaEmpresaInput) (Empresa, Empresa, error) {
-	dadosReal, admNome, admEmail, err := validarNovaEmpresa(input)
+	dadosReal, admNome, admEmail, err := ValidarDadosNovaEmpresa(input)
 	if err != nil {
 		return Empresa{}, Empresa{}, err
 	}
@@ -190,21 +195,8 @@ func CriarEmpresaComTreinamento(db *sql.DB, emailCfg EmailConfig, input NovaEmpr
 		return Empresa{}, Empresa{}, err
 	}
 
-	dadosTreino := dadosReal
-	dadosTreino.NomeFantasia = dadosReal.NomeFantasia + sufixoNomeTreinamento
-	dadosTreino.Slug = dadosReal.Slug + sufixoSlugTreinamento
-	dadosTreino.EmpresaOrigemID = &empresa.ID
-	treino, err := ProvisionarEmpresa(tx, dadosTreino)
+	treino, err := ProvisionarTreinamento(tx, emailCfg, empresa, dadosReal, admNome, admEmail)
 	if err != nil {
-		if errors.Is(err, ErrSlugDuplicado) {
-			return Empresa{}, Empresa{}, ErrSlugTreinamentoDuplicado
-		}
-		return Empresa{}, Empresa{}, err
-	}
-	if err := semearDadosTreinamento(tx, treino.ID); err != nil {
-		return Empresa{}, Empresa{}, err
-	}
-	if err := provisionarAdmPrimeiroAcesso(tx, emailCfg, treino, admNome, admEmail); err != nil {
 		return Empresa{}, Empresa{}, err
 	}
 
@@ -212,6 +204,42 @@ func CriarEmpresaComTreinamento(db *sql.DB, emailCfg EmailConfig, input NovaEmpr
 		return Empresa{}, Empresa{}, fmt.Errorf("falha ao commitar criação de empresa: %w", err)
 	}
 	return empresa, treino, nil
+}
+
+// ProvisionarTreinamento cria a Empresa-irmã "{Nome Fantasia} - Treinamento"
+// de `real`, dentro da transação `tx` do chamador: nome/slug derivados dos da
+// Empresa real pelos sufixos, mesmos razão social/CNPJ/endereço,
+// `empresa_origem_id` = `real.ID`, as listas padrão (ProvisionarEmpresa), os
+// dados de exemplo fixos (semearDadosTreinamento) e o `adm` do Treinamento —
+// conta SEPARADA da da Empresa real, mesmo nome/e-mail, sem senha, com e-mail
+// `primeiro_acesso` (provisionarAdmPrimeiroAcesso).
+//
+// Extraída de CriarEmpresaComTreinamento na Story 9.4 para ser reusada por
+// services.AdotarEmpresaFundadora (`cmd/migrar-multi-empresa`): a 9.4 depende
+// do mecanismo da 9.2, nunca de uma cópia dele.
+//
+// `{slug}-treinamento` já em uso -> ErrSlugTreinamentoDuplicado (que embrulha
+// ErrSlugDuplicado: errors.Is casa com qualquer um dos dois).
+func ProvisionarTreinamento(tx *sql.Tx, emailCfg EmailConfig, real Empresa, dadosReal DadosEmpresa, admNome, admEmail string) (Empresa, error) {
+	dadosTreino := dadosReal
+	dadosTreino.NomeFantasia = dadosReal.NomeFantasia + sufixoNomeTreinamento
+	dadosTreino.Slug = dadosReal.Slug + sufixoSlugTreinamento
+	dadosTreino.EmpresaOrigemID = &real.ID
+
+	treino, err := ProvisionarEmpresa(tx, dadosTreino)
+	if err != nil {
+		if errors.Is(err, ErrSlugDuplicado) {
+			return Empresa{}, ErrSlugTreinamentoDuplicado
+		}
+		return Empresa{}, err
+	}
+	if err := semearDadosTreinamento(tx, treino.ID); err != nil {
+		return Empresa{}, err
+	}
+	if err := provisionarAdmPrimeiroAcesso(tx, emailCfg, treino, admNome, admEmail); err != nil {
+		return Empresa{}, err
+	}
+	return treino, nil
 }
 
 // provisionarAdmPrimeiroAcesso cria o `adm` de `empresa` sem senha

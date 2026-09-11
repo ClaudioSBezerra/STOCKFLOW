@@ -221,27 +221,26 @@ type estoqueEntradaLegada struct {
 //     DEPOIS do commit, processa a foto (se houver) via
 //     services.SalvarFotoProduto — falha de foto vai para FotosComFalha,
 //     nunca desfaz o Produto.
-func migrarProdutos(alvo, legado *sql.DB, fotosDir string, executar bool) (ResultadoMigracaoProdutos, error) {
+func migrarProdutos(alvo, legado *sql.DB, empresaID, fotosDir string, executar bool) (ResultadoMigracaoProdutos, error) {
 	var res ResultadoMigracaoProdutos
 
 	// 1) Pré-condição de seed — checada ANTES de ler qualquer linha legada.
-	//    `empresa_id IS NULL` (Story 9.1): desde a 9.1 cada Empresa recebe a
-	//    própria CÓPIA das listas padrão (services.ProvisionarEmpresa), e este
-	//    binário grava no escopo legado (`empresaIDLegado`, abaixo) — o seed
-	//    que ele precisa é o das linhas padrão das migrations 000010/000013,
-	//    não a cópia de alguma Empresa. HANDOFF 9.4: quando a migração passar
-	//    a gravar dentro da Empresa "Ferreira Costa", estes recortes (e os de
-	//    `estoques`/`produtos`/`usuarios`) passam a ser por aquela Empresa.
+	//    `empresa_id = $1` (Story 9.4): as listas de Categoria e de
+	//    Nomenclatura do corte são as DA EMPRESA que o recebe — as que ela
+	//    adotou do legado no backfill, mais o que `CopiarListasPadrao`
+	//    completou a partir de `categorias_padrao`. As linhas molde da
+	//    plataforma vivem hoje em tabelas próprias (`*_padrao`, migration
+	//    000035) e não são destino de Produto nenhum.
 	var nCategorias, nTemplates int
-	if err := alvo.QueryRow(`SELECT count(*) FROM categorias WHERE empresa_id IS NULL`).Scan(&nCategorias); err != nil {
+	if err := alvo.QueryRow(`SELECT count(*) FROM categorias WHERE empresa_id = $1`, empresaID).Scan(&nCategorias); err != nil {
 		return res, fmt.Errorf("falha ao checar seed de categorias: %w", err)
 	}
-	if err := alvo.QueryRow(`SELECT count(*) FROM nomenclatura_templates WHERE empresa_id IS NULL`).Scan(&nTemplates); err != nil {
+	if err := alvo.QueryRow(`SELECT count(*) FROM nomenclatura_templates WHERE empresa_id = $1`, empresaID).Scan(&nTemplates); err != nil {
 		return res, fmt.Errorf("falha ao checar seed de nomenclatura_templates: %w", err)
 	}
 	if nCategorias == 0 || nTemplates == 0 {
 		return res, fmt.Errorf(
-			"seed ausente: categorias=%d, nomenclatura_templates=%d — as migrations 000010/000013 devem semear essas tabelas antes da migração de Produtos",
+			"seed ausente na Empresa do corte: categorias=%d, nomenclatura_templates=%d — rode `migrar-multi-empresa --etapa backfill --executar` antes da migração de Produtos",
 			nCategorias, nTemplates)
 	}
 
@@ -348,11 +347,11 @@ func migrarProdutos(alvo, legado *sql.DB, fotosDir string, executar bool) (Resul
 	// 3) Pré-checagem de categoria desconhecida — categoria_id é NOT NULL
 	//    (migration 000011), não há como migrar parcialmente.
 	categoriaPorNorm := make(map[string]string)
-	// `empresa_id IS NULL`: sem o recorte, o mesmo nome de Categoria existiria
+	// `empresa_id = $1`: sem o recorte, o mesmo nome de Categoria existiria
 	// uma vez por Empresa (cópias da Story 9.1) e o mapa nome -> id ficaria
 	// ambíguo — o Produto legado poderia nascer apontando para a Categoria de
 	// outro cliente.
-	catRows, err := alvo.Query(`SELECT lower(btrim(nome)), id FROM categorias WHERE empresa_id IS NULL`)
+	catRows, err := alvo.Query(`SELECT lower(btrim(nome)), id FROM categorias WHERE empresa_id = $1`, empresaID)
 	if err != nil {
 		return res, fmt.Errorf("falha ao carregar categorias do banco alvo: %w", err)
 	}
@@ -390,7 +389,7 @@ func migrarProdutos(alvo, legado *sql.DB, fotosDir string, executar bool) (Resul
 	// 4) Pré-checagem de Estoque desconhecido e de quantidade negativa —
 	//    classes separadas, cada uma aborta independentemente.
 	estoqueIDPorNorm := make(map[string]string)
-	estAlvoRows, err := alvo.Query(`SELECT nome_normalizado, id FROM estoques`)
+	estAlvoRows, err := alvo.Query(`SELECT nome_normalizado, id FROM estoques WHERE empresa_id = $1`, empresaID)
 	if err != nil {
 		return res, fmt.Errorf("falha ao carregar estoques do banco alvo: %w", err)
 	}
@@ -542,7 +541,12 @@ func migrarProdutos(alvo, legado *sql.DB, fotosDir string, executar bool) (Resul
 		}
 	}
 	if len(codigosNaoMapeados) > 0 {
-		colideRows, err := alvo.Query(`SELECT codigo FROM produtos WHERE codigo = ANY($1)`, pq.Array(codigosNaoMapeados))
+		// `AND empresa_id = $2` (Story 9.4): `idx_produtos_codigo` é
+		// `(empresa_id, codigo)` — o mesmo código em outra Empresa não colide.
+		colideRows, err := alvo.Query(
+			`SELECT codigo FROM produtos WHERE codigo = ANY($1) AND empresa_id = $2`,
+			pq.Array(codigosNaoMapeados), empresaID,
+		)
 		if err != nil {
 			return res, fmt.Errorf("falha na pré-checagem de colisão de código com o banco alvo: %w", err)
 		}
@@ -618,12 +622,12 @@ func migrarProdutos(alvo, legado *sql.DB, fotosDir string, executar bool) (Resul
 			// que exista ao menos uma, o comportamento continua idempotente
 			// (nunca reprocessa de novo).
 			if l.foto.Valid && strings.TrimSpace(l.foto.String) != "" {
-				fotosExistentes, errListar := services.ListarFotosProduto(alvo, empresaIDLegado, fotosDir, idNovo)
+				fotosExistentes, errListar := services.ListarFotosProduto(alvo, empresaID, fotosDir, idNovo)
 				switch {
 				case errListar != nil:
 					res.FotosComFalha = append(res.FotosComFalha, FotoFalha{IDLegado: l.id, Motivo: errListar.Error()})
 				case len(fotosExistentes) == 0:
-					if motivo := processarESalvarFotoLegado(alvo, fotosDir, idNovo, l.foto.String); motivo != "" {
+					if motivo := processarESalvarFotoLegado(alvo, empresaID, fotosDir, idNovo, l.foto.String); motivo != "" {
 						res.FotosComFalha = append(res.FotosComFalha, FotoFalha{IDLegado: l.id, Motivo: motivo})
 					}
 				}
@@ -634,7 +638,7 @@ func migrarProdutos(alvo, legado *sql.DB, fotosDir string, executar bool) (Resul
 			return res, fmt.Errorf("falha ao consultar migracao_id_map para id_legado=%s: %w", l.id, err)
 		}
 
-		produtoID, err := migrarUmProduto(alvo, l, categoriaPorNorm[removerAcentos(l.categoriaNorm.String)], estoquesPorProduto[l.id], estoqueIDPorNorm)
+		produtoID, err := migrarUmProduto(alvo, empresaID, l, categoriaPorNorm[removerAcentos(l.categoriaNorm.String)], estoquesPorProduto[l.id], estoqueIDPorNorm)
 		if err != nil {
 			return res, err
 		}
@@ -644,7 +648,7 @@ func migrarProdutos(alvo, legado *sql.DB, fotosDir string, executar bool) (Resul
 		// campo `foto` vazio/ausente não é erro, nunca entra em
 		// FotosComFalha.
 		if l.foto.Valid && strings.TrimSpace(l.foto.String) != "" {
-			if motivo := processarESalvarFotoLegado(alvo, fotosDir, produtoID, l.foto.String); motivo != "" {
+			if motivo := processarESalvarFotoLegado(alvo, empresaID, fotosDir, produtoID, l.foto.String); motivo != "" {
 				res.FotosComFalha = append(res.FotosComFalha, FotoFalha{IDLegado: l.id, Motivo: motivo})
 			}
 		}
@@ -653,26 +657,18 @@ func migrarProdutos(alvo, legado *sql.DB, fotosDir string, executar bool) (Resul
 	return res, nil
 }
 
-// empresaIDLegado é a Empresa sob a qual `cmd/migrate-legado` grava — vazia
-// nesta story (Story 9.1, Never: o corte de dados da Ferreira Costa é da
-// Story 9.4). String vazia faz services.SalvarFotoProduto/ListarFotosProduto
-// casarem a linha legada com `empresa_id IS NULL`, preservando exatamente o
-// comportamento anterior do binário. HANDOFF 9.4: passar aqui o id da Empresa
-// "Ferreira Costa" antes do `SET NOT NULL`.
-const empresaIDLegado = ""
-
 // processarESalvarFotoLegado roda o pipeline de foto (processarFotoLegado,
 // foto.go) e, no sucesso, grava via services.SalvarFotoProduto — usada tanto
 // para um Produto recém-migrado quanto para um já mapeado que ainda não tem
 // foto em disco (reprocessamento após uma execução interrompida). Devolve
 // string vazia no sucesso, ou o motivo da falha (para FotosComFalha) —
 // NUNCA um error que aborte o corte.
-func processarESalvarFotoLegado(alvo *sql.DB, fotosDir, produtoID, fotoBase64 string) string {
+func processarESalvarFotoLegado(alvo *sql.DB, empresaID, fotosDir, produtoID, fotoBase64 string) string {
 	jpegBytes, motivo := processarFotoLegado(fotoBase64)
 	if motivo != "" {
 		return motivo
 	}
-	if _, err := services.SalvarFotoProduto(alvo, empresaIDLegado, fotosDir, produtoID, jpegBytes); err != nil {
+	if _, err := services.SalvarFotoProduto(alvo, empresaID, fotosDir, produtoID, jpegBytes); err != nil {
 		return err.Error()
 	}
 	return ""
@@ -682,7 +678,7 @@ func processarESalvarFotoLegado(alvo *sql.DB, fotosDir, produtoID, fotoBase64 st
 // de migrarProdutos) numa transação própria: INSERT produtos + INSERT
 // migracao_id_map + INSERT produto_estoque (um por entrada de `estoques`),
 // commit. Devolve o id novo do Produto no sucesso.
-func migrarUmProduto(alvo *sql.DB, l linhaLegadaProduto, categoriaID string, entradasEstoque []estoqueEntradaLegada, estoqueIDPorNorm map[string]string) (string, error) {
+func migrarUmProduto(alvo *sql.DB, empresaID string, l linhaLegadaProduto, categoriaID string, entradasEstoque []estoqueEntradaLegada, estoqueIDPorNorm map[string]string) (string, error) {
 	comprimentoValor, comprimentoUnidade, comprimentoPendente := resolverDimensao(l.comprimento)
 	larguraValor, larguraUnidade, larguraPendente := resolverDimensao(l.largura)
 	diametroValor, diametroUnidade, diametroPendente := resolverDimensao(l.diametro)
@@ -739,8 +735,9 @@ func migrarUmProduto(alvo *sql.DB, l linhaLegadaProduto, categoriaID string, ent
 			altura_valor, altura_unidade,
 			espessura_valor, espessura_unidade,
 			dimensoes_pendentes_revisao,
-			criado_em
-		) VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, COALESCE($16, now()))
+			criado_em,
+			empresa_id
+		) VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, COALESCE($16, now()), $17)
 		RETURNING id`,
 		l.nome.String, codigo, categoriaID, observacoes,
 		comprimentoValor, comprimentoUnidade,
@@ -748,7 +745,7 @@ func migrarUmProduto(alvo *sql.DB, l linhaLegadaProduto, categoriaID string, ent
 		diametroValor, diametroUnidade,
 		alturaValor, alturaUnidade,
 		espessuraValor, espessuraUnidade,
-		dimPendentesJSON, l.criadoEm,
+		dimPendentesJSON, l.criadoEm, empresaID,
 	).Scan(&produtoID)
 	if err != nil {
 		_ = tx.Rollback()
