@@ -298,11 +298,20 @@ func ListarPedidosProprios(db *sql.DB, empresaID string, usuarioID, filtroStatus
 		return nil, &ErroPedidoValidacao{Mensagem: "status inválido"}
 	}
 
+	// A subquery de contagem é escopada por `empresa_id` — sem isto ela
+	// reagrega `pedido_itens` de TODA a plataforma a cada chamada (o `JOIN`
+	// final por `pedido_id`, chave globalmente única, ainda casaria certo
+	// mesmo sem o escopo — não é vazamento de dado, é trabalho
+	// desperdiçado, proporcional ao volume de TODAS as Empresas, não só da
+	// que está consultando; Story 9.1 escopou o WHERE externo mas deixou
+	// esta agregação de fora). Reaproveita o mesmo placeholder $2.
 	q := `
 		SELECT p.id, p.usuario_id, p.solicitante, p.obra_centro_custo, p.observacao, p.status, p.criado_em,
 		       COALESCE(i.qtd, 0)
 		FROM pedidos p
-		LEFT JOIN (SELECT pedido_id, count(*) AS qtd FROM pedido_itens GROUP BY pedido_id) i ON i.pedido_id = p.id
+		LEFT JOIN (
+			SELECT pedido_id, count(*) AS qtd FROM pedido_itens WHERE empresa_id = $2 GROUP BY pedido_id
+		) i ON i.pedido_id = p.id
 		WHERE p.usuario_id = $1 AND p.empresa_id = $2`
 	args := []any{usuarioID, empresaID}
 	if filtroStatus != "" {
@@ -352,11 +361,15 @@ func ListarPedidosFila(db *sql.DB, empresaID string, filtroStatus string) ([]Ped
 		return nil, &ErroPedidoValidacao{Mensagem: "status inválido"}
 	}
 
+	// Mesmo escopo por Empresa na subquery de contagem — ver o comentário
+	// equivalente em ListarPedidosProprios.
 	q := `
 		SELECT p.id, p.usuario_id, p.solicitante, p.obra_centro_custo, p.observacao, p.status, p.criado_em,
 		       COALESCE(i.qtd, 0)
 		FROM pedidos p
-		LEFT JOIN (SELECT pedido_id, count(*) AS qtd FROM pedido_itens GROUP BY pedido_id) i ON i.pedido_id = p.id
+		LEFT JOIN (
+			SELECT pedido_id, count(*) AS qtd FROM pedido_itens WHERE empresa_id = $1 GROUP BY pedido_id
+		) i ON i.pedido_id = p.id
 		WHERE p.empresa_id = $1`
 	args := []any{empresaID}
 	if filtroStatus != "" {
