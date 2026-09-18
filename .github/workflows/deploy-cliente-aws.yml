@@ -130,17 +130,25 @@ jobs:
           echo "Aguardando sistema iniciar..."
           WEB_PORT=$(grep '^WEB_PORT=' /opt/apps/stockflow/cliente-aws/.env | cut -d= -f2)
           WEB_PORT=${WEB_PORT:-3008}
+          # `--max-time 5` em cada tentativa: sem isso, um /api/health que
+          # trava (ex. db.PingContext sem timeout, backend/main.go, contra um
+          # Postgres pendurado) prende esta chamada de curl indefinidamente,
+          # e o loop nunca chega ao `exit 1` que despeja os logs da api --
+          # incidente real 2026-09-18, descoberto so porque esta etapa ficou
+          # presa por >15min sem nunca reportar falha.
           for i in $(seq 1 20); do
-            if curl -sf "http://localhost:${WEB_PORT}/api/health" > /dev/null 2>&1; then
+            if curl -sf --max-time 5 "http://localhost:${WEB_PORT}/api/health" > /dev/null 2>&1; then
               echo "Deploy OK!"
-              curl -s "http://localhost:${WEB_PORT}/api/health"
+              curl -s --max-time 5 "http://localhost:${WEB_PORT}/api/health"
               exit 0
             fi
             echo "Tentativa $i/20..."
             sleep 5
           done
           echo "Deploy falhou - health check nao respondeu."
+          docker compose --project-directory /opt/apps/stockflow/cliente-aws ps
           docker compose --project-directory /opt/apps/stockflow/cliente-aws logs api --tail 50
+          docker compose --project-directory /opt/apps/stockflow/cliente-aws logs db --tail 50
           exit 1
 
       - name: Seed do primeiro administrador
@@ -186,3 +194,46 @@ jobs:
           else
             echo "Deploy falhou. Verifique os logs acima."
           fi
+
+  # Diagnostico manual, so-leitura -- nao roda em push nenhum (so via
+  # workflow_dispatch), nao depende dos jobs de deploy e nao reinicia nada.
+  # Existe porque o time nao tem acesso SSH direto ao servidor no momento
+  # (VPN isolada, 2026-09-18) -- este runner self-hosted, ja usado por
+  # deploy-cliente-aws, e o unico canal disponivel para ver o estado real
+  # da maquina. Cada comando tem timeout proprio para nunca travar como o
+  # health check acima travou antes da correcao com --max-time.
+  diagnostico:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, stockflow]
+    timeout-minutes: 5
+
+    steps:
+      - name: Estado dos containers, logs e disco
+        working-directory: /opt/apps/stockflow/cliente-aws
+        run: |
+          echo "=== docker compose ps ==="
+          timeout 15 docker compose ps
+
+          echo
+          echo "=== espaco em disco ==="
+          timeout 10 df -h
+
+          echo
+          echo "=== memoria ==="
+          timeout 10 free -h
+
+          echo
+          echo "=== docker stats (snapshot, sem streaming) ==="
+          timeout 15 docker stats --no-stream
+
+          echo
+          echo "=== logs: db (ultimas 100 linhas) ==="
+          timeout 15 docker compose logs db --tail 100
+
+          echo
+          echo "=== logs: api (ultimas 100 linhas) ==="
+          timeout 15 docker compose logs api --tail 100
+
+          echo
+          echo "=== logs: web (ultimas 50 linhas) ==="
+          timeout 15 docker compose logs web --tail 50
