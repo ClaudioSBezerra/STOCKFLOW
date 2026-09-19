@@ -96,6 +96,21 @@ services:
 networks:
   stockflow_net:
     driver: bridge
+    # Subnet fixa -- SEM ISSO, o Docker aloca a rede automaticamente no pool
+    # padrão (172.17.0.0/16 até 172.31.0.0/16). Esse host já tem 15 redes
+    # Docker criadas por outros apps, esgotando o pool: a rede do stockflow
+    # caiu no último bloco livre, 172.31.0.0/16, que colide com uma rota
+    # real da VPC AWS (172.31.0.0/20 via gateway). Rota mais específica da
+    # AWS "ganhava" da rota da bridge Docker, e todo pacote pro container
+    # se perdia -- containers subiam saudáveis, mas ninguém de fora
+    # conseguia acessar (nem o health check deste próprio workflow).
+    # Incidente real (2026-09-18/19): 3 deploys seguidos falharam sempre no
+    # step "Health check", sempre travando os mesmos ~3m20s. 10.200.0.0/24
+    # fica fora de qualquer faixa usada pela AWS ou pelas outras 15 redes
+    # deste host -- não trocar sem checar `ip route` no servidor antes.
+    ipam:
+      config:
+        - subnet: 10.200.0.0/24
 
 volumes:
   stockflow_db_data:
