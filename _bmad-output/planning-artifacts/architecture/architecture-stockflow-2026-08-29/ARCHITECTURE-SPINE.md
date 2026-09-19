@@ -7,8 +7,8 @@ paradigm: 'Layered Go (pragmático, sem framework/ORM) — ratificado do FB_APU0
 scope: 'Backend Go + PostgreSQL e frontend React do stockflow (migração do Catálogo de Materiais), incluindo Keycloak SSO'
 status: final
 created: '2026-08-29'
-updated: '2026-09-10'
-binds: ['FR-1..FR-44', 'NFR (§8 do PRD)']
+updated: '2026-09-19'
+binds: ['FR-1..FR-52', 'NFR (§8 do PRD)']
 sources: ['_bmad-output/planning-artifacts/prds/prd-stockflow-2026-08-29/prd.md', '_bmad-output/planning-artifacts/prds/prd-stockflow-2026-08-29/addendum.md', '/home/claudio/projetos/FB_APU02 (código real, referência de stack e Keycloak)']
 companions: []
 ---
@@ -56,9 +56,10 @@ graph TD
 ### AD-3 — Tempo real via broadcaster in-process + SSE
 
 - **Binds:** atualização quase em tempo real do catálogo/estoques/movimentações/pedidos (PRD §6.1, substituto do `onSnapshot` do Firestore).
-- **Prevents:** introdução de Redis Pub/Sub ou WebSocket; schema de evento divergente entre features; canal não atribuído a um domínio; mecanismo de autenticação inconsistente entre conexões SSE.
+- **Prevents:** introdução de Redis Pub/Sub ou WebSocket; schema de evento divergente entre features; canal não atribuído a um domínio de alta frequência; mecanismo de autenticação inconsistente entre conexões SSE.
 - **Rule:**
-  - Um registry in-memory (map protegido por mutex) de conexões SSE abertas por processo, com **quatro** canais de recurso: `produtos`, `estoques`, `movimentacoes`, `pedidos` (todo domínio com handler próprio tem canal — nenhum fica implícito em outro).
+  - Um registry in-memory (map protegido por mutex) de conexões SSE abertas por processo, com **quatro** canais de recurso: `produtos`, `estoques`, `movimentacoes`, `pedidos` (todo domínio de **alta frequência de mudança operacional**, com handler próprio, tem canal — nenhum fica implícito em outro).
+  - **Exceção explícita (nesta versão):** Categorias, Templates de Nomenclatura, Filiais e Centros de Custo (`handlers/categorias.go`, `handlers/nomenclatura.go`, `handlers/filiais.go`) são config administrativa de baixa frequência — mudam raramente, via tela de admin, sem necessidade de sincronização ao vivo entre viewers concorrentes. Ficam **fora** do gerador "todo domínio com handler tem canal": sem exceção explícita, os handlers novos desta rodada implicariam canais que nunca foram implementados. Cliente sempre rebusca via GET normal após uma ação de CRUD nessas telas.
   - **Envelope de evento fixo, único para todos os canais:** `{"resource": "produtos"|"estoques"|"movimentacoes"|"pedidos", "id": "<uuid>", "change": "created"|"updated"|"deleted"}` — nenhum produtor de evento inventa campo ou vocabulário próprio. Payload sempre mínimo; cliente rebusca via GET.
   - **Autenticação da conexão SSE:** `EventSource` não permite header customizado, então a sessão (AD-6/AD-7) não se aplica diretamente. Cliente autenticado obtém um *ticket* de curta duração (TTL 30s, uso único) via `POST /api/realtime/ticket` (autenticado normalmente, por cookie/Authorization); abre `GET /api/realtime/stream?ticket=...` com esse ticket na query string. Ticket expira em 30s ou no primeiro uso — nunca o token de sessão em si aparece em query string/log.
   - Ao reconectar, cliente sempre faz um GET completo ao recurso, nunca replay de eventos perdidos.
@@ -103,24 +104,26 @@ graph TD
 - **Prevents:** reintrodução de parsing de texto livre (débito técnico herdado, addendum §E.9).
 - **Rule:** cada dimensão (comprimento, largura, diâmetro, altura, espessura, lateral) é um par `{valor: numeric, unidade: enum}` — nunca string livre.
 
-### AD-10 — [ADOPTED] Concorrência e propriedade de escrita de `produto_estoque.quantidade`
+### AD-10 — [ADOPTED] Concorrência e propriedade de escrita de `lotes.quantidade`
 
-- **Binds:** débito de estoque (FR-14, FR-15, FR-25).
-- **Prevents:** saldo negativo por corrida entre transações concorrentes; deadlock por ordem de lock inconsistente num lote; um segundo caminho de escrita que não gera Movimentação, quebrando a garantia "soma de MOVIMENTACOES == quantidade atual" usada por FR-16/FR-30.
+- **Binds:** débito de estoque (FR-14, FR-15, FR-25); criação de reserva de saldo (FR-22, AD-25).
+- **Prevents:** saldo negativo por corrida entre transações concorrentes; deadlock por ordem de lock inconsistente num lote; um segundo caminho de escrita que não gera Movimentação, quebrando a garantia "soma de MOVIMENTACOES == quantidade atual" usada por FR-16/FR-30; duas reservas concorrentes lendo o mesmo saldo disponível como livre e travando-o duas vezes (achado do revisor adversarial da arquitetura — a leitura literal de AD-25, que reserva não escreve `quantidade`, deixava esse caminho fora do lock).
 - **Rule:**
-  - **Toda** escrita em `produto_estoque.quantidade`, sem exceção — incluindo qualquer futura "correção manual de saldo" — insere uma `MOVIMENTACOES` na mesma transação (tipo `ajuste` para correções que não são baixa/transferência). Não existe caminho de escrita em `quantidade` sem uma linha de `MOVIMENTACOES` correspondente.
+  - **Toda** escrita em `lotes.quantidade`, sem exceção — incluindo qualquer futura "correção manual de saldo" — insere uma `MOVIMENTACOES` na mesma transação (tipo `ajuste` para correções que não são baixa/transferência). Não existe caminho de escrita em `quantidade` sem uma linha de `MOVIMENTACOES` correspondente.
   - Toda escrita usa `SELECT ... FOR UPDATE` (lock pessimista) na mesma transação.
-  - Para transações que tocam **múltiplas** linhas `(produto_id, estoque_id)` (ex. FR-25 aprovando um Pedido com N itens): o conjunto completo de pares é **ordenado ascendentemente antes de adquirir qualquer lock** — nunca na ordem de inserção/exibição do carrinho. A regra de ordem canônica vale para o lote inteiro, não só par a par.
+  - **Criar uma reserva (FR-22) participa do mesmo protocolo de lock, mesmo sem escrever em `lotes.quantidade`:** adquire `SELECT ... FOR UPDATE` sobre as linhas de `lotes` do(s) par(es) produto/estoque afetados antes de calcular saldo disponível (AD-25) e inserir a linha em `reservas_pedido_item`, na mesma transação. Sem isso, duas submissões concorrentes de Pedido poderiam ambas calcular saldo suficiente e reservar o mesmo saldo físico duas vezes.
+  - Para transações que tocam **múltiplas** linhas `(produto_id, estoque_id)` (ex. FR-25 aprovando um Pedido com N itens, ou FR-22 reservando N itens): o conjunto completo de pares é **ordenado ascendentemente antes de adquirir qualquer lock** — nunca na ordem de inserção/exibição do carrinho. A regra de ordem canônica vale para o lote inteiro, não só par a par.
+  - **Estendido nesta versão (AD-24):** com o saldo passando a ser rastreado por Lote, a ordem canônica de lock vira `(produto_id, estoque_id, lote_id)` ascendente — o terceiro nível não substitui os dois primeiros, só refina o lock para o nível em que a escrita (ou, no caso de reserva, a leitura protegida) de fato acontece.
 
 ### AD-11 — [ADOPTED] Fotos versionadas em disco, soft-delete com FK reescrita em merge
 
-- **Binds:** FR-27, FR-28, FR-20 (mesclagem de duplicatas), FR-30/relatórios.
-- **Prevents:** fotos inline no banco (achado E.6 do addendum); URL de foto cacheada servindo imagem obsoleta após re-upload; histórico de Movimentações/Pedidos de um produto mesclado ficar "preso" ao id removido e sumir de relatórios sobre o produto sobrevivente.
+- **Binds:** FR-27, FR-28, FR-20 (mesclagem de duplicatas), FR-30/relatórios, FR-47/FR-50 (Lote e reserva de saldo).
+- **Prevents:** fotos inline no banco (achado E.6 do addendum); URL de foto cacheada servindo imagem obsoleta após re-upload; histórico de Movimentações/Pedidos/Lotes/reservas de um produto mesclado ficar "preso" ao id removido e sumir de relatórios ou saldo do produto sobrevivente.
 - **Rule:**
   - Fotos em volume Docker nomeado e persistente, nunca base64 inline nem storage efêmero.
   - Nome de arquivo **versionado** (`<produto_id>-<timestamp_unix>.jpg`), nunca overwrite em path fixo — evita cache de URL servindo foto antiga após re-upload.
   - `deleted_at IS NULL` em todo read de Produto.
-  - **Mesclagem de duplicatas (FR-20) reescreve o `produto_id` em todas as linhas históricas de `MOVIMENTACOES` e `PEDIDO_ITENS` do produto removido para o produto sobrevivente**, antes do soft-delete — preserva "soma de MOVIMENTACOES == quantidade atual" e mantém relatórios (FR-30) corretos sem precisar atravessar lineage de merge em toda query. Produto soft-deleted nunca reentra em mesclagem, mas mantém foto em disco para auditoria permanente da mesclagem em si (`MESCLAGEM_PRODUTOS_REMOVIDOS`).
+  - **Mesclagem de duplicatas (FR-20) reescreve o `produto_id` em todas as linhas históricas de `MOVIMENTACOES`, `PEDIDO_ITENS`, `LOTES` e `RESERVAS_PEDIDO_ITEM` do produto removido para o produto sobrevivente**, antes do soft-delete — preserva "soma de MOVIMENTACOES == quantidade atual", mantém relatórios (FR-30) corretos e garante que saldo físico (AD-24) e reserva ativa (AD-25) do produto removido não fiquem órfãos sob um id soft-deleted, sem precisar atravessar lineage de merge em toda query. **Achado crítico do revisor adversarial da arquitetura:** `LOTES` e `RESERVAS_PEDIDO_ITEM` nasceram depois desta AD (AD-24/AD-25) e tinham ficado de fora da lista original — sem essa extensão, uma mesclagem faria saldo físico "sumir" e permitiria dupla-venda do saldo reservado ignorado no cálculo do sobrevivente. Produto soft-deleted nunca reentra em mesclagem, mas mantém foto em disco para auditoria permanente da mesclagem em si (`MESCLAGEM_PRODUTOS_REMOVIDOS`).
 
 ### AD-12 — [ADOPTED] Bootstrap do primeiro Adm via CLI
 
@@ -171,7 +174,7 @@ graph TD
 | Data & formatos (ids, datas, erro, e-mail) | UUID v4; `timestamptz` UTC; envelope de erro com vocabulário fixo de `code`; e-mail normalizado lowercase (AD-14) |
 | Autorização | Decisão (allow/deny) sempre em middleware; escopo de listagem sempre em service, nunca re-derivando o papel (AD-8) |
 | Escopo de Empresa | `empresa_id` resolvido uma vez no middleware a partir do slug da URL (AD-19); toda query de service filtra por ele (AD-20); nunca aceito de body/query do cliente |
-| Concorrência e propriedade de escrita | `SELECT ... FOR UPDATE` + ordem de lote ascendente; toda escrita em `quantidade` gera Movimentação, sem exceção (AD-10) |
+| Concorrência e propriedade de escrita | `SELECT ... FOR UPDATE` + ordem `(produto_id, estoque_id, lote_id)` ascendente, inclusive na criação de reserva (não só na escrita de `quantidade`) (AD-10); toda escrita em `quantidade` gera Movimentação, sem exceção (AD-10); saldo disponível sempre calculado contra reserva, nunca coluna materializada (AD-25); consumo de Lote é sempre FEFO, nunca escolha manual (AD-24) |
 | Tempo real | Envelope de evento fixo, um canal por domínio, autenticação via ticket de curta duração (AD-3) |
 | Logging | `log/slog` estruturado, nunca `fmt.Print` (AD-14) |
 | Sessão/autenticação | AD-6 (senha) e AD-7 (SSO) emitem o mesmo formato de token — nenhum handler decide sessão por conta própria |
@@ -221,27 +224,33 @@ erDiagram
   EMPRESAS ||--o{ USUARIOS : escopa
   EMPRESAS ||--o{ PRODUTOS : escopa
   EMPRESAS ||--o{ ESTOQUES : escopa
+  EMPRESAS ||--o{ FILIAIS : escopa
+  EMPRESAS ||--o{ CENTROS_CUSTO : escopa
   EMPRESAS ||--o{ CONVITES_EMPRESA : emite
   EMPRESAS |o--o| EMPRESAS : "empresa_origem_id (Treinamento)"
   DONOS_PLATAFORMA ||--o{ EMPRESAS : cria
+  FILIAIS ||--o{ ESTOQUES : contem
   USUARIOS ||--o{ SOLICITACOES_PROMOCAO : solicita
   USUARIOS ||--o{ PEDIDOS : cria
   USUARIOS ||--o{ EMAILS_PENDENTES : gera
   USUARIOS ||--o{ TOKENS_ACAO : possui
   CATEGORIAS ||--o{ PRODUTOS : classifica
   NOMENCLATURA_TEMPLATES ||--o{ PRODUTOS : sugere_nome
-  PRODUTOS ||--o{ PRODUTO_ESTOQUE : possui
-  ESTOQUES ||--o{ PRODUTO_ESTOQUE : contem
+  PRODUTOS ||--o{ LOTES : possui
+  ESTOQUES ||--o{ LOTES : contem
   PRODUTOS ||--o{ MOVIMENTACOES : movimenta
   ESTOQUES ||--o{ MOVIMENTACOES : origem_destino
   PEDIDOS ||--o{ PEDIDO_ITENS : contem
+  PEDIDOS ||--o{ RESERVAS_PEDIDO_ITEM : reserva
+  PEDIDOS }o--o| CENTROS_CUSTO : referencia
   PRODUTOS ||--o{ PEDIDO_ITENS : referencia
+  PRODUTOS ||--o{ RESERVAS_PEDIDO_ITEM : reserva
   PRODUTOS ||--o{ MESCLAGENS_DUPLICATAS : mescla
   MESCLAGENS_DUPLICATAS ||--o{ MESCLAGEM_PRODUTOS_REMOVIDOS : remove
   IMPORTACOES ||--o{ IMPORTACAO_LINHAS : contem
 ```
 
-*Nota: `PRODUTOS`, `ESTOQUES`, `MOVIMENTACOES`, `PEDIDOS`, `PEDIDO_ITENS`, `CATEGORIAS`, `LOGS_ACESSO`, `SOLICITACOES_PROMOCAO`, `MESCLAGENS_DUPLICATAS`, `IMPORTACOES` e `NOMENCLATURA_TEMPLATES` também carregam `empresa_id` (AD-20) — omitido do diagrama acima por brevidade, já que toda tabela de domínio é escopada da mesma forma.*
+*Nota: `PRODUTOS`, `ESTOQUES`, `MOVIMENTACOES`, `PEDIDOS`, `PEDIDO_ITENS`, `CATEGORIAS`, `LOGS_ACESSO`, `SOLICITACOES_PROMOCAO`, `MESCLAGENS_DUPLICATAS`, `IMPORTACOES`, `NOMENCLATURA_TEMPLATES`, `LOTES`, `FILIAIS`, `CENTROS_CUSTO` e `RESERVAS_PEDIDO_ITEM` também carregam `empresa_id` (AD-20) — omitido do diagrama acima por brevidade, já que toda tabela de domínio é escopada da mesma forma. `LOTES` substitui `PRODUTO_ESTOQUE` (AD-24). `CONTADORES_PRODUTO` (AD-26) tem `empresa_id` como chave primária — sem `id` próprio — e por isso fica fora do diagrama de relacionamentos.*
 
 ## Capability → Architecture Map
 
@@ -256,11 +265,12 @@ erDiagram
 | LGPD (FR-39) | `services/` | AD-14 (formato de exportação) |
 | SSO Keycloak (FR-34) | `iam/`, `handlers/auth_sso.go` | AD-7, AD-14 (e-mail normalizado) |
 | Catálogo/busca (FR-4–7, FR-35) | `handlers/produtos.go`, `services/` | AD-1, AD-9 |
-| Cadastro/importação (FR-8–11) | `handlers/produtos.go`, `services/`, `IMPORTACOES`/`IMPORTACAO_LINHAS` | AD-9 |
-| Gestão de Estoques (FR-12–13) | `handlers/estoques.go` | AD-1 |
-| Movimentação (FR-14–16) | `handlers/movimentacoes.go` | AD-10 |
+| Cadastro/importação (FR-8–11, FR-45–46) | `handlers/produtos.go`, `services/`, `IMPORTACOES`/`IMPORTACAO_LINHAS`, `CONTADORES_PRODUTO` | AD-9, AD-26, AD-30, AD-32, AD-34 |
+| CRUD de Categorias/Templates (FR-48–49) | `handlers/categorias.go`, `handlers/nomenclatura.go`, `services/` | AD-20 (cópia por Empresa), AD-33 |
+| Gestão de Estoques e Filiais (FR-12–13, FR-51) | `handlers/estoques.go`, `handlers/filiais.go`, `FILIAIS` | AD-1, AD-27, AD-31 |
+| Movimentação e Lote (FR-14–16, FR-47) | `handlers/movimentacoes.go`, `LOTES` | AD-10, AD-24 |
 | Normalização (FR-17–20) | `handlers/normalizacao.go` | AD-9, AD-11 |
-| Pedidos (FR-21–25) | `handlers/pedidos.go` | AD-10 |
+| Pedidos e reserva de saldo (FR-21–25, FR-50, FR-52) | `handlers/pedidos.go`, `RESERVAS_PEDIDO_ITEM`, `CENTROS_CUSTO` | AD-10, AD-25, AD-28 |
 | Recibo PDF (FR-26) | `handlers/pedidos.go`, `signintech/gopdf` | AD-17 |
 | Fotos (FR-27–29) | `handlers/produtos.go`, volume de disco | AD-11 |
 | Exportação Excel (FR-30) | `services/relatorios.go`, `qax-os/excelize` | AD-1, Stack |
@@ -294,10 +304,11 @@ erDiagram
 ### AD-20 — Isolamento por Empresa via `empresa_id` em toda tabela de domínio, migração aditiva
 
 - **Binds:** FR-40, SM-7 — Catálogo, Estoques, Movimentações, Pedidos, Categorias, Log de Acesso, Normalização/Duplicatas, Gestão de Contas/Promoção; FR-44 (migração da Ferreira Costa).
-- **Prevents:** uma área nova (ou uma query de relatório/agregação futura) esquecer o filtro de Empresa e vazar dado entre clientes; a migração da Ferreira Costa travar o sistema em produção ou ficar num estado parcial sem caminho de retomada.
+- **Prevents:** uma área nova (ou uma query de relatório/agregação futura) esquecer o filtro de Empresa e vazar dado entre clientes; a migração da Ferreira Costa travar o sistema em produção ou ficar num estado parcial sem caminho de retomada; um `filial_id`/`centro_custo_id` de outra Empresa sendo aceito porque a FK do banco, sozinha, não garante isolamento cross-Empresa.
 - **Rule:**
-  - Coluna `empresa_id UUID NOT NULL REFERENCES empresas(id)` em toda tabela de domínio hoje existente (`produtos`, `estoques`, `movimentacoes`, `pedidos`, `pedido_itens`, `categorias`, `logs_acesso`, `solicitacoes_promocao`, `mesclagens_duplicatas`, `mesclagem_produtos_removidos`, `importacoes`, `nomenclatura_templates`) e em `usuarios`.
+  - Coluna `empresa_id UUID NOT NULL REFERENCES empresas(id)` em toda tabela de domínio (`produtos`, `estoques`, `movimentacoes`, `pedidos`, `pedido_itens`, `categorias`, `logs_acesso`, `solicitacoes_promocao`, `mesclagens_duplicatas`, `mesclagem_produtos_removidos`, `importacoes`, `nomenclatura_templates`, `convites_empresa`, `lotes`, `reservas_pedido_item`, `filiais`, `centros_custo`) e em `usuarios`. **Exceção:** `contadores_produto` usa `empresa_id` como chave primária própria (AD-26), não como coluna de filtro adicional. **Achado do revisor adversarial da arquitetura:** esta lista tinha ficado presa às tabelas anteriores à Multi-Empresa/Lote — atualizada aqui para as 6 tabelas novas desta rodada e as de AD-21/22.
   - Toda query de `service` que lê ou escreve uma dessas tabelas inclui `WHERE empresa_id = $1` (ou equivalente na escrita) usando o `empresa_id` do contexto da requisição (AD-19) — nunca um `service` monta uma query sem essa cláusula, nem mesmo em agregações/relatórios.
+  - **FK para tabela escopada por Empresa, recebida do cliente, é sempre revalidada contra a Empresa do contexto antes de aceitar:** um `filial_id` (FR-51) ou `centro_custo_id` (FR-52) enviado no corpo de uma requisição só é aceito se a linha referenciada tiver o mesmo `empresa_id` do contexto (AD-19) — a FK do banco por si só não impede que um `filial_id`/`centro_custo_id` de outra Empresa seja aceito silenciosamente. Mesma disciplina de "nunca confiar em id de escopo vindo do cliente" já aplicada ao próprio `empresa_id`.
   - **Migração da Ferreira Costa (FR-44) é aditiva em duas fases, nunca um único `ALTER ... NOT NULL` direto sobre produção viva:** (1) coluna `empresa_id` nasce `NULL`able, backfill em lote (resumível — reexecutar não duplica, não perde linha, idempotente por chave primária já existente) atribuindo o id da Empresa "Ferreira Costa" a toda linha hoje sem dono; (2) só depois de backfill 100% confirmado, `ALTER COLUMN empresa_id SET NOT NULL` + índice. Sem downtime obrigatório entre as duas fases — a aplicação continua servindo tráfego normalmente enquanto a coluna ainda aceita `NULL`.
   - `adm` (AD-8) deixa de ser único globalmente e passa a ser único por `empresa_id` — índice único parcial trocado de `WHERE papel='adm'` para `WHERE papel='adm'` particionado por `empresa_id` (ex. índice único composto `(empresa_id) WHERE papel='adm'`).
 
@@ -319,6 +330,83 @@ erDiagram
 - **Prevents:** um segundo mecanismo de isolamento construído só para "empresas de treinamento", divergindo de AD-20 e duplicando superfície de risco de vazamento.
 - **Rule:** `empresas.empresa_origem_id UUID NULL REFERENCES empresas(id)` — `NULL` para uma Empresa real, preenchido com o id da Empresa real quando a linha é um Ambiente de Treinamento. Todo o resto (isolamento AD-20, resolução de slug AD-19, papéis intra-Empresa AD-8) trata a Empresa de Treinamento exatamente como trataria uma segunda Empresa de cliente qualquer — nenhuma condicional `if eh_treinamento` em `service` algum.
 
+### AD-24 — Consumo de Lote é FEFO automático, sem escolha manual
+
+- **Binds:** FR-47, FR-14, FR-15, FR-25.
+- **Prevents:** dois consumos concorrentes escolhendo Lotes diferentes do mesmo Produto/Estoque; dois builders implementando FEFO com critério de ordenação divergente (um por `data_validade`, outro por `criado_em`).
+- **Rule:** nova tabela `lotes` (`id` UUID, `produto_id`, `estoque_id`, `quantidade`, `data_validade` `NULL`able, `empresa_id`, `criado_em`) **substitui `produto_estoque`** — deixa de existir uma linha única por par Produto/Estoque; passam a existir N linhas (uma por Lote), e a quantidade do par é a soma delas (AD-29). Migração: cada linha hoje existente em `produto_estoque` vira um "Lote legado" em `lotes` com `data_validade = NULL`, preservando a quantidade atual — mesmo tratamento de AD-30. **`lotes.empresa_id` é copiado diretamente de `produto_estoque.empresa_id` da linha de origem, nunca recalculado** — a migração aditiva de `empresa_id` (AD-20/FR-44, Story 9.4) já rodou e concluiu em produção antes desta rodada, então não há corrida real entre as duas migrações; a cópia direta remove a ambiguidade para quem ler esta AD sem esse histórico (achado do revisor adversarial da arquitetura). Toda Baixa (FR-14), Transferência (FR-15) e aprovação de Pedido (FR-25) debita automaticamente do(s) Lote(s) do par Produto/Estoque com `data_validade` mais próxima primeiro (`ORDER BY data_validade NULLS LAST, criado_em ASC`) — Lote sem validade conhecida só é consumido depois de esgotados os Lotes com validade real. Nenhuma tela ou endpoint expõe escolha manual de qual Lote consumir. Estende a ordem canônica de lock de AD-10 para `(produto_id, estoque_id, lote_id)`.
+- **Rationale (Deferred no PRD §11.17, fechado aqui):** FEFO automático é o próprio motivo de existir do Lote — reduzir perda por vencimento; nenhum caso de uso do PRD pede pular um Lote mais velho por um mais novo, e dar escolha manual sem necessidade real só adicionaria UI e carga cognitiva ao Almoxarife.
+
+### AD-25 — Reserva de saldo sem expiração automática; saldo disponível é sempre query, nunca coluna
+
+- **Binds:** FR-50, FR-14, FR-15, FR-22, FR-25.
+- **Prevents:** dois mecanismos divergentes de "saldo disponível" (um contando reserva, outro não) — o achado da revisão adversarial do PRD de que Baixa/Transferência furavam a garantia de FR-50; reintrodução da race condition que FR-50 fechou, via expiração automática mal desenhada.
+- **Rule:** nova tabela `reservas_pedido_item` (`id`, `pedido_id`, `produto_id`, `estoque_id`, `quantidade`, `empresa_id`) — não uma coluna em `pedido_itens`, para o ciclo de vida da reserva ser independente do item. **Saldo disponível é sempre calculado (soma de `lotes.quantidade` menos soma de `reservas_pedido_item.quantidade` ativas), nunca uma coluna materializada** — Baixa, Transferência e aprovação de Pedido (AD-24) sempre revalidam contra esse cálculo, nunca contra o saldo bruto do Lote. Reserva nasce no envio do Pedido (FR-22) e só é liberada por decisão explícita (aprovar/rejeitar/parcial, FR-25) — **sem job, cron ou expiração automática nesta versão.**
+- **Rationale (Deferred no PRD §11.19, fechado aqui):** expiração automática exigiria um mecanismo assíncrono novo (hoje só existe o worker de e-mail, AD-4) e a pergunta "o que fazer com o Pedido quando a reserva expira" não tem resposta óbvia (auto-rejeitar reabre a race; deixar pendente sem reserva também). Pedido preso é resolvido por decisão humana, que já libera a reserva — sem mecanismo novo. Revisitar se pedidos presos virarem problema operacional real (ver Deferred).
+
+### AD-26 — Código sequencial de Produto: contador atômico por Empresa
+
+- **Binds:** FR-8.
+- **Prevents:** uma `sequence` nativa do Postgres (objeto de schema fixo, não segmentável por Empresa sem DDL dinâmico em runtime) vazando, entre Empresas, uma pista de quantos Produtos a outra já tem; dois builders implementando o contador de formas incompatíveis (um com `SELECT COUNT(*)`, sujeito a corrida); bootstrap não-atômico da primeira linha do contador de uma Empresa nova gerando código duplicado no primeiro Produto cadastrado.
+- **Rule:** nova tabela `contadores_produto` (`empresa_id` PK, `proximo_valor`), incrementada atomicamente via `UPDATE contadores_produto SET proximo_valor = proximo_valor + 1 WHERE empresa_id = $1 RETURNING proximo_valor`, na MESMA transação do `INSERT` em `produtos`. Código final formatado com zero-padding de 6 dígitos (`000001`). Sequência é por Empresa, nunca compartilhada — consistente com o isolamento total de AD-20. **A primeira linha de `contadores_produto` (`proximo_valor = 1`) nasce na MESMA transação de `ProvisionarEmpresa` que já cria a Filial padrão (AD-27)** — nunca via lazy-init/`INSERT ... ON CONFLICT` no momento do primeiro Produto. Achado do revisor adversarial da arquitetura: AD-27 já era explícita sobre bootstrap atômico da Filial padrão, mas esta AD não era — mesmo padrão aplicado aqui para fechar a mesma classe de risco.
+
+### AD-27 — Estrutura Filial > Estoque, migração aditiva
+
+- **Binds:** FR-51, FR-12.
+- **Prevents:** Estoque órfão de Filial; dois builders inventando mecanismos divergentes de "Filial padrão" para dado já em produção.
+- **Rule:** nova tabela `filiais` (`id` UUID, `empresa_id`, `nome`, `criado_em`); `estoques` ganha `filial_id UUID REFERENCES filiais(id)` — migração aditiva no mesmo molde de AD-20 (`NULL`able → backfill de uma Filial padrão única por Empresa já existente → `SET NOT NULL`). Índice único de nome de Estoque muda de `(empresa_id, nome_normalizado)` para `(filial_id, nome_normalizado)` — duas Filiais da mesma Empresa podem ter cada uma um Estoque de mesmo nome. Toda Empresa nova (FR-41, provisionamento da Story 9.2) ganha uma Filial padrão automática (nome = Nome Fantasia da Empresa) na MESMA transação de `ProvisionarEmpresa` — nenhum Estoque nasce sem Filial, nenhum passo extra de onboarding é necessário.
+
+### AD-28 — Centro de Custo/Destino de Obra coexiste com o texto livre, não o substitui
+
+- **Binds:** FR-52, FR-22.
+- **Prevents:** dois builders decidindo divergentemente se o campo estruturado substitui o texto livre; quebra de FR-22 (Pedido sempre exige obra/centro de custo) caso a lista estruturada esteja vazia no dia 1.
+- **Rule:** nova tabela `centros_custo` (`id`, `empresa_id`, `nome`); `pedidos.obra_centro_custo` (texto livre, já existente) permanece inalterado e continua obrigatório. Novo campo opcional `pedidos.centro_custo_id UUID NULL REFERENCES centros_custo(id)` — quando presente, é a referência estruturada; os dois coexistem, sem migração retroativa de Pedido histórico.
+- **Rationale (Deferred no PRD §11.18, fechado aqui):** coexistir é o caminho aditivo já estabelecido pelo resto do sistema (AD-20); substituir no dia 1 quebraria o cadastro de Pedido enquanto a lista de Centros de Custo estiver vazia. Migração para obrigatório fica Deferred, decisão de produto para quando a lista estiver populada.
+
+### AD-29 — Produto sem saldo aparece no Catálogo com quantidade zero
+
+- **Binds:** FR-6, FR-5, FR-8.
+- **Prevents:** um segundo mecanismo de ocultação (ex. status "rascunho") duplicando o que o filtro de disponibilidade (FR-5) já resolve.
+- **Rule:** Produto sem nenhuma linha em `lotes` aparece normalmente no Catálogo com quantidade total 0 — nenhum estado de visibilidade novo é criado; quem não quer ver Produto sem saldo já usa o filtro "com estoque" existente.
+
+### AD-30 — Importação em massa gera Lote sem validade, mesmo tratamento do dado migrado
+
+- **Binds:** FR-10, FR-47.
+- **Prevents:** dois caminhos divergentes de "Lote sem validade conhecida" — um para a migração da Ferreira Costa, outro para importação em massa.
+- **Rule:** toda linha de planilha (FR-10) que cria ou atualiza saldo gera automaticamente uma linha em `lotes` com `data_validade = NULL` — a planilha padronizada não ganha colunas novas de Lote/Validade nesta versão (mesmo tratamento do saldo legado migrado da Ferreira Costa, FR-44).
+
+### AD-31 — Exclusão de Estoque bloqueada por Lote residual (mesmo zerado) ou reserva ativa `[ASSUMPTION]`
+
+- **Binds:** FR-13, AD-24, AD-29.
+- **Prevents:** exclusão de Estoque apagar silenciosamente o histórico de Lote (mesmo a quantidade zero) ou deixar uma `RESERVAS_PEDIDO_ITEM` ativa apontando para um Estoque que não existe mais; dois builders decidindo divergentemente se "saldo residual" inclui Lote zerado e reserva ativa, ou só quantidade física positiva.
+- **Rule:** exclusão de Estoque (FR-13) é bloqueada se existir **qualquer** linha em `lotes` para esse Estoque — mesmo com `quantidade = 0` — OU qualquer `reservas_pedido_item` ativa referenciando um Lote desse Estoque. Uma linha de Lote a quantidade zero nunca é apagada automaticamente (mesmo espírito de preservação de histórico de AD-11) — fica mantida, zerada, como registro de que aquele par Produto/Estoque já teve saldo.
+- **Rationale (Deferred no PRD, fechado aqui):** `[ASSUMPTION]` fast-path — nenhuma FR ou AD anterior decidia isso; achado crítico do revisor adversarial da arquitetura (FR-13 × AD-24/AD-29 sem interação definida). Bloquear é o lado seguro: permitir exclusão com histórico presente arriscaria perda silenciosa de rastreabilidade de Lote, que é justamente o problema que FR-47 nasceu para resolver. A confirmar com o usuário na triagem.
+
+### AD-32 — Código do Fornecedor/EAN-13 e Unidade de Medida/Embalagem: colunas simples, migração aditiva só onde obrigatório
+
+- **Binds:** FR-45, FR-46.
+- **Prevents:** confundir Código do Fornecedor/EAN-13 (FR-45) com o "Código de Identificação" interno de FR-8/FR-35 — são três campos disjuntos, sem relação funcional; builder tratando `unidade_medida` como obrigatória para Produto legado e travando o sistema por dado incompleto.
+- **Rule:**
+  - `produtos.codigo_fornecedor` (texto livre) e `produtos.ean13` (`CHAR(13)`, validado por dígito verificador quando informado) — ambos opcionais, sem índice de unicidade (FR-45 explícito: nenhuma garantia de unicidade nesta versão).
+  - `produtos.unidade_medida` (enum já especificado em `addendum.md` §F, nunca implementado) e `produtos.embalagem` (texto livre, ex. "CX 24") — `unidade_medida` obrigatória só para Produto **novo**; migração aditiva (mesmo molde de AD-20/AD-24): coluna nasce `NULL`able, backfill em lote com valor único (`[ASSUMPTION]` "un", a confirmar) para todo Produto já existente sem essa informação, só então validação de obrigatoriedade passa a valer no cadastro/edição.
+  - Ambos os pares aparecem como colunas próprias no Catálogo (FR-6) e no detalhe por Estoque (FR-7) — sem transformação, exibição direta.
+
+### AD-33 — CRUD de Categorias e Templates: exclusão bloqueada por referência, edição nunca retroativa
+
+- **Binds:** FR-48, FR-49.
+- **Prevents:** exclusão de Categoria/Template referenciado por Produto quebrando a integridade referencial ou um relatório existente (mesmo classe de risco que AD-31 fecha para Estoque); edição de Template forçando reedição em massa de Produtos já cadastrados sob o padrão antigo.
+- **Rule:**
+  - Exclusão de Categoria (FR-48) ou Template (FR-49) é bloqueada se existir qualquer `produtos.categoria_id`/`produtos.template_id` apontando para a linha — mesmo princípio de AD-31 (FR-13/Estoque), agora estendido às duas listas administráveis.
+  - `categorias.codigo` até 8 caracteres, `categorias.nome`/descrição até 50 — constraint de tamanho aplicada no banco, não só na validação de handler.
+  - Editar um Template já em uso **não** revalida retroativamente os Produtos que já usam esse padrão — a nova regra só se aplica no próximo cadastro/edição de nome desse Produto (mesmo espírito não-retroativo de FR-9/AD-34).
+  - Ambas seguem a cópia editável independente por Empresa já estabelecida em AD-20/FR-40 — sem AD nova para isso, é a mesma regra de sempre se aplicando a mais duas tabelas.
+
+### AD-34 — Template "Genérico" `[NOME LIVRE]` é caso especial no motor de validação, não mais um template estrutural
+
+- **Binds:** FR-9.
+- **Prevents:** um builder implementando a obrigatoriedade de template (FR-9) sem perceber que o próprio fallback "Genérico" precisa ser aceito pelo motor de validação apesar de não ter estrutura de tokens nenhuma — rejeitaria o próprio mecanismo criado para cobrir as ~16/25 categorias sem template real (achado do reconhecimento adversarial do PRD, addendum §G/§H).
+- **Rule:** seed de `nomenclatura_templates` inclui uma linha `Genérico` com marcador `[NOME LIVRE]` em vez de uma sequência de tokens estruturados. Motor de validação trata esse marcador como caso especial: aceita qualquer texto não vazio, sem checagem de ordem/presença de token — todo outro template continua validado estruturalmente como hoje. Seleção de template continua obrigatória (FR-9); "Genérico" é sempre uma opção disponível, nunca removível via CRUD (AD-33 já bloqueia exclusão referenciada, mas esta linha em particular nunca fica sem Produto nenhum usando-a como fallback universal).
+
 ## Deferred
 
 - **Contador/bloqueio de força bruta (FR-36) e biblioteca TOTP (FR-37):** mecanismo de contagem de tentativas/duração de bloqueio e a biblioteca TOTP não foram fixados nesta spine — `pquerna/otp` é candidata, mas não teve manutenção ativa confirmada nesta pesquisa; escolher e verificar no momento da story.
@@ -330,4 +418,7 @@ erDiagram
 - **Validação de CNPJ (FR-41):** algoritmo de dígito verificador é conhecido/padrão (não precisa de biblioteca externa), mas confirmar na story se algum pacote Go já maduro cobre isso (ex. `klassmann/cpfcnpj`) ou se a validação é implementada inline — decisão de implementação, não de arquitetura.
 - **Rate limit de emissão de convites (AD-22) e de tentativas de login do Dono da Plataforma (AD-21):** mecanismo concreto (contador em Postgres, mesmo espírito do Deferred de FR-36) não fixado nesta rodada — resolver junto do Deferred já existente de bloqueio de força bruta.
 - **Tamanho de lote do backfill de `empresa_id` (AD-20):** não fixado — depende do volume real de linhas em produção no momento da execução; decisão de implementação da story de migração, não de arquitetura.
-- **Conjunto de dados de exemplo do Ambiente de Treinamento (FR-43):** quantidade/conteúdo exato dos Produtos/Estoques semeados não fixado nesta spine — decisão de conteúdo/UX, não de arquitetura.
+- **Conjunto de dados de exemplo do Ambiente de Treinamento (FR-43), incluindo fotos:** quantidade/conteúdo exato dos Produtos/Estoques/fotos semeados não fixado nesta spine — decisão de conteúdo/UX, não de arquitetura. Mecanismo de seed de fotos, quando decidido, é um script one-off humano-disparado (mesmo princípio de AD-15) que faz upload pelas rotas normais de FR-27, reaproveitando o armazenamento versionado de AD-11 — sem storage novo, sem AD dedicada.
+- **Expiração de reserva de saldo (AD-25):** sem mecanismo automático nesta versão — revisitar se Pedido pendente travando saldo indefinidamente virar problema operacional real (ex. relatório/alerta de Pedidos parados há N dias).
+- **Substituição do texto livre de obra/centro de custo pelo cadastro estruturado (AD-28):** Deferred até a lista de Centros de Custo estar populada o bastante — decisão de produto, não de arquitetura.
+- **Reorganização de Estoques legados entre Filiais reais (AD-27):** a migração cria uma única Filial padrão para todo Estoque já existente; distribuí-los entre Filiais de verdade é trabalho manual do `adm`, fora desta spine.

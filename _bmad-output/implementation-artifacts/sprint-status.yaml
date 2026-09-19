@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-29-2026 14:50
-last_updated: 08-29-2026 14:50
+last_updated: 09-19-2026 17:37
 project: stockflow
 project_key: NOKEY
 tracking_system: file-system
@@ -44,7 +44,7 @@ development_status:
   1-6-recuperação-de-senha-por-e-mail: done
   1-7-solicitação-de-promoção-de-papel: done
   1-8-gestão-de-contas-desativação-e-rebaixamento: done
-  1-9-login-federado-via-keycloak-sso-ferreira-costa: awaiting-operator
+  1-9-login-federado-via-keycloak-sso-ferreira-costa: review
   1-10-bloqueio-de-conta-e-política-de-senha: done
   1-11-mfa-obrigatório-para-papéis-administrativos: done
   1-12-log-de-acesso-e-auditoria: done
@@ -106,7 +106,32 @@ development_status:
 
   epic-9: done
   9-1-fundação-multi-empresa-schema-e-isolamento-por-empresa: done
-  9-2-dono-da-plataforma-cria-empresas-com-ambiente-de-treinamento-automático: done
+  9-2-dono-da-plataforma-cria-empresas-com-ambiente-de-treinamento: done
   9-3-convite-nominal-de-acesso-a-uma-empresa: done
   9-4-migração-da-ferreira-costa-para-o-modelo-multi-empresa: done
   epic-9-retrospective: optional
+
+  epic-10: backlog
+  10-1-nome-mínimo-e-template-de-nomenclatura-obrigatório-com-fallb: backlog
+  10-2-código-de-produto-automático-e-sequencial-por-empresa: backlog
+  10-3-código-do-fornecedor-ean-13-unidade-de-medida-e-embalagem: backlog
+  10-4-colunas-explícitas-na-listagem-do-catálogo: backlog
+  10-5-crud-de-categorias: backlog
+  10-6-crud-de-templates-de-nomenclatura: backlog
+  epic-10-retrospective: optional
+
+  epic-11: backlog
+  11-1-lançamento-de-saldo-inicial-com-lote-e-data-de-validade: backlog
+  11-2-migração-do-saldo-existente-para-lote-legado: backlog
+  11-3-reserva-de-saldo-ao-enviar-pedido: backlog
+  11-4-baixa-e-transferência-consomem-lote-automaticamente-e-respei: backlog
+  11-5-aprovação-de-pedido-revalida-contra-reserva-e-debita-lote: backlog
+  11-6-estoque-e-quantidade-inicial-saem-do-cadastro-de-produto: backlog
+  epic-11-retrospective: optional
+
+  epic-12: backlog
+  12-1-cadastro-de-filiais-e-vínculo-de-estoque: backlog
+  12-2-migração-dos-estoques-legados-para-filial-padrão: backlog
+  12-3-cadastro-de-centro-de-custo-e-destino-de-obra: backlog
+  12-4-fotos-de-exemplo-no-ambiente-de-treinamento: backlog
+  epic-12-retrospective: optional

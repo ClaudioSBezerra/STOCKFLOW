@@ -1,5 +1,5 @@
 ---
-stepsCompleted: [1, 1-confirmed, 2, 2-approved, 3, 4-validated]
+stepsCompleted: [1, 1-confirmed, 2, 2-approved, 3, 4-validated, r2-1, r2-1-confirmed, r2-2, r2-2-approved, r2-3, r2-4-validated]
 inputDocuments:
   - _bmad-output/planning-artifacts/prds/prd-stockflow-2026-08-29/prd.md
   - _bmad-output/planning-artifacts/prds/prd-stockflow-2026-08-29/addendum.md
@@ -63,6 +63,31 @@ FR42: Vínculo de Usuário a uma Empresa via convite nominal (vinculado a um e-m
 FR43: Ambiente de Treinamento auto-provisionado junto com toda Empresa criada — Empresa-irmã isolada até da Empresa real que a originou, com dados de exemplo próprios e a mesma hierarquia de papéis, para prática sem risco de afetar dado real.
 FR44: Migração da Ferreira Costa (dados/contas já em produção) para a primeira Empresa real do novo modelo, sem perda de histórico — migração aditiva/resumível, sem downtime obrigatório, com plano de rollback (diferente da migração legada anterior, que rodava contra um espelho dormente).
 
+**Feedback de Treinamento pós Multi-Empresa (2026-09-19) — FR revisados:**
+
+FR6 *(revisado)*: Visualização do catálogo em grade e em tabela agrupada, soma quantidades de produtos com mesmo nome/unidade/dimensões; toda listagem mostra explicitamente código, nome, categoria, estoque total (soma across Estoques) e embalagem+unidade como colunas próprias.
+FR8 *(revisado)*: Cadastro manual de Produto — nome (mínimo 10 caracteres), código gerado automaticamente e sequencial (deixa de ser digitado), categoria, template de Nomenclatura (agora obrigatório), código do fornecedor e EAN-13, unidade de medida e embalagem, dimensões estruturadas, observações, foto opcional; Estoque destino e quantidade inicial SAEM deste formulário (passam a ser lançados separadamente, FR47); regras novas (nome mínimo, template obrigatório) valem só para cadastro novo/próxima edição, nunca retroativas.
+FR9 *(revisado)*: Nomenclatura Guiada — seleção de template passa a ser OBRIGATÓRIA no cadastro; ganha um template "Genérico" (`[NOME LIVRE]`) sempre disponível como fallback para categorias sem template específico (as ~16/25 categorias fora do domínio de material de construção).
+FR12 *(revisado)*: Criar e listar locais de Estoque, com nome único garantido atomicamente dentro da mesma Filial (não mais globalmente na Empresa).
+FR14 *(revisado)*: Registrar Baixa (consumo) — debita contra o saldo DISPONÍVEL (descontada a reserva de FR50), nunca o saldo total; debita de um ou mais Lotes do Produto no Estoque (FEFO, ver Architecture AD-24).
+FR15 *(revisado)*: Registrar Transferência entre Estoques — rejeita quantidade maior que a DISPONÍVEL (mesma correção de FR14); move Lote(s) inteiros ou parte de um Lote preservando a Data de Validade original, nunca cria Lote novo com validade diferente da origem.
+FR21 *(revisado)*: Carrinho de reserva de itens antes de enviar um Pedido; valida disponibilidade no momento da adição — nota de terminologia: "reservar" aqui soma só com o próprio carrinho do usuário, não trava saldo contra outros usuários (isso só passa a acontecer no envio do Pedido, FR50).
+FR22 *(revisado)*: Envio de Pedido de Retirada (solicitante, obra/centro de custo — FR52, observação) → status `pendente`; rejeita carrinho vazio; revalida disponibilidade no envio; passa a RESERVAR o saldo dos itens (FR50), deixando de ser só uma revalidação pontual.
+FR25 *(revisado)*: Aprovação/rejeição de Pedido com revalidação de estoque item a item contra a RESERVA (não mais o saldo livre); nunca sucesso parcial silencioso; item aprovado debita do(s) Lote(s) do Estoque de origem (FEFO); débito e Movimentação atômicos.
+FR40 *(revisado)*: Empresa como unidade de isolamento total de dados — assunção de cópia editável por Empresa estendida de Categorias também para Templates de Nomenclatura (FR49).
+FR43 *(revisado)*: Ambiente de Treinamento auto-provisionado — conjunto de exemplo passa a incluir também fotos de exemplo nos Produtos (antes só Produtos/Estoques sem foto), para dar sensação de catálogo real.
+
+**Feedback de Treinamento pós Multi-Empresa (2026-09-19) — FR novos:**
+
+FR45: Código do Fornecedor (texto livre) e EAN-13 (13 dígitos + dígito verificador) no cadastro de Produto — dois campos adicionais, independentes entre si e do código interno (FR8); ambos opcionais, sem garantia de unicidade.
+FR46: Unidade de Medida (enum, obrigatória para Produto novo) e Embalagem (texto livre, opcional) no cadastro de Produto; aparecem como colunas no Catálogo (FR6) e no detalhe por Estoque (FR7); Produto legado sem Unidade de Medida recebe valor de migração único em lote.
+FR47: Lançamento de saldo inicial com Lote e Data de Validade, tela dedicada ao Almoxarife+ — um Produto pode ter vários Lotes ativos simultaneamente no mesmo Estoque; quantidade total exibida é a soma de todos os Lotes ativos; consumo é FEFO automático (Architecture AD-24); saldo legado migra como "Lote legado" com Data de Validade nula.
+FR48: CRUD de Categorias pelo `adm`+ — código até 8 caracteres, nome/descrição até 50; cópia editável independente por Empresa; exclusão bloqueada se referenciada por algum Produto.
+FR49: CRUD de Templates de Nomenclatura pelo `adm`+ — mesma cópia editável por Empresa de Categorias; editar um template em uso não força reedição retroativa dos Produtos já cadastrados; exclusão bloqueada se referenciado por algum Produto.
+FR50: Reserva de saldo ao enviar Pedido — saldo dos itens fica reservado (indisponível para qualquer outro Pedido/Carrinho) até a decisão (FR25); Catálogo/Estoque passam a mostrar saldo disponível separado do reservado, com detalhe de para qual Pedido/solicitante; reserva liberada automaticamente na rejeição, parcialmente na aprovação parcial; sem expiração automática nesta versão.
+FR51: Cadastro de Filiais pelo `adm`+ — toda Filial pertence a exatamente uma Empresa; todo Estoque passa a pertencer a exatamente uma Filial (Depósito = Estoque existente + Filial como pai, não um terceiro nível); toda Empresa nova ganha uma Filial padrão automática; migração vincula todo Estoque legado a essa Filial padrão.
+FR52: Cadastro de Centro de Custo e Destino de Obra pelo `adm`+ — entidades próprias referenciáveis no envio de Pedido (FR22), coexistindo com o campo texto livre já existente (não o substituem nesta versão); mesma cópia por Empresa de FR40/FR48/FR49.
+
 ### NonFunctional Requirements
 
 NFR1: Toda autorização por papel é validada no servidor; nenhuma credencial (própria ou do Keycloak) é exposta no cliente/repositório; toda entrada é validada no limite da API.
@@ -103,6 +128,23 @@ NFR10: Isolamento multi-Empresa — toda consulta a dado operacional (Catálogo,
 - "Dono da Plataforma" em tabela própria (`donos_plataforma`), disjunta de `usuarios` — nunca a mesma credencial de um `adm` de Empresa; rota de login própria; bootstrap do primeiro registro por CLI, mesmo padrão de AD-12; reaproveita o formato de token de AD-6 (Architecture AD-21).
 - Convite de acesso em tabela própria (`convites_empresa`) — nominal (e-mail específico), uso único, expira; mesmo espírito de AD-18 mas tabela separada por não haver `usuario_id` ainda no momento da criação (Architecture AD-22).
 - Ambiente de Treinamento é uma Empresa comum com `empresa_origem_id` nullable — reusa inteiramente o isolamento de AD-20, sem nenhuma condicional `if eh_treinamento` em service (Architecture AD-23).
+
+**Feedback de Treinamento pós Multi-Empresa (2026-09-19):**
+
+- Consumo de Lote é FEFO automático (`ORDER BY data_validade NULLS LAST, criado_em ASC`), nunca escolha manual — nova tabela `lotes` SUBSTITUI `produto_estoque` (uma linha por Lote, quantidade do par Produto/Estoque é a soma); Lote legado migra com `data_validade = NULL`, herdando `empresa_id` direto da linha de origem (Architecture AD-24).
+- Saldo disponível é sempre calculado em query (soma `lotes.quantidade` menos reserva ativa), nunca coluna materializada; nova tabela `reservas_pedido_item`; reserva nasce no envio do Pedido, só é liberada por decisão explícita, sem expiração automática nesta versão; criar uma reserva participa do mesmo lock `SELECT ... FOR UPDATE` ordenado de AD-10, mesmo sem escrever em `lotes.quantidade` (Architecture AD-25, estende AD-10).
+- Código sequencial de Produto via contador atômico por Empresa (`contadores_produto`, PK `empresa_id`, `UPDATE ... RETURNING` na mesma transação do INSERT), zero-padding 6 dígitos; primeira linha nasce na mesma transação de `ProvisionarEmpresa` que cria a Filial padrão, nunca lazy-init (Architecture AD-26).
+- Nova tabela `filiais`; `estoques.filial_id` migração aditiva (nullable → backfill de Filial padrão → NOT NULL); índice único de nome de Estoque muda de `(empresa_id, nome)` para `(filial_id, nome)`; toda Empresa nova ganha Filial padrão automática na mesma transação de provisionamento (Architecture AD-27).
+- Nova tabela `centros_custo`; `pedidos.centro_custo_id` opcional coexiste com `pedidos.obra_centro_custo` (texto livre, inalterado) — sem migração retroativa (Architecture AD-28).
+- Produto sem nenhuma linha em `lotes` aparece no Catálogo com quantidade total 0 — nenhum estado de visibilidade novo (Architecture AD-29).
+- Importação em massa (FR10) gera Lote com `data_validade = NULL` para toda linha que cria/atualiza saldo — mesmo tratamento do saldo legado migrado (Architecture AD-30).
+- Exclusão de Estoque (FR13) bloqueada se existir qualquer linha em `lotes` para esse Estoque (mesmo com quantidade zero) OU reserva ativa referenciando um Lote dele; Lote a quantidade zero nunca é apagado automaticamente, mesmo espírito de preservação de histórico de AD-11 (Architecture AD-31, `[ASSUMPTION]` a confirmar).
+- `produtos.codigo_fornecedor` (texto livre) e `produtos.ean13` (`CHAR(13)`, validado por dígito verificador) opcionais, sem unicidade; `produtos.unidade_medida` (enum) obrigatória só para Produto novo com migração aditiva (backfill `[ASSUMPTION]` "un" para dado legado); `produtos.embalagem` opcional (Architecture AD-32).
+- CRUD de Categorias/Templates: exclusão bloqueada se referenciado por Produto (mesmo princípio de AD-31); `categorias.codigo` até 8 chars, nome/descrição até 50; editar Template em uso não revalida retroativamente Produtos já cadastrados (Architecture AD-33).
+- Template "Genérico" (`[NOME LIVRE]`) é caso especial no motor de validação — aceita qualquer texto sem checagem de tokens, distinto da validação estrutural dos demais 27 templates; sempre disponível, nunca removível via CRUD (Architecture AD-34).
+- Mesclagem de duplicatas (FR20/AD-11) estendida para reescrever `produto_id` também em `LOTES` e `RESERVAS_PEDIDO_ITEM` do produto removido, além de `MOVIMENTACOES`/`PEDIDO_ITENS` já cobertos — sem isso, saldo físico e reserva ativa do produto removido ficariam órfãos.
+- Canais SSE (AD-3) seguem fixos em 4 (`produtos`, `estoques`, `movimentacoes`, `pedidos`); Categorias/Templates/Filiais/Centros de Custo são config administrativa de baixa frequência, explicitamente exemptas do gerador "todo domínio com handler tem canal" — sem canal SSE dedicado, cliente rebusca via GET normal após CRUD.
+- `filial_id`/`centro_custo_id` recebidos do cliente são sempre revalidados contra a Empresa do contexto antes de aceitar — FK do banco sozinha não impede um id de outra Empresa (extensão de AD-20).
 
 ### UX Design Requirements
 
@@ -176,6 +218,25 @@ FR41: Epic 9 - Papel "Dono da Plataforma" cria e gerencia Empresas
 FR42: Epic 9 - Vínculo de Usuário a uma Empresa via convite nominal
 FR43: Epic 9 - Ambiente de Treinamento automático por Empresa
 FR44: Epic 9 - Migração da Ferreira Costa para o modelo multi-Empresa
+FR6 (revisado): Epic 10 - Colunas explícitas (código, categoria, estoque total, embalagem+unidade) na listagem
+FR8 (revisado): Epic 10 - Nome mínimo 10 chars, código automático, estoque/quantidade saem do cadastro
+FR9 (revisado): Epic 10 - Template de Nomenclatura obrigatório + fallback Genérico
+FR40 (revisado): Epic 10 - Cópia editável por Empresa estendida a Templates de Nomenclatura
+FR45: Epic 10 - Código do Fornecedor e EAN-13 no cadastro de Produto
+FR46: Epic 10 - Unidade de Medida e Embalagem no cadastro de Produto
+FR48: Epic 10 - CRUD de Categorias
+FR49: Epic 10 - CRUD de Templates de Nomenclatura
+FR14 (revisado): Epic 11 - Baixa debita saldo disponível e consome Lote (FEFO)
+FR15 (revisado): Epic 11 - Transferência debita saldo disponível e move Lote preservando validade
+FR21 (revisado): Epic 11 - Terminologia de Carrinho/Reservar distinta da reserva dura
+FR22 (revisado): Epic 11 - Envio de Pedido passa a reservar saldo
+FR25 (revisado): Epic 11 - Aprovação revalida contra reserva e debita Lote (FEFO)
+FR47: Epic 11 - Lançamento de saldo inicial com Lote e Data de Validade
+FR50: Epic 11 - Reserva de saldo ao enviar Pedido
+FR12 (revisado): Epic 12 - Nome de Estoque único dentro da mesma Filial
+FR43 (revisado): Epic 12 - Ambiente de Treinamento ganha fotos de exemplo
+FR51: Epic 12 - Cadastro de Filiais
+FR52: Epic 12 - Cadastro de Centro de Custo e Destino de Obra
 
 ## Epic List
 
@@ -214,6 +275,18 @@ Usuário exporta os próprios dados pessoais; Adm processa solicitações de exc
 ### Epic 9: Multi-Empresa e Plataforma
 O stockflow deixa de ser uma instalação única (Ferreira Costa) para ser uma plataforma multi-cliente com isolamento total de dados entre Empresas; Dono da Plataforma cria Empresas (com Ambiente de Treinamento automático); Usuário se vincula a uma Empresa via convite nominal; a Ferreira Costa migra para a primeira Empresa real do novo modelo.
 **FRs covered:** FR40, FR41, FR42, FR43, FR44
+
+### Epic 10: Enriquecimento do Cadastro de Produto e Configuração de Catálogo
+Almoxarife cadastra Produtos mais completos e consistentes (nome mínimo, template de Nomenclatura obrigatório com fallback Genérico, Código do Fornecedor e EAN-13, Unidade de Medida e Embalagem, colunas explícitas na listagem); Adm mantém Categorias e Templates de Nomenclatura próprios por Empresa, sem depender de seed fixo.
+**FRs covered:** FR6, FR8, FR9, FR40, FR45, FR46, FR48, FR49
+
+### Epic 11: Estoque Preciso — Lote, Validade e Reserva de Saldo
+Almoxarife lança e consome saldo por Lote com Data de Validade (FEFO automático, sem escolha manual); enviar um Pedido passa a travar de verdade o saldo reservado até a decisão do almoxarife, fechando a corrida entre pedidos concorrentes que hoje não existe.
+**FRs covered:** FR14, FR15, FR21, FR22, FR25, FR47, FR50
+
+### Epic 12: Estrutura Organizacional — Filiais e Centro de Custo
+Adm estrutura a organização em Filiais (com Depósitos/Estoques vinculados) e cadastra Centro de Custo/Destino de Obra, referenciável no envio de Pedido; Ambiente de Treinamento ganha fotos de exemplo nos Produtos.
+**FRs covered:** FR12, FR43, FR51, FR52
 
 ## Epic 1: Autenticação e Gestão de Acesso
 
@@ -1392,3 +1465,447 @@ So that o sistema em produção passe a operar sob o mesmo isolamento de qualque
 **Given** a regra já estabelecida para qualquer corte de dados em produção (Architecture AD-15, PRD §9)
 **When** esta migração é executada
 **Then** ela é sempre disparada manualmente por uma pessoa — nunca de forma autônoma por um agente de IA, mesmo que o código da migração tenha sido escrito sob o processo de agentes do `bmad-loop`
+
+## Epic 10: Enriquecimento do Cadastro de Produto e Configuração de Catálogo
+
+Almoxarife cadastra Produtos mais completos e consistentes (nome mínimo, template de Nomenclatura obrigatório com fallback Genérico, Código do Fornecedor e EAN-13, Unidade de Medida e Embalagem, colunas explícitas na listagem); Adm mantém Categorias e Templates de Nomenclatura próprios por Empresa, sem depender de seed fixo.
+
+### Story 10.1: Nome mínimo e Template de Nomenclatura obrigatório com fallback Genérico
+
+As a Almoxarife,
+I want que o cadastro de Produto exija um nome minimamente descritivo e sempre um Template de Nomenclatura selecionado,
+So that o catálogo pare de receber nomes curtos demais ou fora do padrão que atrapalham busca e consistência.
+
+**Acceptance Criteria:**
+
+**Given** o cadastro ou edição de Produto
+**When** o nome informado tem menos de 10 caracteres
+**Then** o sistema rejeita com mensagem clara (máximo de 255 continua valendo)
+
+**Given** a lista de templates (28 estruturais + "Genérico" `[NOME LIVRE]`, Architecture AD-34)
+**When** o Almoxarife tenta cadastrar sem selecionar nenhum template
+**Then** o sistema rejeita — não existe mais caminho de cadastro sem template selecionado
+
+**Given** uma Categoria sem template estrutural específico (addendum §H, ~16 das 25 categorias)
+**When** o Almoxarife cadastra um Produto dessa categoria
+**Then** o template "Genérico" está sempre disponível e aceita qualquer texto não vazio, sem checagem de ordem/presença de token (AD-34)
+
+**Given** um Produto com template (estrutural ou Genérico) já aplicado
+**When** o Almoxarife edita o nome depois do cadastro
+**Then** a edição revalida o nome contra o mesmo template — não é possível burlar a regra editando depois
+
+**Given** Produtos já cadastrados antes desta story, com nome curto ou sem template
+**When** o sistema sobe com essas regras novas
+**Then** nenhuma varredura retroativa força reedição — as regras valem só para cadastro novo e a próxima edição de cada Produto (FR8 `[NOTE FOR PM]`)
+
+### Story 10.2: Código de Produto automático e sequencial por Empresa
+
+As a Almoxarife,
+I want que o código do Produto seja gerado automaticamente pelo sistema,
+So that eu não precise inventar/digitar um código e não haja risco de colisão entre cadastros.
+
+**Acceptance Criteria:**
+
+**Given** uma Empresa sem nenhum Produto cadastrado ainda
+**When** o primeiro Produto é cadastrado
+**Then** o código gerado é "000001" (zero-padding de 6 dígitos), a partir de uma linha em `contadores_produto` criada na mesma transação de provisionamento da Empresa (Story 9.2), nunca via lazy-init (Architecture AD-26)
+
+**Given** dois cadastros de Produto concorrentes na mesma Empresa
+**When** ambos são submetidos ao mesmo tempo
+**Then** cada um recebe um código distinto e sequencial via `UPDATE contadores_produto ... RETURNING` atômico, na mesma transação do `INSERT` em `produtos` — nunca uma colisão
+
+**Given** o campo código no formulário de cadastro
+**When** a tela carrega
+**Then** o campo não é mais editável pelo Almoxarife — só exibido, já preenchido, depois da criação
+
+**Given** Produtos já cadastrados manualmente antes desta story, com códigos livres
+**When** a sequência nova passa a valer
+**Then** os códigos antigos permanecem intactos, convivendo com a nova sequência, sem renumeração retroativa
+
+**Given** a sequência de código de duas Empresas diferentes
+**When** comparadas
+**Then** cada Empresa tem sua própria sequência independente, nunca compartilhada (consistente com AD-20)
+
+### Story 10.3: Código do Fornecedor, EAN-13, Unidade de Medida e Embalagem
+
+As a Almoxarife,
+I want registrar o código do fornecedor, o código de barras EAN-13, a unidade de medida e a embalagem de um Produto,
+So that o cadastro reflita informações reais de compra/logística já usadas no dia a dia.
+
+**Acceptance Criteria:**
+
+**Given** o formulário de cadastro/edição de Produto
+**When** o Almoxarife informa Código do Fornecedor (texto livre) e/ou EAN-13
+**Then** ambos são salvos como campos opcionais, sem nenhuma checagem de unicidade entre Produtos, sem relação funcional com o código interno de Produto (Story 10.2) (FR45, Architecture AD-32)
+
+**Given** um EAN-13 informado
+**When** o Almoxarife salva
+**Then** o sistema valida o formato (13 dígitos + dígito verificador) e rejeita valores inválidos — campo vazio nunca é rejeitado
+
+**Given** o cadastro de um Produto NOVO
+**When** o Almoxarife não informa Unidade de Medida
+**Then** o cadastro é rejeitado — Unidade de Medida é obrigatória só para Produto novo (Embalagem continua opcional)
+
+**Given** a migração aditiva desta story
+**When** ela roda contra Produtos já em produção sem Unidade de Medida
+**Then** a coluna nasce nullable, um valor único (`[ASSUMPTION]` "un") é atribuído em lote a todo Produto legado sem essa informação, e só depois a obrigatoriedade passa a valer no cadastro/edição — nunca bloqueia o sistema de subir por dado antigo incompleto (AD-32)
+
+**Given** Unidade de Medida e Embalagem persistidas no Produto
+**When** consultadas via API de detalhe de Produto (FR7)
+**Then** os dois valores retornam como campos próprios, sem transformação — exibição explícita na listagem do Catálogo é entregue pela Story 10.4
+
+### Story 10.4: Colunas explícitas na listagem do Catálogo
+
+As a qualquer Usuário,
+I want ver código, categoria, estoque total e embalagem+unidade diretamente na listagem do Catálogo,
+So that eu não precise abrir o detalhe de cada Produto pra saber o essencial.
+
+**Acceptance Criteria:**
+
+**Given** o Catálogo em visualização de grade
+**When** um Usuário a acessa
+**Then** cada card mostra explicitamente código, nome, categoria, estoque total (soma across Estoques) e embalagem+unidade
+
+**Given** o Catálogo em visualização de tabela agrupada
+**When** um Usuário a acessa
+**Then** as mesmas colunas aparecem como colunas próprias da tabela, sem precisar expandir uma linha
+
+**Given** um Produto sem Embalagem preenchida (campo opcional)
+**When** ele aparece na listagem
+**Then** a coluna de embalagem mostra um traço/vazio, nunca quebra o layout
+
+### Story 10.5: CRUD de Categorias
+
+As a `adm`+,
+I want cadastrar, editar e excluir Categorias,
+So that eu não dependa mais de uma lista fixa definida por seed para organizar o catálogo.
+
+**Acceptance Criteria:**
+
+**Given** um `adm`+ autenticado
+**When** ele cadastra uma Categoria com código (até 8 caracteres) e nome/descrição (até 50 caracteres)
+**Then** a Categoria é criada, escopada à Empresa dele (AD-20), com os limites de tamanho aplicados no banco, não só na validação de handler (Architecture AD-33)
+
+**Given** uma Categoria referenciada por pelo menos um Produto
+**When** o `adm`+ tenta excluí-la
+**Then** a exclusão é bloqueada — mesmo princípio de FR13/AD-31 aplicado agora a Categorias
+
+**Given** uma Categoria sem nenhum Produto referenciando
+**When** o `adm`+ confirma a exclusão via `ConfirmDialog`
+**Then** ela é removida
+
+**Given** um Usuário com papel abaixo de `adm`
+**When** ele tenta cadastrar/editar/excluir Categoria pela API
+**Then** a resposta é 403
+
+**Given** as ~25 Categorias seed já existentes por Empresa (Story 9.x, cópia por Empresa)
+**When** esta story é implementada
+**Then** elas continuam intactas e passam a ser editáveis via este CRUD — nenhuma migração de dado necessária, só a capacidade de editar o que já existe
+
+### Story 10.6: CRUD de Templates de Nomenclatura
+
+As a `adm`+,
+I want cadastrar, editar e excluir Templates de Nomenclatura,
+So that a Empresa consiga adaptar os padrões de nome às suas próprias categorias, sem depender só do seed fixo.
+
+**Acceptance Criteria:**
+
+**Given** um `adm`+ autenticado
+**When** ele cadastra um Template com sua estrutura de tokens
+**Then** o Template é criado, escopado à Empresa dele, seguindo a mesma cópia editável independente por Empresa já estabelecida para Categorias — assunção estendida explicitamente a Templates nesta rodada (FR40 revisado)
+
+**Given** um Template já em uso por Produtos existentes
+**When** o `adm`+ edita sua estrutura
+**Then** Produtos já cadastrados sob o padrão antigo NÃO são reeditados retroativamente — a mudança só passa a valer a partir do próximo cadastro/edição de nome desses Produtos (Architecture AD-33)
+
+**Given** um Template referenciado por pelo menos um Produto
+**When** o `adm`+ tenta excluí-lo
+**Then** a exclusão é bloqueada, mesmo princípio de FR13/FR48/AD-31/AD-33
+
+**Given** o template "Genérico" (`[NOME LIVRE]`, Story 10.1/AD-34)
+**When** o `adm`+ visualiza a lista de Templates
+**Then** ele aparece listado como qualquer outro, mas a interface nunca permite excluí-lo enquanto for o único fallback disponível para as categorias sem template específico
+
+**Given** um Usuário com papel abaixo de `adm`
+**When** ele tenta cadastrar/editar/excluir Template pela API
+**Then** a resposta é 403
+
+## Epic 11: Estoque Preciso — Lote, Validade e Reserva de Saldo
+
+Almoxarife lança e consome saldo por Lote com Data de Validade (FEFO automático, sem escolha manual); enviar um Pedido passa a travar de verdade o saldo reservado até a decisão do almoxarife, fechando a corrida entre pedidos concorrentes que hoje não existe.
+
+### Story 11.1: Lançamento de saldo inicial com Lote e Data de Validade
+
+As a Almoxarife,
+I want lançar saldo de um Produto num Estoque sempre informando Lote e Data de Validade,
+So that eu tenha rastreabilidade real de recebimentos, em vez de uma quantidade única sem histórico.
+
+**Acceptance Criteria:**
+
+**Given** uma tela dedicada de Lançamento de Saldo
+**When** o Almoxarife informa Produto, Estoque, quantidade e Data de Validade (opcional — pode ficar em branco se desconhecida)
+**Then** uma nova linha é criada em `lotes` (produto_id, estoque_id, quantidade, data_validade nullable, empresa_id) — nunca sobrescrevendo um Lote existente do mesmo par (Architecture AD-24)
+
+**Given** um Produto que já tem Lotes ativos no mesmo Estoque
+**When** um novo lançamento é feito
+**Then** ele cria um Lote adicional, e a quantidade total exibida (FR6/FR7) passa a ser a soma de todos os Lotes ativos ali
+
+**Given** um Lote com Data de Validade no passado
+**When** ele aparece na consulta de Estoque (FR7)
+**Then** é sinalizado visualmente como vencido — o saldo continua existindo e contável, só sinalizado, nunca bloqueado ou oculto (Out of Scope: alerta proativo por e-mail)
+
+**Given** um Usuário com papel `usuario`
+**When** ele tenta lançar saldo pela API
+**Then** a resposta é 403 — restrito a `almoxarife`+
+
+**Given** a quantidade lançada
+**When** ela é zero ou negativa
+**Then** o lançamento é rejeitado
+
+### Story 11.2: Migração do saldo existente para Lote legado
+
+As a Adm/Almoxarife responsável pela migração,
+I want que todo saldo hoje existente vire automaticamente um Lote legado,
+So that o sistema nunca suba incapaz de mostrar o saldo real já registrado.
+
+**Acceptance Criteria:**
+
+**Given** a tabela `produto_estoque`, com uma linha única por par Produto/Estoque
+**When** a migração roda
+**Then** cada linha vira uma linha em `lotes` com a mesma quantidade preservada, `data_validade = NULL` (marcado como "validade desconhecida" na tela, nunca inventada), e `empresa_id` copiado diretamente da linha de origem (já backfilled pela Story 9.4) — nunca recalculado (Architecture AD-24)
+
+**Given** a migração concluída com sucesso
+**When** o sistema opera normalmente a partir daí
+**Then** `lotes` passa a ser a única fonte de saldo — `produto_estoque` é descontinuada
+
+**Given** a migração já executada uma vez
+**When** ela roda novamente
+**Then** linhas já migradas não são duplicadas (idempotência, mesmo padrão de Story 2.3/3.7)
+
+**Given** o corte de dados em produção
+**When** o script é executado
+**Then** é sempre disparado manualmente por uma pessoa, nunca por um agente autônomo (AD-15, PRD §9)
+
+### Story 11.3: Reserva de saldo ao enviar Pedido
+
+As a Almoxarife,
+I want que o saldo dos itens de um Pedido fique travado assim que ele é enviado,
+So that dois Pedidos concorrentes nunca disputem o mesmo saldo físico até uma decisão ser tomada.
+
+**Acceptance Criteria:**
+
+**Given** um Pedido sendo enviado (carrinho não vazio)
+**When** o envio é confirmado
+**Then** uma linha é criada em `reservas_pedido_item` para cada item, na mesma transação, após adquirir `SELECT ... FOR UPDATE` ordenado sobre as linhas de `lotes` afetadas — fecha a corrida entre duas reservas concorrentes do mesmo saldo (Architecture AD-10 estendida, AD-25)
+
+**Given** o saldo disponível de um Produto num Estoque
+**When** ele é consultado (Catálogo/Estoque, FR6/FR7)
+**Then** é sempre calculado como soma de `lotes.quantidade` menos soma de `reservas_pedido_item.quantidade` ativas — nunca uma coluna materializada
+
+**Given** um item reservado
+**When** um Usuário clica na quantidade reservada
+**Then** vê para qual(is) Pedido(s)/solicitante(s) ela está associada
+
+**Given** um Pedido rejeitado
+**When** a decisão é registrada
+**Then** a reserva inteira é liberada automaticamente
+
+**Given** uma aprovação parcial de Pedido
+**When** a decisão é registrada
+**Then** só a parte não aprovada volta a ficar disponível
+
+**Given** o rótulo "Reservar"/"Carrinho de reserva" já existente (Epic 7)
+**When** esta story é implementada
+**Then** a interface passa a distinguir claramente as duas coisas (ex. "Adicionar ao carrinho" vs. "Saldo reservado") para não sugerir que adicionar ao carrinho já trava saldo contra outros usuários (FR21 `[NOTE FOR PM]`)
+
+**Given** um Pedido pendente há muito tempo sem decisão
+**When** ele permanece nesse estado
+**Then** o saldo continua reservado indefinidamente — sem expiração automática nesta versão (Deferred, AD-25)
+
+### Story 11.4: Baixa e Transferência consomem Lote automaticamente e respeitam saldo reservado
+
+As a Almoxarife,
+I want que Baixa e Transferência debitem sempre o Lote mais próximo do vencimento e nunca toquem saldo já reservado por um Pedido,
+So that o estoque físico e a reserva de outros Pedidos nunca fiquem inconsistentes entre si.
+
+**Acceptance Criteria:**
+
+**Given** uma Baixa ou Transferência de quantidade X
+**When** ela é confirmada
+**Then** o débito é feito automaticamente do(s) Lote(s) do par Produto/Estoque com `data_validade` mais próxima primeiro (`ORDER BY data_validade NULLS LAST, criado_em ASC`) — Lote sem validade conhecida só é consumido depois de esgotados os Lotes com validade real (FEFO, AD-24); nenhuma tela permite escolha manual de Lote
+
+**Given** o saldo DISPONÍVEL (descontada a reserva ativa, Story 11.3)
+**When** uma Baixa/Transferência é solicitada com quantidade maior que o disponível, mesmo com saldo físico total suficiente
+**Then** é rejeitada — nunca debita saldo que está reservado por outro Pedido
+
+**Given** uma Transferência entre Estoques
+**When** ela move um Lote inteiro ou parte de um
+**Then** a Data de Validade original é preservada no Estoque destino — nunca cria um Lote novo com validade diferente da origem
+
+**Given** uma transação de débito que toca múltiplas linhas de Lote
+**When** os locks são adquiridos
+**Then** segue a ordem canônica `(produto_id, estoque_id, lote_id)` ascendente antes de qualquer escrita (Architecture AD-10)
+
+**Given** toda escrita em `lotes.quantidade`
+**When** ela ocorre
+**Then** uma `MOVIMENTACOES` correspondente é sempre gerada na mesma transação, sem exceção (AD-10)
+
+**Given** quantidade zero ou negativa, ou origem=destino numa Transferência
+**When** solicitado
+**Then** rejeitado (comportamento já existente, preservado)
+
+### Story 11.5: Aprovação de Pedido revalida contra reserva e debita Lote
+
+As a Almoxarife,
+I want que aprovar um Pedido revalide contra o que está de fato reservado e debite o Lote certo,
+So that a aprovação nunca falhe por concorrência normal — só por um bug real de reserva.
+
+**Acceptance Criteria:**
+
+**Given** um Pedido pendente com itens reservados (Story 11.3)
+**When** o Almoxarife aprova
+**Then** cada item é revalidado contra a própria reserva daquele Pedido (não mais contra o saldo livre) — falha aqui só deveria acontecer por bug de reserva, nunca por concorrência normal entre Pedidos
+
+**Given** um item aprovado
+**When** o débito acontece
+**Then** ele consome do(s) Lote(s) do Estoque de origem seguindo o mesmo critério FEFO da Story 11.4, e a reserva desse item é liberada atomicamente na mesma transação
+
+**Given** uma falha de revalidação em um item específico
+**When** a aprovação é processada
+**Then** nunca gera sucesso parcial silencioso — a lista exata de itens com problema é devolvida ao Almoxarife para decidir (aprovação parcial explícita ou rejeitar/ajustar), mesmo comportamento já existente (Epic 7), agora rodando contra a base de reserva
+
+**Given** o papel de quem aprova
+**When** a aprovação é submetida
+**Then** é revalidado no momento exato da submissão (comportamento já existente, preservado)
+
+**Given** débito e liberação de reserva
+**When** a aprovação é confirmada
+**Then** ambos e a Movimentação correspondente são atômicos na mesma transação
+
+### Story 11.6: Estoque e quantidade inicial saem do Cadastro de Produto
+
+As a Almoxarife,
+I want que o cadastro de um Produto não exija mais informar Estoque/quantidade inicial,
+So that eu possa criar o Produto primeiro e lançar o saldo separadamente, pela tela dedicada de Lote.
+
+**Acceptance Criteria:**
+
+**Given** a tela de Cadastro de Produto já existente (Story 3.1, com os campos adicionais de Story 10.1–10.3 se essa epic já tiver rodado)
+**When** o Almoxarife cadastra um Produto novo
+**Then** os campos de Estoque destino e quantidade inicial não aparecem mais no formulário — o Produto é criado sem nenhuma linha de saldo em nenhum Estoque
+
+**Given** um Produto recém-cadastrado sem saldo em nenhum Estoque
+**When** ele aparece no Catálogo (FR6)
+**Then** aparece normalmente com quantidade total 0, sem nenhum estado de erro ou visibilidade especial (Architecture AD-29) — se Epic 10/Story 10.4 já tiver rodado, essa é a primeira vez que esse estado realmente ocorre; senão, vale para a listagem já existente
+
+**Given** a tela de Lançamento de Saldo (Story 11.1) já existente
+**When** o Almoxarife precisa dar entrada em estoque de um Produto recém-cadastrado
+**Then** esse é o único caminho disponível — nenhum outro formulário lança saldo inicial
+
+**Given** Produtos cadastrados antes desta story, com saldo já vinculado no cadastro
+**When** esta mudança entra em vigor
+**Then** nada muda para eles — a alteração afeta só o formulário de cadastro NOVO daqui pra frente
+
+## Epic 12: Estrutura Organizacional — Filiais e Centro de Custo
+
+Adm estrutura a organização em Filiais (com Depósitos/Estoques vinculados) e cadastra Centro de Custo/Destino de Obra, referenciável no envio de Pedido; Ambiente de Treinamento ganha fotos de exemplo nos Produtos.
+
+### Story 12.1: Cadastro de Filiais e vínculo de Estoque
+
+As a `adm`+,
+I want cadastrar Filiais e vincular cada Estoque a uma delas,
+So that a organização física da empresa fique refletida no sistema, com Depósitos (Estoques) agrupados por Filial.
+
+**Acceptance Criteria:**
+
+**Given** um `adm`+ autenticado
+**When** ele cadastra uma Filial com um nome
+**Then** ela é criada, escopada à Empresa dele (Architecture AD-27)
+
+**Given** o cadastro/edição de um Estoque NOVO (Story 2.1) a partir desta story em diante
+**When** ele é criado
+**Then** exige uma Filial vinculada — Depósito continua sendo o mesmo conceito de Estoque já existente, só ganhando Filial como atributo/pai, não um terceiro nível de hierarquia
+
+**Given** o nome de um Estoque
+**When** dois Estoques de Filiais diferentes da mesma Empresa têm o mesmo nome
+**Then** ambos são permitidos — a unicidade passa a ser `(filial_id, nome_normalizado)`, não mais só `(empresa_id, nome_normalizado)` (FR12 revisado)
+
+**Given** uma Empresa nova sendo provisionada (Story 9.2)
+**When** o provisionamento roda
+**Then** uma Filial padrão (nome = Nome Fantasia da Empresa) é criada automaticamente na mesma transação — nenhum Estoque nasce sem Filial, nenhum passo extra de onboarding necessário
+
+**Given** um Usuário com papel abaixo de `adm`
+**When** ele tenta cadastrar Filial pela API
+**Then** a resposta é 403
+
+### Story 12.2: Migração dos Estoques legados para Filial padrão
+
+As a Adm/Almoxarife responsável pela migração,
+I want que todo Estoque já existente seja vinculado automaticamente a uma Filial,
+So that o sistema nunca suba com Estoque órfão de Filial.
+
+**Acceptance Criteria:**
+
+**Given** todo Estoque hoje existente numa Empresa (ex. Ferreira Costa, ~11 estoques reais)
+**When** a migração roda
+**Then** uma Filial padrão única é criada para a Empresa (se ainda não existir) e todo Estoque atual é atribuído a ela automaticamente — migração aditiva (`filial_id` nasce nullable, backfill, só depois `NOT NULL`), mesmo molde de AD-20 (Architecture AD-27)
+
+**Given** a migração concluída
+**When** o `adm` acessa a lista de Estoques
+**Then** todos aparecem vinculados a essa Filial padrão, prontos para reorganização manual futura (fora do escopo desta migração)
+
+**Given** a migração já executada uma vez
+**When** ela roda novamente
+**Then** Estoques já vinculados não são reprocessados (idempotência)
+
+**Given** o corte de dados em produção
+**When** o script é executado
+**Then** é sempre disparado manualmente por uma pessoa, nunca por um agente autônomo (AD-15, PRD §9)
+
+### Story 12.3: Cadastro de Centro de Custo e Destino de Obra
+
+As a `adm`+,
+I want cadastrar Centros de Custo e Destinos de Obra como entidades próprias,
+So that o envio de Pedido possa referenciar uma lista padronizada, em vez de depender só de texto livre.
+
+**Acceptance Criteria:**
+
+**Given** um `adm`+ autenticado
+**When** ele cadastra um Centro de Custo/Destino de Obra com um nome (ex. "Estoque do Cabo de Santo Agostinho")
+**Then** ele é criado, escopado à Empresa dele, seguindo a mesma cópia por Empresa já estabelecida para Categorias/Templates/Filiais (Architecture AD-28)
+
+**Given** o envio de um Pedido (Epic 7)
+**When** o solicitante preenche o campo obra/centro de custo
+**Then** o campo texto livre já existente continua obrigatório e inalterado; um novo campo opcional `centro_custo_id` referencia a lista estruturada quando o solicitante escolhe um item cadastrado — os dois coexistem, sem migração retroativa de Pedido histórico
+
+**Given** um `centro_custo_id` recebido do cliente
+**When** o Pedido é enviado
+**Then** é sempre revalidado contra a Empresa do contexto antes de aceitar — nunca aceito de outra Empresa (extensão de AD-20)
+
+**Given** um Usuário com papel abaixo de `adm`
+**When** ele tenta cadastrar Centro de Custo/Destino de Obra pela API
+**Then** a resposta é 403
+
+### Story 12.4: Fotos de exemplo no Ambiente de Treinamento
+
+As a Adm provisionando uma Empresa nova,
+I want que o Ambiente de Treinamento venha com fotos de exemplo nos Produtos semeados,
+So that o catálogo de treinamento passe a sensação de um catálogo real, não uma lista vazia de nomes.
+
+**Acceptance Criteria:**
+
+**Given** o provisionamento de um Ambiente de Treinamento (Story 9.2)
+**When** os Produtos de exemplo são semeados
+**Then** cada um recebe pelo menos uma foto de exemplo, enviada pelas rotas normais de upload (Story 3.5), reaproveitando o armazenamento versionado em disco já existente — sem storage novo (Architecture AD-11)
+
+**Given** o mecanismo de seed
+**When** ele é executado
+**Then** é um script one-off disparado manualmente por uma pessoa (mesmo princípio de AD-15), nunca automático nem por agente autônomo
+
+**Given** fotos já semeadas num Ambiente de Treinamento existente antes desta story
+**When** ela é implementada
+**Then** não força reseed automático — passa a valer para Ambientes de Treinamento provisionados a partir de agora
+
+**Given** a quantidade/conteúdo exato de Produtos e fotos semeadas
+**When** esta story é implementada
+**Then** usa um conjunto pequeno definido em conjunto com o Adm — decisão de conteúdo/UX, não parte fixa desta story

@@ -2,7 +2,7 @@
 title: stockflow
 status: final
 created: 2026-08-29
-updated: 2026-09-10
+updated: 2026-09-19
 ---
 
 # PRD: stockflow
@@ -18,6 +18,8 @@ Este PRD é para Claudio (PM/dono da migração) e para os fluxos downstream do 
 Toda a numeração de FRs (FR-1 a FR-33) é herdada do PRD original para preservar rastreabilidade com os épicos/stories já escritos. Capacidades novas começam em FR-34. Vocabulário do Glossário (§3) é usado literalmente em todo o documento — nenhum sinônimo. Detalhes técnicos, decisões de arquitetura herdadas, a visão de produto SaaS de longo prazo e a análise competitiva estão em `addendum.md`, não aqui.
 
 **Atualização de 2026-09-10 ("V1 Multi-Empresa"):** o stockflow deixa de ser uma instalação única (Ferreira Costa) para ser uma plataforma multi-cliente com isolamento total de dados entre Empresas — ativando parte da visão de longo prazo já documentada em `addendum.md` §D (mercado de US$2,4bi globais, sem líder local claro no segmento). Capacidades novas desta rodada começam em FR-40; métricas novas seguem a mesma lógica de numeração histórica do PRD original e começam em SM-7. Rigor calibrado como *launch* (máximo), por decisão explícita do usuário — a base multi-tenant pode ser oferecida a clientes além da Ferreira Costa.
+
+**Atualização de 2026-09-19 ("Feedback de Treinamento pós Multi-Empresa"):** com a Empresa "Ferreira Costa" migrada e o Ambiente de Treinamento em uso (FR-40 a FR-44), o primeiro ciclo real de testes por usuários finais (Karla, Ricardo) devolveu um lote de ajustes e capacidades novas, principalmente em Cadastro de Produto, Estoques (rastreamento de Lote/Validade), Pedidos (reserva de saldo) e estrutura organizacional (Filiais, Centro de Custo). Capacidades novas desta rodada começam em FR-45; métrica nova começa em SM-9. Toda tabela de domínio nova criada nesta rodada (Filial, Centro de Custo/Destino de Obra, Lote) herda a mesma obrigação de isolamento por Empresa já estabelecida em FR-40/NFR §8 — não é um requisito novo, é a mesma regra se aplicando ao que ainda não existia quando ela foi escrita.
 
 *Nota de organização:* os FRs em §4 estão agrupados por área funcional, não em ordem numérica estrita — por isso FR-31 a FR-39 (Autenticação/Acesso) aparecem antes de FR-4 (Catálogo) no corpo do documento. A numeração reflete a ordem histórica de introdução de cada capacidade (preservada do PRD original), não a ordem de leitura.
 
@@ -49,8 +51,8 @@ Ao seguir o mesmo stack e o mesmo padrão de autenticação federada (Keycloak) 
 - **UJ-1. Mariana, engenheira de obra, encontra material sobrando de outra obra.**
   Está orçando uma nova frente de serviço e quer evitar comprar tubo PVC que já existe em sobra. Busca "tubo pvc 100mm" (autocomplete), filtra "Com estoque", abre o card do produto e confere a quantidade por Estoque. Vê 40m disponíveis em dois canteiros diferentes e clica "Reservar" — o item entra no Carrinho. **Edge case:** se o produto não existe no catálogo, o autocomplete não retorna nada; comprar externamente fica fora do escopo do sistema.
 
-- **UJ-2. João, almoxarife, aprova um pedido de retirada.**
-  Recebe uma notificação in-app de pedido pendente, filtra "Pendentes", abre o pedido de Mariana e confere os itens. Clica "Aprovar" — o sistema revalida no servidor o estoque de cada item; se algum item não tem mais estoque suficiente, João é avisado explicitamente sobre qual item falhou (nunca uma baixa parcial silenciosa). O item mostra um selo "Solicitado: 10m · Disponível: 4m"; João escolhe "Aprovar os 4m disponíveis" (confirmação explícita) e resolve o restante depois. Se cancelar, nada é debitado. Estoque debitado e Movimentação registrada são atômicos.
+- **UJ-2. João, almoxarife, aprova um pedido de retirada.** *(nota adicionada nesta versão — ver FR-50)*
+  Recebe uma notificação in-app de pedido pendente, filtra "Pendentes", abre o pedido de Mariana e confere os itens. Clica "Aprovar" — o sistema revalida no servidor o estoque de cada item; se algum item não tem mais estoque suficiente, João é avisado explicitamente sobre qual item falhou (nunca uma baixa parcial silenciosa). O item mostra um selo "Solicitado: 10m · Disponível: 4m"; João escolhe "Aprovar os 4m disponíveis" (confirmação explícita) e resolve o restante depois. Se cancelar, nada é debitado. Estoque debitado e Movimentação registrada são atômicos. **Com a reserva de saldo (FR-50) em vigor, o cenário "item sem estoque suficiente" descrito aqui deixa de ser o caminho normal e passa a indicar falha de reserva (bug) — o saldo do Pedido de Mariana já estava travado desde o envio, então nada além dela deveria ter conseguido consumi-lo nesse meio-tempo.**
 
 - **UJ-3. João cadastra 200 itens de uma obra encerrada via planilha.**
   Seleciona a planilha Excel exportada; o sistema lê as colunas esperadas, cria Estoques ausentes automaticamente e decide, linha a linha, se atualiza (por código) ou cria um novo Produto. O relatório final mostra criados vs. atualizados, sem duplicar nada, e traz um CTA "Verificar duplicatas agora" que leva direto à ferramenta de Duplicatas (FR-19) já com a análise disparada — a importação só é considerada concluída depois dessa checagem. João roda a ferramenta como checagem final. **Edge case:** se a importação for interrompida no meio, a próxima tentativa mostra quais linhas já foram salvas, sem reprocessar nem duplicar.
@@ -75,8 +77,11 @@ Ao seguir o mesmo stack e o mesmo padrão de autenticação federada (Keycloak) 
 
 ## 3. Glossário
 
-- **Produto** — item do catálogo (ex. "Tubo PVC 100mm"): nome, código opcional, categoria, dimensões, foto, quantidade por Estoque.
-- **Estoque** — local físico (canteiro/almoxarifado) onde Produtos são armazenados; um Produto pode estar em múltiplos Estoques.
+- **Produto** — item do catálogo (ex. "Tubo PVC 100mm"): nome, código (gerado pelo sistema — ver FR-8 *(revisado nesta versão)*), código do fornecedor e EAN-13 opcionais (FR-45), categoria, unidade de medida e embalagem (FR-46), dimensões, foto, quantidade por Estoque.
+- **Estoque (Depósito)** — MESMA entidade, dois nomes: "Estoque" é o termo já usado em todo este documento e no código; "Depósito" é como o time de operação se refere a ela no dia a dia — não são conceitos diferentes, não há dois cadastros. Local físico (canteiro/almoxarifado) onde Produtos são armazenados; um Produto pode estar em múltiplos Estoques. *(atualizado nesta versão)* Pertence a uma Filial (FR-51); saldo é rastreado por Lote e Data de Validade (FR-47), não mais uma quantidade única por par Produto/Estoque.
+- **Lote** *(novo)* — quantidade de um Produto recebida de uma vez num Estoque, com sua própria Data de Validade; um mesmo Produto pode ter vários Lotes ativos no mesmo Estoque simultaneamente (FR-47).
+- **Filial** *(novo)* — unidade organizacional da Empresa à qual um ou mais Estoques pertencem (FR-51); não é unidade de isolamento de dado (isso continua sendo só a Empresa, FR-40) — é hierarquia interna dentro de uma mesma Empresa.
+- **Centro de Custo / Destino de Obra** *(novo)* — referência estruturada de para onde um Pedido se destina (ex. "Estoque do Cabo de Santo Agostinho"), cadastrável pelo `adm` (FR-52); ver §11 Perguntas em Aberto sobre a relação com o campo texto livre já existente em FR-22.
 - **Movimentação** — evento de saída (**Baixa**) ou **Transferência** entre Estoques; gera registro no Histórico.
 - **Histórico** — log append-only de todas as Movimentações, incluindo as geradas por aprovação de Pedido.
 - **Pedido de Retirada (Pedido)** — solicitação de retirada de quantidades de Produtos de Estoques específicos; status `pendente` / `aprovado` / `rejeitado`.
@@ -194,13 +199,13 @@ Usuário pode solicitar exportação dos próprios dados pessoais; `adm` pode pr
 ### 4.10 Estrutura Multi-Empresa e Ambiente de Treinamento *(novo nesta versão — fisicamente posicionado aqui por ser fundacional a todas as demais áreas, mesma convenção de FR-31 a FR-39 dentro de 4.1; ver nota de numeração em §0)*
 **Descrição:** transforma o stockflow de instalação única (Ferreira Costa) em plataforma multi-cliente com isolamento total de dados. Realiza UJ-6, UJ-7.
 
-#### FR-40: Empresa como unidade de isolamento total de dados
+#### FR-40: Empresa como unidade de isolamento total de dados *(revisado nesta versão — assunção estendida a Templates de Nomenclatura)*
 Toda conta de Usuário, todo Produto, Estoque, Movimentação, Pedido, Categoria e Log de Acesso pertence a exatamente uma Empresa.
 **Consequences:**
 - Nenhuma consulta, filtro ou exportação jamais retorna ou referencia dado de outra Empresa, para nenhum papel dentro da Empresa (`usuario` a `adm`) — vale para TODAS as áreas funcionais existentes: Catálogo/Estoques/Movimentações/Pedidos (FR-4 a FR-30), Log de Acesso (FR-38), Normalização — Inconsistências e Duplicatas (FR-17 a FR-20) — e Gestão de Contas/Promoção de Papel (FR-31, FR-33).
 - Duplicatas merece nota própria: um vazamento ali não é só leitura indevida — a mesclagem (FR-20) é destrutiva e irreversível. Detectar/agrupar/mesclar considera SOMENTE Produtos da mesma Empresa do ator; nunca agrupa por nome/dimensão através de Empresas diferentes.
 - `adm` deixa de ser único globalmente (Glossário §3) e passa a ser único **por Empresa** — cada Empresa tem exatamente um `adm` ativo por vez, mesma regra de unicidade de v1 anterior, agora escopada.
-- `[ASSUMPTION]` Categorias (hoje lista fixa ~25, compartilhada) passam a ser uma cópia editável independente por Empresa — toda Empresa nova recebe a mesma lista padrão como ponto de partida, mas customizá-la não afeta outras Empresas.
+- `[ASSUMPTION]` Categorias (hoje lista fixa ~25, compartilhada) e Templates de Nomenclatura (hoje lista fixa ~28, compartilhada — FR-49) passam a ser uma cópia editável independente por Empresa — toda Empresa nova recebe a mesma lista padrão como ponto de partida, mas customizá-la não afeta outras Empresas.
 - **Resolve ambiguidade de login (FR-1/FR-34) com e-mail não mais globalmente único (FR-42):** toda Empresa tem um identificador estável e público (`[ASSUMPTION]` um slug/código curto, ex. `ferreira-costa`, refletido na URL de acesso — mesmo mecanismo sugerido em `addendum.md` §I para distinguir visualmente o Ambiente de Treinamento). A combinação (identificador da Empresa da URL acessada + e-mail + senha) identifica a conta de forma inequívoca — a Empresa nunca é "escolhida" numa tela/dropdown de login (continua verdadeiro o que FR-42 promete), mas é resolvida pela URL/contexto de acesso, não pelo e-mail isolado.
 **Out of Scope:** negócios entre Empresas (compartilhar Catálogo/Estoque/Pedidos entre Empresas distintas) — explicitamente adiado para versão futura (confirmado com o usuário).
 
@@ -229,11 +234,11 @@ Toda conta de Usuário (FR-3) pertence a exatamente uma Empresa desde a criaçã
 - `[ASSUMPTION]` Unicidade de e-mail (FR-3) passa a ser por Empresa, não mais global — o mesmo e-mail pode ter uma conta em Empresas diferentes.
 - Login (FR-1, FR-34) resolve a Empresa a partir do contexto de acesso (FR-40), nunca de um seletor manual na tela de login.
 
-#### FR-43: Ambiente de Treinamento automático por Empresa
+#### FR-43: Ambiente de Treinamento automático por Empresa *(revisado nesta versão — fotos de exemplo)*
 Toda Empresa criada (FR-41) ganha automaticamente uma Empresa-irmã marcada como Ambiente de Treinamento, isolada até da Empresa real que a originou. Realiza UJ-7.
 **Consequences:**
 - Nome sugerido automaticamente como "{Nome da Empresa} - Treinamento" (ex. "Ferreira Costa - Treinamento"), editável pelo `adm` da Empresa real.
-- Provisionada com um `adm` de treinamento próprio (mesmo bootstrap de FR-41, incluindo MFA obrigatório se aplicável ao papel) e `[ASSUMPTION]` um conjunto pequeno de Produtos/Estoques de exemplo (não vazio) — nunca copia dados reais da Empresa de origem.
+- Provisionada com um `adm` de treinamento próprio (mesmo bootstrap de FR-41, incluindo MFA obrigatório se aplicável ao papel) e `[ASSUMPTION]` um conjunto pequeno de Produtos/Estoques de exemplo (não vazio), **incluindo fotos de exemplo nos Produtos** *(novo nesta versão — feedback de treinamento pós Epic 9: sem foto, o catálogo de treinamento não passa a sensação de um catálogo real)* — nunca copia dados reais da Empresa de origem.
 - Nenhuma ação dentro do Ambiente de Treinamento (Movimentação, Pedido, exclusão, mesclagem de duplicatas) afeta a Empresa real correspondente — isolamento idêntico ao de duas Empresas de clientes distintos (FR-40), incluindo a barreira de Duplicatas (nunca agrupa/mescla através do par real↔treinamento).
 - Contas do Ambiente de Treinamento têm a mesma hierarquia de papéis da Empresa real, para validar exatamente as restrições de cada papel (ex. um usuário de treinamento com papel `almoxarife` testa Movimentação/Pedidos sem tocar dado real).
 **Out of Scope:** reset automático periódico do Ambiente de Treinamento ao estado inicial (versão futura, se a experimentação sujar demais os dados de exemplo).
@@ -259,6 +264,7 @@ Filtros combináveis simultaneamente.
 
 #### FR-6: Visualização em grade e tabela agrupada
 Tabela agrupa e soma quantidades de produtos com mesmo nome/unidade/dimensões.
+**Consequences:** *(novo nesta versão)* toda listagem (grade e tabela agrupada) mostra explicitamente código, nome, categoria, estoque total (soma across Estoques) e embalagem+unidade (FR-46) como colunas próprias — pedido direto de treinamento, hoje a grade não expõe quantidade total nem embalagem/unidade.
 
 #### FR-7: Detalhe do produto por local de estoque
 Mostra a quantidade discriminada por Estoque.
@@ -277,18 +283,54 @@ Usuário identifica um Produto apontando a câmera do celular para um QR Code ou
 ### 4.3 Cadastro e Importação
 **Descrição:** restrito a `almoxarife`+ (FR-2). Realiza UJ-3.
 
-#### FR-8: Cadastro manual de Produto
-Nome, código, categoria, dimensões (comprimento, largura, diâmetro, altura, espessura — cada uma como par estruturado valor+unidade, nunca texto livre), estoque destino, quantidade inicial, observações, foto opcional.
+#### FR-8: Cadastro manual de Produto *(revisado nesta versão — feedback de treinamento pós Epic 9)*
+Nome, código, categoria, template de Nomenclatura (FR-9, agora obrigatório), código do fornecedor e EAN-13 (FR-45), unidade de medida e embalagem (FR-46), dimensões (comprimento, largura, diâmetro, altura, espessura — cada uma como par estruturado valor+unidade, nunca texto livre), observações, foto opcional.
 **Consequences:**
 - `usuario` chamando este endpoint recebe 403 (vale também para FR-10).
 - Dimensão sem unidade (ou vice-versa) é rejeitada.
+- Nome deve ter no mínimo 10 caracteres (e no máximo 255, como já era).
+- `[ASSUMPTION]` Código é gerado automaticamente pelo sistema, sequencial, a partir de "01" — deixa de ser digitado pelo usuário no cadastro. Exato formato/largura do sequencial (ex. zero-padding, se reinicia por Empresa) é decisão de Arquitetura.
+- **`[NOTE FOR PM]` Compatibilidade com Produtos já em produção (Ferreira Costa já tem milhares de Produtos cadastrados, ver FR-44):** nome mínimo de 10 caracteres e template obrigatório valem para cadastro NOVO e para a próxima EDIÇÃO de um Produto existente — nunca uma varredura retroativa forçando reedição em massa dos Produtos já cadastrados que não atendem às regras novas. Código automático não renumera códigos já atribuídos manualmente — a sequência nova começa a valer só para Produtos cadastrados a partir desta versão, convivendo com os códigos antigos.
+- **Estoque destino e quantidade inicial SAEM deste formulário** — cadastrar um Produto não exige mais informar onde/quanto ele existe fisicamente; isso passa a ser um passo separado, feito pelo Almoxarife (FR-47). Um Produto pode ser cadastrado e ficar temporariamente sem nenhuma linha de saldo em nenhum Estoque, até alguém lançar o saldo inicial.
+**Out of Scope:** este FR não decide se um Produto sem saldo em nenhum Estoque aparece ou não no Catálogo (FR-4/FR-6) — decisão de UX na Arquitetura/Stories.
 
-#### FR-9: Nomenclatura Guiada por subtipo
-Templates de nome sugeridos por subtipo (28 na versão original), obrigatória quando um template é selecionado.
+#### FR-9: Nomenclatura Guiada por subtipo *(revisado nesta versão — feedback de treinamento pós Epic 9)*
+Templates de nome sugeridos por subtipo (28 na versão original); **seleção de um template passa a ser obrigatória no cadastro de Produto** — reversão explícita do comportamento anterior, confirmada com o usuário.
 **Consequences:**
 - Nome deve seguir a estrutura do template (mesma ordem de tokens, sem placeholder vazio), validado no servidor.
-- Sem template, texto livre.
+- ~~Sem template, texto livre~~ — **removido nesta versão:** não existe mais caminho de cadastro sem template selecionado.
 - Editar um Produto com template aplicado revalida o nome contra esse template — não é possível burlar a regra editando depois do cadastro.
+- **`[ASSUMPTION]` Ganha um template "Genérico" (`[NOME LIVRE]`), sempre disponível, para categorias sem template específico.** Necessário: os 28 templates (`addendum.md` §G) cobrem só material de construção (categorias 04.xxx); as ~16 categorias restantes (05.xxx–13.xxx: EPI, Escritório, Combustíveis, Verbas/Licenças, Impostos, Equip. Esportivos) não têm nenhum — sem fallback, a obrigatoriedade acima bloquearia o cadastro nelas.
+**Out of Scope:** curar/criar templates específicos novos para as categorias hoje sem cobertura — o template Genérico é o fallback aceito nesta versão, não uma lacuna a fechar agora.
+
+#### FR-45: Código do Fornecedor e EAN-13 no cadastro de Produto *(novo)*
+Dois campos adicionais e independentes do código interno de FR-8: Código do Fornecedor (referência externa, texto livre) e EAN-13 (código de barras padrão de mercado, 13 dígitos com dígito verificador).
+**Consequences:**
+- Nenhum dos dois tem relação funcional com o "Código de Identificação" já reaproveitado por FR-35 (QR Code/código de barras interno do sistema) — confirmado com o usuário: coexistem, sem substituir nada.
+- EAN-13 é validado no formato (13 dígitos + dígito verificador), quando informado; ambos os campos são opcionais.
+- Não há garantia de unicidade entre Produtos para nenhum dos dois campos nesta versão (um fornecedor pode reaproveitar/reemitir EAN-13, ex. produto descontinuado).
+
+#### FR-46: Unidade de Medida e Embalagem no cadastro de Produto *(novo)*
+Unidade de Medida (ex. `un, m, m², m³, kg, L, cx, rolo, barra, mm, cm, kg/m²` — mesmo conjunto já especificado em `addendum.md` §F, nunca implementado) e Embalagem (ex. "CX 24" — múltiplo de venda/armazenamento) como campos do Produto.
+**Consequences:**
+- Unidade de Medida é obrigatória para Produto NOVO; Embalagem é opcional (nem todo Produto vem embalado em múltiplos, ex. item avulso).
+- Aparecem na listagem do Catálogo (FR-6) e no detalhe por Estoque (FR-7).
+- `[NOTE FOR PM]` Produtos já em produção sem Unidade de Medida cadastrada recebem um valor de migração (`[ASSUMPTION]` ex. "un", a confirmar) em lote único — mesmo princípio de coluna nova aditiva já usado em FR-44, nunca bloqueando o sistema de subir por dado antigo incompleto.
+
+#### FR-48: CRUD de Categorias *(novo)*
+Hoje Categoria é lista fixa (~25, seed) só de leitura (Glossário §3); passa a ter cadastro/edição/exclusão pelo `adm`+.
+**Consequences:**
+- Código de até 8 caracteres, nome/descrição de até 50 caracteres.
+- Segue a mesma cópia editável independente por Empresa já estabelecida em FR-40 — criar/editar/excluir uma Categoria nunca afeta outras Empresas.
+- `[NOTE FOR PM]` confirmar que os códigos das ~25 categorias já existentes (`addendum.md` §H, ex. "04.001") cabem no limite de 8 caracteres antes de aplicar a constraint — se algum não couber, precisa de decisão de remapeamento.
+**Out of Scope:** exclusão de Categoria referenciada por algum Produto (bloqueada, mesmo princípio de FR-13 para Estoque).
+
+#### FR-49: CRUD de Templates de Nomenclatura *(novo)*
+Hoje Nomenclatura Guiada é lista fixa (28, seed) só de leitura (Glossário §3); passa a ter cadastro/edição/exclusão pelo `adm`+.
+**Consequences:**
+- Segue a mesma cópia editável independente por Empresa já estabelecida em FR-40 para Categorias — este FR estende explicitamente essa mesma regra a Templates de Nomenclatura.
+- Editar o padrão de um template já em uso por Produtos existentes não força reedição retroativa desses Produtos — só passa a valer para o próximo cadastro/edição de nome (mesmo espírito de FR-9: revalida no momento da ação, não retroativamente).
+**Out of Scope:** exclusão de Template referenciado por algum Produto (bloqueada, mesmo princípio de FR-13/FR-48).
 
 #### FR-10: Importação em massa via planilha padronizada
 Cria Estoques ausentes automaticamente.
@@ -308,21 +350,44 @@ Cria Estoques ausentes automaticamente.
 ### 4.4 Gestão de Estoques
 **Descrição:** restrito a `almoxarife`+.
 
-#### FR-12: Criar e listar locais de Estoque
-Nome único (case/espaço-insensitive), garantido atomicamente.
+#### FR-12: Criar e listar locais de Estoque *(revisado nesta versão)*
+Nome único (case/espaço-insensitive dentro da mesma Filial — ver FR-51), garantido atomicamente.
 
 #### FR-13: Exclusão de Estoque trata resíduos e pedidos pendentes
 **Consequences:**
 - Bloqueada se houver quantidade residual (lista quais Produtos) ou Pedido `pendente` referenciando o Estoque, mesmo com quantidade zerada.
 
+#### FR-47: Lançamento de saldo inicial com Lote e Data de Validade *(novo — feedback de treinamento pós Epic 9)*
+Tela dedicada ao Almoxarife+ para lançar saldo de um Produto num Estoque, sempre com Lote e Data de Validade — hoje não existe rastreamento de lote no sistema; um Produto num Estoque é uma quantidade única, sem histórico de recebimentos separados. Realiza a metade que FR-8 deixou de cobrir (ver FR-8 revisado).
+**Consequences:**
+- Um mesmo Produto pode ter vários Lotes ativos simultaneamente no mesmo Estoque, cada um com sua própria quantidade e Data de Validade (Glossário §3).
+- `[ASSUMPTION]` A quantidade total de um Produto num Estoque (mostrada em FR-6/FR-7) passa a ser a SOMA de todos os Lotes ativos ali.
+- `[NOTE FOR PM]` mecanismo de CONSUMO de lote na Baixa/Transferência (FR-14/FR-15) e na aprovação de Pedido (FR-25) — FEFO automático (sempre o lote que vence primeiro) vs. escolha manual pelo Almoxarife — não está decidido; ver §11 Perguntas em Aberto. O PRD fixa só a capacidade de rastrear, não o algoritmo de consumo.
+- Lote com Data de Validade vencida não impede a existência do saldo, mas precisa ser sinalizado na consulta (FR-6/FR-7) — regra exata de alerta/bloqueio é decisão de Arquitetura.
+- **`[NOTE FOR PM]` Migração do saldo já em produção (Ferreira Costa, FR-44):** todo saldo hoje existente (uma quantidade única por par Produto/Estoque, sem Lote) precisa virar um "Lote legado" durante a migração — criado automaticamente, com a quantidade atual preservada e Data de Validade desconhecida/nula (marcado como tal na tela, nunca inventada). Mesmo rigor de migração aditiva/resumível já exigido em FR-44 — sem isso, o sistema sobe incapaz de mostrar o saldo que já existe hoje.
+**Out of Scope:** alerta proativo (e-mail/notificação) de lote perto do vencimento nesta versão — só sinalização passiva na tela.
+
+#### FR-51: Cadastro de Filiais *(novo — feedback de treinamento pós Epic 9)*
+`[NOTE FOR PM]` O pedido original foi por uma única tela admin de "estrutura empresarial completa". Este PRD fixa a capacidade em quatro FRs (Categorias FR-48, Templates FR-49, Filiais FR-51, Centro de Custo/Destino de Obra FR-52) por serem dados de natureza diferente (uns descrevem Produto, outros descrevem organização física/financeira) — mas nada impede que a Arquitetura/UX apresente os quatro como abas/seções de UMA área administrativa só, se isso atender melhor a intenção original. Agrupamento de tela é decisão de UX, não de capacidade.
+
+Toda Filial pertence a exatamente uma Empresa (mesma regra de isolamento de FR-40); todo Estoque (FR-12) passa a pertencer a exatamente uma Filial. `adm`+ cadastra Filiais.
+**Consequences:**
+- Confirmado com o usuário: Depósito é o mesmo conceito de Estoque já existente, ganhando Filial como atributo/pai — não é um terceiro nível de hierarquia.
+- Nome de Estoque deixa de ser único globalmente na Empresa e passa a ser único dentro da mesma Filial (duas Filiais podem ter cada uma um Estoque chamado "Almoxarifado Central", por exemplo) — `[NOTE FOR PM]` confirmar se essa relaxação de unicidade é aceitável ou se o nome deve continuar único na Empresa inteira.
+- Toda Empresa nova (FR-41) precisa de pelo menos uma Filial antes de cadastrar qualquer Estoque, ou ganha uma Filial padrão automaticamente — `[NOTE FOR PM]` decisão de UX/onboarding para a Arquitetura.
+- **`[NOTE FOR PM]` Migração dos Estoques já em produção (Ferreira Costa, FR-44):** todo Estoque hoje existente precisa ser vinculado a uma Filial durante a migração — `[ASSUMPTION]` uma Filial padrão única é criada e todos os Estoques atuais são atribuídos a ela automaticamente, para o sistema nunca subir com Estoque órfão de Filial. Reorganizar esses Estoques em Filiais reais é trabalho manual do `adm` depois, não parte desta migração.
+
 ### 4.5 Movimentação de Estoque
 **Descrição:** restrito a `almoxarife`+ (mesma restrição de FR-8) — para não abrir caminho de debitar estoque fora do fluxo de aprovação de Pedido.
 
-#### FR-14: Registrar Baixa (consumo)
+#### FR-14: Registrar Baixa (consumo) *(revisado nesta versão)*
 **Consequences:** `usuario` → 403; rejeita quantidade zero ou negativa.
+- **Debita contra o saldo DISPONÍVEL (descontado o que está reservado por FR-50), nunca o saldo total** — sem isso, uma Baixa direta furaria a garantia de FR-50 (item reservado por um Pedido pendente continuaria consumível por fora). Mesma revalidação atômica já existente aqui, só que contra a base certa.
+- Debita de um ou mais Lotes do Produto no Estoque (FR-47) — critério de qual Lote é consumido primeiro é o mesmo em aberto de FR-47/§11 item 17.
 
-#### FR-15: Registrar Transferência entre Estoques
-**Consequences:** `usuario` → 403; rejeita origem = destino; rejeita quantidade maior que a disponível — checagem e débito atômicos, para evitar saldo negativo por concorrência.
+#### FR-15: Registrar Transferência entre Estoques *(revisado nesta versão)*
+**Consequences:** `usuario` → 403; rejeita origem = destino; rejeita quantidade maior que a **disponível** (mesma correção de FR-14: disponível, não total) — checagem e débito atômicos, para evitar saldo negativo por concorrência.
+- Transferir um Produto move Lote(s) inteiros ou parte de um Lote para o Estoque destino, preservando Data de Validade original — uma Transferência nunca cria um Lote "novo" com validade diferente da origem.
 
 #### FR-16: Histórico de Movimentações consultável
 Produto, tipo, origem, destino, quantidade, autor, data.
@@ -352,13 +417,25 @@ Agrupa por nome normalizado + dimensões equivalentes (com conversão de unidade
 
 #### FR-21: Carrinho de reserva
 **Consequences:** valida no momento da adição, somando linhas já no carrinho; item cujo Produto/Estoque some é removido automaticamente com aviso.
+- `[NOTE FOR PM]` *(nesta versão)* o nome "Carrinho de reserva" e o rótulo "Reservar" (UJ-1) são anteriores à reserva de saldo de verdade introduzida por FR-50 — hoje "reservar" aqui só soma com o que o PRÓPRIO usuário já tem no carrinho, nunca trava saldo contra OUTROS usuários (isso só passa a acontecer no envio do Pedido, FR-50). Terminologia da interface pode precisar de ajuste na Arquitetura/UX para não confundir as duas coisas.
 
-#### FR-22: Envio de Pedido
-Finaliza informando solicitante, obra/centro de custo, observação → status `pendente`.
+#### FR-22: Envio de Pedido *(revisado nesta versão)*
+Finaliza informando solicitante, obra/centro de custo (FR-52), observação → status `pendente`.
 **Consequences:**
 - Rejeita carrinho vazio.
 - Revalida disponibilidade no envio (não só na adição).
+- **Envio de Pedido passa a RESERVAR o saldo dos itens** (FR-50) — deixa de ser só uma revalidação pontual.
 - Auditoria e "Meus Pedidos" sempre usam a identidade autenticada, mesmo que "solicitante" seja texto livre.
+
+#### FR-50: Reserva de saldo ao enviar Pedido *(novo — feedback de treinamento pós Epic 9)*
+Ao enviar um Pedido (FR-22), o saldo dos itens fica reservado (indisponível para qualquer outro Pedido/Carrinho) até a decisão (FR-25) — reversão explícita do comportamento anterior (saldo ficava livre enquanto o Pedido estivesse `pendente`), confirmada com o usuário.
+**Consequences:**
+- Consulta de Catálogo/Estoque (FR-6/FR-7) passa a mostrar saldo disponível separado do saldo reservado.
+- Clicar na quantidade reservada mostra para qual(is) Pedido(s)/solicitante(s) ela está associada.
+- Reserva é liberada automaticamente se o Pedido é rejeitado, ou parcialmente liberada na aprovação parcial (a parte não aprovada volta a ficar disponível).
+- `[NOTE FOR PM]` **SM-2 muda de sentido:** hoje mede concorrência esperada (dois Pedidos disputando o mesmo saldo); com reserva dura, uma falha na aprovação por indisponibilidade vira sintoma de bug de reserva, não mais evento normal — enunciado do SM precisa ser revisado na Arquitetura/Stories.
+- `[NOTE FOR PM]` Pedido pendente há muito tempo trava saldo indefinidamente — política de expiração/liberação automática de reserva antiga não está decidida nesta versão.
+**Out of Scope:** reserva a partir do Carrinho (FR-21) antes do envio — a reserva só nasce no envio do Pedido (FR-22), carrinho continua sem travar nada.
 
 #### FR-23: Consulta de Pedidos próprios
 Filtrável por status, com texto explicativo por status.
@@ -366,13 +443,21 @@ Filtrável por status, com texto explicativo por status.
 #### FR-24: Consulta de todos os Pedidos (Almoxarife+)
 **Consequences:** um Usuário sem papel `almoxarife`+ chamando esta rota recebe só os próprios pedidos (escopo, não erro).
 
-#### FR-25: Aprovação/rejeição com revalidação de estoque item a item
+#### FR-25: Aprovação/rejeição com revalidação de estoque item a item *(revisado nesta versão)*
 Realiza UJ-2.
 **Consequences:**
 - Falha em um item nunca gera sucesso parcial silencioso — o almoxarife recebe a lista exata e decide (aprovação parcial explícita ou rejeitar/ajustar).
 - Itens que falham voltam como pendentes.
 - Papel do aprovador é revalidado no momento exato da submissão (não no carregamento da tela).
 - Débito e Movimentação são atômicos.
+- Com reserva de saldo (FR-50) em vigor, "revalidação" aqui passa a checar a própria reserva, não o saldo livre — falha só deveria acontecer por bug de reserva, não por concorrência normal.
+- Item aprovado debita do(s) Lote(s) do Estoque de origem (FR-47) — mecanismo de qual Lote é consumido primeiro é o mesmo em aberto de FR-47 (§11 Perguntas em Aberto).
+
+#### FR-52: Cadastro de Centro de Custo e Destino de Obra *(novo — feedback de treinamento pós Epic 9)*
+`adm`+ cadastra Centros de Custo e Destinos de Obra (ex. "Estoque do Cabo de Santo Agostinho") como entidades próprias, referenciáveis no envio de Pedido (FR-22) — hoje esse campo é só texto livre.
+**Consequences:**
+- Segue a mesma cópia por Empresa já estabelecida para outras listas administráveis (FR-40, FR-48, FR-49).
+**Out of Scope, `[NOTE FOR PM]`:** não ficou decidido se isso SUBSTITUI o campo texto livre de FR-22 (obrigando escolher um Centro de Custo/Destino de Obra cadastrado) ou se COEXISTE com ele (o texto livre continua aceito, o cadastro é só uma lista de sugestão/padronização) — ver §11 Perguntas em Aberto.
 
 #### FR-26: Recibo do Pedido em PDF gerado pelo servidor *(revisado nesta versão — substitui a decisão original de "impressão via navegador")*
 Após decisão do Pedido (aprovado, ou parcialmente aprovado), o sistema gera um recibo/comprovante em **PDF no servidor**, com itens, quantidades, estoques de origem, solicitante, aprovador e data.
@@ -421,6 +506,7 @@ Produto com múltiplas fotos exibe uma galeria navegável; qualquer foto pode se
 - Login federado via Keycloak (FR-34).
 - Bloqueio de conta/política de senha (FR-36), MFA para papéis administrativos (FR-37), log de acesso (FR-38), exportação/exclusão de dados pessoais LGPD (FR-39).
 - Todas as features de Catálogo, Cadastro/Importação, Estoques, Movimentação, Normalização, Pedidos e Fotos (FR-4 a FR-29), incluindo geração de PDF no servidor para o recibo do Pedido (FR-26) e identificação por QR Code/código de barras (FR-35).
+- **Feedback de treinamento pós Multi-Empresa** *(novo)*: código do Fornecedor e EAN-13 (FR-45), unidade de medida e embalagem (FR-46), lançamento de saldo com Lote/Validade pelo Almoxarife (FR-47), CRUD de Categorias (FR-48) e de Templates de Nomenclatura (FR-49), reserva de saldo ao enviar Pedido (FR-50), cadastro de Filiais (FR-51) e de Centro de Custo/Destino de Obra (FR-52), template de Nomenclatura obrigatório (FR-9 revisado), nome mínimo de 10 caracteres e código automático (FR-8 revisado).
 - Solicitação de Promoção de papel (FR-33).
 - Exportação Excel (FR-30).
 - Migração de dados em corte único, a partir do espelho PostgreSQL local do Firestore mantido pela empresa (ver §9 Constraints).
@@ -435,12 +521,16 @@ Produto com múltiplas fotos exibe uma galeria navegável; qualquer foto pode se
 - Negócios entre Empresas (compartilhar Catálogo/Estoque/Pedidos entre Empresas distintas) — versão futura.
 - Cadastro self-service de Empresa nova; planos comerciais/billing; módulo de locação de equipamentos; white-label (visão de longo prazo — `[NOTE FOR PM]` revisitar quando a empresa decidir comercializar para terceiros além do modelo atual de onboarding manual pelo Dono da Plataforma).
 - Reset automático periódico do Ambiente de Treinamento (FR-43).
+- Alerta proativo (e-mail/notificação) de Lote perto do vencimento (FR-47) — só sinalização passiva na tela nesta versão.
+- FEFO automático (consumo do lote mais antigo primeiro) garantido pelo sistema — mecanismo de consumo de Lote não está fechado nesta versão (FR-47, ver §11).
+- Exclusão/edição em massa de Categorias ou Templates de Nomenclatura (FR-48/FR-49) — CRUD é item a item nesta versão.
 
 ## 7. Métricas de Sucesso
 
 **Primárias**
 - **SM-1**: 100% das ações de escrita sensíveis recusadas no servidor quando executadas por um papel sem permissão, verificável por teste automatizado. Valida FR-2, FR-3, FR-8, FR-10, FR-13, FR-14, FR-15, FR-18, FR-20, FR-25, FR-31, FR-33, FR-34.
-- **SM-2**: taxa de itens que falham na revalidação de estoque durante a aprovação (FR-25), acompanhada nos primeiros 90 dias — proxy de contenção/timing entre pedidos concorrentes.
+- **SM-2** *(sentido revisado nesta versão)*: taxa de itens que falham na revalidação de estoque durante a aprovação (FR-25), acompanhada nos primeiros 90 dias. Antes da reserva de saldo (FR-50), era proxy esperado de contenção/timing entre pedidos concorrentes; com reserva dura em vigor, uma falha aqui passa a indicar bug de reserva, não concorrência normal — meta desloca de "baixo e estável" para "próximo de zero".
+- **SM-9** *(novo)*: 100% dos Pedidos enviados reservam o saldo de seus itens (FR-50) antes de qualquer decisão — nenhum segundo Pedido, item de Carrinho ou Baixa/Transferência direta (FR-14/FR-15) consegue levar o saldo DISPONÍVEL (total menos reservado) abaixo de zero, verificável por teste automatizado de concorrência. Valida FR-50.
 - **SM-7** *(novo)*: 100% das consultas de Catálogo, Estoques, Movimentações, Pedidos, Log de Acesso, **Normalização (Inconsistências e Duplicatas)** e **Gestão de Contas/Promoção de Papel** excluem dado de qualquer outra Empresa, verificável por teste automatizado (inclusive para o papel Dono da Plataforma, que não deve ver conteúdo operacional de nenhuma Empresa). Atenção especial a Duplicatas: nenhum agrupamento ou mesclagem (FR-19/FR-20) considera Produto de outra Empresa. Valida FR-40, FR-41.
 
 **Secundárias**
@@ -480,7 +570,7 @@ Produto com múltiplas fotos exibe uma galeria navegável; qualquer foto pode se
 - **Keycloak (Ferreira Costa)** — realm corporativo já em produção (usado pelo `FB_APU02`); FR-34 depende de um client dedicado ao stockflow registrado nesse mesmo realm. `[ASSUMPTION]` reaproveitar o mesmo realm, com client id próprio do stockflow (não o mesmo client id do `FB_APU02`).
 - **PostgreSQL local (Docker) da empresa** — origem direta da migração de dados, espelho estrutural do Firestore atual.
 - **SMTP corporativo** — envio de e-mail transacional (verificação de conta, recuperação de senha); mecanismo de envio assíncrono é decisão de Arquitetura (ver §11).
-- **Excel/CSV** — modelo único padronizado de colunas (nome, código, categoria, dimensões+unidade, quantidade, estoque, observações) para importação/exportação.
+- **Excel/CSV** — modelo único padronizado de colunas (nome, código, categoria, dimensões+unidade, quantidade, estoque, observações) para importação/exportação. `[NOTE FOR PM]` este modelo ainda não reflete Lote/Validade (FR-47) nem os campos novos de FR-45/FR-46 — ver §11 item 25.
 - **Google Custom Search API** — sendo descomissionada; não é dependência do sistema-alvo.
 - Não há integração com ERP nesta versão (fora do escopo do MVP).
 
@@ -502,6 +592,15 @@ Produto com múltiplas fotos exibe uma galeria navegável; qualquer foto pode se
 14. **Onde vive o papel "Dono da Plataforma" no modelo de dados (FR-41).** Uma conta especial fora da tabela de Usuários de qualquer Empresa, ou um atributo/flag ortogonal ao `papel` de Empresa? Decisão de Arquitetura, não fechada aqui — o PRD só fixa a capacidade (gerenciar Empresas em nível de metadado, sem ver conteúdo operacional), não a implementação.
 15. **Login SSO (FR-34) e multi-Empresa.** O Keycloak corporativo Ferreira Costa autentica só contas dessa Empresa — como (ou se) o SSO se estende a futuras Empresas com seus próprios provedores de identidade é uma questão em aberto para quando a segunda Empresa real for criada; fora do escopo desta rodada por não haver ainda uma segunda Empresa confirmada.
 16. **Confirmar a assunção de Categorias por Empresa (FR-40).** Este PRD assume cópia editável independente por Empresa a partir de uma lista padrão; se o produto preferir categorias compartilhadas por padrão com opção de customizar, é uma mudança de FR-40, não de arquitetura.
+17. **Mecanismo de consumo de Lote (FR-47/FR-25).** FEFO automático (sempre o lote que vence primeiro) vs. escolha manual do Almoxarife na Baixa/Transferência/aprovação de Pedido — o PRD fixa só a capacidade de rastrear Lote/Validade, não o algoritmo de consumo. Decisão de Arquitetura/Stories.
+18. **Centro de Custo/Destino de Obra (FR-52) substitui ou coexiste com o texto livre de FR-22?** Não decidido com o usuário nesta rodada — se substitui, FR-22 precisa ser reescrito para exigir a referência estruturada; se coexiste, o texto livre continua aceito e o cadastro (FR-52) é só uma lista de apoio/padronização.
+19. **Política de liberação de reserva de saldo (FR-50) para Pedido pendente há muito tempo.** Reserva dura sem prazo pode travar saldo indefinidamente se ninguém decidir o Pedido — expiração automática, alerta, ou nenhum mecanismo nesta versão é decisão de Arquitetura/Stories.
+20. **Formato exato do código sequencial automático (FR-8).** Zero-padding (ex. "01" vs "1"), se a sequência reinicia por Empresa ou é global à instalação, e o que acontece se o operador ainda quiser digitar um código manualmente em algum cenário — não fechado nesta rodada.
+21. **Unicidade de nome de Estoque: por Filial ou por Empresa inteira (FR-51)?** O PRD assume por Filial (permite duas Filiais com um Estoque de mesmo nome); se o produto preferir manter único na Empresa inteira, é mudança de FR-51, não de arquitetura.
+22. **Toda Empresa nova precisa de uma Filial padrão automática (FR-51)?** Ou o cadastro da primeira Filial é um passo manual de onboarding — decisão de UX/Arquitetura.
+23. **Produto sem saldo em nenhum Estoque aparece no Catálogo (FR-8)?** Desde que estoque/quantidade saíram do cadastro de Produto (FR-8 revisado), um Produto pode existir sem nenhuma linha de saldo até o Almoxarife lançar (FR-47) — se ele aparece "zerado" no Catálogo ou fica oculto até ter saldo é decisão de UX/Arquitetura.
+24. ~~Código de Categoria de 8 caracteres é compatível com o formato atual (FR-48)?~~ — **resolvida nesta rodada:** conferido contra `addendum.md` §H — as 25 categorias existentes usam todas o formato "XX.XXX" (6 caracteres, ex. "04.001", "13.001"), cabem folgadamente no limite de 8. Nenhum remapeamento necessário.
+25. **Importação em massa (FR-10) e Lote/Validade (FR-47).** Hoje a planilha padronizada já traz colunas de quantidade e Estoque, criando saldo direto. Com saldo passando a ser rastreado por Lote, a planilha precisa ganhar colunas de Lote/Validade, ou toda linha importada cai num "lote genérico" sem validade — não decidido nesta rodada.
 
 ## 12. Índice de Assunções
 
@@ -522,3 +621,9 @@ Produto com múltiplas fotos exibe uma galeria navegável; qualquer foto pode se
 - §4.10 FR-41 — Papel Dono da Plataforma exige MFA obrigatório, sem exceção.
 - §4.10 FR-42 — Convite de acesso tem prazo de expiração e é de uso único (parâmetros exatos a definir na Arquitetura).
 - §4.10 FR-41 — Cadastro de Empresa inclui CNPJ (único, validado), Razão Social, Nome Fantasia e endereço completo (logradouro, Bairro, Cidade, CEP, UF).
+- §4.3 FR-8 — código do Produto é gerado automaticamente pelo sistema, sequencial, a partir de "01" (formato exato a definir na Arquitetura — ver §11 item 20).
+- §4.10 FR-40 — assunção de cópia editável por Empresa estendida de Categorias também para Templates de Nomenclatura (FR-49) — o código já trata as duas listas de forma simétrica desde a Story 9.4.
+- §4.4 FR-47 — quantidade total de um Produto num Estoque passa a ser a soma de todos os Lotes ativos ali.
+- §4.3 FR-9 — categoria sem template específico usa um template "Genérico" (`[NOME LIVRE]`) sempre disponível como fallback obrigatório.
+- §4.3 FR-46 — Produtos já em produção sem Unidade de Medida recebem um valor de migração único (ex. "un", a confirmar) em lote.
+- §4.4 FR-51 — Estoques já em produção são atribuídos automaticamente a uma Filial padrão única na migração.
