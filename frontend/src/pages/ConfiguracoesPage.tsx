@@ -12,6 +12,7 @@ import { GestaoUsuariosSection } from '@/components/usuarios/GestaoUsuariosSecti
 import { ConvitesSection } from '@/components/usuarios/ConvitesSection';
 import { SolicitacoesExclusaoSection } from '@/components/usuarios/SolicitacoesExclusaoSection';
 import { LogAcessoSection } from '@/components/logs/LogAcessoSection';
+import { CategoriasSection } from '@/components/categorias/CategoriasSection';
 import { PrivacidadeSection } from '@/components/privacidade/PrivacidadeSection';
 import { apiUrl, authHeaders } from '@/lib/api';
 
@@ -43,6 +44,10 @@ import { apiUrl, authHeaders } from '@/lib/api';
  *    Tabela somente-leitura de `GET /api/logs-acesso` (toda tentativa de login
  *    por senha ou SSO, sucesso ou falha), filtrável por período. Nenhuma ação
  *    de edição/exclusão — a trilha é append-only.
+ *  - "Categorias" (`CategoriasSection`, Story 10.5): só montada para `adm`+.
+ *    CRUD das categorias de produto da Empresa (`GET/POST /api/categorias`,
+ *    `PUT/DELETE /api/categorias/{id}`); exclusão bloqueada (409) enquanto
+ *    algum Produto usa a categoria.
  *  - "Privacidade" (`PrivacidadeSection`, Story 8.1): montada para QUALQUER
  *    papel autenticado, sem gate de `rankPapel` — a LGPD exige que todo
  *    Usuário consiga baixar os próprios dados. Botão "Baixar meus dados" ->
@@ -539,6 +544,8 @@ export function ConfiguracoesPage() {
       {podeDecidir && <ConvitesSection />}
 
       {rankPapel(papel) >= rankPapel('adm') && <LogAcessoSection />}
+
+      {rankPapel(papel) >= rankPapel('adm') && <CategoriasSection />}
 
       {/* SolicitacoesExclusaoSection já se auto-gateia por rankPapel('adm')
           internamente (molde de PrivacidadeSection) — montada incondicionalmente

@@ -439,6 +439,18 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	registrar("GET /e/{slug}/api/categorias", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarCategoriasHandler(db)))
 
+	// CRUD de Categorias — Story 10.5 (AD-33). Escrita só `adm`+ (403 abaixo,
+	// decidido por RequireRole); o GET acima segue só RequireAuth.
+	registrar("POST /e/{slug}/api/categorias", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAdm)(
+			handlers.CriarCategoriaHandler(db))))
+	registrar("PUT /e/{slug}/api/categorias/{id}", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAdm)(
+			handlers.AtualizarCategoriaHandler(db))))
+	registrar("DELETE /e/{slug}/api/categorias/{id}", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAdm)(
+			handlers.ExcluirCategoriaHandler(db))))
+
 	// Nomenclatura Guiada por subtipo — Story 3.2 (FR-9). GET
 	// /api/nomenclatura-templates leva só RequireAuth, mesmo padrão de GET
 	// /api/categorias — a lista fixa dos 28 templates é liberada a qualquer

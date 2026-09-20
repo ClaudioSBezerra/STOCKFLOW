@@ -116,7 +116,7 @@ development_status:
   10-2-código-de-produto-automático-e-sequencial-por-empresa: done
   10-3-código-do-fornecedor-ean-13-unidade-de-medida-e-embalagem: done
   10-4-colunas-explícitas-na-listagem-do-catálogo: done
-  10-5-crud-de-categorias: backlog
+  10-5-crud-de-categorias: done
   10-6-crud-de-templates-de-nomenclatura: backlog
   epic-10-retrospective: optional
 
