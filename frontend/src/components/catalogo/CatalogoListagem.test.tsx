@@ -1,8 +1,9 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { CatalogoListagem } from './CatalogoListagem';
+import { formatarEmbalagemUnidade } from './formatacao';
 
 vi.mock('@/lib/session', () => ({
   getAccessToken: () => 'token-de-teste',
@@ -31,6 +32,17 @@ const DIMENSOES_NULAS = {
   diametro: null,
   altura: null,
   espessura: null,
+};
+
+// Campos da Story 10.4 (spec-10-4) que as fixtures antigas não traziam: item
+// da grade sem unidade/embalagem; grupo homogêneo sem código, mesma categoria.
+const COLUNAS_ITEM_PADRAO = { unidadeMedida: null, embalagem: null };
+const COLUNAS_GRUPO_PADRAO = {
+  codigo: null,
+  categoria: { id: 'c1', codigo: '04.001', nome: 'Construção Civil' },
+  embalagem: null,
+  unidadeMedida: null,
+  multiplos: { codigo: false, categoria: false, embalagemUnidade: false },
 };
 
 // stubMatchMedia sobrescreve `window.matchMedia` para um MediaQueryList
@@ -84,6 +96,7 @@ describe('CatalogoListagem — grade (padrão)', () => {
                 id: 'p1',
                 nome: 'Parafuso Sextavado',
                 codigo: 'PAR-001',
+                ...COLUNAS_ITEM_PADRAO,
                 categoria: { id: 'c1', codigo: '04.001', nome: 'Construção Civil' },
                 dimensoes: DIMENSOES_NULAS,
                 quantidadeTotal: 5,
@@ -142,6 +155,7 @@ describe('CatalogoListagem — grade (padrão)', () => {
                 id: 'p1',
                 nome: 'Cimento CP-II',
                 codigo: null,
+                ...COLUNAS_ITEM_PADRAO,
                 categoria: { id: 'c1', codigo: '04.001', nome: 'Construção Civil' },
                 dimensoes: DIMENSOES_NULAS,
                 quantidadeTotal: 0,
@@ -232,6 +246,7 @@ describe('CatalogoListagem — grade (padrão)', () => {
               id: pagina2 ? 'p2' : 'p1',
               nome: pagina2 ? 'Produto Página 2' : 'Produto Página 1',
               codigo: null,
+              ...COLUNAS_ITEM_PADRAO,
               categoria: { id: 'c1', codigo: '04.001', nome: 'Construção Civil' },
               dimensoes: DIMENSOES_NULAS,
               quantidadeTotal: 1,
@@ -274,6 +289,7 @@ describe('CatalogoListagem — tabela agrupada (viewport ≥ 768px)', () => {
                 id: 'p1',
                 nome: 'Parafuso',
                 codigo: null,
+                ...COLUNAS_ITEM_PADRAO,
                 categoria: { id: 'c1', codigo: '04.001', nome: 'Construção Civil' },
                 dimensoes: DIMENSOES_NULAS,
                 quantidadeTotal: 17,
@@ -295,6 +311,7 @@ describe('CatalogoListagem — tabela agrupada (viewport ≥ 768px)', () => {
               quantidadeTotal: porEstoque.reduce((soma, e) => soma + e.quantidade, 0),
               disponivel: porEstoque.length > 0,
               porEstoque,
+              ...COLUNAS_GRUPO_PADRAO,
             },
           ],
           paginacao: { pagina: 1, tamanho: 24, total: 1, totalPaginas: 1 },
@@ -363,6 +380,7 @@ describe('CatalogoListagem — tabela agrupada (viewport ≥ 768px)', () => {
                 id: 'p1',
                 nome: 'Parafuso',
                 codigo: null,
+                ...COLUNAS_ITEM_PADRAO,
                 categoria: { id: 'c1', codigo: '04.001', nome: 'Construção Civil' },
                 dimensoes: DIMENSOES_NULAS,
                 quantidadeTotal: 1,
@@ -385,6 +403,7 @@ describe('CatalogoListagem — tabela agrupada (viewport ≥ 768px)', () => {
               quantidadeTotal: 1,
               disponivel: true,
               porEstoque: [],
+              ...COLUNAS_GRUPO_PADRAO,
             },
           ],
           paginacao: { pagina: pagina2 ? 2 : 1, tamanho: 24, total: 30, totalPaginas: 2 },
@@ -457,6 +476,7 @@ describe('CatalogoListagem — tabela agrupada (viewport ≥ 768px)', () => {
                 id: 'p1',
                 nome: 'Parafuso',
                 codigo: null,
+                ...COLUNAS_ITEM_PADRAO,
                 categoria: { id: 'c1', codigo: '04.001', nome: 'Construção Civil' },
                 dimensoes: DIMENSOES_NULAS,
                 quantidadeTotal: 1,
@@ -482,6 +502,7 @@ describe('CatalogoListagem — tabela agrupada (viewport ≥ 768px)', () => {
               quantidadeTotal: 3,
               disponivel: true,
               porEstoque: [],
+              ...COLUNAS_GRUPO_PADRAO,
             },
             {
               chave: 'sem-dim',
@@ -490,6 +511,7 @@ describe('CatalogoListagem — tabela agrupada (viewport ≥ 768px)', () => {
               quantidadeTotal: 2,
               disponivel: true,
               porEstoque: [],
+              ...COLUNAS_GRUPO_PADRAO,
             },
           ],
           paginacao: { pagina: 1, tamanho: 24, total: 2, totalPaginas: 1 },
@@ -506,8 +528,10 @@ describe('CatalogoListagem — tabela agrupada (viewport ≥ 768px)', () => {
 
     // Valor fracionário formatado em pt-BR ("6,5", não "6.5") + rótulos.
     expect(await screen.findByText('C 6,5m · ⌀ 10cm')).toBeInTheDocument();
-    // Grupo sem nenhuma dimensão -> travessão.
-    expect(screen.getByText('—')).toBeInTheDocument();
+    // Grupo sem nenhuma dimensão -> travessão na célula "Dimensões" (5ª coluna:
+    // expandir, código, produto, categoria, dimensões).
+    const linha = screen.getByText('Cimento CP-II').closest('tr') as HTMLElement;
+    expect(within(linha).getAllByRole('cell')[4]).toHaveTextContent('—');
   });
 
   it('encolher a viewport abaixo de 768px volta para grade e esconde o alternador', async () => {
@@ -692,6 +716,7 @@ describe('CatalogoListagem — filtros (Story 4.2)', () => {
               id: pagina2 ? 'p2' : 'p1',
               nome: pagina2 ? 'Produto Página 2' : 'Produto Página 1',
               codigo: null,
+              ...COLUNAS_ITEM_PADRAO,
               categoria: { id: 'c1', codigo: '04.001', nome: 'Materiais Civis' },
               dimensoes: DIMENSOES_NULAS,
               quantidadeTotal: 1,
@@ -807,6 +832,7 @@ describe('CatalogoListagem — filtros (Story 4.2)', () => {
               id: pagina2 ? 'p2' : 'p1',
               nome: pagina2 ? 'Produto Página 2' : 'Produto Página 1',
               codigo: null,
+              ...COLUNAS_ITEM_PADRAO,
               categoria: { id: 'c1', codigo: '04.001', nome: 'Materiais Civis' },
               dimensoes: DIMENSOES_NULAS,
               quantidadeTotal: 1,
@@ -879,6 +905,7 @@ describe('CatalogoListagem — exportação (Story 4.6)', () => {
                 quantidadeTotal: 5,
                 disponivel: true,
                 porEstoque: [],
+                ...COLUNAS_GRUPO_PADRAO,
               },
             ],
             paginacao: { pagina: 1, tamanho: 24, total: 1, totalPaginas: 1 },
@@ -893,6 +920,7 @@ describe('CatalogoListagem — exportação (Story 4.6)', () => {
               id: 'p1',
               nome: 'Parafuso',
               codigo: null,
+              ...COLUNAS_ITEM_PADRAO,
               categoria: { id: 'c1', codigo: '04.001', nome: 'Construção Civil' },
               dimensoes: DIMENSOES_NULAS,
               quantidadeTotal: 5,
@@ -990,6 +1018,7 @@ describe('CatalogoListagem — exportação (Story 4.6)', () => {
                 quantidadeTotal: 5,
                 disponivel: true,
                 porEstoque: [],
+                ...COLUNAS_GRUPO_PADRAO,
               },
             ],
             paginacao: { pagina: 1, tamanho: 24, total: 1, totalPaginas: 1 },
@@ -1004,6 +1033,7 @@ describe('CatalogoListagem — exportação (Story 4.6)', () => {
               id: 'p1',
               nome: 'Parafuso',
               codigo: null,
+              ...COLUNAS_ITEM_PADRAO,
               categoria: { id: 'c1', codigo: '04.001', nome: 'Construção Civil' },
               dimensoes: DIMENSOES_NULAS,
               quantidadeTotal: 5,
@@ -1072,5 +1102,205 @@ describe('CatalogoListagem — exportação (Story 4.6)', () => {
         'Não foi possível exportar o catálogo. Tente novamente em instantes.',
       ),
     );
+  });
+});
+
+// --- Story 10.4: colunas explícitas na listagem (spec-10-4) ----------------
+
+describe('formatarEmbalagemUnidade (Story 10.4)', () => {
+  it('cobre os 4 casos: ambos, só unidade, só embalagem, nenhum', () => {
+    expect(formatarEmbalagemUnidade('Caixa c/ 12', 'un')).toBe('Caixa c/ 12 · un');
+    expect(formatarEmbalagemUnidade(null, 'un')).toBe('— · un');
+    expect(formatarEmbalagemUnidade('Caixa c/ 12', null)).toBe('Caixa c/ 12');
+    expect(formatarEmbalagemUnidade(null, null)).toBe('—');
+  });
+});
+
+describe('CatalogoListagem — colunas explícitas (Story 10.4)', () => {
+  const CATEGORIA = { id: 'c1', codigo: '04.001', nome: 'Construção Civil' };
+  const SEM_MULTIPLOS = { codigo: false, categoria: false, embalagemUnidade: false };
+
+  function stubFetch(produtos: unknown[], grupos: unknown[]) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) =>
+        Promise.resolve({
+          ok: true,
+          json: async () =>
+            String(url).includes('agrupar=true')
+              ? {
+                  grupos,
+                  paginacao: { pagina: 1, tamanho: 24, total: grupos.length, totalPaginas: 1 },
+                }
+              : {
+                  produtos,
+                  paginacao: { pagina: 1, tamanho: 24, total: produtos.length, totalPaginas: 1 },
+                },
+        }),
+      ),
+    );
+  }
+
+  function item(id: string, nome: string, extra: Record<string, unknown>) {
+    return {
+      id,
+      nome,
+      codigo: null,
+      categoria: CATEGORIA,
+      dimensoes: DIMENSOES_NULAS,
+      quantidadeTotal: 15,
+      disponivel: true,
+      unidadeMedida: null,
+      embalagem: null,
+      ...extra,
+    };
+  }
+
+  it('grade: card mostra código, nome, categoria, "Estoque total" e embalagem+unidade', async () => {
+    stubFetch(
+      [
+        item('p1', 'Parafuso Completo', {
+          codigo: 'PAR-001',
+          unidadeMedida: 'un',
+          embalagem: 'Cx c/ 12',
+        }),
+        item('p2', 'Parafuso Só Unidade', { unidadeMedida: 'un' }),
+        item('p3', 'Parafuso Importado', {}),
+      ],
+      [],
+    );
+
+    renderCatalogo();
+
+    const card1 = (await screen.findByRole('link', { name: /Parafuso Completo/ })) as HTMLElement;
+    expect(within(card1).getByText('PAR-001')).toHaveClass('font-mono');
+    expect(within(card1).getByText('Construção Civil')).toBeInTheDocument();
+    expect(within(card1).getByText(/Estoque total/)).toBeInTheDocument();
+    expect(within(card1).getByText('15')).toBeInTheDocument();
+    expect(within(card1).getByText('Cx c/ 12 · un')).toBeInTheDocument();
+
+    const card2 = screen.getByRole('link', { name: /Parafuso Só Unidade/ });
+    expect(within(card2).getByText('— · un')).toBeInTheDocument();
+
+    const card3 = screen.getByRole('link', { name: /Parafuso Importado/ });
+    expect(within(card3).getByText('—')).toBeInTheDocument();
+  });
+
+  it('tabela: cabeçalhos e valores comuns visíveis sem expandir', async () => {
+    stubMatchMedia(true);
+    stubFetch(
+      [item('p1', 'Parafuso', {})],
+      [
+        {
+          chave: 'g1',
+          nome: 'Tubo PVC',
+          dimensoes: DIMENSOES_NULAS,
+          quantidadeTotal: 17,
+          disponivel: true,
+          porEstoque: [{ estoqueId: 'e1', estoqueNome: 'Almoxarifado Central', quantidade: 17 }],
+          codigo: 'TUB-001',
+          categoria: CATEGORIA,
+          embalagem: 'Caixa c/ 12',
+          unidadeMedida: 'un',
+          multiplos: SEM_MULTIPLOS,
+        },
+      ],
+    );
+
+    const user = userEvent.setup();
+    renderCatalogo();
+    await screen.findByText('Parafuso');
+    await user.click(screen.getByRole('button', { name: 'Tabela' }));
+
+    for (const nome of ['Código', 'Produto', 'Categoria', 'Embalagem/Unidade', 'Quantidade']) {
+      expect(await screen.findByRole('columnheader', { name: nome })).toBeInTheDocument();
+    }
+    const linha = screen.getByText('Tubo PVC').closest('tr') as HTMLElement;
+    expect(within(linha).getByText('TUB-001')).toBeInTheDocument();
+    expect(within(linha).getByText('Construção Civil')).toBeInTheDocument();
+    expect(within(linha).getByText('Caixa c/ 12 · un')).toBeInTheDocument();
+    expect(within(linha).getByText('17')).toBeInTheDocument();
+    // Nada expandido: a discriminação por Estoque não aparece.
+    expect(screen.queryByText('Almoxarifado Central')).not.toBeInTheDocument();
+  });
+
+  it('tabela: "Múltiplos" nas 3 colunas e "—" com embalagem/unidade ausentes', async () => {
+    stubMatchMedia(true);
+    const base = {
+      dimensoes: DIMENSOES_NULAS,
+      quantidadeTotal: 3,
+      disponivel: true,
+      porEstoque: [],
+    };
+    stubFetch(
+      [item('p1', 'Parafuso', {})],
+      [
+        {
+          ...base,
+          chave: 'g-mult',
+          nome: 'Grupo Divergente',
+          codigo: null,
+          categoria: null,
+          embalagem: null,
+          unidadeMedida: null,
+          multiplos: { codigo: true, categoria: true, embalagemUnidade: true },
+        },
+        {
+          ...base,
+          chave: 'g-vazio',
+          nome: 'Grupo Sem Embalagem',
+          codigo: null,
+          categoria: CATEGORIA,
+          embalagem: null,
+          unidadeMedida: null,
+          multiplos: SEM_MULTIPLOS,
+        },
+      ],
+    );
+
+    const user = userEvent.setup();
+    renderCatalogo();
+    await screen.findByText('Parafuso');
+    await user.click(screen.getByRole('button', { name: 'Tabela' }));
+
+    const mult = (await screen.findByText('Grupo Divergente')).closest('tr') as HTMLElement;
+    expect(within(mult).getAllByText('Múltiplos')).toHaveLength(3);
+
+    const vazio = screen.getByText('Grupo Sem Embalagem').closest('tr') as HTMLElement;
+    expect(within(vazio).queryByText('Múltiplos')).not.toBeInTheDocument();
+    // código, dimensões e embalagem/unidade ausentes -> travessão.
+    expect(within(vazio).getAllByText('—')).toHaveLength(3);
+  });
+
+  it('a linha expandida ocupa todas as colunas (colSpan = 8)', async () => {
+    stubMatchMedia(true);
+    stubFetch(
+      [item('p1', 'Parafuso', {})],
+      [
+        {
+          chave: 'g1',
+          nome: 'Tubo PVC',
+          dimensoes: DIMENSOES_NULAS,
+          quantidadeTotal: 2,
+          disponivel: true,
+          porEstoque: [{ estoqueId: 'e1', estoqueNome: 'Almoxarifado Central', quantidade: 2 }],
+          codigo: null,
+          categoria: CATEGORIA,
+          embalagem: null,
+          unidadeMedida: 'un',
+          multiplos: SEM_MULTIPLOS,
+        },
+      ],
+    );
+
+    const user = userEvent.setup();
+    renderCatalogo();
+    await screen.findByText('Parafuso');
+    await user.click(screen.getByRole('button', { name: 'Tabela' }));
+    await user.click(await screen.findByRole('button', { name: /Tubo PVC/ }));
+
+    const linhaExpandida = screen.getByText('Almoxarifado Central').closest('td') as HTMLElement;
+    const colunas = screen.getAllByRole('columnheader').length;
+    expect(linhaExpandida).toHaveAttribute('colspan', String(colunas));
   });
 });

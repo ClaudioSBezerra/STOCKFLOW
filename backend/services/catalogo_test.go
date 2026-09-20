@@ -1314,3 +1314,253 @@ func TestListarTodosGruposCatalogo_IDMalformadoColapsaEmVazio(t *testing.T) {
 		t.Errorf("estoqueId malformado: grupos = %v, want [] não-nil", grupos2)
 	}
 }
+
+// --- Story 10.4: Colunas explícitas na listagem do Catálogo ---------------
+
+// strVal desreferencia um *string para mensagens de erro ("<nil>" quando nil).
+func strVal(p *string) string {
+	if p == nil {
+		return "<nil>"
+	}
+	return *p
+}
+
+// TestListarCatalogoGrade_UnidadeEEmbalagem prova as linhas "Grade" da matriz
+// da spec-10-4: unidadeMedida/embalagem preenchidos, e `nil` quando o Produto
+// não tem (ex. importado).
+func TestListarCatalogoGrade_UnidadeEEmbalagem(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Grade Unidade")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+
+	criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Produto Completo Grade", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 15,
+		UnidadeMedida: "un", Embalagem: "Cx c/ 12",
+	})
+	semID, _ := criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Produto Sem Unidade Grade", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+		UnidadeMedida: "un",
+	})
+	if _, err := db.Exec(`UPDATE produtos SET unidade_medida = NULL, embalagem = NULL WHERE id = $1`, semID); err != nil {
+		t.Fatalf("seed UPDATE: %v", err)
+	}
+
+	itens, _, err := ListarCatalogoGrade(db, 1, FiltrosCatalogo{EmpresaID: empresaTeste})
+	if err != nil {
+		t.Fatalf("ListarCatalogoGrade: %v", err)
+	}
+	if len(itens) != 2 {
+		t.Fatalf("len = %d, want 2", len(itens))
+	}
+	for _, it := range itens {
+		switch it.Nome {
+		case "Produto Completo Grade":
+			if it.UnidadeMedida == nil || *it.UnidadeMedida != "un" {
+				t.Errorf("unidadeMedida = %s, want un", strVal(it.UnidadeMedida))
+			}
+			if it.Embalagem == nil || *it.Embalagem != "Cx c/ 12" {
+				t.Errorf("embalagem = %s, want Cx c/ 12", strVal(it.Embalagem))
+			}
+			if it.QuantidadeTotal != 15 {
+				t.Errorf("quantidadeTotal = %v, want 15", it.QuantidadeTotal)
+			}
+		case "Produto Sem Unidade Grade":
+			if it.UnidadeMedida != nil || it.Embalagem != nil {
+				t.Errorf("unidadeMedida/embalagem = %s/%s, want nil/nil", strVal(it.UnidadeMedida), strVal(it.Embalagem))
+			}
+		default:
+			t.Errorf("nome inesperado %q", it.Nome)
+		}
+	}
+}
+
+// TestListarCatalogoAgrupado_ColunasComunsEMultiplos cobre a matriz da
+// spec-10-4 para a tabela agrupada: grupo homogêneo, unitário e divergências
+// de código (incluindo um NULL), categoria e par embalagem+unidade.
+func TestListarCatalogoAgrupado_ColunasComunsEMultiplos(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Agrupado Colunas")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	cat1 := categoriaIDPorCodigo(t, db, "04.001")
+	cat2 := categoriaIDPorCodigo(t, db, "04.002")
+
+	novo := func(nome, categoriaID, unidade, embalagem string) string {
+		id, _ := criarProdutoCat(t, db, CriarProdutoInput{
+			Nome: nome, CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+			UnidadeMedida: unidade, Embalagem: embalagem,
+		})
+		return id
+	}
+	// Códigos são gerados sequencialmente pelo servidor: forçamos valores
+	// iguais/diferentes via UPDATE para exercitar os casos de concordância.
+	setCodigo := func(id string, codigo *string) {
+		if _, err := db.Exec(`UPDATE produtos SET codigo = $1 WHERE id = $2`, codigo, id); err != nil {
+			t.Fatalf("setCodigo: %v", err)
+		}
+	}
+	cod := func(s string) *string { return &s }
+
+	// Homogêneo: mesmo código/categoria/embalagem+unidade.
+	h1 := novo("Grupo Homogeneo Um", cat1, "cx", "Caixa c/ 12")
+	h2 := novo("Grupo Homogeneo Um", cat1, "cx", "Caixa c/ 12")
+	// `codigo` é único por Empresa: dois Produtos do mesmo grupo só
+	// "concordam" em código quando ambos são NULL (ex. importados).
+	setCodigo(h1, nil)
+	setCodigo(h2, nil)
+
+	// Unitário.
+	u1 := novo("Grupo Unitario Um", cat2, "un", "")
+	setCodigo(u1, cod("UNI-1"))
+
+	// Código divergente (um NULL).
+	c1 := novo("Grupo Codigo Divergente", cat1, "un", "")
+	c2 := novo("Grupo Codigo Divergente", cat1, "un", "")
+	setCodigo(c1, cod("COD-1"))
+	setCodigo(c2, nil)
+
+	// Categoria divergente.
+	k1 := novo("Grupo Categoria Divergente", cat1, "un", "")
+	k2 := novo("Grupo Categoria Divergente", cat2, "un", "")
+	setCodigo(k1, nil)
+	setCodigo(k2, nil)
+
+	// Par embalagem+unidade divergente (só a embalagem difere).
+	e1 := novo("Grupo Embalagem Divergente", cat1, "un", "Caixa c/ 12")
+	e2 := novo("Grupo Embalagem Divergente", cat1, "un", "Caixa c/ 24")
+	setCodigo(e1, nil)
+	setCodigo(e2, nil)
+
+	// Só a unidade difere.
+	m1 := novo("Grupo Unidade Divergente", cat1, "un", "Caixa")
+	m2 := novo("Grupo Unidade Divergente", cat1, "cx", "Caixa")
+	setCodigo(m1, nil)
+	setCodigo(m2, nil)
+
+	verificar := func(t *testing.T, grupos []CatalogoGrupo) map[string]CatalogoGrupo {
+		t.Helper()
+		por := make(map[string]CatalogoGrupo)
+		for _, g := range grupos {
+			por[g.Nome] = g
+		}
+		if len(por) != 6 {
+			t.Fatalf("grupos = %d, want 6", len(por))
+		}
+		return por
+	}
+
+	checar := func(t *testing.T, por map[string]CatalogoGrupo) {
+		t.Helper()
+
+		g := por["Grupo Homogeneo Um"]
+		if g.Multiplos != (MultiplosGrupo{}) {
+			t.Errorf("homogêneo: multiplos = %+v, want todos false", g.Multiplos)
+		}
+		if g.Codigo != nil {
+			t.Errorf("homogêneo: codigo = %s, want <nil> (ambos NULL)", strVal(g.Codigo))
+		}
+		if g.Categoria == nil || g.Categoria.ID != cat1 || g.Categoria.Codigo != "04.001" || g.Categoria.Nome == "" {
+			t.Errorf("homogêneo: categoria = %+v", g.Categoria)
+		}
+		if g.Embalagem == nil || *g.Embalagem != "Caixa c/ 12" || g.UnidadeMedida == nil || *g.UnidadeMedida != "cx" {
+			t.Errorf("homogêneo: embalagem/unidade = %s/%s", strVal(g.Embalagem), strVal(g.UnidadeMedida))
+		}
+		if g.QuantidadeTotal != 2 {
+			t.Errorf("homogêneo: quantidadeTotal = %v, want 2", g.QuantidadeTotal)
+		}
+
+		g = por["Grupo Unitario Um"]
+		if g.Multiplos != (MultiplosGrupo{}) {
+			t.Errorf("unitário: multiplos = %+v, want todos false", g.Multiplos)
+		}
+		if g.Codigo == nil || *g.Codigo != "UNI-1" || g.Categoria == nil || g.Categoria.ID != cat2 {
+			t.Errorf("unitário: codigo/categoria = %s/%+v", strVal(g.Codigo), g.Categoria)
+		}
+		if g.UnidadeMedida == nil || *g.UnidadeMedida != "un" {
+			t.Errorf("unitário: unidadeMedida = %s, want un", strVal(g.UnidadeMedida))
+		}
+
+		g = por["Grupo Codigo Divergente"]
+		if !g.Multiplos.Codigo || g.Codigo != nil {
+			t.Errorf("código divergente: multiplos.codigo = %v, codigo = %s, want true/<nil>", g.Multiplos.Codigo, strVal(g.Codigo))
+		}
+		if g.Multiplos.Categoria || g.Multiplos.EmbalagemUnidade || g.Categoria == nil {
+			t.Errorf("código divergente: demais colunas deveriam concordar (%+v, %+v)", g.Multiplos, g.Categoria)
+		}
+
+		g = por["Grupo Categoria Divergente"]
+		if !g.Multiplos.Categoria || g.Categoria != nil {
+			t.Errorf("categoria divergente: multiplos.categoria = %v, categoria = %+v, want true/nil", g.Multiplos.Categoria, g.Categoria)
+		}
+		if g.Multiplos.Codigo || g.Codigo != nil {
+			t.Errorf("categoria divergente: codigo deveria ser comum nil (%v, %s)", g.Multiplos.Codigo, strVal(g.Codigo))
+		}
+
+		for _, nome := range []string{"Grupo Embalagem Divergente", "Grupo Unidade Divergente"} {
+			g = por[nome]
+			if !g.Multiplos.EmbalagemUnidade || g.Embalagem != nil || g.UnidadeMedida != nil {
+				t.Errorf("%s: multiplos.embalagemUnidade = %v, embalagem/unidade = %s/%s, want true/<nil>/<nil>",
+					nome, g.Multiplos.EmbalagemUnidade, strVal(g.Embalagem), strVal(g.UnidadeMedida))
+			}
+			if g.Multiplos.Codigo || g.Multiplos.Categoria {
+				t.Errorf("%s: código/categoria deveriam concordar (%+v)", nome, g.Multiplos)
+			}
+		}
+	}
+
+	t.Run("ListarCatalogoAgrupado", func(t *testing.T) {
+		grupos, _, err := ListarCatalogoAgrupado(db, 1, FiltrosCatalogo{EmpresaID: empresaTeste})
+		if err != nil {
+			t.Fatalf("ListarCatalogoAgrupado: %v", err)
+		}
+		checar(t, verificar(t, grupos))
+	})
+	t.Run("ListarTodosGruposCatalogo", func(t *testing.T) {
+		grupos, err := ListarTodosGruposCatalogo(db, FiltrosCatalogo{EmpresaID: empresaTeste})
+		if err != nil {
+			t.Fatalf("ListarTodosGruposCatalogo: %v", err)
+		}
+		checar(t, verificar(t, grupos))
+	})
+}
+
+// TestListarCatalogoAgrupado_GrupoSemEmbalagemNemUnidade: grupo unitário/
+// homogêneo com embalagem e unidade NULL (importado) -> nil/nil e flag false
+// (o "valor comum" é ausente, nunca "Múltiplos").
+func TestListarCatalogoAgrupado_GrupoSemEmbalagemNemUnidade(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Agrupado Sem Unidade")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+	id, _ := criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Grupo Importado Sem Unidade", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+		UnidadeMedida: "un",
+	})
+	if _, err := db.Exec(`UPDATE produtos SET unidade_medida = NULL, embalagem = NULL WHERE id = $1`, id); err != nil {
+		t.Fatalf("seed UPDATE: %v", err)
+	}
+
+	grupos, _, err := ListarCatalogoAgrupado(db, 1, FiltrosCatalogo{EmpresaID: empresaTeste})
+	if err != nil {
+		t.Fatalf("ListarCatalogoAgrupado: %v", err)
+	}
+	if len(grupos) != 1 {
+		t.Fatalf("len = %d, want 1", len(grupos))
+	}
+	g := grupos[0]
+	if g.Embalagem != nil || g.UnidadeMedida != nil || g.Multiplos.EmbalagemUnidade {
+		t.Errorf("embalagem/unidade = %s/%s (multiplos %v), want nil/nil/false", strVal(g.Embalagem), strVal(g.UnidadeMedida), g.Multiplos.EmbalagemUnidade)
+	}
+}

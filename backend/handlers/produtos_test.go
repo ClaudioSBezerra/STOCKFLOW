@@ -1205,6 +1205,77 @@ func TestListarCatalogoHandler_200AgrupadoComPorEstoque(t *testing.T) {
 	}
 }
 
+// TestListarCatalogoHandler_ContratoJSONColunasExplicitas (Story 10.4) fixa as
+// chaves JSON que a listagem do frontend lê: `unidadeMedida`/`embalagem` por
+// Produto na grade e `codigo`/`categoria`/`embalagem`/`unidadeMedida`/
+// `multiplos.{codigo,categoria,embalagemUnidade}` por grupo — sempre
+// presentes (`null`, nunca omitidas), já que os testes de serviço só olham
+// campos Go, não as tags.
+func TestListarCatalogoHandler_ContratoJSONColunasExplicitas(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	criarContaComPapel(t, db, "Catalogo Contrato", "catalogo-contrato@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "catalogo-contrato@empresa.com", "senha-123456")
+
+	est, err := services.CriarEstoque(db, empresaTeste, "Estoque Contrato Handler")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	seedProdutoCatalogoHandler(t, db, est.ID, "Luva Contrato", categoriaID, 1)
+	seedProdutoCatalogoHandler(t, db, est.ID, "Luva Contrato", categoriaID, 1)
+
+	chaves := func(raw json.RawMessage, esperadas ...string) map[string]json.RawMessage {
+		t.Helper()
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatalf("decode objeto: %v (raw=%s)", err, raw)
+		}
+		for _, k := range esperadas {
+			if _, ok := m[k]; !ok {
+				t.Errorf("chave %q ausente no JSON: %s", k, raw)
+			}
+		}
+		return m
+	}
+
+	wGrade := getProdutosCatalogo(db, "Bearer "+token, "agrupar=false")
+	if wGrade.Code != http.StatusOK {
+		t.Fatalf("grade status = %d (body=%s)", wGrade.Code, wGrade.Body.String())
+	}
+	var grade struct {
+		Produtos []json.RawMessage `json:"produtos"`
+	}
+	if err := json.Unmarshal(wGrade.Body.Bytes(), &grade); err != nil || len(grade.Produtos) != 2 {
+		t.Fatalf("grade: err=%v len=%d (body=%s)", err, len(grade.Produtos), wGrade.Body.String())
+	}
+	item := chaves(grade.Produtos[0], "unidadeMedida", "embalagem", "codigo", "categoria", "quantidadeTotal")
+	if string(item["unidadeMedida"]) != `"un"` || string(item["embalagem"]) != "null" {
+		t.Errorf("grade unidadeMedida/embalagem = %s/%s, want \"un\"/null", item["unidadeMedida"], item["embalagem"])
+	}
+
+	wTab := getProdutosCatalogo(db, "Bearer "+token, "agrupar=true")
+	if wTab.Code != http.StatusOK {
+		t.Fatalf("tabela status = %d (body=%s)", wTab.Code, wTab.Body.String())
+	}
+	var tab struct {
+		Grupos []json.RawMessage `json:"grupos"`
+	}
+	if err := json.Unmarshal(wTab.Body.Bytes(), &tab); err != nil || len(tab.Grupos) != 1 {
+		t.Fatalf("tabela: err=%v len=%d (body=%s)", err, len(tab.Grupos), wTab.Body.String())
+	}
+	grupo := chaves(tab.Grupos[0], "codigo", "categoria", "embalagem", "unidadeMedida", "multiplos")
+	mult := chaves(grupo["multiplos"], "codigo", "categoria", "embalagemUnidade")
+	// Dois Produtos com códigos automáticos distintos, mesma categoria e mesmo par embalagem+unidade.
+	if string(mult["codigo"]) != "true" || string(mult["categoria"]) != "false" || string(mult["embalagemUnidade"]) != "false" {
+		t.Errorf("multiplos = %s, want codigo=true categoria=false embalagemUnidade=false", grupo["multiplos"])
+	}
+	if string(grupo["codigo"]) != "null" || string(grupo["unidadeMedida"]) != `"un"` || string(grupo["embalagem"]) != "null" {
+		t.Errorf("grupo codigo/unidadeMedida/embalagem = %s/%s/%s, want null/\"un\"/null", grupo["codigo"], grupo["unidadeMedida"], grupo["embalagem"])
+	}
+	chaves(grupo["categoria"], "id", "codigo", "nome")
+}
+
 // TestListarCatalogoHandler_400PaginaInvalida prova a linha "`pagina`
 // inválida": `pagina=0` / `pagina=abc` -> 400 VALIDATION_ERROR "página
 // inválida".

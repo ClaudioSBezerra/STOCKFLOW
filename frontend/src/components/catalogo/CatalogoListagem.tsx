@@ -8,8 +8,10 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { apiUrl, authHeaders } from '@/lib/api';
 import {
+  formatarEmbalagemUnidade,
   formatarQuantidade,
   IndicadorDisponibilidade,
+  MULTIPLOS,
   resumirDimensoes,
   type Dimensoes,
 } from './formatacao';
@@ -89,6 +91,8 @@ interface CatalogoItem {
   dimensoes: Dimensoes;
   quantidadeTotal: number;
   disponivel: boolean;
+  unidadeMedida: string | null;
+  embalagem: string | null;
 }
 
 interface EstoqueQuantidade {
@@ -104,6 +108,11 @@ interface CatalogoGrupo {
   quantidadeTotal: number;
   disponivel: boolean;
   porEstoque: EstoqueQuantidade[];
+  codigo: string | null;
+  categoria: CategoriaCatalogo | null;
+  embalagem: string | null;
+  unidadeMedida: string | null;
+  multiplos: { codigo: boolean; categoria: boolean; embalagemUnidade: boolean };
 }
 
 interface Paginacao {
@@ -116,6 +125,9 @@ interface Paginacao {
 type Modo = 'grade' | 'tabela';
 
 const MEDIA_QUERY = '(min-width: 768px)';
+
+// COLUNAS_TABELA: nº de colunas do <thead> da tabela agrupada (expansão usa colSpan).
+const COLUNAS_TABELA = 8;
 
 const MENSAGEM_ERRO = 'Não foi possível carregar o catálogo. Tente novamente em instantes.';
 const MENSAGEM_VAZIO = 'Nenhum produto no catálogo.';
@@ -515,11 +527,17 @@ export function CatalogoListagem({ termo = '', podeExportar = false }: CatalogoL
                 to={`/produtos/${item.id}`}
                 className="min-h-touch-target-min flex flex-col gap-2 rounded-md border border-border p-3"
               >
+                {item.codigo && (
+                  <span className="text-label text-muted-foreground font-mono">{item.codigo}</span>
+                )}
                 <span className="text-body font-medium">{item.nome}</span>
+                <span className="text-label text-muted-foreground">{item.categoria.nome}</span>
+                <span className="text-label">
+                  <span className="text-muted-foreground">Estoque total </span>
+                  <span className="tabular-nums">{formatarQuantidade(item.quantidadeTotal)}</span>
+                </span>
                 <span className="text-label text-muted-foreground">
-                  {item.codigo && <span className="font-mono">{item.codigo}</span>}
-                  {item.codigo && ' — '}
-                  {item.categoria.nome}
+                  {formatarEmbalagemUnidade(item.embalagem, item.unidadeMedida)}
                 </span>
                 <IndicadorDisponibilidade disponivel={item.disponivel} />
               </Link>
@@ -537,10 +555,19 @@ export function CatalogoListagem({ termo = '', podeExportar = false }: CatalogoL
                   <span className="sr-only">Expandir</span>
                 </th>
                 <th className="py-2 pr-4 text-left font-medium" scope="col">
+                  Código
+                </th>
+                <th className="py-2 pr-4 text-left font-medium" scope="col">
                   Produto
                 </th>
                 <th className="py-2 pr-4 text-left font-medium" scope="col">
+                  Categoria
+                </th>
+                <th className="py-2 pr-4 text-left font-medium" scope="col">
                   Dimensões
+                </th>
+                <th className="py-2 pr-4 text-left font-medium" scope="col">
+                  Embalagem/Unidade
                 </th>
                 <th className="py-2 pr-4 text-right font-medium" scope="col">
                   Quantidade
@@ -622,8 +649,19 @@ function FragmentLinhaGrupo({
             </span>
           </button>
         </td>
+        <td className={`py-2 pr-4 text-label ${grupo.codigo ? 'font-mono' : ''}`}>
+          {grupo.multiplos.codigo ? MULTIPLOS : (grupo.codigo || '—')}
+        </td>
         <td className="py-2 pr-4 font-medium">{grupo.nome}</td>
+        <td className="py-2 pr-4">
+          {grupo.multiplos.categoria ? MULTIPLOS : (grupo.categoria?.nome || '—')}
+        </td>
         <td className="py-2 pr-4 text-muted-foreground">{resumirDimensoes(grupo.dimensoes)}</td>
+        <td className="py-2 pr-4 text-muted-foreground">
+          {grupo.multiplos.embalagemUnidade
+            ? MULTIPLOS
+            : formatarEmbalagemUnidade(grupo.embalagem, grupo.unidadeMedida)}
+        </td>
         <td className="py-2 pr-4 text-right tabular-nums">
           {formatarQuantidade(grupo.quantidadeTotal)}
         </td>
@@ -633,7 +671,7 @@ function FragmentLinhaGrupo({
       </tr>
       {expandido && (
         <tr className="border-t border-border/50 bg-muted/40">
-          <td colSpan={5} className="py-2 pr-4 pl-10">
+          <td colSpan={COLUNAS_TABELA} className="py-2 pr-4 pl-10">
             {grupo.porEstoque.length === 0 ? (
               <span className="text-label text-muted-foreground">
                 {MENSAGEM_SEM_ESTOQUE_REGISTRADO}

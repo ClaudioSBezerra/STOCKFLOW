@@ -54,6 +54,10 @@ type CatalogoItem struct {
 	Dimensoes       DimensoesProduto `json:"dimensoes"`
 	QuantidadeTotal float64          `json:"quantidadeTotal"`
 	Disponivel      bool             `json:"disponivel"`
+	// UnidadeMedida/Embalagem (Story 10.4, spec-10-4): `NULL` -> `null`,
+	// mesmo padrão de Codigo.
+	UnidadeMedida *string `json:"unidadeMedida"`
+	Embalagem     *string `json:"embalagem"`
 }
 
 // EstoqueQuantidade é a discriminação da quantidade de um grupo por Estoque
@@ -75,6 +79,23 @@ type CatalogoGrupo struct {
 	QuantidadeTotal float64             `json:"quantidadeTotal"`
 	Disponivel      bool                `json:"disponivel"`
 	PorEstoque      []EstoqueQuantidade `json:"porEstoque"`
+	// Codigo/Categoria/Embalagem/UnidadeMedida (Story 10.4, spec-10-4): valor
+	// comum dos Produtos do grupo; `nil` quando divergem (flag correspondente
+	// em Multiplos = true) ou quando o valor comum é ausente.
+	Codigo        *string        `json:"codigo"`
+	Categoria     *Categoria     `json:"categoria"`
+	Embalagem     *string        `json:"embalagem"`
+	UnidadeMedida *string        `json:"unidadeMedida"`
+	Multiplos     MultiplosGrupo `json:"multiplos"`
+}
+
+// MultiplosGrupo sinaliza, por coluna, que os Produtos do grupo divergem
+// (a listagem mostra "Múltiplos"). `EmbalagemUnidade` compara o PAR
+// (embalagem, unidade_medida).
+type MultiplosGrupo struct {
+	Codigo           bool `json:"codigo"`
+	Categoria        bool `json:"categoria"`
+	EmbalagemUnidade bool `json:"embalagemUnidade"`
 }
 
 // Paginacao é o bloco de paginação numérica devolvido pelos dois modos do
@@ -240,7 +261,8 @@ const catalogoGradeQueryBase = `
 		p.diametro_valor, p.diametro_unidade,
 		p.altura_valor, p.altura_unidade,
 		p.espessura_valor, p.espessura_unidade,
-		COALESCE(pe.total, 0) AS quantidade_total
+		COALESCE(pe.total, 0) AS quantidade_total,
+		p.unidade_medida, p.embalagem
 	FROM produtos p
 	JOIN categorias c ON c.id = p.categoria_id
 	LEFT JOIN (
@@ -289,6 +311,7 @@ func ListarCatalogoGrade(db *sql.DB, pagina int, filtros FiltrosCatalogo) ([]Cat
 		var (
 			it                         CatalogoItem
 			codigo                     sql.NullString
+			unidadeMedida, embalagem   sql.NullString
 			comp, larg, diam, alt, esp parDimensao
 			quantidade                 float64
 		)
@@ -301,13 +324,13 @@ func ListarCatalogoGrade(db *sql.DB, pagina int, filtros FiltrosCatalogo) ([]Cat
 			&alt.valor, &alt.unidade,
 			&esp.valor, &esp.unidade,
 			&quantidade,
+			&unidadeMedida, &embalagem,
 		); err != nil {
 			return nil, Paginacao{}, fmt.Errorf("falha ao ler linha da grade do catálogo: %w", err)
 		}
-		if codigo.Valid {
-			c := codigo.String
-			it.Codigo = &c
-		}
+		it.Codigo = ptrString(codigo)
+		it.UnidadeMedida = ptrString(unidadeMedida)
+		it.Embalagem = ptrString(embalagem)
 		it.Dimensoes = DimensoesProduto{
 			Comprimento: comp.paraDimensao(),
 			Largura:     larg.paraDimensao(),
@@ -383,7 +406,11 @@ const catalogoGrupoQueryBase = `
 		p.altura_valor, p.altura_unidade,
 		p.espessura_valor, p.espessura_unidade,
 		COALESCE(SUM(pe.quantidade), 0) AS quantidade_total,
-		array_agg(DISTINCT p.id::text) AS produto_ids
+		array_agg(DISTINCT p.id::text) AS produto_ids,
+		count(DISTINCT coalesce(p.codigo, '')), min(p.codigo),
+		count(DISTINCT c.id), min(c.id::text), min(c.codigo), min(c.nome),
+		count(DISTINCT coalesce(p.embalagem, '') || chr(31) || coalesce(p.unidade_medida::text, '')),
+		min(p.embalagem), min(p.unidade_medida::text)
 	FROM produtos p
 	JOIN categorias c ON c.id = p.categoria_id
 	LEFT JOIN produto_estoque pe ON pe.produto_id = p.id`
@@ -417,6 +444,56 @@ const catalogoPorEstoqueQuery = `
 	FROM produto_estoque pe
 	JOIN estoques e ON e.id = pe.estoque_id
 	WHERE pe.produto_id = ANY($1) AND e.empresa_id = $2`
+
+// ptrString converte sql.NullString em *string (`NULL` -> nil).
+func ptrString(v sql.NullString) *string {
+	if !v.Valid {
+		return nil
+	}
+	s := v.String
+	return &s
+}
+
+// agregadosGrupo são os agregados de catalogoGrupoQueryBase que alimentam as
+// colunas Código/Categoria/Embalagem+Unidade do grupo (Story 10.4). `n*` é o
+// `count(DISTINCT ...)` (NULL conta como um valor); o `min(...)` só é o
+// "valor comum" quando `n* == 1` — nos demais casos é descartado.
+type agregadosGrupo struct {
+	nCodigo           int
+	codigo            sql.NullString
+	nCategoria        int
+	categoriaID       sql.NullString
+	categoriaCodigo   sql.NullString
+	categoriaNome     sql.NullString
+	nEmbalagemUnidade int
+	embalagem         sql.NullString
+	unidadeMedida     sql.NullString
+}
+
+// aplicar preenche os campos comuns e as flags Multiplos de `g`: n == 1 ->
+// valor comum (pode ser nil); n > 1 -> nil + flag true.
+func (a agregadosGrupo) aplicar(g *CatalogoGrupo) {
+	if a.nCodigo > 1 {
+		g.Multiplos.Codigo = true
+	} else {
+		g.Codigo = ptrString(a.codigo)
+	}
+	if a.nCategoria > 1 {
+		g.Multiplos.Categoria = true
+	} else if a.categoriaID.Valid {
+		g.Categoria = &Categoria{
+			ID:     a.categoriaID.String,
+			Codigo: a.categoriaCodigo.String,
+			Nome:   a.categoriaNome.String,
+		}
+	}
+	if a.nEmbalagemUnidade > 1 {
+		g.Multiplos.EmbalagemUnidade = true
+	} else {
+		g.Embalagem = ptrString(a.embalagem)
+		g.UnidadeMedida = ptrString(a.unidadeMedida)
+	}
+}
 
 // ListarCatalogoAgrupado devolve a página `pagina` da tabela agrupada do
 // Catálogo e o bloco de paginação (contagem sobre GRUPOS, já com os
@@ -464,6 +541,7 @@ func ListarCatalogoAgrupado(db *sql.DB, pagina int, filtros FiltrosCatalogo) ([]
 			comp, larg, diam, alt, esp parDimensao
 			quantidade                 float64
 			ids                        []string
+			agg                        agregadosGrupo
 		)
 		if err := rows.Scan(
 			&g.Chave, &g.Nome,
@@ -474,6 +552,9 @@ func ListarCatalogoAgrupado(db *sql.DB, pagina int, filtros FiltrosCatalogo) ([]
 			&esp.valor, &esp.unidade,
 			&quantidade,
 			pq.Array(&ids),
+			&agg.nCodigo, &agg.codigo,
+			&agg.nCategoria, &agg.categoriaID, &agg.categoriaCodigo, &agg.categoriaNome,
+			&agg.nEmbalagemUnidade, &agg.embalagem, &agg.unidadeMedida,
 		); err != nil {
 			return nil, Paginacao{}, fmt.Errorf("falha ao ler linha da tabela agrupada do catálogo: %w", err)
 		}
@@ -487,6 +568,7 @@ func ListarCatalogoAgrupado(db *sql.DB, pagina int, filtros FiltrosCatalogo) ([]
 		g.QuantidadeTotal = quantidade
 		g.Disponivel = quantidade > 0
 		g.PorEstoque = make([]EstoqueQuantidade, 0)
+		agg.aplicar(&g)
 
 		idx := len(grupos)
 		grupos = append(grupos, g)
@@ -540,6 +622,7 @@ func ListarTodosGruposCatalogo(db *sql.DB, filtros FiltrosCatalogo) ([]CatalogoG
 			comp, larg, diam, alt, esp parDimensao
 			quantidade                 float64
 			ids                        []string
+			agg                        agregadosGrupo
 		)
 		if err := rows.Scan(
 			&g.Chave, &g.Nome,
@@ -550,6 +633,9 @@ func ListarTodosGruposCatalogo(db *sql.DB, filtros FiltrosCatalogo) ([]CatalogoG
 			&esp.valor, &esp.unidade,
 			&quantidade,
 			pq.Array(&ids),
+			&agg.nCodigo, &agg.codigo,
+			&agg.nCategoria, &agg.categoriaID, &agg.categoriaCodigo, &agg.categoriaNome,
+			&agg.nEmbalagemUnidade, &agg.embalagem, &agg.unidadeMedida,
 		); err != nil {
 			return nil, fmt.Errorf("falha ao ler linha de todos os grupos do catálogo: %w", err)
 		}
@@ -563,6 +649,7 @@ func ListarTodosGruposCatalogo(db *sql.DB, filtros FiltrosCatalogo) ([]CatalogoG
 		g.QuantidadeTotal = quantidade
 		g.Disponivel = quantidade > 0
 		g.PorEstoque = make([]EstoqueQuantidade, 0)
+		agg.aplicar(&g)
 
 		idx := len(grupos)
 		grupos = append(grupos, g)

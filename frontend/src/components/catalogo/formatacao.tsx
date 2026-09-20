@@ -50,6 +50,23 @@ export function formatarQuantidade(valor: number): string {
   return valor.toLocaleString('pt-BR');
 }
 
+// Texto exibido na coluna de um grupo (tabela agrupada) cujos Produtos
+// divergem em código, categoria ou embalagem+unidade (Story 10.4).
+export const MULTIPLOS = 'Múltiplos';
+
+// formatarEmbalagemUnidade monta o texto de embalagem+unidade da listagem
+// (Story 10.4): ambos -> "Caixa c/ 12 · un"; só unidade -> "— · un"; só
+// embalagem -> só a embalagem; nenhum -> "—". Ausência nunca quebra o layout.
+export function formatarEmbalagemUnidade(
+  embalagem: string | null | undefined,
+  unidade: string | null | undefined,
+): string {
+  if (embalagem && unidade) return `${embalagem} · ${unidade}`;
+  if (unidade) return `— · ${unidade}`;
+  if (embalagem) return embalagem;
+  return '—';
+}
+
 export function IndicadorDisponibilidade({ disponivel }: { disponivel: boolean }) {
   const Icone = disponivel ? PackageCheck : PackageX;
   return (
