@@ -217,6 +217,73 @@ func TestCriarProdutoHandler_201SemDimensoes(t *testing.T) {
 	}
 }
 
+// TestCriarProdutoHandler_201IgnoraCodigoNoPayload prova a linha "Cliente
+// envia `codigo` no payload de POST /api/produtos" da I/O Matrix da
+// spec-10-2: um `"codigo"` arbitrário no corpo é simplesmente ignorado (o
+// campo não existe mais em `criarProdutoRequest`) — o código gravado/
+// devolvido é sempre o gerado pelo servidor, nunca o valor enviado.
+func TestCriarProdutoHandler_201IgnoraCodigoNoPayload(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	criarContaComPapel(t, db, "Almox Codigo Payload", "prod-codigo-payload-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "prod-codigo-payload-almox@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Codigo Payload")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+
+	var numeroAntes int
+	if err := db.QueryRow(
+		`SELECT ultimo_numero FROM contadores_produto WHERE empresa_id = $1`, empresaTeste,
+	).Scan(&numeroAntes); err != nil {
+		t.Fatalf("falha ao ler contador antes da chamada: %v", err)
+	}
+	codigoEsperado := fmt.Sprintf("%06d", numeroAntes+1)
+
+	const codigoArbitrario = "ALGUM-VALOR-ARBITRARIO"
+	corpo := `{
+		"nome": "Produto Com Codigo No Payload",
+		"codigo": "` + codigoArbitrario + `",
+		"categoria_id": "` + categoriaID + `",
+		"estoque_id": "` + estoque.ID + `",
+		"template_id": "` + templateIDPorSubtipoHandler(t, db, "Genérico") + `",
+		"quantidade_inicial": 1
+	}`
+	w := postProdutos(db, "Bearer "+token, corpo)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	var resp struct {
+		Produto struct {
+			ID     string `json:"id"`
+			Codigo string `json:"codigo"`
+		} `json:"produto"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if resp.Produto.Codigo == codigoArbitrario {
+		t.Fatalf("codigo devolvido = %q, o valor do payload NUNCA deveria ser aceito", resp.Produto.Codigo)
+	}
+	if resp.Produto.Codigo != codigoEsperado {
+		t.Errorf("codigo devolvido = %q, want %q (gerado pelo servidor)", resp.Produto.Codigo, codigoEsperado)
+	}
+
+	var codigoGravado string
+	if err := db.QueryRow(`SELECT codigo FROM produtos WHERE id = $1`, resp.Produto.ID).Scan(&codigoGravado); err != nil {
+		t.Fatalf("falha ao ler produto gravado: %v", err)
+	}
+	if codigoGravado == codigoArbitrario {
+		t.Fatalf("codigo gravado = %q, o valor do payload NUNCA deveria ter sido persistido", codigoGravado)
+	}
+	if codigoGravado != codigoEsperado {
+		t.Errorf("codigo gravado = %q, want %q (gerado pelo servidor)", codigoGravado, codigoEsperado)
+	}
+}
+
 // TestCriarProdutoHandler_400DimensaoIncompleta prova a AC2 na fronteira:
 // dimensão só com `valor` (sem `unidade`) -> 400 VALIDATION_ERROR citando o
 // campo específico na mensagem.
@@ -835,7 +902,6 @@ func TestBuscarProdutosHandler_200ComResultados(t *testing.T) {
 	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
 		TemplateID:        templateIDPorSubtipoHandler(t, db, "Genérico"),
 		Nome:              "Parafuso Sextavado M8",
-		Codigo:            "PAR-BUSCA-1",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
 		QuantidadeInicial: 1,
@@ -869,8 +935,8 @@ func TestBuscarProdutosHandler_200ComResultados(t *testing.T) {
 	if resp.Produtos[0].ID != produto.ID {
 		t.Errorf("ID = %q, want %q", resp.Produtos[0].ID, produto.ID)
 	}
-	if resp.Produtos[0].Codigo == nil || *resp.Produtos[0].Codigo != "PAR-BUSCA-1" {
-		t.Errorf("Codigo = %v, want PAR-BUSCA-1", resp.Produtos[0].Codigo)
+	if resp.Produtos[0].Codigo == nil || *resp.Produtos[0].Codigo != produto.Codigo {
+		t.Errorf("Codigo = %v, want %q", resp.Produtos[0].Codigo, produto.Codigo)
 	}
 	if resp.Produtos[0].Categoria.ID != categoriaID {
 		t.Errorf("Categoria.ID = %q, want %q", resp.Produtos[0].Categoria.ID, categoriaID)
@@ -1882,7 +1948,6 @@ func TestBuscarProdutoPorCodigoHandler_200ComProduto(t *testing.T) {
 	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
 		TemplateID:        templateIDPorSubtipoHandler(t, db, "Genérico"),
 		Nome:              "Cabo Flexível 4mm",
-		Codigo:            "CAB-004",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
 		QuantidadeInicial: 1,
@@ -1891,7 +1956,7 @@ func TestBuscarProdutoPorCodigoHandler_200ComProduto(t *testing.T) {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
 
-	w := getProdutoPorCodigo(db, "Bearer "+token, "CAB-004")
+	w := getProdutoPorCodigo(db, "Bearer "+token, produto.Codigo)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
 	}
@@ -1913,8 +1978,8 @@ func TestBuscarProdutoPorCodigoHandler_200ComProduto(t *testing.T) {
 	if resp.Produto.ID != produto.ID || resp.Produto.Nome != "Cabo Flexível 4mm" {
 		t.Fatalf("produto = %+v", resp.Produto)
 	}
-	if resp.Produto.Codigo == nil || *resp.Produto.Codigo != "CAB-004" {
-		t.Errorf("Codigo = %v, want CAB-004", resp.Produto.Codigo)
+	if resp.Produto.Codigo == nil || *resp.Produto.Codigo != produto.Codigo {
+		t.Errorf("Codigo = %v, want %q", resp.Produto.Codigo, produto.Codigo)
 	}
 	if resp.Produto.Categoria.ID != categoriaID {
 		t.Errorf("Categoria.ID = %q, want %q", resp.Produto.Categoria.ID, categoriaID)
@@ -2004,14 +2069,15 @@ func TestBuscarProdutoPorCodigoHandler_200ParaUsuario(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	if _, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
+	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
 		TemplateID: templateIDPorSubtipoHandler(t, db, "Genérico"),
-		Nome:       "Produto Papel Usuario", Codigo: "PU-001", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
-	}); err != nil {
+		Nome:       "Produto Papel Usuario", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+	})
+	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
 
-	w := getProdutoPorCodigo(db, "Bearer "+token, "PU-001")
+	w := getProdutoPorCodigo(db, "Bearer "+token, produto.Codigo)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d (body=%s) — rota não deveria exigir RequireRole", w.Code, http.StatusOK, w.Body.String())
 	}

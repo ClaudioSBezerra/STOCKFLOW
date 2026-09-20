@@ -76,7 +76,6 @@ func (d *dimensaoRequest) paraInput() *services.DimensaoInput {
 // formato acontece aqui, só decodificação.
 type criarProdutoRequest struct {
 	Nome              string          `json:"nome"`
-	Codigo            string          `json:"codigo"`
 	Observacoes       string          `json:"observacoes"`
 	CategoriaID       string          `json:"categoria_id"`
 	EstoqueID         string          `json:"estoque_id"`
@@ -90,8 +89,11 @@ type criarProdutoRequest struct {
 }
 
 // CriarProdutoHandler expõe POST /api/produtos: cadastra um novo Produto e a
-// linha inicial de `produto_estoque`. `201 {"produto":{"id","nome"}}` no
-// sucesso; `400 VALIDATION_ERROR` com a mensagem específica de campo devolvida
+// linha inicial de `produto_estoque`. `201 {"produto":{"id","nome","codigo"}}`
+// no sucesso — `codigo` é o código sequencial gerado pelo servidor (Story
+// 10.2, spec-10-2, FR-45); um eventual `"codigo"` no payload de entrada é
+// simplesmente ignorado (o campo não existe mais em `criarProdutoRequest`).
+// `400 VALIDATION_ERROR` com a mensagem específica de campo devolvida
 // por services.ErroProdutoValidacao (nome ausente, dimensão incompleta,
 // quantidade negativa, categoria/estoque inexistente).
 //
@@ -121,7 +123,6 @@ func CriarProdutoHandler(db *sql.DB, registro *realtime.Registry) http.HandlerFu
 
 		input := services.CriarProdutoInput{
 			Nome:              req.Nome,
-			Codigo:            req.Codigo,
 			Observacoes:       req.Observacoes,
 			CategoriaID:       req.CategoriaID,
 			EstoqueID:         req.EstoqueID,

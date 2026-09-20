@@ -117,7 +117,7 @@ func TestGerarCatalogoXLSX_GrupoComEstoques(t *testing.T) {
 	criarProdutoCat(t, db, CriarProdutoInput{
 		Nome: "Prancha XLSX", CategoriaID: categoriaID, EstoqueID: estA.ID, QuantidadeInicial: 10,
 	})
-	p2 := criarProdutoCat(t, db, CriarProdutoInput{
+	p2, _ := criarProdutoCat(t, db, CriarProdutoInput{
 		Nome: "Prancha XLSX", CategoriaID: categoriaID, EstoqueID: estA.ID, QuantidadeInicial: 5,
 	})
 	setQuantidade(t, db, p2, estB.ID, 2)
@@ -207,7 +207,7 @@ func TestGerarCatalogoXLSX_GrupoSemEstoque(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	p := criarProdutoCat(t, db, CriarProdutoInput{
+	p, _ := criarProdutoCat(t, db, CriarProdutoInput{
 		Nome: "Sem Linha XLSX", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 0,
 	})
 	limparEstoqueDe(t, db, p)

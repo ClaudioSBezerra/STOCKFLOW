@@ -249,6 +249,10 @@ func removerEmpresaPlataformaHandlers(t *testing.T, db *sql.DB, slug string) {
 		`DELETE FROM usuarios WHERE empresa_id = $1`,
 		`DELETE FROM categorias WHERE empresa_id = $1`,
 		`DELETE FROM nomenclatura_templates WHERE empresa_id = $1`,
+		// Story 10.2 (spec-10-2): `contadores_produto` também tem FK para
+		// `empresas`, sem CASCADE — toda Empresa provisionada nasce com uma
+		// linha lá (AD-26).
+		`DELETE FROM contadores_produto WHERE empresa_id = $1`,
 		`DELETE FROM empresas WHERE id = $1`,
 	} {
 		if _, err := db.Exec(stmt, id); err != nil {

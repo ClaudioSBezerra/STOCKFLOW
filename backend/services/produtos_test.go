@@ -97,9 +97,12 @@ func ptrFloat(v float64) *float64 { return &v }
 func ptrStr(v string) *string     { return &v }
 
 // TestCriarProduto_SucessoCompleto prova a AC1: todos os campos + as 5
-// dimensões pareadas -> 201 equivalente (Produto{ID,Nome}), uma linha em
-// `produtos` com as dimensões gravadas e uma linha em `produto_estoque` com a
-// quantidade inicial exata.
+// dimensões pareadas -> 201 equivalente (Produto{ID,Nome,Codigo}), uma linha
+// em `produtos` com as dimensões gravadas e uma linha em `produto_estoque`
+// com a quantidade inicial exata. `codigo` (Story 10.2, spec-10-2) não é mais
+// entrada — é o próximo número sequencial da Empresa, lido de
+// `contadores_produto` ANTES da chamada (nunca um valor fixo, já que
+// `empresaTeste` é compartilhada por toda a suíte).
 func TestCriarProduto_SucessoCompleto(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
@@ -110,9 +113,16 @@ func TestCriarProduto_SucessoCompleto(t *testing.T) {
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 
+	var numeroAntes int
+	if err := db.QueryRow(
+		`SELECT ultimo_numero FROM contadores_produto WHERE empresa_id = $1`, empresaTeste,
+	).Scan(&numeroAntes); err != nil {
+		t.Fatalf("falha ao ler contador antes da chamada: %v", err)
+	}
+	codigoEsperado := fmt.Sprintf("%06d", numeroAntes+1)
+
 	input := CriarProdutoInput{
 		Nome:              "  Tubo PVC 100mm  ",
-		Codigo:            "  SKU-1  ",
 		Observacoes:       "  observação de teste  ",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -135,6 +145,9 @@ func TestCriarProduto_SucessoCompleto(t *testing.T) {
 	if p.Nome != "Tubo PVC 100mm" {
 		t.Errorf("Nome = %q, want %q (trim das pontas)", p.Nome, "Tubo PVC 100mm")
 	}
+	if p.Codigo != codigoEsperado {
+		t.Errorf("Codigo = %q, want %q (ultimo_numero antes + 1)", p.Codigo, codigoEsperado)
+	}
 	if n := contarProdutos(t, db); n != 1 {
 		t.Errorf("linhas em produtos = %d, want 1", n)
 	}
@@ -153,8 +166,8 @@ func TestCriarProduto_SucessoCompleto(t *testing.T) {
 	if larguraValor != 100 || larguraUnidade != "mm" {
 		t.Errorf("largura = %v %v, want 100 mm", larguraValor, larguraUnidade)
 	}
-	if codigo != "SKU-1" {
-		t.Errorf("codigo = %q, want %q", codigo, "SKU-1")
+	if codigo != codigoEsperado {
+		t.Errorf("codigo gravado = %q, want %q", codigo, codigoEsperado)
 	}
 	if observacoes != "observação de teste" {
 		t.Errorf("observacoes = %q, want %q", observacoes, "observação de teste")
@@ -498,98 +511,198 @@ func TestCriarProduto_QuantidadeInicialAcimaDoLimite(t *testing.T) {
 	}
 }
 
-// TestCriarProduto_CodigoAcimaDe255Caracteres prova a validação de `codigo`
-// (também `VARCHAR(255)`, como `nome`, mas sem cobertura própria até este
-// teste): acima de 255 runes -> ErroProdutoValidacao, nada gravado — sem esta
-// validação, o INSERT falharia com "value too long for type character
-// varying(255)" (não mapeado), caindo no 500 genérico em vez de 400.
-func TestCriarProduto_CodigoAcimaDe255Caracteres(t *testing.T) {
-	db := testDB(t)
-	limparProdutos(t, db)
-
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Codigo Longo")
-	if err != nil {
-		t.Fatalf("seed CriarEstoque: %v", err)
+// removerEmpresaComProdutos apaga a Empresa `slug` e TODAS as linhas que
+// existem por causa dela, incluindo Produto/Estoque — `removerEmpresaDeTeste`
+// não serve aqui (mesma armadilha documentada em
+// migracao_multi_empresa_test.go: essas Empresas têm Produto/Estoque, não só
+// as cópias das listas padrão de Categoria/Nomenclatura). Usado pelos testes
+// de código sequencial (Story 10.2, spec-10-2) que precisam de uma Empresa
+// SEM nenhum Produto prévio, para que o primeiro código gerado seja
+// garantidamente "000001".
+func removerEmpresaComProdutos(t *testing.T, db *sql.DB, slug string) {
+	t.Helper()
+	var id string
+	if err := db.QueryRow(`SELECT id FROM empresas WHERE slug = $1`, slug).Scan(&id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return
+		}
+		t.Fatalf("removerEmpresaComProdutos(%s): %v", slug, err)
 	}
-	categoriaID := categoriaIDPorCodigo(t, db, "05.002")
-
-	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
-		Nome:              "Produto Codigo Longo",
-		Codigo:            strings.Repeat("x", 256),
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
-		QuantidadeInicial: 1,
-	})
-	var erroValidacao *ErroProdutoValidacao
-	if !errors.As(err, &erroValidacao) {
-		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
-	}
-	if !strings.Contains(erroValidacao.Mensagem, "código") {
-		t.Errorf("mensagem = %q, want citar %q", erroValidacao.Mensagem, "código")
-	}
-	if n := contarProdutos(t, db); n != 0 {
-		t.Errorf("linhas em produtos = %d, want 0", n)
-	}
-
-	// 255 runes exatos é válido.
-	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
-		Nome:              "Produto Codigo No Limite",
-		Codigo:            strings.Repeat("y", 255),
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
-		QuantidadeInicial: 1,
-	})
-	if err != nil {
-		t.Fatalf("código de 255 runes deveria ser válido, got %v", err)
+	for _, stmt := range []string{
+		`DELETE FROM produto_estoque WHERE produto_id IN (SELECT id FROM produtos WHERE empresa_id = $1)`,
+		`DELETE FROM produtos WHERE empresa_id = $1`,
+		`DELETE FROM estoques WHERE empresa_id = $1`,
+		`DELETE FROM convites_empresa WHERE empresa_id = $1`,
+		`DELETE FROM categorias WHERE empresa_id = $1`,
+		`DELETE FROM nomenclatura_templates WHERE empresa_id = $1`,
+		`DELETE FROM contadores_produto WHERE empresa_id = $1`,
+		`DELETE FROM empresas WHERE id = $1`,
+	} {
+		if _, err := db.Exec(stmt, id); err != nil {
+			t.Fatalf("removerEmpresaComProdutos(%s) [%s]: %v", slug, stmt, err)
+		}
 	}
 }
 
-// TestCriarProduto_CodigoJaCadastrado prova a Story 3.4 (spec-3-4): o índice
-// único parcial `idx_produtos_codigo` (migration 000017) barra um segundo
-// Produto com o mesmo `código` não-nulo — CriarProduto mapeia a violação de
-// unicidade (SQLSTATE 23505) para ErroProdutoValidacao "código já
-// cadastrado", nunca um 500 genérico; nenhum Produto novo é gravado.
-func TestCriarProduto_CodigoJaCadastrado(t *testing.T) {
+// TestCriarProduto_CodigoSequencialPorEmpresa prova as AC1/AC2 da spec-10-2
+// (Story 10.2, FR-45): duas chamadas seguidas de CriarProduto na MESMA
+// Empresa recebem códigos consecutivos, nunca repetidos. Usa uma Empresa
+// própria (criarEmpresaDeTeste), não `empresaTeste` (compartilhada por toda a
+// suíte) — só assim o primeiro código é garantidamente "000001".
+func TestCriarProduto_CodigoSequencialPorEmpresa(t *testing.T) {
 	db := testDB(t)
-	limparProdutos(t, db)
+	removerEmpresaComProdutos(t, db, "codigo-sequencial")
+	empresa := criarEmpresaDeTeste(t, db, "codigo-sequencial", "998887770001", "Codigo Sequencial")
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Codigo Duplicado")
+	estoque, err := CriarEstoque(db, empresa.ID, "Canteiro Codigo Sequencial")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+	var categoriaID string
+	if err := db.QueryRow(
+		`SELECT id FROM categorias WHERE codigo = $1 AND empresa_id = $2`, "04.001", empresa.ID,
+	).Scan(&categoriaID); err != nil {
+		t.Fatalf("categoria da empresa: %v", err)
+	}
+	templateID := templateGenericoID(t, db, empresa.ID)
 
-	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
-		Nome:              "Produto Codigo Original",
-		Codigo:            "SKU-DUP-MANUAL",
+	p1, err := CriarProduto(db, empresa.ID, CriarProdutoInput{
+		Nome:              "Primeiro Produto Sequencial",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
+		TemplateID:        templateID,
 		QuantidadeInicial: 1,
 	})
 	if err != nil {
-		t.Fatalf("seed CriarProduto (primeiro): %v", err)
+		t.Fatalf("CriarProduto (primeiro): %v", err)
+	}
+	if p1.Codigo != "000001" {
+		t.Errorf("primeiro código = %q, want %q", p1.Codigo, "000001")
 	}
 
-	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
-		Nome:              "Produto Codigo Repetido",
-		Codigo:            "SKU-DUP-MANUAL",
+	p2, err := CriarProduto(db, empresa.ID, CriarProdutoInput{
+		Nome:              "Segundo Produto Sequencial",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
+		TemplateID:        templateID,
 		QuantidadeInicial: 1,
 	})
+	if err != nil {
+		t.Fatalf("CriarProduto (segundo): %v", err)
+	}
+	if p2.Codigo != "000002" {
+		t.Errorf("segundo código = %q, want %q", p2.Codigo, "000002")
+	}
+}
+
+// TestCriarProduto_CodigoIndependentePorEmpresa prova a AC3 da spec-10-2: duas
+// Empresas distintas, cada uma cadastrando seu primeiro Produto, recebem
+// AMBAS "000001" — a sequência nunca é compartilhada entre Empresas.
+func TestCriarProduto_CodigoIndependentePorEmpresa(t *testing.T) {
+	db := testDB(t)
+	removerEmpresaComProdutos(t, db, "codigo-independente-a")
+	removerEmpresaComProdutos(t, db, "codigo-independente-b")
+	empresaA := criarEmpresaDeTeste(t, db, "codigo-independente-a", "998887770002", "Codigo Independente A")
+	empresaB := criarEmpresaDeTeste(t, db, "codigo-independente-b", "998887770003", "Codigo Independente B")
+
+	var categoriaA string
+	if err := db.QueryRow(
+		`SELECT id FROM categorias WHERE codigo = $1 AND empresa_id = $2`, "04.001", empresaA.ID,
+	).Scan(&categoriaA); err != nil {
+		t.Fatalf("categoria da empresa A: %v", err)
+	}
+	var categoriaB string
+	if err := db.QueryRow(
+		`SELECT id FROM categorias WHERE codigo = $1 AND empresa_id = $2`, "04.001", empresaB.ID,
+	).Scan(&categoriaB); err != nil {
+		t.Fatalf("categoria da empresa B: %v", err)
+	}
+
+	estoqueA, err := CriarEstoque(db, empresaA.ID, "Canteiro Independente A")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque A: %v", err)
+	}
+	estoqueB, err := CriarEstoque(db, empresaB.ID, "Canteiro Independente B")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque B: %v", err)
+	}
+
+	pA, err := CriarProduto(db, empresaA.ID, CriarProdutoInput{
+		Nome:              "Produto Empresa A",
+		CategoriaID:       categoriaA,
+		EstoqueID:         estoqueA.ID,
+		TemplateID:        templateGenericoID(t, db, empresaA.ID),
+		QuantidadeInicial: 1,
+	})
+	if err != nil {
+		t.Fatalf("CriarProduto empresa A: %v", err)
+	}
+	pB, err := CriarProduto(db, empresaB.ID, CriarProdutoInput{
+		Nome:              "Produto Empresa B",
+		CategoriaID:       categoriaB,
+		EstoqueID:         estoqueB.ID,
+		TemplateID:        templateGenericoID(t, db, empresaB.ID),
+		QuantidadeInicial: 1,
+	})
+	if err != nil {
+		t.Fatalf("CriarProduto empresa B: %v", err)
+	}
+
+	if pA.Codigo != "000001" {
+		t.Errorf("código empresa A = %q, want %q", pA.Codigo, "000001")
+	}
+	if pB.Codigo != "000001" {
+		t.Errorf("código empresa B = %q, want %q", pB.Codigo, "000001")
+	}
+}
+
+// TestCriarProduto_ContadorAusente prova a linha "Contador ausente para a
+// Empresa" da I/O Matrix da spec-10-2 (estado impossível em produção — toda
+// Empresa nasce com sua linha via ProvisionarEmpresa — mas defensivo aqui):
+// sem a linha em `contadores_produto`, proximoCodigoProduto devolve erro
+// interno (`fmt.Errorf`, NUNCA `*ErroProdutoValidacao` — não é input de
+// cliente inválido) e nenhuma linha é gravada em `produtos`.
+func TestCriarProduto_ContadorAusente(t *testing.T) {
+	db := testDB(t)
+	removerEmpresaComProdutos(t, db, "codigo-contador-ausente")
+	empresa := criarEmpresaDeTeste(t, db, "codigo-contador-ausente", "998887770004", "Codigo Contador Ausente")
+
+	if _, err := db.Exec(`DELETE FROM contadores_produto WHERE empresa_id = $1`, empresa.ID); err != nil {
+		t.Fatalf("apagar contador da empresa: %v", err)
+	}
+
+	estoque, err := CriarEstoque(db, empresa.ID, "Canteiro Contador Ausente")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	var categoriaID string
+	if err := db.QueryRow(
+		`SELECT id FROM categorias WHERE codigo = $1 AND empresa_id = $2`, "04.001", empresa.ID,
+	).Scan(&categoriaID); err != nil {
+		t.Fatalf("categoria da empresa: %v", err)
+	}
+
+	_, err = CriarProduto(db, empresa.ID, CriarProdutoInput{
+		Nome:              "Produto Sem Contador",
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		TemplateID:        templateGenericoID(t, db, empresa.ID),
+		QuantidadeInicial: 1,
+	})
+	if err == nil {
+		t.Fatal("CriarProduto = nil, want erro (contador ausente)")
+	}
 	var erroValidacao *ErroProdutoValidacao
-	if !errors.As(err, &erroValidacao) {
-		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
+	if errors.As(err, &erroValidacao) {
+		t.Fatalf("erro = %v (*ErroProdutoValidacao), want erro INTERNO — contador ausente não é input de cliente", err)
 	}
-	if !strings.Contains(erroValidacao.Mensagem, "código já cadastrado") {
-		t.Errorf("mensagem = %q, want citar %q", erroValidacao.Mensagem, "código já cadastrado")
+
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM produtos WHERE empresa_id = $1`, empresa.ID).Scan(&n); err != nil {
+		t.Fatalf("contar produtos da empresa: %v", err)
 	}
-	if n := contarProdutos(t, db); n != 1 {
-		t.Errorf("linhas em produtos = %d, want 1 (só o original, o segundo não foi gravado)", n)
+	if n != 0 {
+		t.Errorf("linhas em produtos para a empresa = %d, want 0 (nada deveria ter sido gravado)", n)
 	}
 }
 
@@ -1127,25 +1240,42 @@ func TestAtualizarNomeProduto_NomeInvalido(t *testing.T) {
 // criarProdutoBusca cadastra um Produto mínimo (nome/código/categoria) para
 // os testes de BuscarProdutos, reaproveitando um único Estoque para toda a
 // suíte (a busca não depende de Estoque/quantidade).
+// criarProdutoBusca semeia um Produto para os testes de BuscarProdutos com um
+// `codigo` ARBITRÁRIO (letras, `%`, `_`, ou vazio) — algo que CriarProduto não
+// aceita mais desde a Story 10.2 (spec-10-2): `codigo` passou a ser sempre
+// gerado pelo servidor, sequencial e numérico. Este helper contorna isso
+// inserindo a linha diretamente em `produtos` (fora de CriarProduto), no
+// mesmo espírito de um código legado/manual (Design Notes da spec-10-2) —
+// os testes de ranking de busca precisam de controle total sobre o valor de
+// `codigo` para provar match exato/prefixo/coringas literais, algo que o
+// código sequencial (só dígitos) nunca exercitaria.
 func criarProdutoBusca(t *testing.T, db *sql.DB, estoqueID, nome, codigo, categoriaID string) ProdutoBusca {
 	t.Helper()
-	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
-		Nome:              nome,
-		Codigo:            codigo,
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoqueID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
-		QuantidadeInicial: 1,
-	})
-	if err != nil {
-		t.Fatalf("seed CriarProduto(%q): %v", nome, err)
+	templateID := templateGenericoID(t, db, empresaTeste)
+	var codigoCol sql.NullString
+	if codigo != "" {
+		codigoCol = sql.NullString{String: codigo, Valid: true}
+	}
+	var id, nomeGravado string
+	if err := db.QueryRow(
+		`INSERT INTO produtos (nome, codigo, categoria_id, template_id, empresa_id)
+		 VALUES ($1, $2, $3, $4, $5) RETURNING id, nome`,
+		nome, codigoCol, categoriaID, templateID, empresaTeste,
+	).Scan(&id, &nomeGravado); err != nil {
+		t.Fatalf("seed direto em produtos(%q): %v", nome, err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO produto_estoque (produto_id, estoque_id, quantidade) VALUES ($1, $2, 1)`,
+		id, estoqueID,
+	); err != nil {
+		t.Fatalf("seed produto_estoque para %q: %v", nome, err)
 	}
 	var codigoPtr *string
 	if codigo != "" {
 		c := codigo
 		codigoPtr = &c
 	}
-	return ProdutoBusca{ID: p.ID, Nome: p.Nome, Codigo: codigoPtr}
+	return ProdutoBusca{ID: id, Nome: nomeGravado, Codigo: codigoPtr}
 }
 
 // TestBuscarProdutos_MatchExatoVemPrimeiro prova a linha "Match exato de

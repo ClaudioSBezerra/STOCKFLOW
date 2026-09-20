@@ -36,12 +36,13 @@ const limiteNumeric103 = 9999999.999
 // científica (`9.999999999e+06`), ilegível para quem lê o erro.
 const limiteNumeric103Texto = "9999999.999"
 
-// Produto é a projeção mínima devolvida por POST /api/produtos (Story 3.1):
-// `id` + `nome`, nada mais — a resposta de cadastro não precisa ecoar o
-// restante do payload.
+// Produto é a projeção mínima devolvida por POST /api/produtos (Story 3.1;
+// Story 10.2, spec-10-2, acrescenta `Codigo` — o código sequencial gerado
+// pelo servidor, para que o cliente saiba o valor atribuído).
 type Produto struct {
-	ID   string `json:"id"`
-	Nome string `json:"nome"`
+	ID     string `json:"id"`
+	Nome   string `json:"nome"`
+	Codigo string `json:"codigo"`
 }
 
 // Categoria é a projeção somente-leitura de uma linha de `categorias`,
@@ -76,7 +77,6 @@ type DimensaoInput struct {
 // vazio, sem checar estrutura.
 type CriarProdutoInput struct {
 	Nome              string
-	Codigo            string
 	Observacoes       string
 	CategoriaID       string
 	EstoqueID         string
@@ -174,9 +174,35 @@ func validarDimensao(campo string, d *DimensaoInput) (sql.NullFloat64, sql.NullS
 	return sql.NullFloat64{Float64: *d.Valor, Valid: true}, sql.NullString{String: *d.Unidade, Valid: true}, nil
 }
 
+// proximoCodigoProduto gera o próximo código sequencial de Produto para
+// `empresaID` (Story 10.2, spec-10-2, FR-45): incrementa atomicamente
+// `contadores_produto.ultimo_numero` via `UPDATE ... RETURNING`, DENTRO da
+// transação `tx` do chamador, e formata o resultado com zero-padding de 6
+// dígitos (ex. "000001"). Nunca faz lazy-init da linha do contador — a
+// ausência de linha (`sql.ErrNoRows`) é um estado impossível em produção
+// (toda Empresa nasce com sua linha via ProvisionarEmpresa, AD-26) e vira
+// erro interno (`fmt.Errorf`, não ErroProdutoValidacao — não é input de
+// cliente inválido).
+func proximoCodigoProduto(tx *sql.Tx, empresaID string) (string, error) {
+	var numero int
+	err := tx.QueryRow(
+		`UPDATE contadores_produto SET ultimo_numero = ultimo_numero + 1 WHERE empresa_id = $1 RETURNING ultimo_numero`,
+		empresaID,
+	).Scan(&numero)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", fmt.Errorf("contador de código de produto ausente para a empresa %s", empresaID)
+		}
+		return "", fmt.Errorf("falha ao gerar próximo código de produto: %w", err)
+	}
+	return fmt.Sprintf("%06d", numero), nil
+}
+
 // CriarProduto valida e insere um novo Produto (Story 3.1, FR-8; Story 3.2
 // acrescenta a Nomenclatura Guiada; Story 10.1 torna `nome` com mínimo de 10
-// runas e `TemplateID` sempre obrigatórios, FR8). Toda a validação acontece
+// runas e `TemplateID` sempre obrigatórios, FR8; Story 10.2, spec-10-2,
+// FR-45, tira `codigo` da entrada — o servidor gera o próximo número
+// sequencial da Empresa via proximoCodigoProduto). Toda a validação acontece
 // ANTES de qualquer escrita — nome (10..255 runas), categoria/estoque
 // (presença), quantidade inicial, as 5 dimensões pareadas e o formato do
 // nome contra o template selecionado, sempre presente (ver o bloco de
@@ -184,10 +210,11 @@ func validarDimensao(campo string, d *DimensaoInput) (sql.NullFloat64, sql.NullS
 // `[NOME LIVRE]`, AD-34) — de modo que um erro de validação NUNCA deixa um
 // Produto parcialmente gravado.
 //
-// Sucesso: uma única transação insere a linha em `produtos` (`RETURNING id,
-// nome`, incluindo `template_id` quando informado) seguida da linha em
+// Sucesso: uma única transação gera o próximo código sequencial da Empresa
+// (proximoCodigoProduto), insere a linha em `produtos` (`RETURNING id, nome,
+// codigo`, incluindo `template_id` quando informado) e a linha em
 // `produto_estoque` vinculando o Produto recém-criado ao Estoque informado
-// com a quantidade inicial, e comita as duas juntas. `categoria_id`/
+// com a quantidade inicial, e comita as três juntas. `categoria_id`/
 // `estoque_id` que não correspondem a nenhuma linha (violação de FK,
 // SQLSTATE 23503) ou que não são UUID válido (SQLSTATE 22P02, mesma
 // constante pqInvalidTextRepresentation de promocao.go) colapsam em
@@ -203,13 +230,6 @@ func CriarProduto(db *sql.DB, empresaID string, input CriarProdutoInput) (Produt
 	if n := utf8.RuneCountInString(nomeTrimado); n < 10 || n > 255 {
 		return Produto{}, &ErroProdutoValidacao{
 			Mensagem: "nome é obrigatório e deve ter entre 10 e 255 caracteres",
-		}
-	}
-
-	codigoTrimado := strings.TrimSpace(input.Codigo)
-	if codigoTrimado != "" && utf8.RuneCountInString(codigoTrimado) > 255 {
-		return Produto{}, &ErroProdutoValidacao{
-			Mensagem: "código deve ter no máximo 255 caracteres",
 		}
 	}
 
@@ -287,10 +307,6 @@ func CriarProduto(db *sql.DB, empresaID string, input CriarProdutoInput) (Produt
 		templateID = sql.NullString{String: templateIDTrimado, Valid: true}
 	}
 
-	var codigo sql.NullString
-	if codigoTrimado != "" {
-		codigo = sql.NullString{String: codigoTrimado, Valid: true}
-	}
 	var observacoes sql.NullString
 	if observacoesTrimadas := strings.TrimSpace(input.Observacoes); observacoesTrimadas != "" {
 		observacoes = sql.NullString{String: observacoesTrimadas, Valid: true}
@@ -301,6 +317,14 @@ func CriarProduto(db *sql.DB, empresaID string, input CriarProdutoInput) (Produt
 		return Produto{}, fmt.Errorf("falha ao iniciar transação: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
+
+	// Código sequencial da Empresa (Story 10.2, spec-10-2, FR-45) — gerado
+	// DENTRO da mesma transação do INSERT em `produtos`, antes dele, nunca a
+	// partir de entrada do cliente.
+	codigo, err := proximoCodigoProduto(tx, empresaID)
+	if err != nil {
+		return Produto{}, err
+	}
 
 	// A Categoria informada precisa pertencer À MESMA Empresa (Story 9.1,
 	// AD-20): em vez de um SELECT-antes-de-INSERT (que teria janela de
@@ -321,7 +345,7 @@ func CriarProduto(db *sql.DB, empresaID string, input CriarProdutoInput) (Produt
 		SELECT $1, $2, c.id, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
 		FROM categorias c
 		WHERE c.id = $3 AND c.empresa_id = $16
-		RETURNING id, nome`
+		RETURNING id, nome, codigo`
 	var p Produto
 	err = tx.QueryRow(insertProduto,
 		nomeTrimado, codigo, categoriaID, observacoes, templateID,
@@ -331,17 +355,20 @@ func CriarProduto(db *sql.DB, empresaID string, input CriarProdutoInput) (Produt
 		alturaValor, alturaUnidade,
 		espessuraValor, espessuraUnidade,
 		empresaID,
-	).Scan(&p.ID, &p.Nome)
+	).Scan(&p.ID, &p.Nome, &p.Codigo)
 	if err != nil {
 		var pqErr *pq.Error
 		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && (pqErr.Code == pqForeignKeyViolation || pqErr.Code == pqInvalidTextRepresentation)) {
 			return Produto{}, &ErroProdutoValidacao{Mensagem: "categoria informada não existe"}
 		}
-		// Violação do índice único parcial `idx_produtos_codigo` (migration
-		// 000017, Story 3.4): `código` já não-nulo em outro Produto. A
-		// importação (services/importacoes.go) depende dessa unicidade para
-		// que o match por código de processarProximaLinha seja determinístico
-		// — o cadastro manual passa a respeitar a mesma regra.
+		// Violação do índice único `idx_produtos_codigo` (empresa_id, codigo;
+		// migration 000032): na prática, hoje, só uma colisão eventual entre
+		// o código sequencial recém-gerado e um código legado/manual já
+		// gravado antes da Story 10.2 (spec-10-2, Design Notes) — não há
+		// lógica nova de desvio/realocação, o Produto simplesmente não é
+		// gravado. A importação (services/importacoes.go) depende da mesma
+		// unicidade para que o match por código de processarProximaLinha seja
+		// determinístico.
 		if errors.As(err, &pqErr) && pqErr.Code == pqUniqueViolation {
 			return Produto{}, &ErroProdutoValidacao{Mensagem: "código já cadastrado"}
 		}

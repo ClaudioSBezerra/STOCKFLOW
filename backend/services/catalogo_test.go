@@ -12,11 +12,12 @@ import (
 // Helpers do mesmo pacote reutilizados: limparProdutos, categoriaIDPorCodigo,
 // testDB, ptrFloat, ptrStr (produtos_test.go).
 
-// criarProdutoCat cadastra um Produto via CriarProduto e devolve o id. A
-// linha inicial em `produto_estoque` (EstoqueID + QuantidadeInicial) segue a
-// regra de CriarProduto; os testes ajustam depois com setQuantidade /
-// limparEstoqueDe.
-func criarProdutoCat(t *testing.T, db *sql.DB, in CriarProdutoInput) string {
+// criarProdutoCat cadastra um Produto via CriarProduto e devolve o id e o
+// código gerado pelo servidor (Story 10.2, spec-10-2 — `codigo` não é mais
+// entrada do chamador). A linha inicial em `produto_estoque` (EstoqueID +
+// QuantidadeInicial) segue a regra de CriarProduto; os testes ajustam depois
+// com setQuantidade / limparEstoqueDe.
+func criarProdutoCat(t *testing.T, db *sql.DB, in CriarProdutoInput) (id string, codigo string) {
 	t.Helper()
 	// Story 10.1: `TemplateID` passou a ser obrigatório em CriarProduto; os
 	// testes desta suíte (catálogo) não exercitam Nomenclatura Guiada, então
@@ -29,7 +30,7 @@ func criarProdutoCat(t *testing.T, db *sql.DB, in CriarProdutoInput) string {
 	if err != nil {
 		t.Fatalf("seed CriarProduto(%q): %v", in.Nome, err)
 	}
-	return p.ID
+	return p.ID, p.Codigo
 }
 
 // setQuantidade fixa a quantidade de um Produto num Estoque (upsert na PK
@@ -120,8 +121,8 @@ func TestListarCatalogoGrade_ProdutoSemEstoque(t *testing.T) {
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 
-	semEstoque := criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Sem Estoque", Codigo: "SEM-EST", CategoriaID: categoriaID,
+	semEstoque, codigoSemEstoque := criarProdutoCat(t, db, CriarProdutoInput{
+		Nome: "Sem Estoque", CategoriaID: categoriaID,
 		EstoqueID: estoque.ID, QuantidadeInicial: 0,
 	})
 	limparEstoqueDe(t, db, semEstoque)
@@ -146,8 +147,8 @@ func TestListarCatalogoGrade_ProdutoSemEstoque(t *testing.T) {
 	if sem.Nome != "Sem Estoque" || sem.QuantidadeTotal != 0 || sem.Disponivel {
 		t.Errorf("sem estoque = %+v, want qtd 0 disponivel false", sem)
 	}
-	if sem.Codigo == nil || *sem.Codigo != "SEM-EST" {
-		t.Errorf("codigo = %v, want SEM-EST", sem.Codigo)
+	if sem.Codigo == nil || *sem.Codigo != codigoSemEstoque {
+		t.Errorf("codigo = %v, want %q", sem.Codigo, codigoSemEstoque)
 	}
 }
 
@@ -168,7 +169,7 @@ func TestListarCatalogoGrade_QuantidadeSomadaEDimensoes(t *testing.T) {
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 
-	id := criarProdutoCat(t, db, CriarProdutoInput{
+	id, _ := criarProdutoCat(t, db, CriarProdutoInput{
 		Nome: "Tubo PVC 100mm", CategoriaID: categoriaID,
 		EstoqueID: estoqueA.ID, QuantidadeInicial: 10,
 		Comprimento: &DimensaoInput{Valor: ptrFloat(6), Unidade: ptrStr("m")},
@@ -267,12 +268,12 @@ func TestListarCatalogoAgrupado_AgrupaPorNomeEDimensoes(t *testing.T) {
 		Nome: "Parafuso Grupo", CategoriaID: categoriaID, EstoqueID: estAlmox.ID, QuantidadeInicial: 10,
 		Diametro: dim(),
 	})
-	p2 := criarProdutoCat(t, db, CriarProdutoInput{
+	p2, _ := criarProdutoCat(t, db, CriarProdutoInput{
 		Nome: "Parafuso Grupo", CategoriaID: categoriaID, EstoqueID: estAlmox.ID, QuantidadeInicial: 5,
 		Diametro: dim(),
 	})
 	setQuantidade(t, db, p2, estObra.ID, 2)
-	p3 := criarProdutoCat(t, db, CriarProdutoInput{
+	p3, _ := criarProdutoCat(t, db, CriarProdutoInput{
 		Nome: "Parafuso Grupo", CategoriaID: categoriaID, EstoqueID: estAlmox.ID, QuantidadeInicial: 0,
 		Diametro: dim(),
 	})
@@ -399,10 +400,10 @@ func TestListarCatalogoAgrupado_GrupoSemLinhasDeEstoque(t *testing.T) {
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 
-	a := criarProdutoCat(t, db, CriarProdutoInput{
+	a, _ := criarProdutoCat(t, db, CriarProdutoInput{
 		Nome: "Prego Comum", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 0,
 	})
-	b := criarProdutoCat(t, db, CriarProdutoInput{
+	b, _ := criarProdutoCat(t, db, CriarProdutoInput{
 		Nome: "Prego Comum", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 0,
 	})
 	limparEstoqueDe(t, db, a)
@@ -557,9 +558,8 @@ func TestObterProdutoDetalhe_ComEstoqueDiscriminado(t *testing.T) {
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 
-	produtoID := criarProdutoCat(t, db, CriarProdutoInput{
+	produtoID, codigoGerado := criarProdutoCat(t, db, CriarProdutoInput{
 		Nome:              "Produto Detalhe",
-		Codigo:            "COD-DETALHE-1",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoqueA.ID,
 		QuantidadeInicial: 5,
@@ -574,8 +574,8 @@ func TestObterProdutoDetalhe_ComEstoqueDiscriminado(t *testing.T) {
 	if det.ID != produtoID || det.Nome != "Produto Detalhe" {
 		t.Fatalf("produto = %+v", det)
 	}
-	if det.Codigo == nil || *det.Codigo != "COD-DETALHE-1" {
-		t.Errorf("codigo = %v, want COD-DETALHE-1", det.Codigo)
+	if det.Codigo == nil || *det.Codigo != codigoGerado {
+		t.Errorf("codigo = %v, want %q", det.Codigo, codigoGerado)
 	}
 	if det.Dimensoes.Comprimento == nil || det.Dimensoes.Comprimento.Valor != 6 {
 		t.Errorf("dimensoes.comprimento = %+v", det.Dimensoes.Comprimento)
@@ -609,7 +609,7 @@ func TestObterProdutoDetalhe_SemEstoque(t *testing.T) {
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 
-	produtoID := criarProdutoCat(t, db, CriarProdutoInput{
+	produtoID, codigoGerado := criarProdutoCat(t, db, CriarProdutoInput{
 		Nome:              "Produto Sem Estoque",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -630,8 +630,10 @@ func TestObterProdutoDetalhe_SemEstoque(t *testing.T) {
 	if len(det.PorEstoque) != 0 {
 		t.Errorf("len(porEstoque) = %d, want 0", len(det.PorEstoque))
 	}
-	if det.Codigo != nil {
-		t.Errorf("codigo = %v, want nil (produto sem código)", det.Codigo)
+	// Story 10.2 (spec-10-2): `codigo` é sempre gerado pelo servidor agora —
+	// não existe mais "Produto sem código" entre os criados por CriarProduto.
+	if det.Codigo == nil || *det.Codigo != codigoGerado {
+		t.Errorf("codigo = %v, want %q", det.Codigo, codigoGerado)
 	}
 }
 
@@ -708,7 +710,7 @@ func TestListarCatalogoGrade_FiltroEstoque_LinhaComQuantidadeZero(t *testing.T) 
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 
-	p1 := criarProdutoCat(t, db, CriarProdutoInput{
+	p1, _ := criarProdutoCat(t, db, CriarProdutoInput{
 		Nome: "Zerado em A", CategoriaID: categoriaID, EstoqueID: estA.ID, QuantidadeInicial: 0,
 	})
 	criarProdutoCat(t, db, CriarProdutoInput{
@@ -744,7 +746,7 @@ func TestListarCatalogoGrade_FiltroComEstoque(t *testing.T) {
 	criarProdutoCat(t, db, CriarProdutoInput{
 		Nome: "Disponível", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 3,
 	})
-	semEstoque := criarProdutoCat(t, db, CriarProdutoInput{
+	semEstoque, _ := criarProdutoCat(t, db, CriarProdutoInput{
 		Nome: "Zerado Estoque", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 0,
 	})
 
@@ -787,7 +789,7 @@ func TestListarCatalogoGrade_TodosOsFiltrosComQCombinados(t *testing.T) {
 	outraCategoria := categoriaIDPorCodigo(t, db, "04.002")
 
 	// Único produto que casa TODOS os 4 filtros.
-	alvo := criarProdutoCat(t, db, CriarProdutoInput{
+	alvo, _ := criarProdutoCat(t, db, CriarProdutoInput{
 		Nome: "Parafuso Sextavado", CategoriaID: categoriaID, EstoqueID: estAlvo.ID, QuantidadeInicial: 10,
 	})
 	// Casa q/estoque/comEstoque, falha na categoria.
@@ -837,7 +839,7 @@ func TestListarCatalogoGrade_EstoqueEComEstoqueSemSobreposicao(t *testing.T) {
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 
-	produtoID := criarProdutoCat(t, db, CriarProdutoInput{
+	produtoID, _ := criarProdutoCat(t, db, CriarProdutoInput{
 		Nome: "Disperso Multi", CategoriaID: categoriaID, EstoqueID: estFiltrado.ID, QuantidadeInicial: 0,
 	})
 	setQuantidade(t, db, produtoID, estOutro.ID, 5)

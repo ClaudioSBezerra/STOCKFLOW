@@ -85,7 +85,6 @@ func montarAmbienteIsolamento(t *testing.T, db *sql.DB, slug, cnpjBase12, rotulo
 
 	produto, err := CriarProduto(db, a.empresa.ID, CriarProdutoInput{
 		Nome:              "Prancha Isolamento",
-		Codigo:            "SKU-ISOLAMENTO",
 		CategoriaID:       a.categoriaID,
 		EstoqueID:         a.estoque.ID,
 		TemplateID:        templateGenericoID(t, db, a.empresa.ID),

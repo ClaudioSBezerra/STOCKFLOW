@@ -420,6 +420,36 @@ describe('CadastroProdutoSection', () => {
     await user.click(await screen.findByRole('option', { name: 'Genérico' }));
     expect(screen.getByRole('button', { name: 'Cadastrar produto' })).toBeEnabled();
   });
+
+  // Story 10.2, spec-10-2: `codigo` deixou de ser um campo editável — o
+  // servidor gera o código sequencial e o cliente só exibe o valor devolvido
+  // pelo `201`, depois do cadastro.
+  it('campo Código é somente leitura: vazio e desabilitado antes do cadastro, preenchido com o valor do servidor depois', async () => {
+    const fetchMock = stubListasPadrao({
+      postProdutos: () =>
+        Promise.resolve({
+          ok: true,
+          status: 201,
+          json: async () => ({ produto: { id: 'p-7', nome: 'Tubo PVC 100mm', codigo: '000007' } }),
+        }),
+    });
+
+    const user = userEvent.setup();
+    render(<CadastroProdutoSection />);
+
+    const campoCodigo = screen.getByLabelText('Código');
+    expect(campoCodigo).toBeDisabled();
+    expect(campoCodigo).toHaveValue('');
+
+    await preencherCamposObrigatorios(user);
+    await user.click(screen.getByRole('button', { name: 'Cadastrar produto' }));
+
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Produto cadastrado.'));
+    expect(corpoDoPost(fetchMock).codigo).toBeUndefined();
+
+    expect(screen.getByLabelText('Código')).toBeDisabled();
+    expect(screen.getByLabelText('Código')).toHaveValue('000007');
+  });
 });
 
 // Bloco "Adicionar foto" (Story 3.5, spec-3-5): só existe depois de um

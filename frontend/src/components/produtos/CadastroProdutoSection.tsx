@@ -18,15 +18,19 @@ import { apiUrl, authHeaders } from '@/lib/api';
 /**
  * Seção "Cadastrar Produto" da `CatalogoPage` (Story 3.1, spec-3-1; Story 3.2,
  * spec-3-2, acrescenta a Nomenclatura Guiada; Story 10.1, spec-10-1, torna o
- * Template sempre obrigatório), visível só a `almoxarife`+ (gate na própria
- * página). Um `Card` com formulário: `nome`/`codigo`/`observacoes` (`Input`),
- * `categoria`/`estoque`/`template de nomenclatura` (`Select`, os três
- * obrigatórios — carregados de `GET /api/categorias`/`GET /api/estoques`/
+ * Template sempre obrigatório; Story 10.2, spec-10-2, tira `codigo` da
+ * entrada — o servidor gera o código sequencial), visível só a `almoxarife`+
+ * (gate na própria página). Um `Card` com formulário: `nome`/`observacoes`
+ * (`Input`), `categoria`/`estoque`/`template de nomenclatura` (`Select`, os
+ * três obrigatórios — carregados de `GET /api/categorias`/`GET /api/estoques`/
  * `GET /api/nomenclatura-templates` num único `Promise.all`; falha em
  * QUALQUER um dos três aciona `erroCarregar` e bloqueia o cadastro, já que
  * sem a lista de templates o Almoxarife não tem como selecionar um) e as 5
  * dimensões pareadas (`Input` numérico + `Select` de unidade `mm/cm/m`),
  * todas opcionais — AD-9. `quantidade_inicial` é `Input` numérico obrigatório.
+ * `codigo` (Story 10.2) é um `Input` `disabled`, só leitura — nenhum estado
+ * próprio, `value={produtoCriado?.codigo ?? ''}`: vazio antes do cadastro,
+ * preenchido com o código gerado pelo servidor depois de um `201`.
  *
  * Quando um template é selecionado, um texto de apoio abaixo do campo Nome
  * mostra o formato exato esperado (ex. "Formato: CABO [TIPO] [TENSÃO] ...")
@@ -46,9 +50,9 @@ import { apiUrl, authHeaders } from '@/lib/api';
  * (AC4) — nunca um campo de texto livre.
  *
  * Upload de foto (Story 3.5, spec-3-5): o `201` de `POST /api/produtos`
- * guarda `{id, nome}` do Produto recém-criado em estado local (não afeta a
- * limpeza do formulário acima) e passa a exibir um bloco "Adicionar foto" —
- * único ponto da UI hoje com um `produto_id` em mãos, já que o Catálogo
+ * guarda `{id, nome, codigo}` do Produto recém-criado em estado local (não
+ * afeta a limpeza do formulário acima) e passa a exibir um bloco "Adicionar
+ * foto" — único ponto da UI hoje com um `produto_id` em mãos, já que o Catálogo
  * (Epic 4) ainda não existe. `<input type="file" accept="image/jpeg,
  * image/png,image/webp" capture>` seleciona o arquivo; o botão "Enviar foto"
  * dispara `POST /api/produtos/{id}/fotos` (multipart, campo `foto`, mesmo
@@ -119,6 +123,7 @@ const MENSAGEM_ERRO_GALERIA =
 interface ProdutoCriado {
   id: string;
   nome: string;
+  codigo: string;
 }
 
 // FotoGaleria é uma entrada resolvida da galeria (Story 3.6): `nome`/`url`
@@ -197,7 +202,6 @@ function DimensaoField({
 
 export function CadastroProdutoSection() {
   const [nome, setNome] = useState('');
-  const [codigo, setCodigo] = useState('');
   const [observacoes, setObservacoes] = useState('');
   const [categoriaId, setCategoriaId] = useState('');
   const [estoqueId, setEstoqueId] = useState('');
@@ -287,7 +291,6 @@ export function CadastroProdutoSection() {
 
   function limparFormulario() {
     setNome('');
-    setCodigo('');
     setObservacoes('');
     setCategoriaId('');
     setEstoqueId('');
@@ -325,7 +328,6 @@ export function CadastroProdutoSection() {
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
           nome,
-          codigo: codigo.trim() === '' ? undefined : codigo.trim(),
           observacoes: observacoes.trim() === '' ? undefined : observacoes.trim(),
           categoria_id: categoriaId,
           estoque_id: estoqueId,
@@ -497,8 +499,8 @@ export function CadastroProdutoSection() {
             <Label htmlFor="produto-codigo">Código</Label>
             <Input
               id="produto-codigo"
-              value={codigo}
-              onChange={(event) => setCodigo(event.target.value)}
+              value={produtoCriado?.codigo ?? ''}
+              disabled
             />
           </div>
 

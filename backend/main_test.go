@@ -600,6 +600,10 @@ func removerEmpresaPlataformaMux(t *testing.T, db *sql.DB, slug string) {
 		`DELETE FROM usuarios WHERE empresa_id = $1`,
 		`DELETE FROM categorias WHERE empresa_id = $1`,
 		`DELETE FROM nomenclatura_templates WHERE empresa_id = $1`,
+		// Story 10.2 (spec-10-2): `contadores_produto` também tem FK para
+		// `empresas`, sem CASCADE — toda Empresa provisionada nasce com uma
+		// linha lá (AD-26).
+		`DELETE FROM contadores_produto WHERE empresa_id = $1`,
 		`DELETE FROM empresas WHERE id = $1`,
 	} {
 		if _, err := db.Exec(stmt, id); err != nil {
@@ -2412,15 +2416,16 @@ func TestNewMux_ProdutosPorCodigoRotaSoRequireAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	if _, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
+	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
 		TemplateID: templateGenericoIDMux(t, db),
-		Nome:       "Produto PorCodigo Mux", Codigo: "PCM-001", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
-	}); err != nil {
+		Nome:       "Produto PorCodigo Mux", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+	})
+	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
 
 	t.Run("sem token -> 401", func(t *testing.T) {
-		w := despachar(http.MethodGet, prefixoEmpresaTeste+"/api/produtos/por-codigo?codigo=PCM-001", "")
+		w := despachar(http.MethodGet, prefixoEmpresaTeste+"/api/produtos/por-codigo?codigo="+produto.Codigo, "")
 		if w.Code != http.StatusUnauthorized {
 			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
 		}
@@ -2428,7 +2433,7 @@ func TestNewMux_ProdutosPorCodigoRotaSoRequireAuth(t *testing.T) {
 
 	t.Run("token usuario -> 200 (rota sem RequireRole)", func(t *testing.T) {
 		token := tokenDeMux(t, mux, "porcodigo-mux-usuario@empresa.com", senha, segredos)
-		w := despachar(http.MethodGet, prefixoEmpresaTeste+"/api/produtos/por-codigo?codigo=PCM-001", token)
+		w := despachar(http.MethodGet, prefixoEmpresaTeste+"/api/produtos/por-codigo?codigo="+produto.Codigo, token)
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d (body=%s) — rota não deveria exigir RequireRole", w.Code, http.StatusOK, w.Body.String())
 		}

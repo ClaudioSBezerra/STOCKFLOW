@@ -798,7 +798,6 @@ func TestCriarImportacao_CodigoExistente_AtualizaEmVezDeCriar(t *testing.T) {
 
 	produtoExistente, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "Produto Nome Antigo",
-		Codigo:            "SKU-ATUALIZA-1",
 		CategoriaID:       categoriaAntiga,
 		EstoqueID:         estoque.ID,
 		TemplateID:        templateGenericoID(t, db, empresaTeste),
@@ -810,7 +809,7 @@ func TestCriarImportacao_CodigoExistente_AtualizaEmVezDeCriar(t *testing.T) {
 
 	linhas := [][]string{
 		CabecalhoEsperado,
-		linhaBase("Produto Nome Novo", "SKU-ATUALIZA-1", categoriaNova, "3", estoque.Nome),
+		linhaBase("Produto Nome Novo", produtoExistente.Codigo, categoriaNova, "3", estoque.Nome),
 	}
 	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
 	if err != nil {
@@ -915,7 +914,6 @@ func TestCriarImportacao_CodigoExistente_TemplateNomeInvalido_Rejeitada(t *testi
 
 	produtoExistente, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "TUBO PEAD PN80 DN50",
-		Codigo:            "SKU-TEMPLATE-IMPORT-1",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
 		TemplateID:        templateID,
@@ -927,7 +925,7 @@ func TestCriarImportacao_CodigoExistente_TemplateNomeInvalido_Rejeitada(t *testi
 
 	linhas := [][]string{
 		CabecalhoEsperado,
-		linhaBase("Nome Fora Do Formato", "SKU-TEMPLATE-IMPORT-1", categoriaNome, "1", estoque.Nome),
+		linhaBase("Nome Fora Do Formato", produtoExistente.Codigo, categoriaNome, "1", estoque.Nome),
 	}
 	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
 	if err != nil {
@@ -1078,7 +1076,6 @@ func TestCriarImportacao_CodigoExistente_NovoEstoque_ParExistenteIntacto(t *test
 
 	produtoExistente, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "Produto Multi Estoque",
-		Codigo:            "SKU-MULTIESTOQUE-1",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoqueOriginal.ID,
 		TemplateID:        templateGenericoID(t, db, empresaTeste),
@@ -1090,7 +1087,7 @@ func TestCriarImportacao_CodigoExistente_NovoEstoque_ParExistenteIntacto(t *test
 
 	linhas := [][]string{
 		CabecalhoEsperado,
-		linhaBase("Produto Multi Estoque", "SKU-MULTIESTOQUE-1", categoriaNome, "7", "Canteiro Estoque Novo"),
+		linhaBase("Produto Multi Estoque", produtoExistente.Codigo, categoriaNome, "7", "Canteiro Estoque Novo"),
 	}
 	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
 	if err != nil {
@@ -1158,7 +1155,6 @@ func TestCriarImportacao_CodigoExistente_EstoqueInvalido_NaoAlteraProduto(t *tes
 
 	produtoExistente, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "Produto Nome Original",
-		Codigo:            "SKU-ESTOQUE-INVALIDO-1",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoqueOriginal.ID,
 		TemplateID:        templateGenericoID(t, db, empresaTeste),
@@ -1173,7 +1169,7 @@ func TestCriarImportacao_CodigoExistente_EstoqueInvalido_NaoAlteraProduto(t *tes
 	// Produto encontrado por código.
 	linhas := [][]string{
 		CabecalhoEsperado,
-		linhaBase("Produto Nome Diferente", "SKU-ESTOQUE-INVALIDO-1", categoriaNome, "9", "   "),
+		linhaBase("Produto Nome Diferente", produtoExistente.Codigo, categoriaNome, "9", "   "),
 	}
 	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
 	if err != nil {

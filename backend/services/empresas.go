@@ -400,10 +400,15 @@ func CopiarListasPadrao(tx *sql.Tx, empresaID string) error {
 
 // ProvisionarEmpresa cria uma Empresa `ativa` dentro da transação `tx` do
 // chamador e copia para ela as listas padrão de Categoria (25) e de
-// Nomenclatura Guiada (28). Desde a Story 9.4 é a simples composição de
-// InserirEmpresa + CopiarListasPadrao — mesma assinatura e mesmo
-// comportamento de antes. Tudo na MESMA transação do chamador: um
-// provisionamento que falhe no meio nunca deixa uma Empresa sem suas listas.
+// Nomenclatura Guiada (28), além de semear a linha inicial do contador de
+// código de Produto (Story 10.2, spec-10-2, AD-26). Tudo na MESMA transação
+// do chamador: um provisionamento que falhe no meio nunca deixa uma Empresa
+// sem suas listas nem sem contador.
+//
+// A linha de `contadores_produto` (`ultimo_numero=0`) nasce SEMPRE aqui,
+// nunca via lazy-init em CriarProduto — cobre tanto a Empresa real quanto a
+// Empresa-treino (empresas_plataforma.go chama ProvisionarEmpresa com `tx`s
+// distintas para cada uma, então cada uma ganha sua própria linha).
 //
 // Erros: os mesmos de InserirEmpresa (*ErroEmpresaValidacao,
 // ErrCNPJDuplicado, ErrSlugDuplicado).
@@ -414,6 +419,11 @@ func ProvisionarEmpresa(tx *sql.Tx, dados DadosEmpresa) (Empresa, error) {
 	}
 	if err := CopiarListasPadrao(tx, e.ID); err != nil {
 		return Empresa{}, err
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO contadores_produto (empresa_id, ultimo_numero) VALUES ($1, 0)`, e.ID,
+	); err != nil {
+		return Empresa{}, fmt.Errorf("falha ao criar contador de código de produto para a empresa: %w", err)
 	}
 	return e, nil
 }

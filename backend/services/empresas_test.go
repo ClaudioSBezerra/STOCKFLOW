@@ -180,6 +180,29 @@ func TestProvisionarEmpresa_CopiaListasPadrao(t *testing.T) {
 	}
 }
 
+// TestProvisionarEmpresa_CriaContadorDeCodigo prova a AD-26 da spec-10-2
+// (Story 10.2, FR-45): toda Empresa nasce com sua própria linha em
+// `contadores_produto`, `ultimo_numero=0`, na MESMA transação de
+// ProvisionarEmpresa — nunca via lazy-init em CriarProduto.
+func TestProvisionarEmpresa_CriaContadorDeCodigo(t *testing.T) {
+	db := testDB(t)
+
+	removerEmpresaDeTeste(t, db, "provisionamento-contador")
+	e := criarEmpresaDeTeste(t, db, "provisionamento-contador", "778889990002", "Provisionamento Contador")
+
+	var n, ultimoNumero int
+	if err := db.QueryRow(`SELECT count(*), coalesce(min(ultimo_numero), -1) FROM contadores_produto WHERE empresa_id = $1`, e.ID).
+		Scan(&n, &ultimoNumero); err != nil {
+		t.Fatalf("contar contador da empresa: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("linhas em contadores_produto para a empresa = %d, want 1", n)
+	}
+	if ultimoNumero != 0 {
+		t.Errorf("ultimo_numero = %d, want 0", ultimoNumero)
+	}
+}
+
 // TestProvisionarEmpresa_NormalizaEValida prova que os dados chegam
 // normalizados ao banco (CNPJ sem máscara, slug canônico) e que uma validação
 // que falha não escreve nada.
