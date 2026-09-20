@@ -44,6 +44,7 @@ func criarProdutoParaFotoHandler(t *testing.T, db *sql.DB, nome string) string {
 		t.Fatalf("seed categoria: %v", err)
 	}
 	p, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              nome,
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,

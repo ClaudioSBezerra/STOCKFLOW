@@ -797,6 +797,7 @@ func TestCriarImportacao_CodigoExistente_AtualizaEmVezDeCriar(t *testing.T) {
 	}
 
 	produtoExistente, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Produto Nome Antigo",
 		CategoriaID:       categoriaAntiga,
 		EstoqueID:         estoque.ID,
@@ -913,6 +914,7 @@ func TestCriarImportacao_CodigoExistente_TemplateNomeInvalido_Rejeitada(t *testi
 	templateID, _ := templatePorSubtipo(t, db, "Tubo — PEAD/PPR")
 
 	produtoExistente, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "TUBO PEAD PN80 DN50",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -968,6 +970,7 @@ func TestCriarImportacao_LinhaSemCodigo_NomeParecidoAindaAssimCria(t *testing.T)
 	}
 
 	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Produto Nome Igualzinho",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -1075,6 +1078,7 @@ func TestCriarImportacao_CodigoExistente_NovoEstoque_ParExistenteIntacto(t *test
 	}
 
 	produtoExistente, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Produto Multi Estoque",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoqueOriginal.ID,
@@ -1154,6 +1158,7 @@ func TestCriarImportacao_CodigoExistente_EstoqueInvalido_NaoAlteraProduto(t *tes
 	}
 
 	produtoExistente, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Produto Nome Original",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoqueOriginal.ID,

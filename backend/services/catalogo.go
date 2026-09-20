@@ -656,6 +656,15 @@ type ProdutoDetalhe struct {
 	QuantidadeTotal float64             `json:"quantidadeTotal"`
 	Disponivel      bool                `json:"disponivel"`
 	PorEstoque      []EstoqueQuantidade `json:"porEstoque"`
+	// UnidadeMedida/Embalagem (Story 10.3, spec-10-3): campos próprios do
+	// detalhe, mesmo padrão ponteiro de Codigo. `NULL` no banco (Produto
+	// legado ainda não passado pelo backfill da migration 000038, ou criado
+	// via importação, Never desta spec) vira `null` no JSON — nunca "un"
+	// forçado aqui. Código do Fornecedor/EAN-13 NÃO entram nesta projeção
+	// (Never, spec-10-3): ficam gravados, sem superfície de leitura nesta
+	// story.
+	UnidadeMedida *string `json:"unidadeMedida"`
+	Embalagem     *string `json:"embalagem"`
 }
 
 // produtoDetalheQuery devolve um único Produto por `id` — mesmas colunas de
@@ -671,7 +680,8 @@ const produtoDetalheQuery = `
 		p.diametro_valor, p.diametro_unidade,
 		p.altura_valor, p.altura_unidade,
 		p.espessura_valor, p.espessura_unidade,
-		COALESCE(pe.total, 0) AS quantidade_total
+		COALESCE(pe.total, 0) AS quantidade_total,
+		p.unidade_medida, p.embalagem
 	FROM produtos p
 	JOIN categorias c ON c.id = p.categoria_id
 	LEFT JOIN (
@@ -699,6 +709,7 @@ func ObterProdutoDetalhe(db *sql.DB, empresaID string, id string) (ProdutoDetalh
 		codigo                     sql.NullString
 		comp, larg, diam, alt, esp parDimensao
 		quantidade                 float64
+		unidadeMedida, embalagem   sql.NullString
 	)
 	err := db.QueryRow(produtoDetalheQuery, id, empresaID).Scan(
 		&det.ID, &det.Nome, &codigo,
@@ -709,6 +720,7 @@ func ObterProdutoDetalhe(db *sql.DB, empresaID string, id string) (ProdutoDetalh
 		&alt.valor, &alt.unidade,
 		&esp.valor, &esp.unidade,
 		&quantidade,
+		&unidadeMedida, &embalagem,
 	)
 	if err != nil {
 		var pqErr *pq.Error
@@ -720,6 +732,14 @@ func ObterProdutoDetalhe(db *sql.DB, empresaID string, id string) (ProdutoDetalh
 	if codigo.Valid {
 		c := codigo.String
 		det.Codigo = &c
+	}
+	if unidadeMedida.Valid {
+		u := unidadeMedida.String
+		det.UnidadeMedida = &u
+	}
+	if embalagem.Valid {
+		e := embalagem.String
+		det.Embalagem = &e
 	}
 	det.Dimensoes = DimensoesProduto{
 		Comprimento: comp.paraDimensao(),

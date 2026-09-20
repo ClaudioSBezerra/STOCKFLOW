@@ -133,6 +133,12 @@ func TestCriarProduto_SucessoCompleto(t *testing.T) {
 		Diametro:          &DimensaoInput{Valor: ptrFloat(10), Unidade: ptrStr("cm")},
 		Altura:            &DimensaoInput{Valor: ptrFloat(2), Unidade: ptrStr("m")},
 		Espessura:         &DimensaoInput{Valor: ptrFloat(5), Unidade: ptrStr("mm")},
+		// Story 10.3, spec-10-3: os 4 campos novos, com um EAN-13 de dígito
+		// verificador correto (7891234567895 — mesmo valor da I/O Matrix).
+		CodigoFornecedor: "  ABC-123  ",
+		EAN13:            "7891234567895",
+		UnidadeMedida:    "  un  ",
+		Embalagem:        "  Caixa com 10  ",
 	}
 
 	p, err := CriarProduto(db, empresaTeste, input)
@@ -173,6 +179,36 @@ func TestCriarProduto_SucessoCompleto(t *testing.T) {
 		t.Errorf("observacoes = %q, want %q", observacoes, "observação de teste")
 	}
 
+	// Story 10.3, spec-10-3: `codigo_fornecedor`/`ean13` não têm superfície de
+	// leitura via serviço nesta story (Never, spec-10-3) — asserção via
+	// SELECT direto, trimados e com o dígito verificador do EAN-13 intacto.
+	var codigoFornecedorGravado, ean13Gravado string
+	if err := db.QueryRow(
+		`SELECT codigo_fornecedor, ean13 FROM produtos WHERE id = $1`, p.ID,
+	).Scan(&codigoFornecedorGravado, &ean13Gravado); err != nil {
+		t.Fatalf("falha ao ler codigo_fornecedor/ean13: %v", err)
+	}
+	if codigoFornecedorGravado != "ABC-123" {
+		t.Errorf("codigo_fornecedor = %q, want %q (trim das pontas)", codigoFornecedorGravado, "ABC-123")
+	}
+	if ean13Gravado != "7891234567895" {
+		t.Errorf("ean13 = %q, want %q", ean13Gravado, "7891234567895")
+	}
+
+	// `unidade_medida`/`embalagem` TÊM superfície de leitura via
+	// ObterProdutoDetalhe (AC5 desta story) — asserção pela mesma via que a
+	// API expõe, não por SELECT direto.
+	det, err := ObterProdutoDetalhe(db, empresaTeste, p.ID)
+	if err != nil {
+		t.Fatalf("ObterProdutoDetalhe: %v", err)
+	}
+	if det.UnidadeMedida == nil || *det.UnidadeMedida != "un" {
+		t.Errorf("unidadeMedida = %v, want %q", det.UnidadeMedida, "un")
+	}
+	if det.Embalagem == nil || *det.Embalagem != "Caixa com 10" {
+		t.Errorf("embalagem = %v, want %q (trim das pontas)", det.Embalagem, "Caixa com 10")
+	}
+
 	if n := contarProdutoEstoque(t, db); n != 1 {
 		t.Fatalf("linhas em produto_estoque = %d, want 1", n)
 	}
@@ -201,6 +237,7 @@ func TestCriarProduto_SucessoSemDimensoes(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.002")
 
 	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Produto Simples",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -277,6 +314,7 @@ func TestCriarProduto_DimensaoParIncompleto(t *testing.T) {
 			categoriaID := categoriaIDPorCodigo(t, db, "04.003")
 
 			input := CriarProdutoInput{
+				UnidadeMedida:     "un",
 				Nome:              "Produto " + c.nome,
 				CategoriaID:       categoriaID,
 				EstoqueID:         estoque.ID,
@@ -300,6 +338,234 @@ func TestCriarProduto_DimensaoParIncompleto(t *testing.T) {
 				t.Errorf("linhas em produto_estoque = %d, want 0", n)
 			}
 		})
+	}
+}
+
+// --- Story 10.3: Código do Fornecedor, EAN-13, Unidade de Medida e
+// Embalagem (spec-10-3, FR45/FR46) ------------------------------------------
+
+// criarProdutoInputValido monta um CriarProdutoInput mínimo válido (seed de
+// Estoque/Categoria/Template já resolvidos), sobrescrito pelos testes desta
+// seção — evita repetir os 4 seeds em cada um dos casos de EAN-13/Unidade de
+// Medida/limite de texto livre abaixo.
+func criarProdutoInputValido(t *testing.T, db *sql.DB, nome, codigoCategoria string) CriarProdutoInput {
+	t.Helper()
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro "+nome)
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	return CriarProdutoInput{
+		Nome:              nome,
+		CategoriaID:       categoriaIDPorCodigo(t, db, codigoCategoria),
+		EstoqueID:         estoque.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
+		QuantidadeInicial: 1,
+		UnidadeMedida:     "un",
+	}
+}
+
+// TestCriarProduto_EAN13Invalido prova a linha "EAN-13 com tamanho/
+// caracteres errados"/"EAN-13 com dígito verificador errado" da I/O Matrix:
+// nada é gravado, ErroProdutoValidacao nomeia o problema específico (formato
+// vs. dígito verificador).
+func TestCriarProduto_EAN13Invalido(t *testing.T) {
+	db := testDB(t)
+
+	casos := []struct {
+		nome     string
+		ean13    string
+		mensagem string
+	}{
+		{"tamanho curto", "123", "13 dígitos"},
+		{"tamanho longo", "12345678901234", "13 dígitos"},
+		{"caractere não-dígito", "789123456789A", "13 dígitos"},
+		{"dígito verificador errado", "7891234567890", "dígito verificador"},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			limparProdutos(t, db)
+			input := criarProdutoInputValido(t, db, "Produto EAN "+c.nome, "04.001")
+			input.EAN13 = c.ean13
+
+			_, err := CriarProduto(db, empresaTeste, input)
+			var erroValidacao *ErroProdutoValidacao
+			if !errors.As(err, &erroValidacao) {
+				t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
+			}
+			if !strings.Contains(erroValidacao.Mensagem, c.mensagem) {
+				t.Errorf("mensagem = %q, want conter %q", erroValidacao.Mensagem, c.mensagem)
+			}
+			if n := contarProdutos(t, db); n != 0 {
+				t.Errorf("linhas em produtos = %d, want 0 (nada deveria ser gravado)", n)
+			}
+		})
+	}
+}
+
+// TestCriarProduto_EAN13VazioAceito prova a linha "Fornecedor/EAN-13
+// ausentes" da I/O Matrix: `ean13` vazio (após trim) nunca é rejeitado, é
+// gravado NULL.
+func TestCriarProduto_EAN13VazioAceito(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	input := criarProdutoInputValido(t, db, "Produto EAN Vazio", "04.001")
+	input.EAN13 = "   "
+
+	p, err := CriarProduto(db, empresaTeste, input)
+	if err != nil {
+		t.Fatalf("CriarProduto erro inesperado: %v", err)
+	}
+	var ean13 sql.NullString
+	if err := db.QueryRow(`SELECT ean13 FROM produtos WHERE id = $1`, p.ID).Scan(&ean13); err != nil {
+		t.Fatalf("falha ao ler ean13: %v", err)
+	}
+	if ean13.Valid {
+		t.Errorf("ean13 = %v, want NULL", ean13)
+	}
+}
+
+// TestCriarProduto_UnidadeMedidaObrigatoria prova a linha "Unidade de Medida
+// ausente no cadastro" da I/O Matrix: vazio (ausente ou só espaços) rejeita
+// citando a obrigatoriedade, nada gravado.
+func TestCriarProduto_UnidadeMedidaObrigatoria(t *testing.T) {
+	db := testDB(t)
+
+	for _, unidade := range []string{"", "   "} {
+		t.Run(fmt.Sprintf("%q", unidade), func(t *testing.T) {
+			limparProdutos(t, db)
+			input := criarProdutoInputValido(t, db, "Produto Sem Unidade", "04.001")
+			input.UnidadeMedida = unidade
+
+			_, err := CriarProduto(db, empresaTeste, input)
+			var erroValidacao *ErroProdutoValidacao
+			if !errors.As(err, &erroValidacao) {
+				t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
+			}
+			if erroValidacao.Mensagem != "unidade de medida é obrigatória" {
+				t.Errorf("mensagem = %q, want %q", erroValidacao.Mensagem, "unidade de medida é obrigatória")
+			}
+			if n := contarProdutos(t, db); n != 0 {
+				t.Errorf("linhas em produtos = %d, want 0 (nada deveria ser gravado)", n)
+			}
+		})
+	}
+}
+
+// TestCriarProduto_UnidadeMedidaInvalida prova a linha "Unidade de Medida
+// fora do enum" da I/O Matrix: um valor fora dos 12 aceitos rejeita, nada
+// gravado. Também prova que os 12 valores válidos (addendum.md §F) SÃO todos
+// aceitos, incluindo os com caracteres não-ASCII ("m²", "m³", "kg/m²").
+func TestCriarProduto_UnidadeMedidaInvalida(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	input := criarProdutoInputValido(t, db, "Produto Unidade Invalida", "04.001")
+	input.UnidadeMedida = "litro"
+
+	_, err := CriarProduto(db, empresaTeste, input)
+	var erroValidacao *ErroProdutoValidacao
+	if !errors.As(err, &erroValidacao) {
+		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
+	}
+	if erroValidacao.Mensagem != "unidade de medida inválida" {
+		t.Errorf("mensagem = %q, want %q", erroValidacao.Mensagem, "unidade de medida inválida")
+	}
+	if n := contarProdutos(t, db); n != 0 {
+		t.Errorf("linhas em produtos = %d, want 0 (nada deveria ser gravado)", n)
+	}
+}
+
+// TestCriarProduto_TodasUnidadesMedidaValidasSaoAceitas prova que os 12
+// valores do enum fechado (addendum.md §F) são todos aceitos pelo cadastro —
+// nenhuma rejeição espúria em cima da grafia exata (inclusive "m²"/"m³"/
+// "kg/m²", com caracteres não-ASCII).
+func TestCriarProduto_TodasUnidadesMedidaValidasSaoAceitas(t *testing.T) {
+	db := testDB(t)
+
+	for _, unidade := range []string{"un", "m", "m²", "m³", "kg", "L", "cx", "rolo", "barra", "mm", "cm", "kg/m²"} {
+		t.Run(unidade, func(t *testing.T) {
+			limparProdutos(t, db)
+			input := criarProdutoInputValido(t, db, "Produto Unidade "+unidade, "04.001")
+			input.UnidadeMedida = unidade
+
+			p, err := CriarProduto(db, empresaTeste, input)
+			if err != nil {
+				t.Fatalf("CriarProduto erro inesperado para unidade %q: %v", unidade, err)
+			}
+			det, err := ObterProdutoDetalhe(db, empresaTeste, p.ID)
+			if err != nil {
+				t.Fatalf("ObterProdutoDetalhe: %v", err)
+			}
+			if det.UnidadeMedida == nil || *det.UnidadeMedida != unidade {
+				t.Errorf("unidadeMedida = %v, want %q", det.UnidadeMedida, unidade)
+			}
+		})
+	}
+}
+
+// TestCriarProduto_CodigoFornecedorEEmbalagemAcimaDoLimiteRejeitados prova
+// que `codigo_fornecedor`/`embalagem` acima de 255 runas rejeitam citando o
+// campo específico, nada gravado — mesmo teto de `nome`/`codigo`
+// (limiteTextoLivre255).
+func TestCriarProduto_CodigoFornecedorEEmbalagemAcimaDoLimiteRejeitados(t *testing.T) {
+	db := testDB(t)
+	textoLongo := strings.Repeat("a", 256)
+
+	casos := []struct {
+		nome  string
+		apply func(*CriarProdutoInput)
+		campo string
+	}{
+		{"codigo_fornecedor acima do limite", func(i *CriarProdutoInput) { i.CodigoFornecedor = textoLongo }, "código do fornecedor"},
+		{"embalagem acima do limite", func(i *CriarProdutoInput) { i.Embalagem = textoLongo }, "embalagem"},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			limparProdutos(t, db)
+			input := criarProdutoInputValido(t, db, "Produto "+c.nome, "04.001")
+			c.apply(&input)
+
+			_, err := CriarProduto(db, empresaTeste, input)
+			var erroValidacao *ErroProdutoValidacao
+			if !errors.As(err, &erroValidacao) {
+				t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
+			}
+			if !strings.Contains(erroValidacao.Mensagem, c.campo) {
+				t.Errorf("mensagem = %q, want conter %q", erroValidacao.Mensagem, c.campo)
+			}
+			if n := contarProdutos(t, db); n != 0 {
+				t.Errorf("linhas em produtos = %d, want 0 (nada deveria ser gravado)", n)
+			}
+		})
+	}
+}
+
+// TestCriarProduto_CodigoFornecedorEEmbalagemAusentesGravamNull prova a
+// linha "Embalagem ausente" da I/O Matrix (mesmo raciocínio para
+// `codigo_fornecedor`, Always desta spec): vazio/omitido -> NULL, nunca
+// rejeitado.
+func TestCriarProduto_CodigoFornecedorEEmbalagemAusentesGravamNull(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	input := criarProdutoInputValido(t, db, "Produto Sem Fornecedor Embalagem", "04.001")
+
+	p, err := CriarProduto(db, empresaTeste, input)
+	if err != nil {
+		t.Fatalf("CriarProduto erro inesperado: %v", err)
+	}
+	var codigoFornecedor, embalagem sql.NullString
+	if err := db.QueryRow(
+		`SELECT codigo_fornecedor, embalagem FROM produtos WHERE id = $1`, p.ID,
+	).Scan(&codigoFornecedor, &embalagem); err != nil {
+		t.Fatalf("falha ao ler codigo_fornecedor/embalagem: %v", err)
+	}
+	if codigoFornecedor.Valid {
+		t.Errorf("codigo_fornecedor = %v, want NULL", codigoFornecedor)
+	}
+	if embalagem.Valid {
+		t.Errorf("embalagem = %v, want NULL", embalagem)
 	}
 }
 
@@ -404,6 +670,7 @@ func TestCriarProduto_CategoriaInexistente(t *testing.T) {
 	}
 
 	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Produto Categoria Ausente",
 		CategoriaID:       "00000000-0000-4000-8000-000000000000",
 		EstoqueID:         estoque.ID,
@@ -431,6 +698,7 @@ func TestCriarProduto_EstoqueInexistente(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.004")
 
 	_, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Produto Estoque Ausente",
 		CategoriaID:       categoriaID,
 		EstoqueID:         "00000000-0000-4000-8000-000000000000",
@@ -462,6 +730,7 @@ func TestCriarProduto_QuantidadeInicialNegativa(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.005")
 
 	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Produto Quantidade Negativa",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -493,6 +762,7 @@ func TestCriarProduto_QuantidadeInicialAcimaDoLimite(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.007")
 
 	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Produto Quantidade Acima Limite",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -567,6 +837,7 @@ func TestCriarProduto_CodigoSequencialPorEmpresa(t *testing.T) {
 	templateID := templateGenericoID(t, db, empresa.ID)
 
 	p1, err := CriarProduto(db, empresa.ID, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Primeiro Produto Sequencial",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -581,6 +852,7 @@ func TestCriarProduto_CodigoSequencialPorEmpresa(t *testing.T) {
 	}
 
 	p2, err := CriarProduto(db, empresa.ID, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Segundo Produto Sequencial",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -628,6 +900,7 @@ func TestCriarProduto_CodigoIndependentePorEmpresa(t *testing.T) {
 	}
 
 	pA, err := CriarProduto(db, empresaA.ID, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Produto Empresa A",
 		CategoriaID:       categoriaA,
 		EstoqueID:         estoqueA.ID,
@@ -638,6 +911,7 @@ func TestCriarProduto_CodigoIndependentePorEmpresa(t *testing.T) {
 		t.Fatalf("CriarProduto empresa A: %v", err)
 	}
 	pB, err := CriarProduto(db, empresaB.ID, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Produto Empresa B",
 		CategoriaID:       categoriaB,
 		EstoqueID:         estoqueB.ID,
@@ -683,6 +957,7 @@ func TestCriarProduto_ContadorAusente(t *testing.T) {
 	}
 
 	_, err = CriarProduto(db, empresa.ID, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Produto Sem Contador",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -719,6 +994,7 @@ func TestCriarProduto_NomeInvalido(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.006")
 
 	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "   ",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -746,6 +1022,7 @@ func TestCriarProduto_NomeAbaixoDoMinimoRejeitado(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.006")
 
 	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "  123456789  ", // 9 caracteres após o trim
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -774,6 +1051,7 @@ func TestCriarProduto_NomeNoMinimoExatoAceito(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.006")
 
 	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "  1234567890  ", // 10 caracteres após o trim
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -798,6 +1076,7 @@ func TestAtualizarNomeProduto_NomeAbaixoDoMinimoRejeitado(t *testing.T) {
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.006")
 	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Nome Original Valido",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -835,6 +1114,7 @@ func TestAtualizarNomeProduto_NomeNoMinimoExatoAceito(t *testing.T) {
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.006")
 	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Nome Original Valido",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -895,6 +1175,7 @@ func TestCriarProduto_ComTemplateNomeCompleto(t *testing.T) {
 	templateID, _ := templatePorSubtipo(t, db, "Tubo — PEAD/PPR")
 
 	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "TUBO PEAD PN80 DN50",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -929,6 +1210,7 @@ func TestCriarProduto_ComTemplatePlaceholderFaltando(t *testing.T) {
 	templateID, _ := templatePorSubtipo(t, db, "Tubo — PEAD/PPR")
 
 	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "TUBO PEAD PN80", // falta o segmento DN[XX]
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -967,6 +1249,7 @@ func TestCriarProduto_TemplateInexistente(t *testing.T) {
 			categoriaID := categoriaIDPorCodigo(t, db, "04.003")
 
 			_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
+				UnidadeMedida:     "un",
 				Nome:              "Produto Template Ausente",
 				CategoriaID:       categoriaID,
 				EstoqueID:         estoque.ID,
@@ -1004,6 +1287,7 @@ func TestCriarProduto_TemplateIDVazioRejeitado(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.004")
 
 	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "qualquer texto livre, sem estrutura nenhuma",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -1036,6 +1320,7 @@ func TestCriarProduto_ComTemplateGenericoAceitaNomeLivre(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.004")
 
 	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "qualquer texto livre, sem estrutura nenhuma",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -1150,6 +1435,7 @@ func TestAtualizarNomeProduto_ComTemplateRevalida(t *testing.T) {
 	templateID, _ := templatePorSubtipo(t, db, "Tubo — PEAD/PPR")
 
 	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "TUBO PEAD PN80 DN50",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -1218,6 +1504,7 @@ func TestAtualizarNomeProduto_NomeInvalido(t *testing.T) {
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.007")
 	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Nome Original",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,

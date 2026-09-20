@@ -140,11 +140,12 @@ func TestAnalisarInconsistencias_CampoEstruturadoValidoNuncaSugere(t *testing.T)
 	limparProdutos(t, db)
 
 	produtoID := seedProdutoNormalizacao(t, db, "Tubo Estruturado Valido", CriarProdutoInput{
-		Comprimento: &DimensaoInput{Valor: ptrFloat(6), Unidade: ptrStr("m")},
-		Largura:     &DimensaoInput{Valor: ptrFloat(100), Unidade: ptrStr("mm")},
-		Diametro:    &DimensaoInput{Valor: ptrFloat(10), Unidade: ptrStr("cm")},
-		Altura:      &DimensaoInput{Valor: ptrFloat(2), Unidade: ptrStr("m")},
-		Espessura:   &DimensaoInput{Valor: ptrFloat(5), Unidade: ptrStr("mm")},
+		UnidadeMedida: "un",
+		Comprimento:   &DimensaoInput{Valor: ptrFloat(6), Unidade: ptrStr("m")},
+		Largura:       &DimensaoInput{Valor: ptrFloat(100), Unidade: ptrStr("mm")},
+		Diametro:      &DimensaoInput{Valor: ptrFloat(10), Unidade: ptrStr("cm")},
+		Altura:        &DimensaoInput{Valor: ptrFloat(2), Unidade: ptrStr("m")},
+		Espessura:     &DimensaoInput{Valor: ptrFloat(5), Unidade: ptrStr("mm")},
 	})
 	// Mesmo com uma entrada em dimensoes_pendentes_revisao para um campo já
 	// estruturado, nenhuma sugestão deve nascer dela — a condição de campo
@@ -168,7 +169,8 @@ func TestAnalisarInconsistencias_MigracaoTextoReparseavel(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	produtoID := seedProdutoNormalizacao(t, db, "Tubo Migracao Reparseavel", CriarProdutoInput{})
+	produtoID := seedProdutoNormalizacao(t, db, "Tubo Migracao Reparseavel", CriarProdutoInput{
+		UnidadeMedida: "un"})
 	setDimensoesPendentesRevisao(t, db, produtoID, `{"comprimento": "cerca de 3 metros"}`)
 
 	sugestoes, err := AnalisarInconsistencias(db, empresaTeste)
@@ -191,7 +193,8 @@ func TestAnalisarInconsistencias_MigracaoTextoNaoParseavel(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	produtoID := seedProdutoNormalizacao(t, db, "Tubo Migracao Nao Parseavel", CriarProdutoInput{})
+	produtoID := seedProdutoNormalizacao(t, db, "Tubo Migracao Nao Parseavel", CriarProdutoInput{
+		UnidadeMedida: "un"})
 	setDimensoesPendentesRevisao(t, db, produtoID, `{"largura": "ver etiqueta"}`)
 
 	sugestoes, err := AnalisarInconsistencias(db, empresaTeste)
@@ -210,6 +213,7 @@ func TestAnalisarInconsistencias_NomeComValorImplicitoUnicoCampoVazio(t *testing
 	limparProdutos(t, db)
 
 	produtoID := seedProdutoNormalizacao(t, db, "TUBO PVC 6M", CriarProdutoInput{
+		UnidadeMedida: "un",
 		// Comprimento fica NULL (o único campo vazio); os outros 4 preenchidos.
 		Largura:   &DimensaoInput{Valor: ptrFloat(100), Unidade: ptrStr("mm")},
 		Diametro:  &DimensaoInput{Valor: ptrFloat(10), Unidade: ptrStr("cm")},
@@ -238,6 +242,7 @@ func TestAnalisarInconsistencias_NomeComNumeroDoisCamposVaziosNuncaSugereDeNome(
 	limparProdutos(t, db)
 
 	produtoID := seedProdutoNormalizacao(t, db, "TUBO PVC 6M DN25", CriarProdutoInput{
+		UnidadeMedida: "un",
 		// Comprimento E diametro ficam NULL — dois campos vazios.
 		Largura:   &DimensaoInput{Valor: ptrFloat(100), Unidade: ptrStr("mm")},
 		Altura:    &DimensaoInput{Valor: ptrFloat(2), Unidade: ptrStr("m")},
@@ -265,10 +270,11 @@ func TestAnalisarInconsistencias_MigracaoTemPrioridadeSobreNome(t *testing.T) {
 	limparProdutos(t, db)
 
 	produtoID := seedProdutoNormalizacao(t, db, "TUBO PVC 6M", CriarProdutoInput{
-		Largura:   &DimensaoInput{Valor: ptrFloat(100), Unidade: ptrStr("mm")},
-		Diametro:  &DimensaoInput{Valor: ptrFloat(10), Unidade: ptrStr("cm")},
-		Altura:    &DimensaoInput{Valor: ptrFloat(2), Unidade: ptrStr("m")},
-		Espessura: &DimensaoInput{Valor: ptrFloat(5), Unidade: ptrStr("mm")},
+		UnidadeMedida: "un",
+		Largura:       &DimensaoInput{Valor: ptrFloat(100), Unidade: ptrStr("mm")},
+		Diametro:      &DimensaoInput{Valor: ptrFloat(10), Unidade: ptrStr("cm")},
+		Altura:        &DimensaoInput{Valor: ptrFloat(2), Unidade: ptrStr("m")},
+		Espessura:     &DimensaoInput{Valor: ptrFloat(5), Unidade: ptrStr("mm")},
 	})
 	setDimensoesPendentesRevisao(t, db, produtoID, `{"comprimento": "cerca de 3 metros"}`)
 
@@ -311,6 +317,7 @@ func TestAnalisarInconsistencias_NomeComDoisTokensNaoReatribuiCampoJaEstruturado
 	limparProdutos(t, db)
 
 	produtoID := seedProdutoNormalizacao(t, db, "TUBO 25MM 6M", CriarProdutoInput{
+		UnidadeMedida: "un",
 		// Comprimento fica NULL (o único campo vazio); diametro já estruturado
 		// com o MESMO valor+unidade do primeiro token do nome ("25MM").
 		Diametro:  &DimensaoInput{Valor: ptrFloat(25), Unidade: ptrStr("mm")},
@@ -350,16 +357,18 @@ func TestAnalisarInconsistencias_DimensoesPendentesMalformadoNaoAbortaAnalise(t 
 	// e nome com valor implícito para o único campo vazio — a origem "nome"
 	// deve continuar funcionando para ele.
 	produtoComJSONRuim := seedProdutoNormalizacao(t, db, "TUBO PVC 6M", CriarProdutoInput{
-		Largura:   &DimensaoInput{Valor: ptrFloat(100), Unidade: ptrStr("mm")},
-		Diametro:  &DimensaoInput{Valor: ptrFloat(10), Unidade: ptrStr("cm")},
-		Altura:    &DimensaoInput{Valor: ptrFloat(2), Unidade: ptrStr("m")},
-		Espessura: &DimensaoInput{Valor: ptrFloat(5), Unidade: ptrStr("mm")},
+		UnidadeMedida: "un",
+		Largura:       &DimensaoInput{Valor: ptrFloat(100), Unidade: ptrStr("mm")},
+		Diametro:      &DimensaoInput{Valor: ptrFloat(10), Unidade: ptrStr("cm")},
+		Altura:        &DimensaoInput{Valor: ptrFloat(2), Unidade: ptrStr("m")},
+		Espessura:     &DimensaoInput{Valor: ptrFloat(5), Unidade: ptrStr("mm")},
 	})
 	setDimensoesPendentesRevisao(t, db, produtoComJSONRuim, `{"comprimento": 3}`)
 
 	// Um segundo Produto, saudável, no mesmo catálogo — prova que a análise
 	// não para no primeiro Produto ruim.
-	outroProdutoID := seedProdutoNormalizacao(t, db, "Cano Migracao Sadio", CriarProdutoInput{})
+	outroProdutoID := seedProdutoNormalizacao(t, db, "Cano Migracao Sadio", CriarProdutoInput{
+		UnidadeMedida: "un"})
 	setDimensoesPendentesRevisao(t, db, outroProdutoID, `{"largura": "6 m"}`)
 
 	sugestoes, err := AnalisarInconsistencias(db, empresaTeste)
@@ -416,7 +425,8 @@ func TestAplicarCorrecao_Individual(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	produtoID := seedProdutoNormalizacao(t, db, "Tubo Aplicar Individual", CriarProdutoInput{})
+	produtoID := seedProdutoNormalizacao(t, db, "Tubo Aplicar Individual", CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	aplicadas, err := AplicarCorrecoes(db, empresaTeste, []CorrecaoInput{
 		{ProdutoID: produtoID, Campo: "comprimento", Valor: 6, Unidade: "m"},
@@ -445,9 +455,11 @@ func TestAplicarCorrecao_LoteComItemObsoleto(t *testing.T) {
 	// produtoJaPreenchido já tem `largura` estruturada -> o guard IS NULL
 	// bloqueia a escrita, o item some de `aplicadas`.
 	produtoJaPreenchido := seedProdutoNormalizacao(t, db, "Tubo Ja Preenchido", CriarProdutoInput{
-		Largura: &DimensaoInput{Valor: ptrFloat(50), Unidade: ptrStr("mm")},
+		UnidadeMedida: "un",
+		Largura:       &DimensaoInput{Valor: ptrFloat(50), Unidade: ptrStr("mm")},
 	})
-	produtoVazio := seedProdutoNormalizacao(t, db, "Tubo Vazio", CriarProdutoInput{})
+	produtoVazio := seedProdutoNormalizacao(t, db, "Tubo Vazio", CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	aplicadas, err := AplicarCorrecoes(db, empresaTeste, []CorrecaoInput{
 		{ProdutoID: produtoJaPreenchido, Campo: "largura", Valor: 100, Unidade: "mm"},
@@ -478,7 +490,8 @@ func TestAplicarCorrecao_CampoInvalido(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	produtoID := seedProdutoNormalizacao(t, db, "Tubo Campo Invalido", CriarProdutoInput{})
+	produtoID := seedProdutoNormalizacao(t, db, "Tubo Campo Invalido", CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	_, err := AplicarCorrecoes(db, empresaTeste, []CorrecaoInput{
 		{ProdutoID: produtoID, Campo: "peso", Valor: 6, Unidade: "m"},
@@ -514,7 +527,8 @@ func TestAplicarCorrecao_ValorZeroOuUnidadeInvalidaSaoRejeitados(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	produtoID := seedProdutoNormalizacao(t, db, "Tubo Valor Invalido", CriarProdutoInput{})
+	produtoID := seedProdutoNormalizacao(t, db, "Tubo Valor Invalido", CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	casos := []CorrecaoInput{
 		{ProdutoID: produtoID, Campo: "comprimento", Valor: 0, Unidade: "m"},
@@ -539,7 +553,8 @@ func TestAplicarCorrecao_LoteTotalmenteObsoletoRetornaVazio(t *testing.T) {
 	limparProdutos(t, db)
 
 	produtoID := seedProdutoNormalizacao(t, db, "Tubo Totalmente Obsoleto", CriarProdutoInput{
-		Comprimento: &DimensaoInput{Valor: ptrFloat(6), Unidade: ptrStr("m")},
+		UnidadeMedida: "un",
+		Comprimento:   &DimensaoInput{Valor: ptrFloat(6), Unidade: ptrStr("m")},
 	})
 
 	aplicadas, err := AplicarCorrecoes(db, empresaTeste, []CorrecaoInput{
@@ -560,7 +575,8 @@ func TestSugestaoIgnorada_ValorAcimaDoLimiteRejeitado(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	produtoID := seedProdutoNormalizacao(t, db, "Tubo Ignorar Valor Acima Limite", CriarProdutoInput{})
+	produtoID := seedProdutoNormalizacao(t, db, "Tubo Ignorar Valor Acima Limite", CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	err := IgnorarSugestao(db, empresaTeste, produtoID, "comprimento", limiteNumeric103+1, "m")
 	var erroValidacao *ErroProdutoValidacao
@@ -597,7 +613,8 @@ func TestAplicarCorrecao_LoteComProdutoIdMalformadoNaoAbortaLote(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	produtoValido := seedProdutoNormalizacao(t, db, "Tubo ProdutoId Malformado", CriarProdutoInput{})
+	produtoValido := seedProdutoNormalizacao(t, db, "Tubo ProdutoId Malformado", CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	aplicadas, err := AplicarCorrecoes(db, empresaTeste, []CorrecaoInput{
 		{ProdutoID: "id-nao-e-um-uuid", Campo: "comprimento", Valor: 6, Unidade: "m"},
@@ -623,7 +640,8 @@ func TestSugestaoIgnorada_RemoveDaProximaAnalise(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	produtoID := seedProdutoNormalizacao(t, db, "Tubo Ignorar", CriarProdutoInput{})
+	produtoID := seedProdutoNormalizacao(t, db, "Tubo Ignorar", CriarProdutoInput{
+		UnidadeMedida: "un"})
 	setDimensoesPendentesRevisao(t, db, produtoID, `{"comprimento": "cerca de 3 metros"}`)
 
 	// Confere que a sugestão existe ANTES de ignorar.
@@ -655,7 +673,8 @@ func TestSugestaoIgnorada_MesmaTuplaDuasVezesEIdempotente(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	produtoID := seedProdutoNormalizacao(t, db, "Tubo Ignorar Duas Vezes", CriarProdutoInput{})
+	produtoID := seedProdutoNormalizacao(t, db, "Tubo Ignorar Duas Vezes", CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	if err := IgnorarSugestao(db, empresaTeste, produtoID, "comprimento", 3, "m"); err != nil {
 		t.Fatalf("IgnorarSugestao (1a chamada): %v", err)
@@ -677,7 +696,8 @@ func TestSugestaoIgnorada_ValorMudaParaOutroInconsistenteReaparece(t *testing.T)
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	produtoID := seedProdutoNormalizacao(t, db, "Tubo Valor Muda", CriarProdutoInput{})
+	produtoID := seedProdutoNormalizacao(t, db, "Tubo Valor Muda", CriarProdutoInput{
+		UnidadeMedida: "un"})
 	setDimensoesPendentesRevisao(t, db, produtoID, `{"comprimento": "cerca de 3 metros"}`)
 
 	if err := IgnorarSugestao(db, empresaTeste, produtoID, "comprimento", 3, "m"); err != nil {
@@ -706,7 +726,8 @@ func TestSugestaoIgnorada_CampoInvalido(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	produtoID := seedProdutoNormalizacao(t, db, "Tubo Ignorar Campo Invalido", CriarProdutoInput{})
+	produtoID := seedProdutoNormalizacao(t, db, "Tubo Ignorar Campo Invalido", CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	err := IgnorarSugestao(db, empresaTeste, produtoID, "peso", 6, "m")
 	var erroValidacao *ErroProdutoValidacao
@@ -814,10 +835,12 @@ func TestDetectarDuplicatas_DuplicataClara(t *testing.T) {
 	}
 
 	p1 := seedProdutoComEstoque(t, db, "Tubo PVC 25mm", estoque.ID, CriarProdutoInput{
-		Diametro: &DimensaoInput{Valor: ptrFloat(25), Unidade: ptrStr("mm")},
+		UnidadeMedida: "un",
+		Diametro:      &DimensaoInput{Valor: ptrFloat(25), Unidade: ptrStr("mm")},
 	})
 	p2 := seedProdutoComEstoque(t, db, "Tubo PVC 25mm", estoque.ID, CriarProdutoInput{
-		Diametro: &DimensaoInput{Valor: ptrFloat(2.5), Unidade: ptrStr("cm")},
+		UnidadeMedida: "un",
+		Diametro:      &DimensaoInput{Valor: ptrFloat(2.5), Unidade: ptrStr("cm")},
 	})
 
 	grupos, err := DetectarDuplicatas(db, empresaTeste)
@@ -859,10 +882,12 @@ func TestDetectarDuplicatas_MesmoNomeDimensaoDiferente(t *testing.T) {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
 	p1 := seedProdutoComEstoque(t, db, "Parafuso M6", estoque.ID, CriarProdutoInput{
-		Comprimento: &DimensaoInput{Valor: ptrFloat(20), Unidade: ptrStr("mm")},
+		UnidadeMedida: "un",
+		Comprimento:   &DimensaoInput{Valor: ptrFloat(20), Unidade: ptrStr("mm")},
 	})
 	p2 := seedProdutoComEstoque(t, db, "Parafuso M6", estoque.ID, CriarProdutoInput{
-		Comprimento: &DimensaoInput{Valor: ptrFloat(30), Unidade: ptrStr("mm")},
+		UnidadeMedida: "un",
+		Comprimento:   &DimensaoInput{Valor: ptrFloat(30), Unidade: ptrStr("mm")},
 	})
 
 	grupos, err := DetectarDuplicatas(db, empresaTeste)
@@ -891,10 +916,12 @@ func TestDetectarDuplicatas_SemLocalEmComum(t *testing.T) {
 	}
 
 	p1 := seedProdutoComEstoque(t, db, "Cabo Flexivel 4mm", estoqueX.ID, CriarProdutoInput{
-		Diametro: &DimensaoInput{Valor: ptrFloat(4), Unidade: ptrStr("mm")},
+		UnidadeMedida: "un",
+		Diametro:      &DimensaoInput{Valor: ptrFloat(4), Unidade: ptrStr("mm")},
 	})
 	p2 := seedProdutoComEstoque(t, db, "Cabo Flexivel 4mm", estoqueY.ID, CriarProdutoInput{
-		Diametro: &DimensaoInput{Valor: ptrFloat(4), Unidade: ptrStr("mm")},
+		UnidadeMedida: "un",
+		Diametro:      &DimensaoInput{Valor: ptrFloat(4), Unidade: ptrStr("mm")},
 	})
 
 	grupos, err := DetectarDuplicatas(db, empresaTeste)
@@ -919,9 +946,11 @@ func TestDetectarDuplicatas_CampoParcialmentePreenchido(t *testing.T) {
 	}
 
 	p1 := seedProdutoComEstoque(t, db, "Chapa Metalica", estoque.ID, CriarProdutoInput{
-		Altura: &DimensaoInput{Valor: ptrFloat(10), Unidade: ptrStr("mm")},
+		UnidadeMedida: "un",
+		Altura:        &DimensaoInput{Valor: ptrFloat(10), Unidade: ptrStr("mm")},
 	})
-	p2 := seedProdutoComEstoque(t, db, "Chapa Metalica", estoque.ID, CriarProdutoInput{})
+	p2 := seedProdutoComEstoque(t, db, "Chapa Metalica", estoque.ID, CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	grupos, err := DetectarDuplicatas(db, empresaTeste)
 	if err != nil {
@@ -945,8 +974,10 @@ func TestDetectarDuplicatas_NomeComAcentoECaseDiferentesAgrupa(t *testing.T) {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
 
-	p1 := seedProdutoComEstoque(t, db, "Válvula Registro", estoque.ID, CriarProdutoInput{})
-	p2 := seedProdutoComEstoque(t, db, "valvula registro", estoque.ID, CriarProdutoInput{})
+	p1 := seedProdutoComEstoque(t, db, "Válvula Registro", estoque.ID, CriarProdutoInput{
+		UnidadeMedida: "un"})
+	p2 := seedProdutoComEstoque(t, db, "valvula registro", estoque.ID, CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	grupos, err := DetectarDuplicatas(db, empresaTeste)
 	if err != nil {
@@ -977,10 +1008,13 @@ func TestDetectarDuplicatas_TresMembrosSemInterseccaoTotalNaoAgrupa(t *testing.T
 	}
 
 	nome := "Anel Vedacao"
-	produtoA := seedProdutoComEstoque(t, db, nome, estoqueAB.ID, CriarProdutoInput{})
-	produtoB := seedProdutoComEstoque(t, db, nome, estoqueAB.ID, CriarProdutoInput{})
+	produtoA := seedProdutoComEstoque(t, db, nome, estoqueAB.ID, CriarProdutoInput{
+		UnidadeMedida: "un"})
+	produtoB := seedProdutoComEstoque(t, db, nome, estoqueAB.ID, CriarProdutoInput{
+		UnidadeMedida: "un"})
 	adicionarProdutoEstoque(t, db, produtoB, estoqueBC.ID, 1) // B também está no Estoque BC
-	produtoC := seedProdutoComEstoque(t, db, nome, estoqueBC.ID, CriarProdutoInput{})
+	produtoC := seedProdutoComEstoque(t, db, nome, estoqueBC.ID, CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	grupos, err := DetectarDuplicatas(db, empresaTeste)
 	if err != nil {
@@ -1022,11 +1056,14 @@ func TestDetectarDuplicatas_TresMembrosComInterseccaoTotalAgrupaEmUmGrupo(t *tes
 	}
 
 	nome := "Joelho PVC 90"
-	produtoA := seedProdutoComEstoque(t, db, nome, estoqueComum.ID, CriarProdutoInput{})
+	produtoA := seedProdutoComEstoque(t, db, nome, estoqueComum.ID, CriarProdutoInput{
+		UnidadeMedida: "un"})
 	adicionarProdutoEstoque(t, db, produtoA, estoqueExtraA.ID, 1)
-	produtoB := seedProdutoComEstoque(t, db, nome, estoqueComum.ID, CriarProdutoInput{})
+	produtoB := seedProdutoComEstoque(t, db, nome, estoqueComum.ID, CriarProdutoInput{
+		UnidadeMedida: "un"})
 	adicionarProdutoEstoque(t, db, produtoB, estoqueExtraB.ID, 1)
-	produtoC := seedProdutoComEstoque(t, db, nome, estoqueComum.ID, CriarProdutoInput{})
+	produtoC := seedProdutoComEstoque(t, db, nome, estoqueComum.ID, CriarProdutoInput{
+		UnidadeMedida: "un"})
 	adicionarProdutoEstoque(t, db, produtoC, estoqueExtraC.ID, 1)
 
 	grupos, err := DetectarDuplicatas(db, empresaTeste)
@@ -1070,13 +1107,17 @@ func TestDetectarDuplicatas_MultiplosGruposIndependentesNaoContaminam(t *testing
 	}
 
 	tuboA := seedProdutoComEstoque(t, db, "Tubo PVC 25mm", estoqueTubo.ID, CriarProdutoInput{
-		Diametro: &DimensaoInput{Valor: ptrFloat(25), Unidade: ptrStr("mm")},
+		UnidadeMedida: "un",
+		Diametro:      &DimensaoInput{Valor: ptrFloat(25), Unidade: ptrStr("mm")},
 	})
 	tuboB := seedProdutoComEstoque(t, db, "Tubo PVC 25mm", estoqueTubo.ID, CriarProdutoInput{
-		Diametro: &DimensaoInput{Valor: ptrFloat(25), Unidade: ptrStr("mm")},
+		UnidadeMedida: "un",
+		Diametro:      &DimensaoInput{Valor: ptrFloat(25), Unidade: ptrStr("mm")},
 	})
-	parafusoC := seedProdutoComEstoque(t, db, "Parafuso M6", estoqueParafuso.ID, CriarProdutoInput{})
-	parafusoD := seedProdutoComEstoque(t, db, "Parafuso M6", estoqueParafuso.ID, CriarProdutoInput{})
+	parafusoC := seedProdutoComEstoque(t, db, "Parafuso M6", estoqueParafuso.ID, CriarProdutoInput{
+		UnidadeMedida: "un"})
+	parafusoD := seedProdutoComEstoque(t, db, "Parafuso M6", estoqueParafuso.ID, CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	grupos, err := DetectarDuplicatas(db, empresaTeste)
 	if err != nil {
@@ -1120,8 +1161,10 @@ func TestDetectarDuplicatas_CatalogoSemDuplicatas(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	seedProdutoNormalizacao(t, db, "Produto Unico A", CriarProdutoInput{})
-	seedProdutoNormalizacao(t, db, "Produto Unico B", CriarProdutoInput{})
+	seedProdutoNormalizacao(t, db, "Produto Unico A", CriarProdutoInput{
+		UnidadeMedida: "un"})
+	seedProdutoNormalizacao(t, db, "Produto Unico B", CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	grupos, err := DetectarDuplicatas(db, empresaTeste)
 	if err != nil {
@@ -1269,10 +1312,12 @@ func TestMesclarDuplicatas_MesclagemSimples(t *testing.T) {
 	usuarioID := semearConta(t, db, "Almox Mesclagem Simples", "mesclagem-simples-almox@empresa.com", PapelAlmoxarife, 0)
 
 	produtoA := seedProdutoParaMesclagem(t, db, "Tubo PVC 25mm", estoque.ID, 5, CriarProdutoInput{
-		Diametro: &DimensaoInput{Valor: ptrFloat(25), Unidade: ptrStr("mm")},
+		UnidadeMedida: "un",
+		Diametro:      &DimensaoInput{Valor: ptrFloat(25), Unidade: ptrStr("mm")},
 	})
 	produtoB := seedProdutoParaMesclagem(t, db, "Tubo PVC 25mm", estoque.ID, 3, CriarProdutoInput{
-		Diametro: &DimensaoInput{Valor: ptrFloat(25), Unidade: ptrStr("mm")},
+		UnidadeMedida: "un",
+		Diametro:      &DimensaoInput{Valor: ptrFloat(25), Unidade: ptrStr("mm")},
 	})
 
 	resultado, err := MesclarDuplicatas(db, empresaTeste, produtoA, []string{produtoB}, usuarioID)
@@ -1357,10 +1402,12 @@ func TestMesclarDuplicatas_RemovidoComHistoricoDeMovimentacoes(t *testing.T) {
 	usuarioID := semearConta(t, db, "Almox Mesclagem Historico", "mesclagem-historico-almox@empresa.com", PapelAlmoxarife, 0)
 
 	produtoA := seedProdutoParaMesclagem(t, db, "Cabo Flexivel 4mm", estoque.ID, 10, CriarProdutoInput{
-		Diametro: &DimensaoInput{Valor: ptrFloat(4), Unidade: ptrStr("mm")},
+		UnidadeMedida: "un",
+		Diametro:      &DimensaoInput{Valor: ptrFloat(4), Unidade: ptrStr("mm")},
 	})
 	produtoB := seedProdutoParaMesclagem(t, db, "Cabo Flexivel 4mm", estoque.ID, 5, CriarProdutoInput{
-		Diametro: &DimensaoInput{Valor: ptrFloat(4), Unidade: ptrStr("mm")},
+		UnidadeMedida: "un",
+		Diametro:      &DimensaoInput{Valor: ptrFloat(4), Unidade: ptrStr("mm")},
 	})
 
 	if _, err := RegistrarBaixa(db, empresaTeste, produtoB, estoque.ID, usuarioID, 1); err != nil {
@@ -1410,9 +1457,12 @@ func TestMesclarDuplicatas_GrupoDeTresLocaisEmIntersecaoTotal(t *testing.T) {
 	usuarioID := semearConta(t, db, "Almox Mesclagem Tres Membros", "mesclagem-tres-almox@empresa.com", PapelAlmoxarife, 0)
 
 	nome := "Joelho PVC 90"
-	produtoA := seedProdutoParaMesclagem(t, db, nome, estoque.ID, 2, CriarProdutoInput{})
-	produtoB := seedProdutoParaMesclagem(t, db, nome, estoque.ID, 3, CriarProdutoInput{})
-	produtoC := seedProdutoParaMesclagem(t, db, nome, estoque.ID, 4, CriarProdutoInput{})
+	produtoA := seedProdutoParaMesclagem(t, db, nome, estoque.ID, 2, CriarProdutoInput{
+		UnidadeMedida: "un"})
+	produtoB := seedProdutoParaMesclagem(t, db, nome, estoque.ID, 3, CriarProdutoInput{
+		UnidadeMedida: "un"})
+	produtoC := seedProdutoParaMesclagem(t, db, nome, estoque.ID, 4, CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	resultado, err := MesclarDuplicatas(db, empresaTeste, produtoA, []string{produtoB, produtoC}, usuarioID)
 	if err != nil {
@@ -1454,8 +1504,10 @@ func TestMesclarDuplicatas_ProdutoJaMescladoPorExecucaoConcorrente(t *testing.T)
 	}
 	usuarioID := semearConta(t, db, "Almox Mesclagem Ja Mesclado", "mesclagem-ja-mesclado-almox@empresa.com", PapelAlmoxarife, 0)
 
-	produtoA := seedProdutoParaMesclagem(t, db, "Anel Vedacao", estoque.ID, 2, CriarProdutoInput{})
-	produtoB := seedProdutoParaMesclagem(t, db, "Anel Vedacao", estoque.ID, 3, CriarProdutoInput{})
+	produtoA := seedProdutoParaMesclagem(t, db, "Anel Vedacao", estoque.ID, 2, CriarProdutoInput{
+		UnidadeMedida: "un"})
+	produtoB := seedProdutoParaMesclagem(t, db, "Anel Vedacao", estoque.ID, 3, CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	if _, err := db.Exec(`UPDATE produtos SET deleted_at = now() WHERE id = $1`, produtoB); err != nil {
 		t.Fatalf("falha ao simular mesclagem concorrente de B: %v", err)
@@ -1489,10 +1541,12 @@ func TestMesclarDuplicatas_GrupoNaoEhMaisValido(t *testing.T) {
 	usuarioID := semearConta(t, db, "Almox Mesclagem Grupo Invalido", "mesclagem-grupo-invalido-almox@empresa.com", PapelAlmoxarife, 0)
 
 	produtoA := seedProdutoParaMesclagem(t, db, "Tubo PVC 25mm", estoque.ID, 2, CriarProdutoInput{
-		Diametro: &DimensaoInput{Valor: ptrFloat(25), Unidade: ptrStr("mm")},
+		UnidadeMedida: "un",
+		Diametro:      &DimensaoInput{Valor: ptrFloat(25), Unidade: ptrStr("mm")},
 	})
 	produtoB := seedProdutoParaMesclagem(t, db, "Tubo PVC 25mm", estoque.ID, 3, CriarProdutoInput{
-		Diametro: &DimensaoInput{Valor: ptrFloat(25), Unidade: ptrStr("mm")},
+		UnidadeMedida: "un",
+		Diametro:      &DimensaoInput{Valor: ptrFloat(25), Unidade: ptrStr("mm")},
 	})
 
 	// Story 6.2: a dimensão de B é corrigida para um valor diferente entre a
@@ -1528,8 +1582,10 @@ func TestMesclarDuplicatas_FormaInvalida(t *testing.T) {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
 	usuarioID := semearConta(t, db, "Almox Mesclagem Forma Invalida", "mesclagem-forma-invalida-almox@empresa.com", PapelAlmoxarife, 0)
-	produtoA := seedProdutoParaMesclagem(t, db, "Produto Forma Invalida A", estoque.ID, 1, CriarProdutoInput{})
-	produtoB := seedProdutoParaMesclagem(t, db, "Produto Forma Invalida A", estoque.ID, 1, CriarProdutoInput{})
+	produtoA := seedProdutoParaMesclagem(t, db, "Produto Forma Invalida A", estoque.ID, 1, CriarProdutoInput{
+		UnidadeMedida: "un"})
+	produtoB := seedProdutoParaMesclagem(t, db, "Produto Forma Invalida A", estoque.ID, 1, CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	casos := []struct {
 		nome               string
@@ -1566,7 +1622,8 @@ func TestMesclarDuplicatas_ProdutoIdMalformadoOuInexistenteEhGrupoInvalido(t *te
 		t.Fatalf("CriarEstoque: %v", err)
 	}
 	usuarioID := semearConta(t, db, "Almox Mesclagem Id Malformado", "mesclagem-id-malformado-almox@empresa.com", PapelAlmoxarife, 0)
-	produtoA := seedProdutoParaMesclagem(t, db, "Produto Id Malformado A", estoque.ID, 1, CriarProdutoInput{})
+	produtoA := seedProdutoParaMesclagem(t, db, "Produto Id Malformado A", estoque.ID, 1, CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	casos := map[string]string{
 		"malformado":  "id-nao-e-um-uuid",
@@ -1598,8 +1655,10 @@ func TestMesclarDuplicatas_FalhaDeBanco(t *testing.T) {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
 	usuarioID := semearConta(t, db, "Almox Mesclagem Falha Banco", "mesclagem-falha-banco-almox@empresa.com", PapelAlmoxarife, 0)
-	produtoA := seedProdutoParaMesclagem(t, db, "Produto Falha Banco A", estoque.ID, 1, CriarProdutoInput{})
-	produtoB := seedProdutoParaMesclagem(t, db, "Produto Falha Banco A", estoque.ID, 1, CriarProdutoInput{})
+	produtoA := seedProdutoParaMesclagem(t, db, "Produto Falha Banco A", estoque.ID, 1, CriarProdutoInput{
+		UnidadeMedida: "un"})
+	produtoB := seedProdutoParaMesclagem(t, db, "Produto Falha Banco A", estoque.ID, 1, CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	if _, err := db.Exec(`ALTER TABLE mesclagens_duplicatas RENAME TO mesclagens_duplicatas_indisponivel`); err != nil {
 		t.Fatalf("renomear mesclagens_duplicatas: %v", err)
@@ -1640,8 +1699,10 @@ func TestMesclarDuplicatas_PedidoItensRewriteSemColisao(t *testing.T) {
 	almoxarifeID := semearConta(t, db, "Almox Pedido Rewrite", "pedido-rewrite-almox@empresa.com", PapelAlmoxarife, 0)
 	usuarioID := semearConta(t, db, "Usuario Pedido Rewrite", "pedido-rewrite-usuario@empresa.com", PapelUsuario, 0)
 
-	produtoA := seedProdutoParaMesclagem(t, db, "Cimento CP II", estoque.ID, 5, CriarProdutoInput{})
-	produtoB := seedProdutoParaMesclagem(t, db, "Cimento CP II", estoque.ID, 3, CriarProdutoInput{})
+	produtoA := seedProdutoParaMesclagem(t, db, "Cimento CP II", estoque.ID, 5, CriarProdutoInput{
+		UnidadeMedida: "un"})
+	produtoB := seedProdutoParaMesclagem(t, db, "Cimento CP II", estoque.ID, 3, CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoB, estoque.ID, 2); err != nil {
 		t.Fatalf("seed AdicionarItemCarrinho: %v", err)
@@ -1696,8 +1757,10 @@ func TestMesclarDuplicatas_PedidoItensColisaoDeChaveComposta(t *testing.T) {
 	almoxarifeID := semearConta(t, db, "Almox Pedido Colisao", "pedido-colisao-almox@empresa.com", PapelAlmoxarife, 0)
 	usuarioID := semearConta(t, db, "Usuario Pedido Colisao", "pedido-colisao-usuario@empresa.com", PapelUsuario, 0)
 
-	produtoA := seedProdutoParaMesclagem(t, db, "Tijolo Ceramico 6 Furos", estoque.ID, 10, CriarProdutoInput{})
-	produtoB := seedProdutoParaMesclagem(t, db, "Tijolo Ceramico 6 Furos", estoque.ID, 8, CriarProdutoInput{})
+	produtoA := seedProdutoParaMesclagem(t, db, "Tijolo Ceramico 6 Furos", estoque.ID, 10, CriarProdutoInput{
+		UnidadeMedida: "un"})
+	produtoB := seedProdutoParaMesclagem(t, db, "Tijolo Ceramico 6 Furos", estoque.ID, 8, CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	// O MESMO usuário pede os dois "duplicados" (A e B) no MESMO Estoque, no
 	// MESMO Pedido — cenário exato da colisão de chave composta.

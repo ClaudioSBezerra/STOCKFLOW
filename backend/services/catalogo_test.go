@@ -72,6 +72,7 @@ func TestListarCatalogoGrade_PaginacaoEOrdem(t *testing.T) {
 	// Inserção fora de ordem alfabética de propósito — a query deve ordenar.
 	for i := 29; i >= 0; i-- {
 		criarProdutoCat(t, db, CriarProdutoInput{
+			UnidadeMedida:     "un",
 			Nome:              fmt.Sprintf("Produto %02d", i),
 			CategoriaID:       categoriaID,
 			EstoqueID:         estoque.ID,
@@ -122,13 +123,15 @@ func TestListarCatalogoGrade_ProdutoSemEstoque(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 
 	semEstoque, codigoSemEstoque := criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Sem Estoque", CategoriaID: categoriaID,
+		UnidadeMedida: "un",
+		Nome:          "Sem Estoque", CategoriaID: categoriaID,
 		EstoqueID: estoque.ID, QuantidadeInicial: 0,
 	})
 	limparEstoqueDe(t, db, semEstoque)
 
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Com Estoque", CategoriaID: categoriaID,
+		UnidadeMedida: "un",
+		Nome:          "Com Estoque", CategoriaID: categoriaID,
 		EstoqueID: estoque.ID, QuantidadeInicial: 7,
 	})
 
@@ -170,7 +173,8 @@ func TestListarCatalogoGrade_QuantidadeSomadaEDimensoes(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 
 	id, _ := criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Tubo PVC 100mm", CategoriaID: categoriaID,
+		UnidadeMedida: "un",
+		Nome:          "Tubo PVC 100mm", CategoriaID: categoriaID,
 		EstoqueID: estoqueA.ID, QuantidadeInicial: 10,
 		Comprimento: &DimensaoInput{Valor: ptrFloat(6), Unidade: ptrStr("m")},
 	})
@@ -207,7 +211,8 @@ func TestListarCatalogoGrade_PaginaAlemDaUltima(t *testing.T) {
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Único no Catálogo", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+		UnidadeMedida: "un",
+		Nome:          "Único no Catálogo", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	})
 
 	itens, pag, err := ListarCatalogoGrade(db, 99, FiltrosCatalogo{EmpresaID: empresaTeste})
@@ -265,16 +270,19 @@ func TestListarCatalogoAgrupado_AgrupaPorNomeEDimensoes(t *testing.T) {
 
 	// p1: 10 em Almoxarifado. p2: 5 em Almoxarifado + 2 em Obra. p3: sem estoque.
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Parafuso Grupo", CategoriaID: categoriaID, EstoqueID: estAlmox.ID, QuantidadeInicial: 10,
+		UnidadeMedida: "un",
+		Nome:          "Parafuso Grupo", CategoriaID: categoriaID, EstoqueID: estAlmox.ID, QuantidadeInicial: 10,
 		Diametro: dim(),
 	})
 	p2, _ := criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Parafuso Grupo", CategoriaID: categoriaID, EstoqueID: estAlmox.ID, QuantidadeInicial: 5,
+		UnidadeMedida: "un",
+		Nome:          "Parafuso Grupo", CategoriaID: categoriaID, EstoqueID: estAlmox.ID, QuantidadeInicial: 5,
 		Diametro: dim(),
 	})
 	setQuantidade(t, db, p2, estObra.ID, 2)
 	p3, _ := criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Parafuso Grupo", CategoriaID: categoriaID, EstoqueID: estAlmox.ID, QuantidadeInicial: 0,
+		UnidadeMedida: "un",
+		Nome:          "Parafuso Grupo", CategoriaID: categoriaID, EstoqueID: estAlmox.ID, QuantidadeInicial: 0,
 		Diametro: dim(),
 	})
 	limparEstoqueDe(t, db, p3)
@@ -325,11 +333,13 @@ func TestListarCatalogoAgrupado_DimensoesDistintas(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Parafuso Longo", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 3,
+		UnidadeMedida: "un",
+		Nome:          "Parafuso Longo", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 3,
 		Comprimento: &DimensaoInput{Valor: ptrFloat(20), Unidade: ptrStr("mm")},
 	})
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Parafuso Longo", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 4,
+		UnidadeMedida: "un",
+		Nome:          "Parafuso Longo", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 4,
 		Comprimento: &DimensaoInput{Valor: ptrFloat(30), Unidade: ptrStr("mm")},
 	})
 
@@ -364,10 +374,12 @@ func TestListarCatalogoAgrupado_DimensoesTodasNulas(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Cimento Padrão", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 100,
+		UnidadeMedida: "un",
+		Nome:          "Cimento Padrão", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 100,
 	})
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Cimento Padrão", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 50,
+		UnidadeMedida: "un",
+		Nome:          "Cimento Padrão", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 50,
 	})
 
 	grupos, pag, err := ListarCatalogoAgrupado(db, 1, FiltrosCatalogo{EmpresaID: empresaTeste})
@@ -401,10 +413,12 @@ func TestListarCatalogoAgrupado_GrupoSemLinhasDeEstoque(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 
 	a, _ := criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Prego Comum", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 0,
+		UnidadeMedida: "un",
+		Nome:          "Prego Comum", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 0,
 	})
 	b, _ := criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Prego Comum", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 0,
+		UnidadeMedida: "un",
+		Nome:          "Prego Comum", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 0,
 	})
 	limparEstoqueDe(t, db, a)
 	limparEstoqueDe(t, db, b)
@@ -443,6 +457,7 @@ func TestListarCatalogoAgrupado_PaginacaoSobreGrupos(t *testing.T) {
 
 	for i := 0; i < 26; i++ {
 		criarProdutoCat(t, db, CriarProdutoInput{
+			UnidadeMedida:     "un",
 			Nome:              fmt.Sprintf("Item Catalogo %02d", i),
 			CategoriaID:       categoriaID,
 			EstoqueID:         estoque.ID,
@@ -489,7 +504,8 @@ func TestListarCatalogoAgrupado_PaginaAlemDaUltima(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 	for _, nome := range []string{"Arruela Grande", "Bucha Grande", "Cano Comprido"} {
 		criarProdutoCat(t, db, CriarProdutoInput{
-			Nome: nome, CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+			UnidadeMedida: "un",
+			Nome:          nome, CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 		})
 	}
 
@@ -522,11 +538,13 @@ func TestListarCatalogoAgrupado_NomeIgualDimensaoParcialSepara(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Cano Comprido", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+		UnidadeMedida: "un",
+		Nome:          "Cano Comprido", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 		Comprimento: &DimensaoInput{Valor: ptrFloat(6), Unidade: ptrStr("m")},
 	})
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Cano Comprido", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+		UnidadeMedida: "un",
+		Nome:          "Cano Comprido", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	})
 
 	grupos, pag, err := ListarCatalogoAgrupado(db, 1, FiltrosCatalogo{EmpresaID: empresaTeste})
@@ -559,6 +577,8 @@ func TestObterProdutoDetalhe_ComEstoqueDiscriminado(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 
 	produtoID, codigoGerado := criarProdutoCat(t, db, CriarProdutoInput{
+		UnidadeMedida:     "un",
+		Embalagem:         "Caixa com 10",
 		Nome:              "Produto Detalhe",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoqueA.ID,
@@ -576,6 +596,14 @@ func TestObterProdutoDetalhe_ComEstoqueDiscriminado(t *testing.T) {
 	}
 	if det.Codigo == nil || *det.Codigo != codigoGerado {
 		t.Errorf("codigo = %v, want %q", det.Codigo, codigoGerado)
+	}
+	// Story 10.3, spec-10-3: `unidadeMedida`/`embalagem` como campos próprios
+	// do detalhe (AC5).
+	if det.UnidadeMedida == nil || *det.UnidadeMedida != "un" {
+		t.Errorf("unidadeMedida = %v, want %q", det.UnidadeMedida, "un")
+	}
+	if det.Embalagem == nil || *det.Embalagem != "Caixa com 10" {
+		t.Errorf("embalagem = %v, want %q", det.Embalagem, "Caixa com 10")
 	}
 	if det.Dimensoes.Comprimento == nil || det.Dimensoes.Comprimento.Valor != 6 {
 		t.Errorf("dimensoes.comprimento = %+v", det.Dimensoes.Comprimento)
@@ -610,6 +638,7 @@ func TestObterProdutoDetalhe_SemEstoque(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 
 	produtoID, codigoGerado := criarProdutoCat(t, db, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Produto Sem Estoque",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -634,6 +663,50 @@ func TestObterProdutoDetalhe_SemEstoque(t *testing.T) {
 	// não existe mais "Produto sem código" entre os criados por CriarProduto.
 	if det.Codigo == nil || *det.Codigo != codigoGerado {
 		t.Errorf("codigo = %v, want %q", det.Codigo, codigoGerado)
+	}
+}
+
+// TestObterProdutoDetalhe_SemUnidadeMedidaNemEmbalagem prova a linha
+// "Detalhe de Produto criado via importação (sem unidade/embalagem)" da
+// matriz da spec-10-3: um Produto com `unidade_medida`/`embalagem` NULL no
+// banco (simulando o caminho de importação, Never desta spec — a importação
+// em massa nunca preenche estas colunas) devolve os dois ponteiros `nil`
+// (`null` no JSON) — nunca "un" forçado.
+func TestObterProdutoDetalhe_SemUnidadeMedidaNemEmbalagem(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Detalhe Sem Unidade")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+
+	produtoID, _ := criarProdutoCat(t, db, CriarProdutoInput{
+		UnidadeMedida:     "un",
+		Nome:              "Produto Importado Sem Unidade",
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		QuantidadeInicial: 1,
+	})
+	// Simula o INSERT de importação em massa (services/importacoes.go), que
+	// nunca preenche `unidade_medida`/`embalagem` (Never, spec-10-3) — via SQL
+	// direto, já que CriarProduto sempre exige `unidade_medida`.
+	if _, err := db.Exec(
+		`UPDATE produtos SET unidade_medida = NULL, embalagem = NULL WHERE id = $1`, produtoID,
+	); err != nil {
+		t.Fatalf("falha ao simular produto importado: %v", err)
+	}
+
+	det, err := ObterProdutoDetalhe(db, empresaTeste, produtoID)
+	if err != nil {
+		t.Fatalf("ObterProdutoDetalhe: %v", err)
+	}
+	if det.UnidadeMedida != nil {
+		t.Errorf("unidadeMedida = %v, want nil", *det.UnidadeMedida)
+	}
+	if det.Embalagem != nil {
+		t.Errorf("embalagem = %v, want nil", *det.Embalagem)
 	}
 }
 
@@ -675,10 +748,12 @@ func TestListarCatalogoGrade_FiltroCategoria(t *testing.T) {
 	eletrico := categoriaIDPorCodigo(t, db, "04.002")
 
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Cimento Portland", CategoriaID: civil, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+		UnidadeMedida: "un",
+		Nome:          "Cimento Portland", CategoriaID: civil, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	})
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Cabo Flexível", CategoriaID: eletrico, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+		UnidadeMedida: "un",
+		Nome:          "Cabo Flexível", CategoriaID: eletrico, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	})
 
 	itens, pag, err := ListarCatalogoGrade(db, 1, FiltrosCatalogo{EmpresaID: empresaTeste, CategoriaID: civil})
@@ -711,10 +786,12 @@ func TestListarCatalogoGrade_FiltroEstoque_LinhaComQuantidadeZero(t *testing.T) 
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 
 	p1, _ := criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Zerado em A", CategoriaID: categoriaID, EstoqueID: estA.ID, QuantidadeInicial: 0,
+		UnidadeMedida: "un",
+		Nome:          "Zerado em A", CategoriaID: categoriaID, EstoqueID: estA.ID, QuantidadeInicial: 0,
 	})
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Só em Estoque B", CategoriaID: categoriaID, EstoqueID: estB.ID, QuantidadeInicial: 5,
+		UnidadeMedida: "un",
+		Nome:          "Só em Estoque B", CategoriaID: categoriaID, EstoqueID: estB.ID, QuantidadeInicial: 5,
 	})
 
 	itens, pag, err := ListarCatalogoGrade(db, 1, FiltrosCatalogo{EmpresaID: empresaTeste, EstoqueID: estA.ID})
@@ -744,10 +821,12 @@ func TestListarCatalogoGrade_FiltroComEstoque(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Disponível", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 3,
+		UnidadeMedida: "un",
+		Nome:          "Disponível", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 3,
 	})
 	semEstoque, _ := criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Zerado Estoque", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 0,
+		UnidadeMedida: "un",
+		Nome:          "Zerado Estoque", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 0,
 	})
 
 	comEstoqueTrue := true
@@ -790,23 +869,28 @@ func TestListarCatalogoGrade_TodosOsFiltrosComQCombinados(t *testing.T) {
 
 	// Único produto que casa TODOS os 4 filtros.
 	alvo, _ := criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Parafuso Sextavado", CategoriaID: categoriaID, EstoqueID: estAlvo.ID, QuantidadeInicial: 10,
+		UnidadeMedida: "un",
+		Nome:          "Parafuso Sextavado", CategoriaID: categoriaID, EstoqueID: estAlvo.ID, QuantidadeInicial: 10,
 	})
 	// Casa q/estoque/comEstoque, falha na categoria.
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Parafuso Allen", CategoriaID: outraCategoria, EstoqueID: estAlvo.ID, QuantidadeInicial: 10,
+		UnidadeMedida: "un",
+		Nome:          "Parafuso Allen", CategoriaID: outraCategoria, EstoqueID: estAlvo.ID, QuantidadeInicial: 10,
 	})
 	// Casa q/categoria/comEstoque, falha no estoque.
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Parafuso Philips", CategoriaID: categoriaID, EstoqueID: estOutro.ID, QuantidadeInicial: 10,
+		UnidadeMedida: "un",
+		Nome:          "Parafuso Philips", CategoriaID: categoriaID, EstoqueID: estOutro.ID, QuantidadeInicial: 10,
 	})
 	// Casa q/categoria/estoque, falha em comEstoque (zerado em todo lugar).
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Parafuso Fenda", CategoriaID: categoriaID, EstoqueID: estAlvo.ID, QuantidadeInicial: 0,
+		UnidadeMedida: "un",
+		Nome:          "Parafuso Fenda", CategoriaID: categoriaID, EstoqueID: estAlvo.ID, QuantidadeInicial: 0,
 	})
 	// Casa categoria/estoque/comEstoque, falha no termo de busca.
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Arruela Lisa", CategoriaID: categoriaID, EstoqueID: estAlvo.ID, QuantidadeInicial: 10,
+		UnidadeMedida: "un",
+		Nome:          "Arruela Lisa", CategoriaID: categoriaID, EstoqueID: estAlvo.ID, QuantidadeInicial: 10,
 	})
 
 	comEstoque := true
@@ -840,7 +924,8 @@ func TestListarCatalogoGrade_EstoqueEComEstoqueSemSobreposicao(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 
 	produtoID, _ := criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Disperso Multi", CategoriaID: categoriaID, EstoqueID: estFiltrado.ID, QuantidadeInicial: 0,
+		UnidadeMedida: "un",
+		Nome:          "Disperso Multi", CategoriaID: categoriaID, EstoqueID: estFiltrado.ID, QuantidadeInicial: 0,
 	})
 	setQuantidade(t, db, produtoID, estOutro.ID, 5)
 
@@ -870,7 +955,8 @@ func TestListarCatalogoGrade_CategoriaEstoqueMalformadosColapsamEmZero(t *testin
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Qualquer Nome", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+		UnidadeMedida: "un",
+		Nome:          "Qualquer Nome", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	})
 
 	itens, pag, err := ListarCatalogoGrade(db, 1, FiltrosCatalogo{EmpresaID: empresaTeste, CategoriaID: "abc"})
@@ -905,10 +991,12 @@ func TestListarCatalogoGrade_FiltroQBuscaPorCategoria(t *testing.T) {
 	civil := categoriaIDPorCodigo(t, db, "04.001")
 
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Disjuntor Bipolar", CategoriaID: eletrico, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+		UnidadeMedida: "un",
+		Nome:          "Disjuntor Bipolar", CategoriaID: eletrico, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	})
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Cimento Comum", CategoriaID: civil, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+		UnidadeMedida: "un",
+		Nome:          "Cimento Comum", CategoriaID: civil, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	})
 
 	itens, pag, err := ListarCatalogoGrade(db, 1, FiltrosCatalogo{EmpresaID: empresaTeste, Q: "Elétric"})
@@ -941,6 +1029,7 @@ func TestListarCatalogoGrade_PaginacaoSobreConjuntoFiltrado(t *testing.T) {
 
 	for i := 29; i >= 0; i-- {
 		criarProdutoCat(t, db, CriarProdutoInput{
+			UnidadeMedida:     "un",
 			Nome:              fmt.Sprintf("Civil Produto %02d", i),
 			CategoriaID:       civil,
 			EstoqueID:         estoque.ID,
@@ -949,6 +1038,7 @@ func TestListarCatalogoGrade_PaginacaoSobreConjuntoFiltrado(t *testing.T) {
 	}
 	for i := 0; i < 5; i++ {
 		criarProdutoCat(t, db, CriarProdutoInput{
+			UnidadeMedida:     "un",
 			Nome:              fmt.Sprintf("Eletrico %02d", i),
 			CategoriaID:       eletrico,
 			EstoqueID:         estoque.ID,
@@ -1003,10 +1093,12 @@ func TestListarCatalogoAgrupado_FiltroParcialMostraSoQuemCasou(t *testing.T) {
 	// 2 Produtos "Parafuso", mesmo nome + dimensões nulas (agrupam juntos),
 	// categorias diferentes.
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Parafuso Sextavado", CategoriaID: civil, EstoqueID: estoque.ID, QuantidadeInicial: 10,
+		UnidadeMedida: "un",
+		Nome:          "Parafuso Sextavado", CategoriaID: civil, EstoqueID: estoque.ID, QuantidadeInicial: 10,
 	})
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Parafuso Sextavado", CategoriaID: eletrico, EstoqueID: estoque.ID, QuantidadeInicial: 5,
+		UnidadeMedida: "un",
+		Nome:          "Parafuso Sextavado", CategoriaID: eletrico, EstoqueID: estoque.ID, QuantidadeInicial: 5,
 	})
 
 	grupos, pag, err := ListarCatalogoAgrupado(db, 1, FiltrosCatalogo{EmpresaID: empresaTeste, CategoriaID: civil})
@@ -1036,7 +1128,8 @@ func TestListarCatalogoAgrupado_FiltroRemoveGrupoInteiro(t *testing.T) {
 	eletrico := categoriaIDPorCodigo(t, db, "04.002")
 
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Cabo Flexível", CategoriaID: eletrico, EstoqueID: estoque.ID, QuantidadeInicial: 10,
+		UnidadeMedida: "un",
+		Nome:          "Cabo Flexível", CategoriaID: eletrico, EstoqueID: estoque.ID, QuantidadeInicial: 10,
 	})
 
 	grupos, pag, err := ListarCatalogoAgrupado(db, 1, FiltrosCatalogo{EmpresaID: empresaTeste, CategoriaID: civil})
@@ -1064,10 +1157,12 @@ func TestListarCatalogoAgrupado_FiltroQBuscaPorCategoria(t *testing.T) {
 	civil := categoriaIDPorCodigo(t, db, "04.001")
 
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Disjuntor Bipolar", CategoriaID: eletrico, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+		UnidadeMedida: "un",
+		Nome:          "Disjuntor Bipolar", CategoriaID: eletrico, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	})
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Cimento Comum", CategoriaID: civil, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+		UnidadeMedida: "un",
+		Nome:          "Cimento Comum", CategoriaID: civil, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	})
 
 	grupos, pag, err := ListarCatalogoAgrupado(db, 1, FiltrosCatalogo{EmpresaID: empresaTeste, Q: "Elétric"})
@@ -1092,7 +1187,8 @@ func TestListarCatalogoAgrupado_CategoriaEstoqueMalformadosColapsamEmZero(t *tes
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Qualquer Nome", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+		UnidadeMedida: "un",
+		Nome:          "Qualquer Nome", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	})
 
 	grupos, pag, err := ListarCatalogoAgrupado(db, 1, FiltrosCatalogo{EmpresaID: empresaTeste, CategoriaID: "abc"})
@@ -1130,6 +1226,7 @@ func TestListarTodosGruposCatalogo_SemPaginacao(t *testing.T) {
 	const totalGrupos = TamanhoPaginaCatalogo + 5
 	for i := totalGrupos - 1; i >= 0; i-- {
 		criarProdutoCat(t, db, CriarProdutoInput{
+			UnidadeMedida:     "un",
 			Nome:              fmt.Sprintf("Exportar %02d", i),
 			CategoriaID:       categoriaID,
 			EstoqueID:         estoque.ID,
@@ -1167,10 +1264,12 @@ func TestListarTodosGruposCatalogo_FiltrosAplicados(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Casa Filtro", CategoriaID: categoriaID, EstoqueID: estoqueA.ID, QuantidadeInicial: 3,
+		UnidadeMedida: "un",
+		Nome:          "Casa Filtro", CategoriaID: categoriaID, EstoqueID: estoqueA.ID, QuantidadeInicial: 3,
 	})
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Fora Filtro", CategoriaID: categoriaID, EstoqueID: estoqueB.ID, QuantidadeInicial: 3,
+		UnidadeMedida: "un",
+		Nome:          "Fora Filtro", CategoriaID: categoriaID, EstoqueID: estoqueB.ID, QuantidadeInicial: 3,
 	})
 
 	grupos, err := ListarTodosGruposCatalogo(db, FiltrosCatalogo{EmpresaID: empresaTeste, Q: "Casa", EstoqueID: estoqueA.ID})
@@ -1195,7 +1294,8 @@ func TestListarTodosGruposCatalogo_IDMalformadoColapsaEmVazio(t *testing.T) {
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Qualquer Nome", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+		UnidadeMedida: "un",
+		Nome:          "Qualquer Nome", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	})
 
 	grupos, err := ListarTodosGruposCatalogo(db, FiltrosCatalogo{EmpresaID: empresaTeste, CategoriaID: "abc"})

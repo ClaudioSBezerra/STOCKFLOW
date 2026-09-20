@@ -115,10 +115,12 @@ func TestGerarCatalogoXLSX_GrupoComEstoques(t *testing.T) {
 	}
 
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Prancha XLSX", CategoriaID: categoriaID, EstoqueID: estA.ID, QuantidadeInicial: 10,
+		UnidadeMedida: "un",
+		Nome:          "Prancha XLSX", CategoriaID: categoriaID, EstoqueID: estA.ID, QuantidadeInicial: 10,
 	})
 	p2, _ := criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Prancha XLSX", CategoriaID: categoriaID, EstoqueID: estA.ID, QuantidadeInicial: 5,
+		UnidadeMedida: "un",
+		Nome:          "Prancha XLSX", CategoriaID: categoriaID, EstoqueID: estA.ID, QuantidadeInicial: 5,
 	})
 	setQuantidade(t, db, p2, estB.ID, 2)
 
@@ -208,7 +210,8 @@ func TestGerarCatalogoXLSX_GrupoSemEstoque(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	p, _ := criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Sem Linha XLSX", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 0,
+		UnidadeMedida: "un",
+		Nome:          "Sem Linha XLSX", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 0,
 	})
 	limparEstoqueDe(t, db, p)
 
@@ -258,10 +261,12 @@ func TestGerarCatalogoXLSX_MultiplosGrupos(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Grupo A XLSX", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 4,
+		UnidadeMedida: "un",
+		Nome:          "Grupo A XLSX", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 4,
 	})
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Grupo B XLSX", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 6,
+		UnidadeMedida: "un",
+		Nome:          "Grupo B XLSX", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 6,
 	})
 
 	dados, err := GerarCatalogoXLSX(db, FiltrosCatalogo{EmpresaID: empresaTeste})
@@ -324,7 +329,8 @@ func TestGerarCatalogoXLSX_AutoFilterNoCabecalho(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "AutoFilter XLSX", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+		UnidadeMedida: "un",
+		Nome:          "AutoFilter XLSX", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	})
 
 	dados, err := GerarCatalogoXLSX(db, FiltrosCatalogo{EmpresaID: empresaTeste})
@@ -381,7 +387,8 @@ func TestGerarCatalogoXLSX_FiltroSemResultado(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Existe XLSX", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+		UnidadeMedida: "un",
+		Nome:          "Existe XLSX", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	})
 
 	dados, err := GerarCatalogoXLSX(db, FiltrosCatalogo{EmpresaID: empresaTeste, Q: "não-existe-jamais-xlsx"})
@@ -413,7 +420,8 @@ func TestGerarCatalogoXLSX_CategoriaEstoqueMalformadosSoCabecalho(t *testing.T) 
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	criarProdutoCat(t, db, CriarProdutoInput{
-		Nome: "Malformado XLSX", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+		UnidadeMedida: "un",
+		Nome:          "Malformado XLSX", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	})
 
 	dados, err := GerarCatalogoXLSX(db, FiltrosCatalogo{EmpresaID: empresaTeste, CategoriaID: "abc"})

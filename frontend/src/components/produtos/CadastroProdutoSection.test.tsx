@@ -109,11 +109,13 @@ function corpoDoPost(fetchMock: ReturnType<typeof vi.fn>): Record<string, unknow
   return JSON.parse(chamada[1].body as string) as Record<string, unknown>;
 }
 
-// preencherCamposObrigatorios preenche os 4 campos hoje obrigatórios no
-// cliente (Story 10.1, AC1/AC2): nome (>=10 caracteres), categoria, estoque
-// e template — seleciona sempre o Genérico ([NOME LIVRE]), que aceita
-// qualquer nome sem estrutura, para não acoplar os testes que não são sobre
-// Nomenclatura Guiada ao formato de nenhum template estrutural.
+// preencherCamposObrigatorios preenche os 5 campos hoje obrigatórios no
+// cliente (Story 10.1, AC1/AC2; Story 10.3, spec-10-3, acrescenta Unidade de
+// Medida): nome (>=10 caracteres), categoria, estoque, template — seleciona
+// sempre o Genérico ([NOME LIVRE]), que aceita qualquer nome sem estrutura,
+// para não acoplar os testes que não são sobre Nomenclatura Guiada ao
+// formato de nenhum template estrutural — e Unidade de Medida (sempre "un",
+// irrelevante para os testes que não são sobre Story 10.3).
 async function preencherCamposObrigatorios(user: ReturnType<typeof userEvent.setup>) {
   await user.type(screen.getByLabelText('Nome'), 'Tubo PVC 100mm');
   await user.click(screen.getByRole('combobox', { name: 'Categoria' }));
@@ -123,6 +125,8 @@ async function preencherCamposObrigatorios(user: ReturnType<typeof userEvent.set
   await user.click(screen.getByRole('combobox', { name: 'Template de nomenclatura' }));
   await user.click(await screen.findByRole('option', { name: 'Genérico' }));
   await user.type(screen.getByLabelText('Quantidade inicial'), '10');
+  await user.click(screen.getByRole('combobox', { name: 'Unidade de Medida' }));
+  await user.click(await screen.findByRole('option', { name: 'un' }));
 }
 
 describe('CadastroProdutoSection', () => {
@@ -270,6 +274,8 @@ describe('CadastroProdutoSection', () => {
 
     await user.click(screen.getByRole('combobox', { name: 'Template de nomenclatura' }));
     await user.click(await screen.findByRole('option', { name: 'Tubo — PEAD/PPR' }));
+    await user.click(screen.getByRole('combobox', { name: 'Unidade de Medida' }));
+    await user.click(await screen.findByRole('option', { name: 'un' }));
 
     expect(screen.getByText('Formato: TUBO PEAD [PN] DN[XX]')).toBeInTheDocument();
 
@@ -309,6 +315,8 @@ describe('CadastroProdutoSection', () => {
     await user.click(screen.getByRole('combobox', { name: 'Template de nomenclatura' }));
     await user.click(await screen.findByRole('option', { name: 'Genérico' }));
     await user.type(screen.getByLabelText('Quantidade inicial'), '0');
+    await user.click(screen.getByRole('combobox', { name: 'Unidade de Medida' }));
+    await user.click(await screen.findByRole('option', { name: 'un' }));
 
     await user.click(screen.getByRole('button', { name: 'Cadastrar produto' }));
 
@@ -391,6 +399,8 @@ describe('CadastroProdutoSection', () => {
     await user.click(screen.getByRole('combobox', { name: 'Template de nomenclatura' }));
     await user.click(await screen.findByRole('option', { name: 'Genérico' }));
     await user.type(screen.getByLabelText('Quantidade inicial'), '10');
+    await user.click(screen.getByRole('combobox', { name: 'Unidade de Medida' }));
+    await user.click(await screen.findByRole('option', { name: 'un' }));
 
     expect(screen.getByRole('button', { name: 'Cadastrar produto' })).toBeDisabled();
 
@@ -413,12 +423,98 @@ describe('CadastroProdutoSection', () => {
     await user.click(screen.getByRole('combobox', { name: 'Estoque' }));
     await user.click(await screen.findByRole('option', { name: 'Canteiro A' }));
     await user.type(screen.getByLabelText('Quantidade inicial'), '10');
+    await user.click(screen.getByRole('combobox', { name: 'Unidade de Medida' }));
+    await user.click(await screen.findByRole('option', { name: 'un' }));
 
     expect(screen.getByRole('button', { name: 'Cadastrar produto' })).toBeDisabled();
 
     await user.click(screen.getByRole('combobox', { name: 'Template de nomenclatura' }));
     await user.click(await screen.findByRole('option', { name: 'Genérico' }));
     expect(screen.getByRole('button', { name: 'Cadastrar produto' })).toBeEnabled();
+  });
+
+  // Story 10.3, spec-10-3, AC3: nenhuma Unidade de Medida selecionada mantém
+  // o botão desabilitado mesmo com nome/categoria/estoque/template/
+  // quantidade preenchidos — Embalagem/Código do Fornecedor/EAN-13
+  // continuam opcionais no mesmo cadastro.
+  it('botão desabilitado sem Unidade de Medida selecionada', async () => {
+    stubListasPadrao();
+    const user = userEvent.setup();
+    render(<CadastroProdutoSection />);
+
+    await user.type(screen.getByLabelText('Nome'), 'Nome Valido Sem Unidade');
+    await user.click(screen.getByRole('combobox', { name: 'Categoria' }));
+    await user.click(await screen.findByRole('option', { name: '04.001 — Materiais Civis' }));
+    await user.click(screen.getByRole('combobox', { name: 'Estoque' }));
+    await user.click(await screen.findByRole('option', { name: 'Canteiro A' }));
+    await user.click(screen.getByRole('combobox', { name: 'Template de nomenclatura' }));
+    await user.click(await screen.findByRole('option', { name: 'Genérico' }));
+    await user.type(screen.getByLabelText('Quantidade inicial'), '10');
+
+    expect(screen.getByRole('button', { name: 'Cadastrar produto' })).toBeDisabled();
+
+    await user.click(screen.getByRole('combobox', { name: 'Unidade de Medida' }));
+    await user.click(await screen.findByRole('option', { name: 'un' }));
+    expect(screen.getByRole('button', { name: 'Cadastrar produto' })).toBeEnabled();
+  });
+
+  // Story 10.3, spec-10-3: os 4 campos novos no payload — Código do
+  // Fornecedor/EAN-13/Embalagem só quando preenchidos (trimados), Unidade de
+  // Medida sempre.
+  it('cadastro com os 4 campos novos: envia codigo_fornecedor/ean13/unidade_medida/embalagem no payload', async () => {
+    const fetchMock = stubListasPadrao({
+      postProdutos: () =>
+        Promise.resolve({
+          ok: true,
+          status: 201,
+          json: async () => ({ produto: { id: 'p-10', nome: 'Tubo PVC 100mm' } }),
+        }),
+    });
+
+    const user = userEvent.setup();
+    render(<CadastroProdutoSection />);
+    await preencherCamposObrigatorios(user);
+
+    await user.type(screen.getByLabelText('Código do Fornecedor'), '  ABC-123  ');
+    await user.type(screen.getByLabelText('EAN-13'), '  7891234567895  ');
+    await user.type(screen.getByLabelText('Embalagem'), '  Caixa com 10  ');
+
+    await user.click(screen.getByRole('button', { name: 'Cadastrar produto' }));
+
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Produto cadastrado.'));
+    const corpo = corpoDoPost(fetchMock);
+    expect(corpo.codigo_fornecedor).toBe('ABC-123');
+    expect(corpo.ean13).toBe('7891234567895');
+    expect(corpo.unidade_medida).toBe('un');
+    expect(corpo.embalagem).toBe('Caixa com 10');
+  });
+
+  // Story 10.3, spec-10-3: os 3 campos opcionais (Código do Fornecedor/
+  // EAN-13/Embalagem) ausentes viram chave omitida do payload — mesmo padrão
+  // de `observacoes` — enquanto Unidade de Medida (obrigatória) é sempre
+  // enviada.
+  it('cadastro sem Código do Fornecedor/EAN-13/Embalagem: as 3 chaves ficam ausentes do payload', async () => {
+    const fetchMock = stubListasPadrao({
+      postProdutos: () =>
+        Promise.resolve({
+          ok: true,
+          status: 201,
+          json: async () => ({ produto: { id: 'p-11', nome: 'Tubo PVC 100mm' } }),
+        }),
+    });
+
+    const user = userEvent.setup();
+    render(<CadastroProdutoSection />);
+    await preencherCamposObrigatorios(user);
+
+    await user.click(screen.getByRole('button', { name: 'Cadastrar produto' }));
+
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Produto cadastrado.'));
+    const corpo = corpoDoPost(fetchMock);
+    expect(corpo.codigo_fornecedor).toBeUndefined();
+    expect(corpo.ean13).toBeUndefined();
+    expect(corpo.embalagem).toBeUndefined();
+    expect(corpo.unidade_medida).toBe('un');
   });
 
   // Story 10.2, spec-10-2: `codigo` deixou de ser um campo editável — o

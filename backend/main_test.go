@@ -1141,7 +1141,7 @@ func TestNewMux_ProdutosRotaCarregaRequireRole(t *testing.T) {
 
 	t.Run("POST: almoxarife passa do gate (nunca 403)", func(t *testing.T) {
 		token := tokenDeMux(t, mux, "prod-mux-almox@empresa.com", senha, segredos)
-		corpo := `{"nome":"Produto Almox","categoria_id":"` + categoriaID + `","estoque_id":"` + estoque.ID + `","template_id":"` + templateGenericoIDMux(t, db) + `","quantidade_inicial":1}`
+		corpo := `{"nome":"Produto Almox","categoria_id":"` + categoriaID + `","estoque_id":"` + estoque.ID + `","template_id":"` + templateGenericoIDMux(t, db) + `","quantidade_inicial":1,"unidade_medida":"un"}`
 		w := despachar(http.MethodPost, prefixoEmpresaTeste+"/api/produtos", token, corpo)
 		if w.Code != http.StatusCreated {
 			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
@@ -1224,6 +1224,7 @@ func TestNewMux_ProdutosRenomearRotaCarregaRequireRole(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
+		UnidadeMedida:     "un",
 		TemplateID:        templateGenericoIDMux(t, db),
 		Nome:              "Produto Mux Renomear",
 		CategoriaID:       categoriaID,
@@ -1318,6 +1319,7 @@ func TestNewMux_ProdutosBaixaRotaCarregaRequireRole(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
+		UnidadeMedida:     "un",
 		TemplateID:        templateGenericoIDMux(t, db),
 		Nome:              "Produto Mux Baixa",
 		CategoriaID:       categoriaID,
@@ -1418,6 +1420,7 @@ func TestNewMux_ProdutosTransferenciaRotaCarregaRequireRole(t *testing.T) {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
 	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
+		UnidadeMedida:     "un",
 		TemplateID:        templateGenericoIDMux(t, db),
 		Nome:              "Produto Mux Transferencia",
 		CategoriaID:       categoriaID,
@@ -2347,8 +2350,9 @@ func TestNewMux_ProdutosDetalheRotaSoRequireAuth(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
-		TemplateID: templateGenericoIDMux(t, db),
-		Nome:       "Produto Detalhe Mux", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+		UnidadeMedida: "un",
+		TemplateID:    templateGenericoIDMux(t, db),
+		Nome:          "Produto Detalhe Mux", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	})
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
@@ -2417,8 +2421,9 @@ func TestNewMux_ProdutosPorCodigoRotaSoRequireAuth(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
-		TemplateID: templateGenericoIDMux(t, db),
-		Nome:       "Produto PorCodigo Mux", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+		UnidadeMedida: "un",
+		TemplateID:    templateGenericoIDMux(t, db),
+		Nome:          "Produto PorCodigo Mux", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	})
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
@@ -2505,8 +2510,9 @@ func TestNewMux_CarrinhoRotasSoRequireAuth(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
-		TemplateID: templateGenericoIDMux(t, db),
-		Nome:       "Produto Carrinho Mux", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 10,
+		UnidadeMedida: "un",
+		TemplateID:    templateGenericoIDMux(t, db),
+		Nome:          "Produto Carrinho Mux", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 10,
 	})
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
@@ -2611,8 +2617,9 @@ func TestNewMux_PedidosConsultaRotasSoRequireAuth(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
-		TemplateID: templateGenericoIDMux(t, db),
-		Nome:       "Produto Pedidos Mux", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 10,
+		UnidadeMedida: "un",
+		TemplateID:    templateGenericoIDMux(t, db),
+		Nome:          "Produto Pedidos Mux", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 10,
 	})
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
@@ -2791,7 +2798,7 @@ func TestRealtimeStream_FluxoCompletoTicketStreamEvento(t *testing.T) {
 
 	tokenAlmoxarife := tokenDeMux(t, mux, "sse-fluxo-almoxarife@empresa.com", senha, segredos)
 	corpoProduto := fmt.Sprintf(
-		`{"nome":"Produto SSE Fluxo","categoria_id":%q,"estoque_id":%q,"template_id":%q,"quantidade_inicial":1}`,
+		`{"nome":"Produto SSE Fluxo","categoria_id":%q,"estoque_id":%q,"template_id":%q,"quantidade_inicial":1,"unidade_medida":"un"}`,
 		categoriaID, estoque.ID, templateGenericoIDMux(t, db),
 	)
 	reqCriar := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/produtos", strings.NewReader(corpoProduto))

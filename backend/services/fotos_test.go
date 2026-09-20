@@ -20,6 +20,7 @@ func criarProdutoParaFoto(t *testing.T, db *sql.DB, nome string) Produto {
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              nome,
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,

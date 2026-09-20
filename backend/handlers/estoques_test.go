@@ -424,6 +424,7 @@ func TestExcluirEstoqueHandler_409ComResiduo(t *testing.T) {
 	}
 	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.005")
 	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Tubo PVC 100mm",
 		CategoriaID:       categoriaID,
 		EstoqueID:         e.ID,

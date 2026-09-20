@@ -21,6 +21,94 @@ const pqForeignKeyViolation = "23503"
 // ("6m", "100mm"); nenhuma AC desta story testa um valor fora deste conjunto.
 var unidadesDimensaoValidas = map[string]bool{"mm": true, "cm": true, "m": true}
 
+// unidadesMedidaValidas é o conjunto fechado de Unidade de Medida aceito
+// pelo cadastro de Produto (Story 10.3, spec-10-3, FR45/FR46; addendum.md
+// §F) — mesma grafia, incluindo os caracteres não-ASCII de "m²"/"m³"/
+// "kg/m²". Fechado por design: um valor fora deste conjunto é sempre
+// ErroProdutoValidacao "unidade de medida inválida", nunca gravado.
+var unidadesMedidaValidas = map[string]bool{
+	"un": true, "m": true, "m²": true, "m³": true, "kg": true, "L": true,
+	"cx": true, "rolo": true, "barra": true, "mm": true, "cm": true, "kg/m²": true,
+}
+
+// limiteTextoLivre255 é o teto de 255 runas aplicado a `codigo_fornecedor`/
+// `embalagem` (Story 10.3, spec-10-3) — mesma razão de limiteNumeric103:
+// evita que o Postgres rejeite com "value too long for type character
+// varying(255)" (colunas `VARCHAR(255)`), um erro não mapeado que cairia no
+// 500 genérico em cima de input de cliente inválido.
+const limiteTextoLivre255 = 255
+
+// validarTextoLivreOpcional trima `valor` e aplica o teto de 255 runas
+// (Story 10.3) para um campo de texto livre opcional (`codigo_fornecedor`/
+// `embalagem`): vazio após trim -> NULL, válido; acima do limite ->
+// ErroProdutoValidacao citando `campo`. Nunca valida formato/conteúdo — só
+// tamanho, mesmo espírito de limiteNumeric103.
+func validarTextoLivreOpcional(campo, valor string) (sql.NullString, error) {
+	trimado := strings.TrimSpace(valor)
+	if trimado == "" {
+		return sql.NullString{}, nil
+	}
+	if utf8.RuneCountInString(trimado) > limiteTextoLivre255 {
+		return sql.NullString{}, &ErroProdutoValidacao{
+			Mensagem: fmt.Sprintf("%s deve ter no máximo %d caracteres", campo, limiteTextoLivre255),
+		}
+	}
+	return sql.NullString{String: trimado, Valid: true}, nil
+}
+
+// validarUnidadeMedida trima `valor` e exige que esteja no conjunto fechado
+// unidadesMedidaValidas (Story 10.3, spec-10-3) — SEMPRE obrigatório no
+// cadastro (`CriarProduto`), ainda que a coluna `unidade_medida` continue
+// NULLable no banco (Never, spec-10-3: a importação em massa não preenche
+// esta coluna). Vazio após trim -> "unidade de medida é obrigatória"; fora
+// do conjunto -> "unidade de medida inválida".
+func validarUnidadeMedida(valor string) (string, error) {
+	trimado := strings.TrimSpace(valor)
+	if trimado == "" {
+		return "", &ErroProdutoValidacao{Mensagem: "unidade de medida é obrigatória"}
+	}
+	if !unidadesMedidaValidas[trimado] {
+		return "", &ErroProdutoValidacao{Mensagem: "unidade de medida inválida"}
+	}
+	return trimado, nil
+}
+
+// pesosEAN13 são os pesos alternados 1/3 do dígito verificador do EAN-13,
+// aplicados às 12 primeiras posições (algoritmo padrão: soma ponderada,
+// dígito = (10 - soma%10) % 10).
+var pesosEAN13 = [12]int{1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3}
+
+// validarEAN13 trima `valor` e valida o Código EAN-13 (Story 10.3,
+// spec-10-3): vazio após trim é SEMPRE válido (NULL, campo opcional, nunca
+// rejeitado); não-vazio deve ter exatamente 13 caracteres ASCII `0-9`,
+// senão "EAN-13 deve ter 13 dígitos"; com 13 dígitos, o dígito verificador
+// (13ª posição) deve conferir com a soma ponderada 1/3 alternada das 12
+// primeiras, senão "EAN-13 inválido: dígito verificador não confere" (mesmo
+// estilo de ValidarCNPJ/digitoVerificadorCNPJ, empresas.go).
+func validarEAN13(valor string) (sql.NullString, error) {
+	trimado := strings.TrimSpace(valor)
+	if trimado == "" {
+		return sql.NullString{}, nil
+	}
+	if len(trimado) != 13 {
+		return sql.NullString{}, &ErroProdutoValidacao{Mensagem: "EAN-13 deve ter 13 dígitos"}
+	}
+	for _, r := range trimado {
+		if r < '0' || r > '9' {
+			return sql.NullString{}, &ErroProdutoValidacao{Mensagem: "EAN-13 deve ter 13 dígitos"}
+		}
+	}
+	soma := 0
+	for i := 0; i < 12; i++ {
+		soma += int(trimado[i]-'0') * pesosEAN13[i]
+	}
+	digitoEsperado := (10 - soma%10) % 10
+	if digitoEsperado != int(trimado[12]-'0') {
+		return sql.NullString{}, &ErroProdutoValidacao{Mensagem: "EAN-13 inválido: dígito verificador não confere"}
+	}
+	return sql.NullString{String: trimado, Valid: true}, nil
+}
+
 // limiteNumeric103 é a magnitude máxima representável numa coluna
 // `NUMERIC(10,3)` (10 dígitos totais, 3 depois da vírgula -> até 7 dígitos
 // antes dela): `comprimento_valor`/`largura_valor`/.../`quantidade` em
@@ -87,6 +175,16 @@ type CriarProdutoInput struct {
 	Diametro          *DimensaoInput
 	Altura            *DimensaoInput
 	Espessura         *DimensaoInput
+	// CodigoFornecedor/EAN13/UnidadeMedida/Embalagem (Story 10.3, spec-10-3,
+	// FR45/FR46): CodigoFornecedor/Embalagem são texto livre opcional, sem
+	// checagem de unicidade; EAN13 é opcional mas validado (formato + dígito
+	// verificador) quando não-vazio; UnidadeMedida é SEMPRE obrigatório
+	// (conjunto fechado, addendum.md §F) — ver validarUnidadeMedida/
+	// validarEAN13/validarTextoLivreOpcional.
+	CodigoFornecedor string
+	EAN13            string
+	UnidadeMedida    string
+	Embalagem        string
 }
 
 // ErroProdutoValidacao é o erro de validação devolvido por CriarProduto:
@@ -312,6 +410,27 @@ func CriarProduto(db *sql.DB, empresaID string, input CriarProdutoInput) (Produt
 		observacoes = sql.NullString{String: observacoesTrimadas, Valid: true}
 	}
 
+	// Código do Fornecedor, EAN-13, Unidade de Medida e Embalagem (Story
+	// 10.3, spec-10-3, FR45/FR46) — ainda antes de abrir a transação, junto
+	// às demais validações: um erro aqui NUNCA deixa um Produto parcialmente
+	// gravado.
+	codigoFornecedor, err := validarTextoLivreOpcional("código do fornecedor", input.CodigoFornecedor)
+	if err != nil {
+		return Produto{}, err
+	}
+	ean13, err := validarEAN13(input.EAN13)
+	if err != nil {
+		return Produto{}, err
+	}
+	unidadeMedida, err := validarUnidadeMedida(input.UnidadeMedida)
+	if err != nil {
+		return Produto{}, err
+	}
+	embalagem, err := validarTextoLivreOpcional("embalagem", input.Embalagem)
+	if err != nil {
+		return Produto{}, err
+	}
+
 	tx, err := db.Begin()
 	if err != nil {
 		return Produto{}, fmt.Errorf("falha ao iniciar transação: %w", err)
@@ -340,11 +459,12 @@ func CriarProduto(db *sql.DB, empresaID string, input CriarProdutoInput) (Produt
 			diametro_valor, diametro_unidade,
 			altura_valor, altura_unidade,
 			espessura_valor, espessura_unidade,
+			codigo_fornecedor, ean13, unidade_medida, embalagem,
 			empresa_id
 		)
-		SELECT $1, $2, c.id, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+		SELECT $1, $2, c.id, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
 		FROM categorias c
-		WHERE c.id = $3 AND c.empresa_id = $16
+		WHERE c.id = $3 AND c.empresa_id = $20
 		RETURNING id, nome, codigo`
 	var p Produto
 	err = tx.QueryRow(insertProduto,
@@ -354,6 +474,7 @@ func CriarProduto(db *sql.DB, empresaID string, input CriarProdutoInput) (Produt
 		diametroValor, diametroUnidade,
 		alturaValor, alturaUnidade,
 		espessuraValor, espessuraUnidade,
+		codigoFornecedor, ean13, unidadeMedida, embalagem,
 		empresaID,
 	).Scan(&p.ID, &p.Nome, &p.Codigo)
 	if err != nil {

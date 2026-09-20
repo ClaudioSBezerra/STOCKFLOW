@@ -110,10 +110,12 @@ func TestDetectarDuplicatasHandler_200ComGrupos(t *testing.T) {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
 	p1 := seedProdutoComEstoqueHandler(t, db, "Tubo PVC 25mm", estoque.ID, services.CriarProdutoInput{
-		Diametro: &services.DimensaoInput{Valor: ptrFloatHandler(25), Unidade: ptrStrHandler("mm")},
+		UnidadeMedida: "un",
+		Diametro:      &services.DimensaoInput{Valor: ptrFloatHandler(25), Unidade: ptrStrHandler("mm")},
 	})
 	p2 := seedProdutoComEstoqueHandler(t, db, "Tubo PVC 25mm", estoque.ID, services.CriarProdutoInput{
-		Diametro: &services.DimensaoInput{Valor: ptrFloatHandler(2.5), Unidade: ptrStrHandler("cm")},
+		UnidadeMedida: "un",
+		Diametro:      &services.DimensaoInput{Valor: ptrFloatHandler(2.5), Unidade: ptrStrHandler("cm")},
 	})
 
 	w := getDuplicatas(db, "Bearer "+token)
@@ -202,10 +204,12 @@ func TestDetectarDuplicatasHandler_200ListaVaziaComProdutosNaoDuplicados(t *test
 		t.Fatalf("CriarEstoque: %v", err)
 	}
 	seedProdutoComEstoqueHandler(t, db, "Parafuso M6", estoque.ID, services.CriarProdutoInput{
-		Comprimento: &services.DimensaoInput{Valor: ptrFloatHandler(20), Unidade: ptrStrHandler("mm")},
+		UnidadeMedida: "un",
+		Comprimento:   &services.DimensaoInput{Valor: ptrFloatHandler(20), Unidade: ptrStrHandler("mm")},
 	})
 	seedProdutoComEstoqueHandler(t, db, "Parafuso M6", estoque.ID, services.CriarProdutoInput{
-		Comprimento: &services.DimensaoInput{Valor: ptrFloatHandler(30), Unidade: ptrStrHandler("mm")},
+		UnidadeMedida: "un",
+		Comprimento:   &services.DimensaoInput{Valor: ptrFloatHandler(30), Unidade: ptrStrHandler("mm")},
 	})
 
 	w := getDuplicatas(db, "Bearer "+token)
@@ -297,10 +301,11 @@ func TestAnalisarInconsistenciasHandler_200ComSugestoes(t *testing.T) {
 	token := tokenDeLogin(t, db, "normalizacao-200-almox@empresa.com", "senha-123456")
 
 	produtoID := seedProdutoComPendenciaHandler(t, db, "TUBO PVC 6M", services.CriarProdutoInput{
-		Largura:   &services.DimensaoInput{Valor: ptrFloatHandler(100), Unidade: ptrStrHandler("mm")},
-		Diametro:  &services.DimensaoInput{Valor: ptrFloatHandler(10), Unidade: ptrStrHandler("cm")},
-		Altura:    &services.DimensaoInput{Valor: ptrFloatHandler(2), Unidade: ptrStrHandler("m")},
-		Espessura: &services.DimensaoInput{Valor: ptrFloatHandler(5), Unidade: ptrStrHandler("mm")},
+		UnidadeMedida: "un",
+		Largura:       &services.DimensaoInput{Valor: ptrFloatHandler(100), Unidade: ptrStrHandler("mm")},
+		Diametro:      &services.DimensaoInput{Valor: ptrFloatHandler(10), Unidade: ptrStrHandler("cm")},
+		Altura:        &services.DimensaoInput{Valor: ptrFloatHandler(2), Unidade: ptrStrHandler("m")},
+		Espessura:     &services.DimensaoInput{Valor: ptrFloatHandler(5), Unidade: ptrStrHandler("mm")},
 	})
 
 	w := getInconsistencias(db, "Bearer "+token)
@@ -495,7 +500,8 @@ func TestAplicarCorrecaoHandler_200Individual(t *testing.T) {
 	limparProdutosHandler(t, db)
 	criarContaComPapel(t, db, "Almox Correcao 200", "correcao-200-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "correcao-200-almox@empresa.com", "senha-123456")
-	produtoID := seedProdutoComPendenciaHandler(t, db, "Tubo Correcao Individual", services.CriarProdutoInput{})
+	produtoID := seedProdutoComPendenciaHandler(t, db, "Tubo Correcao Individual", services.CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	body := `{"correcoes":[{"produtoId":"` + produtoID + `","campo":"comprimento","valorSugerido":{"valor":6,"unidade":"m"}}]}`
 	w := postCorrecoes(db, realtime.NewRegistry(), "Bearer "+token, body)
@@ -537,9 +543,11 @@ func TestAplicarCorrecaoHandler_200LoteComItemObsoleto(t *testing.T) {
 	token := tokenDeLogin(t, db, "correcao-obsoleta-almox@empresa.com", "senha-123456")
 
 	produtoJaPreenchido := seedProdutoComPendenciaHandler(t, db, "Tubo Ja Preenchido Handler", services.CriarProdutoInput{
-		Largura: &services.DimensaoInput{Valor: ptrFloatHandler(50), Unidade: ptrStrHandler("mm")},
+		UnidadeMedida: "un",
+		Largura:       &services.DimensaoInput{Valor: ptrFloatHandler(50), Unidade: ptrStrHandler("mm")},
 	})
-	produtoVazio := seedProdutoComPendenciaHandler(t, db, "Tubo Vazio Handler", services.CriarProdutoInput{})
+	produtoVazio := seedProdutoComPendenciaHandler(t, db, "Tubo Vazio Handler", services.CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	body := `{"correcoes":[` +
 		`{"produtoId":"` + produtoJaPreenchido + `","campo":"largura","valorSugerido":{"valor":100,"unidade":"mm"}},` +
@@ -571,7 +579,8 @@ func TestAplicarCorrecaoHandler_400CampoInvalido(t *testing.T) {
 	limparProdutosHandler(t, db)
 	criarContaComPapel(t, db, "Almox Correcao Campo Invalido", "correcao-campo-invalido-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "correcao-campo-invalido-almox@empresa.com", "senha-123456")
-	produtoID := seedProdutoComPendenciaHandler(t, db, "Tubo Campo Invalido Handler", services.CriarProdutoInput{})
+	produtoID := seedProdutoComPendenciaHandler(t, db, "Tubo Campo Invalido Handler", services.CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	body := `{"correcoes":[{"produtoId":"` + produtoID + `","campo":"peso","valorSugerido":{"valor":6,"unidade":"m"}}]}`
 	w := postCorrecoes(db, realtime.NewRegistry(), "Bearer "+token, body)
@@ -635,7 +644,8 @@ func TestAplicarCorrecaoHandler_PublicaUmEventoPorProdutoDistinto(t *testing.T) 
 	limparProdutosHandler(t, db)
 	criarContaComPapel(t, db, "Almox Correcao Evento", "correcao-evento-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "correcao-evento-almox@empresa.com", "senha-123456")
-	produtoID := seedProdutoComPendenciaHandler(t, db, "Tubo Correcao Evento", services.CriarProdutoInput{})
+	produtoID := seedProdutoComPendenciaHandler(t, db, "Tubo Correcao Evento", services.CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	registro := realtime.NewRegistry()
 	eventos, cancelar := registro.Subscribe(empresaTeste)
@@ -676,7 +686,8 @@ func TestAplicarCorrecaoHandler_200LoteComProdutoIdMalformadoNaoAborta(t *testin
 	limparProdutosHandler(t, db)
 	criarContaComPapel(t, db, "Almox Correcao Malformado", "correcao-malformado-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "correcao-malformado-almox@empresa.com", "senha-123456")
-	produtoValido := seedProdutoComPendenciaHandler(t, db, "Tubo Correcao Malformado", services.CriarProdutoInput{})
+	produtoValido := seedProdutoComPendenciaHandler(t, db, "Tubo Correcao Malformado", services.CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	body := `{"correcoes":[` +
 		`{"produtoId":"id-nao-e-um-uuid","campo":"comprimento","valorSugerido":{"valor":6,"unidade":"m"}},` +
@@ -709,7 +720,8 @@ func TestAplicarCorrecaoHandler_500FalhaDeBanco(t *testing.T) {
 	limparProdutosHandler(t, db)
 	criarContaComPapel(t, db, "Almox Correcao 500", "correcao-500-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "correcao-500-almox@empresa.com", "senha-123456")
-	produtoID := seedProdutoComPendenciaHandler(t, db, "Tubo Correcao 500", services.CriarProdutoInput{})
+	produtoID := seedProdutoComPendenciaHandler(t, db, "Tubo Correcao 500", services.CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	if _, err := db.Exec(`ALTER TABLE produtos RENAME TO produtos_indisponivel`); err != nil {
 		t.Fatalf("renomear produtos: %v", err)
@@ -776,7 +788,8 @@ func TestSugestaoIgnoradaHandler_200GravaTupla(t *testing.T) {
 	limparProdutosHandler(t, db)
 	criarContaComPapel(t, db, "Almox Ignorada 200", "ignorada-200-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "ignorada-200-almox@empresa.com", "senha-123456")
-	produtoID := seedProdutoComPendenciaHandler(t, db, "Tubo Ignorada 200", services.CriarProdutoInput{})
+	produtoID := seedProdutoComPendenciaHandler(t, db, "Tubo Ignorada 200", services.CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	body := `{"produtoId":"` + produtoID + `","campo":"comprimento","valorSugerido":{"valor":6,"unidade":"m"}}`
 	w := postIgnoradas(db, "Bearer "+token, body)
@@ -803,7 +816,8 @@ func TestSugestaoIgnoradaHandler_200Idempotente(t *testing.T) {
 	limparProdutosHandler(t, db)
 	criarContaComPapel(t, db, "Almox Ignorada Idempotente", "ignorada-idempotente-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "ignorada-idempotente-almox@empresa.com", "senha-123456")
-	produtoID := seedProdutoComPendenciaHandler(t, db, "Tubo Ignorada Idempotente", services.CriarProdutoInput{})
+	produtoID := seedProdutoComPendenciaHandler(t, db, "Tubo Ignorada Idempotente", services.CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	body := `{"produtoId":"` + produtoID + `","campo":"comprimento","valorSugerido":{"valor":6,"unidade":"m"}}`
 	w1 := postIgnoradas(db, "Bearer "+token, body)
@@ -823,7 +837,8 @@ func TestSugestaoIgnoradaHandler_400CampoInvalido(t *testing.T) {
 	limparProdutosHandler(t, db)
 	criarContaComPapel(t, db, "Almox Ignorada Campo Invalido", "ignorada-campo-invalido-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "ignorada-campo-invalido-almox@empresa.com", "senha-123456")
-	produtoID := seedProdutoComPendenciaHandler(t, db, "Tubo Ignorada Campo Invalido", services.CriarProdutoInput{})
+	produtoID := seedProdutoComPendenciaHandler(t, db, "Tubo Ignorada Campo Invalido", services.CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	body := `{"produtoId":"` + produtoID + `","campo":"peso","valorSugerido":{"valor":6,"unidade":"m"}}`
 	w := postIgnoradas(db, "Bearer "+token, body)
@@ -893,7 +908,8 @@ func TestSugestaoIgnoradaHandler_500FalhaDeBanco(t *testing.T) {
 	limparProdutosHandler(t, db)
 	criarContaComPapel(t, db, "Almox Ignorada 500", "ignorada-500-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "ignorada-500-almox@empresa.com", "senha-123456")
-	produtoID := seedProdutoComPendenciaHandler(t, db, "Tubo Ignorada 500", services.CriarProdutoInput{})
+	produtoID := seedProdutoComPendenciaHandler(t, db, "Tubo Ignorada 500", services.CriarProdutoInput{
+		UnidadeMedida: "un"})
 
 	if _, err := db.Exec(`ALTER TABLE normalizacao_ignoradas RENAME TO normalizacao_ignoradas_indisponivel`); err != nil {
 		t.Fatalf("renomear normalizacao_ignoradas: %v", err)
@@ -951,10 +967,12 @@ func TestMesclarDuplicatasHandler_200(t *testing.T) {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
 	produtoA := seedProdutoComEstoqueHandler(t, db, "Tubo PVC 25mm", estoque.ID, services.CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Diametro:          &services.DimensaoInput{Valor: ptrFloatHandler(25), Unidade: ptrStrHandler("mm")},
 		QuantidadeInicial: 5,
 	})
 	produtoB := seedProdutoComEstoqueHandler(t, db, "Tubo PVC 25mm", estoque.ID, services.CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Diametro:          &services.DimensaoInput{Valor: ptrFloatHandler(25), Unidade: ptrStrHandler("mm")},
 		QuantidadeInicial: 3,
 	})
@@ -1066,8 +1084,10 @@ func TestMesclarDuplicatasHandler_403PapelUsuario(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
-	produtoA := seedProdutoComEstoqueHandler(t, db, "Tubo Mesclar 403", estoque.ID, services.CriarProdutoInput{QuantidadeInicial: 5})
-	produtoB := seedProdutoComEstoqueHandler(t, db, "Tubo Mesclar 403", estoque.ID, services.CriarProdutoInput{QuantidadeInicial: 3})
+	produtoA := seedProdutoComEstoqueHandler(t, db, "Tubo Mesclar 403", estoque.ID, services.CriarProdutoInput{
+		UnidadeMedida: "un", QuantidadeInicial: 5})
+	produtoB := seedProdutoComEstoqueHandler(t, db, "Tubo Mesclar 403", estoque.ID, services.CriarProdutoInput{
+		UnidadeMedida: "un", QuantidadeInicial: 3})
 
 	body := `{"produtoMantidoId":"` + produtoA + `","produtoRemovidoIds":["` + produtoB + `"]}`
 	w := postMesclar(db, realtime.NewRegistry(), "Bearer "+token, body)
@@ -1109,8 +1129,10 @@ func TestMesclarDuplicatasHandler_409ProdutoJaMesclado(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
-	produtoA := seedProdutoComEstoqueHandler(t, db, "Anel Vedacao Mesclar 409", estoque.ID, services.CriarProdutoInput{QuantidadeInicial: 2})
-	produtoB := seedProdutoComEstoqueHandler(t, db, "Anel Vedacao Mesclar 409", estoque.ID, services.CriarProdutoInput{QuantidadeInicial: 3})
+	produtoA := seedProdutoComEstoqueHandler(t, db, "Anel Vedacao Mesclar 409", estoque.ID, services.CriarProdutoInput{
+		UnidadeMedida: "un", QuantidadeInicial: 2})
+	produtoB := seedProdutoComEstoqueHandler(t, db, "Anel Vedacao Mesclar 409", estoque.ID, services.CriarProdutoInput{
+		UnidadeMedida: "un", QuantidadeInicial: 3})
 
 	if _, err := db.Exec(`UPDATE produtos SET deleted_at = now() WHERE id = $1`, produtoB); err != nil {
 		t.Fatalf("falha ao simular mesclagem concorrente de B: %v", err)
@@ -1146,7 +1168,8 @@ func seedProdutoComEstoqueHandlerSimples(t *testing.T, db *sql.DB, nome string) 
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	return seedProdutoComEstoqueHandler(t, db, nome, estoque.ID, services.CriarProdutoInput{})
+	return seedProdutoComEstoqueHandler(t, db, nome, estoque.ID, services.CriarProdutoInput{
+		UnidadeMedida: "un"})
 }
 
 // produtoDeletedAtHandler devolve true quando `produtos.deleted_at` do

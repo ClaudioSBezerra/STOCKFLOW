@@ -86,6 +86,14 @@ type criarProdutoRequest struct {
 	Diametro          dimensaoRequest `json:"diametro"`
 	Altura            dimensaoRequest `json:"altura"`
 	Espessura         dimensaoRequest `json:"espessura"`
+	// CodigoFornecedor/EAN13/UnidadeMedida/Embalagem (Story 10.3, spec-10-3,
+	// FR45/FR46) — repassados 1:1 para services.CriarProdutoInput, sem
+	// validação de formato aqui (services.CriarProduto é a única fonte de
+	// verdade).
+	CodigoFornecedor string `json:"codigo_fornecedor"`
+	EAN13            string `json:"ean13"`
+	UnidadeMedida    string `json:"unidade_medida"`
+	Embalagem        string `json:"embalagem"`
 }
 
 // CriarProdutoHandler expõe POST /api/produtos: cadastra um novo Produto e a
@@ -133,6 +141,10 @@ func CriarProdutoHandler(db *sql.DB, registro *realtime.Registry) http.HandlerFu
 			Diametro:          req.Diametro.paraInput(),
 			Altura:            req.Altura.paraInput(),
 			Espessura:         req.Espessura.paraInput(),
+			CodigoFornecedor:  req.CodigoFornecedor,
+			EAN13:             req.EAN13,
+			UnidadeMedida:     req.UnidadeMedida,
+			Embalagem:         req.Embalagem,
 		}
 
 		produto, err := services.CriarProduto(db, empresa.ID, input)

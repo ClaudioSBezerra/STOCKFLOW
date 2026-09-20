@@ -84,6 +84,7 @@ func montarAmbienteIsolamento(t *testing.T, db *sql.DB, slug, cnpjBase12, rotulo
 	a.estoque = estoque
 
 	produto, err := CriarProduto(db, a.empresa.ID, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Prancha Isolamento",
 		CategoriaID:       a.categoriaID,
 		EstoqueID:         a.estoque.ID,

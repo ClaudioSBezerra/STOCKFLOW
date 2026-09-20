@@ -19,10 +19,14 @@ import { apiUrl, authHeaders } from '@/lib/api';
  * Seção "Cadastrar Produto" da `CatalogoPage` (Story 3.1, spec-3-1; Story 3.2,
  * spec-3-2, acrescenta a Nomenclatura Guiada; Story 10.1, spec-10-1, torna o
  * Template sempre obrigatório; Story 10.2, spec-10-2, tira `codigo` da
- * entrada — o servidor gera o código sequencial), visível só a `almoxarife`+
- * (gate na própria página). Um `Card` com formulário: `nome`/`observacoes`
- * (`Input`), `categoria`/`estoque`/`template de nomenclatura` (`Select`, os
- * três obrigatórios — carregados de `GET /api/categorias`/`GET /api/estoques`/
+ * entrada — o servidor gera o código sequencial; Story 10.3, spec-10-3,
+ * acrescenta Código do Fornecedor/EAN-13/Embalagem, texto livre opcional, e
+ * Unidade de Medida, `Select` com as 12 opções fixas do enum, obrigatório),
+ * visível só a `almoxarife`+ (gate na própria página). Um `Card` com
+ * formulário: `nome`/`observacoes`/`código do fornecedor`/`ean-13`/
+ * `embalagem` (`Input`), `categoria`/`estoque`/`template de nomenclatura`/
+ * `unidade de medida` (`Select`, os quatro obrigatórios — categoria/estoque/
+ * template carregados de `GET /api/categorias`/`GET /api/estoques`/
  * `GET /api/nomenclatura-templates` num único `Promise.all`; falha em
  * QUALQUER um dos três aciona `erroCarregar` e bloqueia o cadastro, já que
  * sem a lista de templates o Almoxarife não tem como selecionar um) e as 5
@@ -30,7 +34,10 @@ import { apiUrl, authHeaders } from '@/lib/api';
  * todas opcionais — AD-9. `quantidade_inicial` é `Input` numérico obrigatório.
  * `codigo` (Story 10.2) é um `Input` `disabled`, só leitura — nenhum estado
  * próprio, `value={produtoCriado?.codigo ?? ''}`: vazio antes do cadastro,
- * preenchido com o código gerado pelo servidor depois de um `201`.
+ * preenchido com o código gerado pelo servidor depois de um `201`. Nenhuma
+ * validação de formato de EAN-13 roda no cliente — o servidor
+ * (`services.CriarProduto`) é a única fonte de verdade (Story 10.3, mesmo
+ * princípio já usado para o formato de nome/template).
  *
  * Quando um template é selecionado, um texto de apoio abaixo do campo Nome
  * mostra o formato exato esperado (ex. "Formato: CABO [TIPO] [TENSÃO] ...")
@@ -44,7 +51,8 @@ import { apiUrl, authHeaders } from '@/lib/api';
  * o campo específico quando aplicável, ex. dimensão incompleta, ou o nome não
  * corresponder ao template selecionado); qualquer outro erro (rede, 500) ->
  * `<p role="alert">` genérico. Botão desabilitado durante o envio ou com
- * `nome`/`categoria_id`/`estoque_id`/`quantidade_inicial` em branco.
+ * `nome`/`categoria_id`/`estoque_id`/`template_id`/`quantidade_inicial`/
+ * `unidade_medida` em branco.
  *
  * Categoria é sempre selecionada da lista fixa de `GET /api/categorias`
  * (AC4) — nunca um campo de texto livre.
@@ -104,6 +112,25 @@ interface DimensaoEstado {
 
 const DIMENSAO_VAZIA: DimensaoEstado = { valor: '', unidade: '' };
 const UNIDADES = ['mm', 'cm', 'm'] as const;
+
+// UNIDADES_MEDIDA (Story 10.3, spec-10-3, addendum.md §F): os 12 valores do
+// enum fechado `unidade_medida_produto` (migration 000038), mesma grafia e
+// ordem do backend (`unidadesMedidaValidas`, backend/services/produtos.go) —
+// inclusive os 3 com caracteres não-ASCII ("m²", "m³", "kg/m²").
+const UNIDADES_MEDIDA = [
+  'un',
+  'm',
+  'm²',
+  'm³',
+  'kg',
+  'L',
+  'cx',
+  'rolo',
+  'barra',
+  'mm',
+  'cm',
+  'kg/m²',
+] as const;
 
 const MENSAGEM_ERRO_CARREGAR =
   'Não foi possível carregar categorias/estoques/templates. Recarregue a página.';
@@ -213,6 +240,16 @@ export function CadastroProdutoSection() {
   const [altura, setAltura] = useState<DimensaoEstado>(DIMENSAO_VAZIA);
   const [espessura, setEspessura] = useState<DimensaoEstado>(DIMENSAO_VAZIA);
 
+  // Código do Fornecedor, EAN-13, Unidade de Medida e Embalagem (Story 10.3,
+  // spec-10-3, FR45/FR46): os dois primeiros e Embalagem são texto livre
+  // opcional; Unidade de Medida é obrigatória (entra em `desabilitado`) —
+  // nenhuma validação de formato de EAN-13 no cliente, o servidor é a única
+  // fonte de verdade.
+  const [codigoFornecedor, setCodigoFornecedor] = useState('');
+  const [ean13, setEan13] = useState('');
+  const [unidadeMedida, setUnidadeMedida] = useState('');
+  const [embalagem, setEmbalagem] = useState('');
+
   const [categorias, setCategorias] = useState<Categoria[]>([]);
   const [estoques, setEstoques] = useState<Estoque[]>([]);
   const [templates, setTemplates] = useState<NomenclaturaTemplate[]>([]);
@@ -301,6 +338,10 @@ export function CadastroProdutoSection() {
     setDiametro(DIMENSAO_VAZIA);
     setAltura(DIMENSAO_VAZIA);
     setEspessura(DIMENSAO_VAZIA);
+    setCodigoFornecedor('');
+    setEan13('');
+    setUnidadeMedida('');
+    setEmbalagem('');
   }
 
   const templateSelecionado = templates.find((t) => t.id === templateId);
@@ -311,7 +352,8 @@ export function CadastroProdutoSection() {
     categoriaId === '' ||
     estoqueId === '' ||
     templateId === '' ||
-    quantidadeInicial.trim() === '';
+    quantidadeInicial.trim() === '' ||
+    unidadeMedida === '';
 
   async function enviar(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -338,6 +380,10 @@ export function CadastroProdutoSection() {
           diametro: montarDimensao(diametro),
           altura: montarDimensao(altura),
           espessura: montarDimensao(espessura),
+          codigo_fornecedor: codigoFornecedor.trim() === '' ? undefined : codigoFornecedor.trim(),
+          ean13: ean13.trim() === '' ? undefined : ean13.trim(),
+          unidade_medida: unidadeMedida,
+          embalagem: embalagem.trim() === '' ? undefined : embalagem.trim(),
         }),
       });
       if (!res.ok) {
@@ -501,6 +547,49 @@ export function CadastroProdutoSection() {
               id="produto-codigo"
               value={produtoCriado?.codigo ?? ''}
               disabled
+            />
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="produto-codigo-fornecedor">Código do Fornecedor</Label>
+            <Input
+              id="produto-codigo-fornecedor"
+              value={codigoFornecedor}
+              onChange={(event) => setCodigoFornecedor(event.target.value)}
+            />
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="produto-ean13">EAN-13</Label>
+            <Input
+              id="produto-ean13"
+              value={ean13}
+              onChange={(event) => setEan13(event.target.value)}
+            />
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="produto-unidade-medida">Unidade de Medida</Label>
+            <Select value={unidadeMedida} onValueChange={setUnidadeMedida}>
+              <SelectTrigger id="produto-unidade-medida">
+                <SelectValue placeholder="Selecione uma unidade de medida" />
+              </SelectTrigger>
+              <SelectContent>
+                {UNIDADES_MEDIDA.map((unidade) => (
+                  <SelectItem key={unidade} value={unidade}>
+                    {unidade}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="produto-embalagem">Embalagem</Label>
+            <Input
+              id="produto-embalagem"
+              value={embalagem}
+              onChange={(event) => setEmbalagem(event.target.value)}
             />
           </div>
 

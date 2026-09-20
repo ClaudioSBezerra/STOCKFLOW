@@ -53,6 +53,7 @@ func seedProdutoComSaldoHandler(t *testing.T, db *sql.DB, nomeEstoque string, qu
 	}
 	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
 	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Produto " + nomeEstoque,
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,

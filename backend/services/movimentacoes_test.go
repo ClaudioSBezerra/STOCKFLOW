@@ -23,6 +23,7 @@ func seedProdutoComSaldo(t *testing.T, db *sql.DB, nomeEstoque string, quantidad
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 	produto, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Produto " + nomeEstoque,
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,

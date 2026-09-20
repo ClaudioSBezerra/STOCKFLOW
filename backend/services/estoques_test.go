@@ -239,6 +239,7 @@ func TestExcluirEstoque_ComResiduo(t *testing.T) {
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.007")
 	produto, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Tubo PVC 100mm",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -369,6 +370,7 @@ func TestExcluirEstoque_SemResiduoAposProdutoEstoqueZerado(t *testing.T) {
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "05.001")
 	if _, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida:     "un",
 		Nome:              "Capacete de Segurança",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -438,6 +440,7 @@ func TestExcluirEstoque_CorridaComCriarProdutoResidual(t *testing.T) {
 		defer wg.Done()
 		<-start
 		_, errCriar = CriarProduto(db, empresaTeste, CriarProdutoInput{
+			UnidadeMedida:     "un",
 			Nome:              "Produto Corrida Residuo",
 			CategoriaID:       categoriaID,
 			EstoqueID:         estoque.ID,
