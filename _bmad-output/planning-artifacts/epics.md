@@ -1574,6 +1574,12 @@ So that eu não precise abrir o detalhe de cada Produto pra saber o essencial.
 **When** ele aparece na listagem
 **Then** a coluna de embalagem mostra um traço/vazio, nunca quebra o layout
 
+**Given** uma linha da tabela agrupada que cobre mais de um Produto distinto (mesmo nome+dimensões, `CatalogoGrupo`)
+**When** os Produtos do grupo divergem em código, categoria ou embalagem+unidade
+**Then** a coluna correspondente mostra "Múltiplos" em vez de um valor específico; quando todos os Produtos do grupo concordam, mostra o valor comum — decisão do usuário (2026-09-20), sem alterar a chave de agrupamento existente (Story 4.3)
+
+**Nota de dependência:** esta story consome `unidade_medida`/`embalagem` persistidos pela Story 10.3 — só pode rodar depois dela (ordem numérica já garante isso, mas o scheduler do `bmad-loop` não a impõe sozinho se a 10.3 travar).
+
 ### Story 10.5: CRUD de Categorias
 
 As a `adm`+,
