@@ -427,6 +427,7 @@ func TestExcluirEstoqueHandler_409ComResiduo(t *testing.T) {
 		Nome:              "Tubo PVC 100mm",
 		CategoriaID:       categoriaID,
 		EstoqueID:         e.ID,
+		TemplateID:        templateIDPorSubtipoHandler(t, db, "Genérico"),
 		QuantidadeInicial: 5,
 	})
 	if err != nil {

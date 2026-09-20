@@ -88,6 +88,7 @@ func montarAmbienteIsolamento(t *testing.T, db *sql.DB, slug, cnpjBase12, rotulo
 		Codigo:            "SKU-ISOLAMENTO",
 		CategoriaID:       a.categoriaID,
 		EstoqueID:         a.estoque.ID,
+		TemplateID:        templateGenericoID(t, db, a.empresa.ID),
 		QuantidadeInicial: 20,
 	})
 	if err != nil {

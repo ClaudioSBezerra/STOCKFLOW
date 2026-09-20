@@ -242,6 +242,7 @@ func TestExcluirEstoque_ComResiduo(t *testing.T) {
 		Nome:              "Tubo PVC 100mm",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
 		QuantidadeInicial: 5,
 	})
 	if err != nil {
@@ -368,9 +369,10 @@ func TestExcluirEstoque_SemResiduoAposProdutoEstoqueZerado(t *testing.T) {
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "05.001")
 	if _, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
-		Nome:              "Capacete",
+		Nome:              "Capacete de Segurança",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
 		QuantidadeInicial: 0,
 	}); err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
@@ -439,6 +441,7 @@ func TestExcluirEstoque_CorridaComCriarProdutoResidual(t *testing.T) {
 			Nome:              "Produto Corrida Residuo",
 			CategoriaID:       categoriaID,
 			EstoqueID:         estoque.ID,
+			TemplateID:        templateGenericoID(t, db, empresaTeste),
 			QuantidadeInicial: 5,
 		})
 	}()

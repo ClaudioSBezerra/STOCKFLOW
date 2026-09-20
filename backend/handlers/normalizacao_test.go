@@ -47,6 +47,9 @@ func seedProdutoComPendenciaHandler(t *testing.T, db *sql.DB, nome string, dims 
 	dims.Nome = nome
 	dims.CategoriaID = categoriaIDPorCodigoHandler(t, db, "04.001")
 	dims.EstoqueID = estoque.ID
+	if dims.TemplateID == "" {
+		dims.TemplateID = templateIDPorSubtipoHandler(t, db, "Genérico")
+	}
 	produto, err := services.CriarProduto(db, empresaTeste, dims)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
@@ -64,6 +67,9 @@ func seedProdutoComEstoqueHandler(t *testing.T, db *sql.DB, nome, estoqueID stri
 	dims.Nome = nome
 	dims.CategoriaID = categoriaIDPorCodigoHandler(t, db, "04.001")
 	dims.EstoqueID = estoqueID
+	if dims.TemplateID == "" {
+		dims.TemplateID = templateIDPorSubtipoHandler(t, db, "Genérico")
+	}
 	produto, err := services.CriarProduto(db, empresaTeste, dims)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)

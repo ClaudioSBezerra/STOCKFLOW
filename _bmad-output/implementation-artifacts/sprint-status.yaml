@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-29-2026 14:50
-last_updated: 09-19-2026 17:37
+last_updated: 09-20-2026 00:08
 project: stockflow
 project_key: NOKEY
 tracking_system: file-system
@@ -111,8 +111,8 @@ development_status:
   9-4-migração-da-ferreira-costa-para-o-modelo-multi-empresa: done
   epic-9-retrospective: optional
 
-  epic-10: backlog
-  10-1-nome-mínimo-e-template-de-nomenclatura-obrigatório-com-fallb: backlog
+  epic-10: in-progress
+  10-1-nome-mínimo-e-template-de-nomenclatura-obrigatório-com-fallb: done
   10-2-código-de-produto-automático-e-sequencial-por-empresa: backlog
   10-3-código-do-fornecedor-ean-13-unidade-de-medida-e-embalagem: backlog
   10-4-colunas-explícitas-na-listagem-do-catálogo: backlog

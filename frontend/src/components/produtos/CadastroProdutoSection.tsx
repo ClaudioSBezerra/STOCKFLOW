@@ -17,13 +17,14 @@ import { apiUrl, authHeaders } from '@/lib/api';
 
 /**
  * Seção "Cadastrar Produto" da `CatalogoPage` (Story 3.1, spec-3-1; Story 3.2,
- * spec-3-2, acrescenta a Nomenclatura Guiada), visível só a `almoxarife`+
- * (gate na própria página). Um `Card` com formulário: `nome`/`codigo`/
- * `observacoes` (`Input`), `categoria`/`estoque`/`template de nomenclatura`
- * (`Select`, os dois primeiros obrigatórios, o terceiro opcional — carregados
- * de `GET /api/categorias`/`GET /api/estoques` (`Promise.all`, obrigatórios)
- * e, isoladamente, `GET /api/nomenclatura-templates` — uma falha só nesse
- * endpoint opcional não bloqueia os dois primeiros) e as 5
+ * spec-3-2, acrescenta a Nomenclatura Guiada; Story 10.1, spec-10-1, torna o
+ * Template sempre obrigatório), visível só a `almoxarife`+ (gate na própria
+ * página). Um `Card` com formulário: `nome`/`codigo`/`observacoes` (`Input`),
+ * `categoria`/`estoque`/`template de nomenclatura` (`Select`, os três
+ * obrigatórios — carregados de `GET /api/categorias`/`GET /api/estoques`/
+ * `GET /api/nomenclatura-templates` num único `Promise.all`; falha em
+ * QUALQUER um dos três aciona `erroCarregar` e bloqueia o cadastro, já que
+ * sem a lista de templates o Almoxarife não tem como selecionar um) e as 5
  * dimensões pareadas (`Input` numérico + `Select` de unidade `mm/cm/m`),
  * todas opcionais — AD-9. `quantidade_inicial` é `Input` numérico obrigatório.
  *
@@ -100,15 +101,8 @@ interface DimensaoEstado {
 const DIMENSAO_VAZIA: DimensaoEstado = { valor: '', unidade: '' };
 const UNIDADES = ['mm', 'cm', 'm'] as const;
 
-// SEM_TEMPLATE é o valor sentinela da opção "nome livre" do `<Select>` de
-// template — Radix `Select.Item` proíbe `value=""` (usado internamente para
-// representar "nada selecionado"), então a opção vazia descrita na spec-3-2
-// precisa de um valor não-vazio próprio, traduzido de volta para `''`
-// (estado `templateId`) no `onValueChange`.
-const SEM_TEMPLATE = '__sem-template__';
-
 const MENSAGEM_ERRO_CARREGAR =
-  'Não foi possível carregar categorias/estoques. Recarregue a página.';
+  'Não foi possível carregar categorias/estoques/templates. Recarregue a página.';
 const MENSAGEM_ERRO_CADASTRO =
   'Não foi possível cadastrar o produto agora. Tente novamente em instantes.';
 const MENSAGEM_ERRO_FOTO =
@@ -258,39 +252,30 @@ export function CadastroProdutoSection() {
   }, []);
 
   const carregarListas = useCallback(async () => {
+    // Story 10.1: Template de nomenclatura passou a ser sempre obrigatório
+    // no cadastro (AC2) — sem a lista, o Almoxarife não tem como selecionar
+    // um, então uma falha aqui recebe o MESMO tratamento hoje dado a
+    // categorias/estoques (mesmo `Promise.all`, mesmo `erroCarregar`), em vez
+    // de degradar silenciosamente como na Story 3.2.
     try {
-      const [resCategorias, resEstoques] = await Promise.all([
+      const [resCategorias, resEstoques, resTemplates] = await Promise.all([
         fetch(apiUrl('/api/categorias'), { headers: authHeaders() }),
         fetch(apiUrl('/api/estoques'), { headers: authHeaders() }),
+        fetch(apiUrl('/api/nomenclatura-templates'), { headers: authHeaders() }),
       ]);
-      if (!resCategorias.ok || !resEstoques.ok) {
+      if (!resCategorias.ok || !resEstoques.ok || !resTemplates.ok) {
         setErroCarregar(MENSAGEM_ERRO_CARREGAR);
         return;
       }
       const bodyCategorias = (await resCategorias.json()) as { categorias: Categoria[] };
       const bodyEstoques = (await resEstoques.json()) as { estoques: Estoque[] };
+      const bodyTemplates = (await resTemplates.json()) as { templates: NomenclaturaTemplate[] };
       setCategorias(bodyCategorias.categorias ?? []);
       setEstoques(bodyEstoques.estoques ?? []);
+      setTemplates(bodyTemplates.templates ?? []);
       setErroCarregar(null);
     } catch {
       setErroCarregar(MENSAGEM_ERRO_CARREGAR);
-      return;
-    }
-
-    // Template de nomenclatura é opcional (Story 3.2, AC2) — buscado FORA do
-    // Promise.all acima, com seu próprio try/catch: nem uma resposta não-ok
-    // nem a própria fetch rejeitando (falha de rede isolada nesse endpoint)
-    // pode bloquear o cadastro inteiro, que não depende dela. Degrada
-    // silenciosamente para "nenhum template disponível" (o `<Select>` mostra
-    // só a opção "Nome livre"), sem acionar `erroCarregar`.
-    try {
-      const resTemplates = await fetch(apiUrl('/api/nomenclatura-templates'), { headers: authHeaders() });
-      if (resTemplates.ok) {
-        const bodyTemplates = (await resTemplates.json()) as { templates: NomenclaturaTemplate[] };
-        setTemplates(bodyTemplates.templates ?? []);
-      }
-    } catch {
-      // Falha de rede isolada em templates — mantém "Nome livre" (templates == []).
     }
   }, []);
 
@@ -319,9 +304,10 @@ export function CadastroProdutoSection() {
 
   const desabilitado =
     enviando ||
-    nome.trim() === '' ||
+    nome.trim().length < 10 ||
     categoriaId === '' ||
     estoqueId === '' ||
+    templateId === '' ||
     quantidadeInicial.trim() === '';
 
   async function enviar(event: FormEvent<HTMLFormElement>) {
@@ -343,7 +329,7 @@ export function CadastroProdutoSection() {
           observacoes: observacoes.trim() === '' ? undefined : observacoes.trim(),
           categoria_id: categoriaId,
           estoque_id: estoqueId,
-          template_id: templateId === '' ? undefined : templateId,
+          template_id: templateId,
           quantidade_inicial: Number(quantidadeInicial),
           comprimento: montarDimensao(comprimento),
           largura: montarDimensao(largura),
@@ -492,16 +478,12 @@ export function CadastroProdutoSection() {
           </div>
 
           <div className="flex flex-col gap-2">
-            <Label htmlFor="produto-template">Template de nomenclatura (opcional)</Label>
-            <Select
-              value={templateId === '' ? SEM_TEMPLATE : templateId}
-              onValueChange={(valor) => setTemplateId(valor === SEM_TEMPLATE ? '' : valor)}
-            >
+            <Label htmlFor="produto-template">Template de nomenclatura</Label>
+            <Select value={templateId} onValueChange={setTemplateId}>
               <SelectTrigger id="produto-template">
-                <SelectValue placeholder="Nome livre (sem template)" />
+                <SelectValue placeholder="Selecione um template" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value={SEM_TEMPLATE}>Nome livre (sem template)</SelectItem>
                 {templates.map((template) => (
                   <SelectItem key={template.id} value={template.id}>
                     {template.subtipo}

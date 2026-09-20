@@ -23,6 +23,14 @@ type NomenclaturaTemplate struct {
 // texto livre.
 var tokenTemplate = regexp.MustCompile(`\[[^\]]+\]`)
 
+// TemplateGenericoMarcador é o texto do template "Genérico" (Story 10.1,
+// AD-34), seed da migration 000036 em `nomenclatura_templates_padrao` (e, a
+// partir dela, de `nomenclatura_templates` de toda Empresa). Serve de
+// fallback universal para as Categorias sem template estrutural fiel: em vez
+// de um placeholder posicional como `[TIPO]`, o marcador inteiro sinaliza
+// "nome livre" a nomeValidoParaTemplate.
+const TemplateGenericoMarcador = "[NOME LIVRE]"
+
 // nomeValidoParaTemplate valida `nome` contra o formato de `templateTexto`
 // (Story 3.2, AC1/AC2): extrai os placeholders `[X]` do template mantendo a
 // ordem, constrói um padrão âncorado (`^...$`) escapando (regexp.QuoteMeta)
@@ -42,6 +50,14 @@ var tokenTemplate = regexp.MustCompile(`\[[^\]]+\]`)
 // espaço após trim — um placeholder "preenchido" só com espaços não conta
 // como preenchido.
 func nomeValidoParaTemplate(templateTexto, nome string) bool {
+	// AD-34: o template Genérico não tem estrutura nenhuma a validar — aceita
+	// qualquer `nome` não vazio (após trim), sem checar tokens/ordem. Branch
+	// isolado ANTES da lógica de regex: o marcador não é um placeholder
+	// posicional, é o template inteiro.
+	if templateTexto == TemplateGenericoMarcador {
+		return strings.TrimSpace(nome) != ""
+	}
+
 	locs := tokenTemplate.FindAllStringIndex(templateTexto, -1)
 
 	var padrao strings.Builder

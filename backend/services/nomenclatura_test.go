@@ -105,17 +105,19 @@ func TestNomeValidoParaTemplate_PlaceholderComQuebraDeLinha(t *testing.T) {
 	}
 }
 
-// TestListarNomenclaturaTemplates_Todas28OrdenadasPorSubtipo prova a AC dos
-// 28 templates de seed (migração 000013), ordenados por `subtipo` ascendente.
-func TestListarNomenclaturaTemplates_Todas28OrdenadasPorSubtipo(t *testing.T) {
+// TestListarNomenclaturaTemplates_Todas29OrdenadasPorSubtipo prova a AC dos
+// 28 templates de seed (migração 000013) + o template Genérico acrescentado
+// pela Story 10.1 (migration 000036, AD-34) = 29, ordenados por `subtipo`
+// ascendente.
+func TestListarNomenclaturaTemplates_Todas29OrdenadasPorSubtipo(t *testing.T) {
 	db := testDB(t)
 
 	templates, err := ListarNomenclaturaTemplates(db, empresaTeste)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
-	if len(templates) != 28 {
-		t.Fatalf("len = %d, want 28", len(templates))
+	if len(templates) != 29 {
+		t.Fatalf("len = %d, want 29", len(templates))
 	}
 	for i := 1; i < len(templates); i++ {
 		if templates[i-1].Subtipo >= templates[i].Subtipo {
@@ -125,6 +127,50 @@ func TestListarNomenclaturaTemplates_Todas28OrdenadasPorSubtipo(t *testing.T) {
 	for _, tpl := range templates {
 		if tpl.ID == "" || tpl.Subtipo == "" || tpl.Template == "" {
 			t.Errorf("template com campo vazio: %+v", tpl)
+		}
+	}
+	var achouGenerico bool
+	for _, tpl := range templates {
+		if tpl.Subtipo == "Genérico" {
+			achouGenerico = true
+			if tpl.Template != TemplateGenericoMarcador {
+				t.Errorf("template do subtipo Genérico = %q, want %q", tpl.Template, TemplateGenericoMarcador)
+			}
+		}
+	}
+	if !achouGenerico {
+		t.Error("subtipo Genérico não encontrado na lista")
+	}
+}
+
+// --- Story 10.1: template Genérico ([NOME LIVRE], AD-34) --------------------
+
+// TestNomeValidoParaTemplate_MarcadorGenericoAceitaQualquerNomeNaoVazio prova
+// o branch do marcador `[NOME LIVRE]` em nomeValidoParaTemplate: qualquer
+// nome não vazio (após trim) é aceito, independente de formato/estrutura —
+// nunca casado contra tokens/regex.
+func TestNomeValidoParaTemplate_MarcadorGenericoAceitaQualquerNomeNaoVazio(t *testing.T) {
+	casos := []string{
+		"qualquer nome livre",
+		"TUBO PEAD PN80 DN50", // até um nome que casaria outro template estrutural
+		"1234567890",
+		"nome com\nquebra de linha",
+	}
+	for _, nome := range casos {
+		if !nomeValidoParaTemplate(TemplateGenericoMarcador, nome) {
+			t.Errorf("nomeValidoParaTemplate(%q, %q) = false, want true (marcador Genérico aceita qualquer nome não vazio)", TemplateGenericoMarcador, nome)
+		}
+	}
+}
+
+// TestNomeValidoParaTemplate_MarcadorGenericoRejeitaVazioOuSoEspaco prova que
+// o branch do marcador Genérico ainda rejeita nome vazio/só espaço — "aceita
+// qualquer nome" não é "aceita string vazia".
+func TestNomeValidoParaTemplate_MarcadorGenericoRejeitaVazioOuSoEspaco(t *testing.T) {
+	casos := []string{"", "   ", "\t\n"}
+	for _, nome := range casos {
+		if nomeValidoParaTemplate(TemplateGenericoMarcador, nome) {
+			t.Errorf("nomeValidoParaTemplate(%q, %q) = true, want false", TemplateGenericoMarcador, nome)
 		}
 	}
 }

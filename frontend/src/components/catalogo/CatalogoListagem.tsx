@@ -123,8 +123,7 @@ const MENSAGEM_SEM_ESTOQUE_REGISTRADO = 'Sem quantidade registrada por estoque.'
 
 // SEM_CATEGORIA/SEM_ESTOQUE são os valores sentinela das opções "Todas as
 // categorias"/"Todos os Estoques" — Radix `Select.Item` proíbe `value=""`
-// (usado internamente para representar "nada selecionado"), mesmo padrão
-// `SEM_TEMPLATE` de CadastroProdutoSection.
+// (usado internamente para representar "nada selecionado").
 const SEM_CATEGORIA = '__todas-categorias__';
 const SEM_ESTOQUE = '__todos-estoques__';
 

@@ -23,6 +23,7 @@ func criarProdutoParaFoto(t *testing.T, db *sql.DB, nome string) Produto {
 		Nome:              nome,
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
 		QuantidadeInicial: 1,
 	})
 	if err != nil {

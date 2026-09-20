@@ -801,6 +801,7 @@ func TestCriarImportacao_CodigoExistente_AtualizaEmVezDeCriar(t *testing.T) {
 		Codigo:            "SKU-ATUALIZA-1",
 		CategoriaID:       categoriaAntiga,
 		EstoqueID:         estoque.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
 		QuantidadeInicial: 10,
 	})
 	if err != nil {
@@ -972,6 +973,7 @@ func TestCriarImportacao_LinhaSemCodigo_NomeParecidoAindaAssimCria(t *testing.T)
 		Nome:              "Produto Nome Igualzinho",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
 		QuantidadeInicial: 1,
 	})
 	if err != nil {
@@ -1079,6 +1081,7 @@ func TestCriarImportacao_CodigoExistente_NovoEstoque_ParExistenteIntacto(t *test
 		Codigo:            "SKU-MULTIESTOQUE-1",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoqueOriginal.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
 		QuantidadeInicial: 5,
 	})
 	if err != nil {
@@ -1158,6 +1161,7 @@ func TestCriarImportacao_CodigoExistente_EstoqueInvalido_NaoAlteraProduto(t *tes
 		Codigo:            "SKU-ESTOQUE-INVALIDO-1",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoqueOriginal.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
 		QuantidadeInicial: 4,
 	})
 	if err != nil {

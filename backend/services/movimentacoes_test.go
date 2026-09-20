@@ -26,6 +26,7 @@ func seedProdutoComSaldo(t *testing.T, db *sql.DB, nomeEstoque string, quantidad
 		Nome:              "Produto " + nomeEstoque,
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
 		QuantidadeInicial: quantidadeInicial,
 	})
 	if err != nil {

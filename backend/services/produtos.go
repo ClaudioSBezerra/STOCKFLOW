@@ -68,9 +68,12 @@ type DimensaoInput struct {
 // `QuantidadeInicial` alimentam o INSERT em `produto_estoque` feito na mesma
 // transação do INSERT em `produtos`.
 //
-// `TemplateID` vazio (após trim) preserva o comportamento da Story 3.1: nome
-// livre, sem validação de estrutura. Preenchido, `nome` deve casar o formato
-// do template referenciado (Story 3.2, AC1/AC2) — ver nomeValidoParaTemplate.
+// `TemplateID` é sempre obrigatório desde a Story 10.1 (AC2) — vazio (após
+// trim) rejeita com ErroProdutoValidacao, não existe mais caminho de nome
+// livre sem template no cadastro. `nome` deve casar o formato do template
+// referenciado (Story 3.2, AC1/AC2) — ver nomeValidoParaTemplate; o template
+// Genérico (`[NOME LIVRE]`, Story 10.1, AD-34) aceita qualquer nome não
+// vazio, sem checar estrutura.
 type CriarProdutoInput struct {
 	Nome              string
 	Codigo            string
@@ -172,12 +175,14 @@ func validarDimensao(campo string, d *DimensaoInput) (sql.NullFloat64, sql.NullS
 }
 
 // CriarProduto valida e insere um novo Produto (Story 3.1, FR-8; Story 3.2
-// acrescenta a Nomenclatura Guiada). Toda a validação acontece ANTES de
-// qualquer escrita — nome, categoria/estoque (presença), quantidade inicial,
-// as 5 dimensões pareadas e, quando `TemplateID` é informado, o formato do
-// nome contra o template (ver o bloco de validação de Nomenclatura Guiada
-// abaixo) — de modo que um erro de validação NUNCA deixa um Produto
-// parcialmente gravado.
+// acrescenta a Nomenclatura Guiada; Story 10.1 torna `nome` com mínimo de 10
+// runas e `TemplateID` sempre obrigatórios, FR8). Toda a validação acontece
+// ANTES de qualquer escrita — nome (10..255 runas), categoria/estoque
+// (presença), quantidade inicial, as 5 dimensões pareadas e o formato do
+// nome contra o template selecionado, sempre presente (ver o bloco de
+// validação de Nomenclatura Guiada abaixo, incluindo o fallback Genérico
+// `[NOME LIVRE]`, AD-34) — de modo que um erro de validação NUNCA deixa um
+// Produto parcialmente gravado.
 //
 // Sucesso: uma única transação insere a linha em `produtos` (`RETURNING id,
 // nome`, incluindo `template_id` quando informado) seguida da linha em
@@ -195,9 +200,9 @@ func validarDimensao(campo string, d *DimensaoInput) (sql.NullFloat64, sql.NullS
 // sem precisar inspecionar o nome da constraint.
 func CriarProduto(db *sql.DB, empresaID string, input CriarProdutoInput) (Produto, error) {
 	nomeTrimado := strings.TrimSpace(input.Nome)
-	if nomeTrimado == "" || utf8.RuneCountInString(nomeTrimado) > 255 {
+	if n := utf8.RuneCountInString(nomeTrimado); n < 10 || n > 255 {
 		return Produto{}, &ErroProdutoValidacao{
-			Mensagem: "nome é obrigatório e deve ter no máximo 255 caracteres",
+			Mensagem: "nome é obrigatório e deve ter entre 10 e 255 caracteres",
 		}
 	}
 
@@ -248,13 +253,20 @@ func CriarProduto(db *sql.DB, empresaID string, input CriarProdutoInput) (Produt
 		return Produto{}, err
 	}
 
-	// Validação de Nomenclatura Guiada (Story 3.2, AC1/AC2) — feita AQUI,
-	// ainda antes de abrir a transação, junto às demais validações: um
-	// `template_id` vazio (após trim) preserva o comportamento da Story 3.1
-	// (nome livre); preenchido, exige que `nome` case o formato do template.
+	// Validação de Nomenclatura Guiada (Story 3.2, AC1/AC2; Story 10.1, AC2)
+	// — feita AQUI, ainda antes de abrir a transação, junto às demais
+	// validações. Desde a Story 10.1 `template_id` é SEMPRE obrigatório: o
+	// template Genérico (`[NOME LIVRE]`, AD-34, migration 000036) é o
+	// fallback universal para Categorias sem template estrutural, então não
+	// existe mais caminho de cadastro sem template selecionado.
 	var templateID sql.NullString
 	templateIDTrimado := strings.TrimSpace(input.TemplateID)
-	if templateIDTrimado != "" {
+	if templateIDTrimado == "" {
+		return Produto{}, &ErroProdutoValidacao{
+			Mensagem: "template de nomenclatura é obrigatório",
+		}
+	}
+	{
 		var templateTexto string
 		err := db.QueryRow(
 			`SELECT template FROM nomenclatura_templates WHERE id = $1 AND empresa_id = $2`,
@@ -369,9 +381,9 @@ func CriarProduto(db *sql.DB, empresaID string, input CriarProdutoInput) (Produt
 // observações ficam fora, sem endpoint de edição para eles nesta story (não
 // existe, em nenhum épico do roadmap, uma tela geral de edição de Produto).
 //
-// `novoNome` é validado com a MESMA regra de CriarProduto (trim, 1..255
-// runes) -> ErroProdutoValidacao se falhar, nenhuma leitura/escrita
-// acontece.
+// `novoNome` é validado com a MESMA regra de CriarProduto (trim, 10..255
+// runes desde a Story 10.1) -> ErroProdutoValidacao se falhar, nenhuma
+// leitura/escrita acontece.
 //
 // `id` inexistente OU malformado (não-UUID, `pq` SQLSTATE 22P02) ->
 // ErrProdutoNaoEncontrado. Quando o Produto tem `template_id` aplicado, o
@@ -383,9 +395,9 @@ func CriarProduto(db *sql.DB, empresaID string, input CriarProdutoInput) (Produt
 // básica acima.
 func AtualizarNomeProduto(db *sql.DB, empresaID string, id string, novoNome string) (Produto, error) {
 	nomeTrimado := strings.TrimSpace(novoNome)
-	if nomeTrimado == "" || utf8.RuneCountInString(nomeTrimado) > 255 {
+	if n := utf8.RuneCountInString(nomeTrimado); n < 10 || n > 255 {
 		return Produto{}, &ErroProdutoValidacao{
-			Mensagem: "nome é obrigatório e deve ter no máximo 255 caracteres",
+			Mensagem: "nome é obrigatório e deve ter entre 10 e 255 caracteres",
 		}
 	}
 

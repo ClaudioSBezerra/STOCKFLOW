@@ -130,7 +130,8 @@ func postRenomear(db *sql.DB, authHeader, id, body string) *httptest.ResponseRec
 }
 
 // templateIDPorSubtipoHandler devolve o id de um dos 28 templates fixos de
-// seed (migração 000013), pelo `subtipo` (addendum §G).
+// seed (migração 000013) ou do template Genérico (Story 10.1, migration
+// 000036), pelo `subtipo` (addendum §G / AD-34).
 func templateIDPorSubtipoHandler(t *testing.T, db *sql.DB, subtipo string) string {
 	t.Helper()
 	var id string
@@ -167,6 +168,7 @@ func TestCriarProdutoHandler_201ParaAlmoxarifeGestorAdm(t *testing.T) {
 				"nome": "` + c.nome + `",
 				"categoria_id": "` + categoriaID + `",
 				"estoque_id": "` + estoque.ID + `",
+				"template_id": "` + templateIDPorSubtipoHandler(t, db, "Genérico") + `",
 				"quantidade_inicial": 10,
 				"comprimento": {"valor": 6, "unidade": "m"},
 				"largura": {"valor": 100, "unidade": "mm"},
@@ -208,7 +210,7 @@ func TestCriarProdutoHandler_201SemDimensoes(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 
-	corpo := `{"nome":"Produto Simples","categoria_id":"` + categoriaID + `","estoque_id":"` + estoque.ID + `","quantidade_inicial":1}`
+	corpo := `{"nome":"Produto Simples","categoria_id":"` + categoriaID + `","estoque_id":"` + estoque.ID + `","template_id":"` + templateIDPorSubtipoHandler(t, db, "Genérico") + `","quantidade_inicial":1}`
 	w := postProdutos(db, "Bearer "+token, corpo)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
@@ -311,6 +313,43 @@ func TestCriarProdutoHandler_400CategoriaOuEstoqueInexistente(t *testing.T) {
 	env := decodeErro(t, w.Body.Bytes())
 	if env.Error.Code != "VALIDATION_ERROR" {
 		t.Errorf("code = %q, want VALIDATION_ERROR", env.Error.Code)
+	}
+}
+
+// TestCriarProdutoHandler_400TemplateIDAusente prova a Story 10.1 AC2 na
+// fronteira HTTP: `POST /api/produtos` sem `template_id` (campo ausente do
+// corpo) -> 400 VALIDATION_ERROR citando o template como obrigatório, nada
+// gravado — o cadastro sem nenhum template selecionado deixou de existir.
+func TestCriarProdutoHandler_400TemplateIDAusente(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.004")
+	criarContaComPapel(t, db, "Almox", "prod-semtemplate-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "prod-semtemplate-almox@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Sem Template HTTP")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+
+	corpo := `{"nome":"Produto Sem Template","categoria_id":"` + categoriaID + `","estoque_id":"` + estoque.ID + `","quantidade_inicial":1}`
+	w := postProdutos(db, "Bearer "+token, corpo)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "VALIDATION_ERROR" {
+		t.Errorf("code = %q, want VALIDATION_ERROR", env.Error.Code)
+	}
+	if !strings.Contains(env.Error.Message, "template de nomenclatura é obrigatório") {
+		t.Errorf("message = %q, want citar %q", env.Error.Message, "template de nomenclatura é obrigatório")
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM produtos`).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("linhas em produtos = %d, want 0 (nada deveria ser gravado)", n)
 	}
 }
 
@@ -520,7 +559,8 @@ func TestCriarProdutoHandler_400TemplateInexistente(t *testing.T) {
 
 // TestListarNomenclaturaTemplatesHandler_200PorQualquerPapel prova que
 // qualquer conta autenticada — inclusive `usuario` — recebe 200 com os 28
-// templates fixos.
+// templates fixos + o template Genérico da Story 10.1 (migration 000036) =
+// 29.
 func TestListarNomenclaturaTemplatesHandler_200PorQualquerPapel(t *testing.T) {
 	db := testDB(t)
 
@@ -540,8 +580,8 @@ func TestListarNomenclaturaTemplatesHandler_200PorQualquerPapel(t *testing.T) {
 			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 				t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
 			}
-			if len(resp.Templates) != 28 {
-				t.Errorf("len(templates) = %d, want 28", len(resp.Templates))
+			if len(resp.Templates) != 29 {
+				t.Errorf("len(templates) = %d, want 29", len(resp.Templates))
 			}
 
 			var subtipoAnterior string
@@ -587,6 +627,7 @@ func TestAtualizarNomeProdutoHandler_200AlmoxarifeSucesso(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
+		TemplateID:        templateIDPorSubtipoHandler(t, db, "Genérico"),
 		Nome:              "Nome Original",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -687,6 +728,7 @@ func TestAtualizarNomeProdutoHandler_400PayloadInvalido(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
+		TemplateID:        templateIDPorSubtipoHandler(t, db, "Genérico"),
 		Nome:              "Nome Original",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -729,6 +771,7 @@ func TestAtualizarNomeProdutoHandler_403ParaUsuario(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
+		TemplateID:        templateIDPorSubtipoHandler(t, db, "Genérico"),
 		Nome:              "Nome Original",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
@@ -790,6 +833,7 @@ func TestBuscarProdutosHandler_200ComResultados(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
+		TemplateID:        templateIDPorSubtipoHandler(t, db, "Genérico"),
 		Nome:              "Parafuso Sextavado M8",
 		Codigo:            "PAR-BUSCA-1",
 		CategoriaID:       categoriaID,
@@ -953,6 +997,7 @@ func seedProdutoCatalogoHandler(t *testing.T, db *sql.DB, estoqueID, nome, categ
 		Nome:              nome,
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoqueID,
+		TemplateID:        templateIDPorSubtipoHandler(t, db, "Genérico"),
 		QuantidadeInicial: qtd,
 	})
 	if err != nil {
@@ -974,8 +1019,8 @@ func TestListarCatalogoHandler_200Grade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	seedProdutoCatalogoHandler(t, db, estoque.ID, "Alfa", categoriaID, 5)
-	seedProdutoCatalogoHandler(t, db, estoque.ID, "Beta", categoriaID, 0)
+	seedProdutoCatalogoHandler(t, db, estoque.ID, "Alfa Produto", categoriaID, 5)
+	seedProdutoCatalogoHandler(t, db, estoque.ID, "Beta Produto", categoriaID, 0)
 
 	w := getProdutosCatalogo(db, "Bearer "+token, "")
 	if w.Code != http.StatusOK {
@@ -1003,11 +1048,11 @@ func TestListarCatalogoHandler_200Grade(t *testing.T) {
 	if len(resp.Produtos) != 2 {
 		t.Fatalf("len(produtos) = %d, want 2", len(resp.Produtos))
 	}
-	if resp.Produtos[0].Nome != "Alfa" || resp.Produtos[0].QuantidadeTotal != 5 || !resp.Produtos[0].Disponivel {
-		t.Errorf("produtos[0] = %+v, want Alfa/5/true", resp.Produtos[0])
+	if resp.Produtos[0].Nome != "Alfa Produto" || resp.Produtos[0].QuantidadeTotal != 5 || !resp.Produtos[0].Disponivel {
+		t.Errorf("produtos[0] = %+v, want Alfa Produto/5/true", resp.Produtos[0])
 	}
-	if resp.Produtos[1].Nome != "Beta" || resp.Produtos[1].Disponivel {
-		t.Errorf("produtos[1] = %+v, want Beta/disponivel false", resp.Produtos[1])
+	if resp.Produtos[1].Nome != "Beta Produto" || resp.Produtos[1].Disponivel {
+		t.Errorf("produtos[1] = %+v, want Beta Produto/disponivel false", resp.Produtos[1])
 	}
 	if resp.Paginacao != (struct {
 		Pagina       int `json:"pagina"`
@@ -1037,8 +1082,8 @@ func TestListarCatalogoHandler_200AgrupadoComPorEstoque(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	seedProdutoCatalogoHandler(t, db, estA.ID, "Bucha", categoriaID, 10)
-	p2 := seedProdutoCatalogoHandler(t, db, estA.ID, "Bucha", categoriaID, 5)
+	seedProdutoCatalogoHandler(t, db, estA.ID, "Bucha Grande", categoriaID, 10)
+	p2 := seedProdutoCatalogoHandler(t, db, estA.ID, "Bucha Grande", categoriaID, 5)
 	if _, err := db.Exec(
 		`INSERT INTO produto_estoque (produto_id, estoque_id, quantidade) VALUES ($1,$2,$3)`,
 		p2, estB.ID, 2,
@@ -1071,8 +1116,8 @@ func TestListarCatalogoHandler_200AgrupadoComPorEstoque(t *testing.T) {
 		t.Fatalf("grupos = %d, total = %d, want 1/1 (body=%s)", len(resp.Grupos), resp.Paginacao.Total, w.Body.String())
 	}
 	g := resp.Grupos[0]
-	if g.Nome != "Bucha" || g.Chave == "" || g.QuantidadeTotal != 17 {
-		t.Errorf("grupo = %+v, want Bucha / chave != '' / qtd 17", g)
+	if g.Nome != "Bucha Grande" || g.Chave == "" || g.QuantidadeTotal != 17 {
+		t.Errorf("grupo = %+v, want Bucha Grande / chave != '' / qtd 17", g)
 	}
 	if len(g.PorEstoque) != 2 {
 		t.Fatalf("porEstoque len = %d, want 2 (%+v)", len(g.PorEstoque), g.PorEstoque)
@@ -1199,7 +1244,7 @@ func TestListarCatalogoHandler_FiltroCategoriaIsolado(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	seedProdutoCatalogoHandler(t, db, estoque.ID, "Cimento", civil, 1)
+	seedProdutoCatalogoHandler(t, db, estoque.ID, "Cimento Portland", civil, 1)
 	seedProdutoCatalogoHandler(t, db, estoque.ID, "Cabo Flexível", eletrico, 1)
 
 	w := getProdutosCatalogo(db, "Bearer "+token, "categoriaId="+civil)
@@ -1207,8 +1252,8 @@ func TestListarCatalogoHandler_FiltroCategoriaIsolado(t *testing.T) {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
 	}
 	resp := decodeCatalogoProdutos(t, w)
-	if resp.Paginacao.Total != 1 || len(resp.Produtos) != 1 || resp.Produtos[0].Nome != "Cimento" {
-		t.Fatalf("resp = %+v, want só 'Cimento'", resp)
+	if resp.Paginacao.Total != 1 || len(resp.Produtos) != 1 || resp.Produtos[0].Nome != "Cimento Portland" {
+		t.Fatalf("resp = %+v, want só 'Cimento Portland'", resp)
 	}
 }
 
@@ -1229,16 +1274,16 @@ func TestListarCatalogoHandler_FiltroEstoqueIsolado(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed CriarEstoque B: %v", err)
 	}
-	seedProdutoCatalogoHandler(t, db, estA.ID, "Só em A", categoriaID, 0)
-	seedProdutoCatalogoHandler(t, db, estB.ID, "Só em B", categoriaID, 5)
+	seedProdutoCatalogoHandler(t, db, estA.ID, "Só em Estoque A", categoriaID, 0)
+	seedProdutoCatalogoHandler(t, db, estB.ID, "Só em Estoque B", categoriaID, 5)
 
 	w := getProdutosCatalogo(db, "Bearer "+token, "estoqueId="+estA.ID)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
 	}
 	resp := decodeCatalogoProdutos(t, w)
-	if resp.Paginacao.Total != 1 || len(resp.Produtos) != 1 || resp.Produtos[0].Nome != "Só em A" {
-		t.Fatalf("resp = %+v, want só 'Só em A' (linha existe, quantidade 0 não importa)", resp)
+	if resp.Paginacao.Total != 1 || len(resp.Produtos) != 1 || resp.Produtos[0].Nome != "Só em Estoque A" {
+		t.Fatalf("resp = %+v, want só 'Só em Estoque A' (linha existe, quantidade 0 não importa)", resp)
 	}
 }
 
@@ -1256,7 +1301,7 @@ func TestListarCatalogoHandler_FiltroComEstoqueIsolado(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	seedProdutoCatalogoHandler(t, db, estoque.ID, "Disponível", categoriaID, 3)
-	seedProdutoCatalogoHandler(t, db, estoque.ID, "Zerado", categoriaID, 0)
+	seedProdutoCatalogoHandler(t, db, estoque.ID, "Zerado Estoque", categoriaID, 0)
 
 	w := getProdutosCatalogo(db, "Bearer "+token, "comEstoque=true")
 	if w.Code != http.StatusOK {
@@ -1356,7 +1401,7 @@ func TestListarCatalogoHandler_200VazioParaIDMalformado(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	seedProdutoCatalogoHandler(t, db, estoque.ID, "Qualquer", categoriaID, 1)
+	seedProdutoCatalogoHandler(t, db, estoque.ID, "Qualquer Nome", categoriaID, 1)
 
 	for _, query := range []string{"categoriaId=abc", "estoqueId=xyz"} {
 		w := getProdutosCatalogo(db, "Bearer "+token, query)
@@ -1387,7 +1432,7 @@ func TestListarCatalogoHandler_FiltroComAgrupar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	seedProdutoCatalogoHandler(t, db, estoque.ID, "Bucha", civil, 10)
+	seedProdutoCatalogoHandler(t, db, estoque.ID, "Bucha Grande", civil, 10)
 	seedProdutoCatalogoHandler(t, db, estoque.ID, "Cabo Flexível", eletrico, 10)
 
 	w := getProdutosCatalogo(db, "Bearer "+token, "agrupar=true&categoriaId="+civil)
@@ -1405,8 +1450,8 @@ func TestListarCatalogoHandler_FiltroComAgrupar(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
 	}
-	if resp.Paginacao.Total != 1 || len(resp.Grupos) != 1 || resp.Grupos[0].Nome != "Bucha" {
-		t.Fatalf("resp = %+v, want só o grupo 'Bucha'", resp)
+	if resp.Paginacao.Total != 1 || len(resp.Grupos) != 1 || resp.Grupos[0].Nome != "Bucha Grande" {
+		t.Fatalf("resp = %+v, want só o grupo 'Bucha Grande'", resp)
 	}
 }
 
@@ -1718,7 +1763,7 @@ func TestCriarProdutoHandler_PublicaEventoNoSucesso(t *testing.T) {
 				middleware.RequireRole(services.PapelAlmoxarife)(
 					CriarProdutoHandler(db, registro)))))
 
-	body := `{"nome":"Produto Evento","categoria_id":"` + categoriaID + `","estoque_id":"` + estoque.ID + `","quantidade_inicial":1}`
+	body := `{"nome":"Produto Evento","categoria_id":"` + categoriaID + `","estoque_id":"` + estoque.ID + `","template_id":"` + templateIDPorSubtipoHandler(t, db, "Genérico") + `","quantidade_inicial":1}`
 	r := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/produtos", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+token)
@@ -1759,7 +1804,8 @@ func TestAtualizarNomeProdutoHandler_PublicaEventoNoSucesso(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
-		Nome: "Nome Original Evento", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+		TemplateID: templateIDPorSubtipoHandler(t, db, "Genérico"),
+		Nome:       "Nome Original Evento", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	})
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
@@ -1834,6 +1880,7 @@ func TestBuscarProdutoPorCodigoHandler_200ComProduto(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
+		TemplateID:        templateIDPorSubtipoHandler(t, db, "Genérico"),
 		Nome:              "Cabo Flexível 4mm",
 		Codigo:            "CAB-004",
 		CategoriaID:       categoriaID,
@@ -1958,7 +2005,8 @@ func TestBuscarProdutoPorCodigoHandler_200ParaUsuario(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	if _, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
-		Nome: "Produto Papel Usuario", Codigo: "PU-001", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
+		TemplateID: templateIDPorSubtipoHandler(t, db, "Genérico"),
+		Nome:       "Produto Papel Usuario", Codigo: "PU-001", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
 	}); err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}

@@ -56,6 +56,7 @@ func seedProdutoComSaldoHandler(t *testing.T, db *sql.DB, nomeEstoque string, qu
 		Nome:              "Produto " + nomeEstoque,
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
+		TemplateID:        templateIDPorSubtipoHandler(t, db, "Genérico"),
 		QuantidadeInicial: quantidadeInicial,
 	})
 	if err != nil {

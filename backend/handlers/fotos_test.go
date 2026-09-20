@@ -47,6 +47,7 @@ func criarProdutoParaFotoHandler(t *testing.T, db *sql.DB, nome string) string {
 		Nome:              nome,
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
+		TemplateID:        templateIDPorSubtipoHandler(t, db, "Genérico"),
 		QuantidadeInicial: 1,
 	})
 	if err != nil {

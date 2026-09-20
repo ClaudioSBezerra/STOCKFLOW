@@ -41,6 +41,23 @@ func categoriaIDPorCodigo(t *testing.T, db *sql.DB, codigo string) string {
 	return id
 }
 
+// templateGenericoID devolve o id do template "Genérico" ([NOME LIVRE],
+// Story 10.1, AD-34, migration 000036) da Empresa `empresaID` — usado pelos
+// testes de OUTRAS suítes (catálogo, movimentações, normalização, etc.) só
+// para satisfazer o novo requisito de `template_id` obrigatório em
+// CriarProduto, sem acoplar esses testes ao comportamento de nenhum template
+// estrutural.
+func templateGenericoID(t *testing.T, db *sql.DB, empresaID string) string {
+	t.Helper()
+	var id string
+	if err := db.QueryRow(
+		`SELECT id FROM nomenclatura_templates WHERE subtipo = 'Genérico' AND empresa_id = $1`, empresaID,
+	).Scan(&id); err != nil {
+		t.Fatalf("falha ao buscar template Genérico: %v", err)
+	}
+	return id
+}
+
 // templatePorSubtipo devolve o id e o texto de um dos 28 templates fixos de
 // seed (migração 000013), pelo `subtipo` (addendum §G) — usado como
 // `template_id`/texto esperado nos testes de Nomenclatura Guiada.
@@ -99,6 +116,7 @@ func TestCriarProduto_SucessoCompleto(t *testing.T) {
 		Observacoes:       "  observação de teste  ",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
 		QuantidadeInicial: 12.5,
 		Comprimento:       &DimensaoInput{Valor: ptrFloat(6), Unidade: ptrStr("m")},
 		Largura:           &DimensaoInput{Valor: ptrFloat(100), Unidade: ptrStr("mm")},
@@ -173,6 +191,7 @@ func TestCriarProduto_SucessoSemDimensoes(t *testing.T) {
 		Nome:              "Produto Simples",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
 		QuantidadeInicial: 0,
 	})
 	if err != nil {
@@ -248,6 +267,7 @@ func TestCriarProduto_DimensaoParIncompleto(t *testing.T) {
 				Nome:              "Produto " + c.nome,
 				CategoriaID:       categoriaID,
 				EstoqueID:         estoque.ID,
+				TemplateID:        templateGenericoID(t, db, empresaTeste),
 				QuantidadeInicial: 1,
 			}
 			c.apply(&input)
@@ -374,6 +394,7 @@ func TestCriarProduto_CategoriaInexistente(t *testing.T) {
 		Nome:              "Produto Categoria Ausente",
 		CategoriaID:       "00000000-0000-4000-8000-000000000000",
 		EstoqueID:         estoque.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
 		QuantidadeInicial: 1,
 	})
 	var erroValidacao *ErroProdutoValidacao
@@ -400,6 +421,7 @@ func TestCriarProduto_EstoqueInexistente(t *testing.T) {
 		Nome:              "Produto Estoque Ausente",
 		CategoriaID:       categoriaID,
 		EstoqueID:         "00000000-0000-4000-8000-000000000000",
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
 		QuantidadeInicial: 1,
 	})
 	var erroValidacao *ErroProdutoValidacao
@@ -430,6 +452,7 @@ func TestCriarProduto_QuantidadeInicialNegativa(t *testing.T) {
 		Nome:              "Produto Quantidade Negativa",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
 		QuantidadeInicial: -1,
 	})
 	var erroValidacao *ErroProdutoValidacao
@@ -460,6 +483,7 @@ func TestCriarProduto_QuantidadeInicialAcimaDoLimite(t *testing.T) {
 		Nome:              "Produto Quantidade Acima Limite",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
 		QuantidadeInicial: 1e12,
 	})
 	var erroValidacao *ErroProdutoValidacao
@@ -494,6 +518,7 @@ func TestCriarProduto_CodigoAcimaDe255Caracteres(t *testing.T) {
 		Codigo:            strings.Repeat("x", 256),
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
 		QuantidadeInicial: 1,
 	})
 	var erroValidacao *ErroProdutoValidacao
@@ -513,6 +538,7 @@ func TestCriarProduto_CodigoAcimaDe255Caracteres(t *testing.T) {
 		Codigo:            strings.Repeat("y", 255),
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
 		QuantidadeInicial: 1,
 	})
 	if err != nil {
@@ -540,6 +566,7 @@ func TestCriarProduto_CodigoJaCadastrado(t *testing.T) {
 		Codigo:            "SKU-DUP-MANUAL",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
 		QuantidadeInicial: 1,
 	})
 	if err != nil {
@@ -551,6 +578,7 @@ func TestCriarProduto_CodigoJaCadastrado(t *testing.T) {
 		Codigo:            "SKU-DUP-MANUAL",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
 		QuantidadeInicial: 1,
 	})
 	var erroValidacao *ErroProdutoValidacao
@@ -589,6 +617,127 @@ func TestCriarProduto_NomeInvalido(t *testing.T) {
 	}
 	if n := contarProdutos(t, db); n != 0 {
 		t.Errorf("linhas em produtos = %d, want 0", n)
+	}
+}
+
+// TestCriarProduto_NomeAbaixoDoMinimoRejeitado prova a Story 10.1 AC1: nome
+// com 9 caracteres (trim) -> ErroProdutoValidacao, nada gravado.
+func TestCriarProduto_NomeAbaixoDoMinimoRejeitado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Nome Curto")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.006")
+
+	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
+		Nome:              "  123456789  ", // 9 caracteres após o trim
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
+		QuantidadeInicial: 1,
+	})
+	var erroValidacaoCurto *ErroProdutoValidacao
+	if !errors.As(err, &erroValidacaoCurto) {
+		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
+	}
+	if n := contarProdutos(t, db); n != 0 {
+		t.Errorf("linhas em produtos = %d, want 0", n)
+	}
+}
+
+// TestCriarProduto_NomeNoMinimoExatoAceito prova o limite exato da Story
+// 10.1 AC1: nome com exatos 10 caracteres (trim) -> sucesso.
+func TestCriarProduto_NomeNoMinimoExatoAceito(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Nome No Minimo")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.006")
+
+	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
+		Nome:              "  1234567890  ", // 10 caracteres após o trim
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
+		QuantidadeInicial: 1,
+	})
+	if err != nil {
+		t.Fatalf("nome de 10 caracteres deveria ser válido, got %v", err)
+	}
+}
+
+// TestAtualizarNomeProduto_NomeAbaixoDoMinimoRejeitado prova a Story 10.1
+// AC1 aplicada à edição: novo nome com 9 caracteres (trim) ->
+// ErroProdutoValidacao, nada atualizado.
+func TestAtualizarNomeProduto_NomeAbaixoDoMinimoRejeitado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Renomear Nome Curto")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.006")
+	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
+		Nome:              "Nome Original Valido",
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
+		QuantidadeInicial: 1,
+	})
+	if err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+
+	_, err = AtualizarNomeProduto(db, empresaTeste, p.ID, "123456789")
+	var erroValidacaoCurto *ErroProdutoValidacao
+	if !errors.As(err, &erroValidacaoCurto) {
+		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
+	}
+	var nomeGravado string
+	if err := db.QueryRow(`SELECT nome FROM produtos WHERE id = $1`, p.ID).Scan(&nomeGravado); err != nil {
+		t.Fatalf("falha ao ler produto: %v", err)
+	}
+	if nomeGravado != "Nome Original Valido" {
+		t.Errorf("nome gravado = %q, want o nome original preservado", nomeGravado)
+	}
+}
+
+// TestAtualizarNomeProduto_NomeNoMinimoExatoAceito prova o limite exato da
+// Story 10.1 AC1 aplicado à edição: novo nome com exatos 10 caracteres ->
+// sucesso.
+func TestAtualizarNomeProduto_NomeNoMinimoExatoAceito(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Renomear Nome No Minimo")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.006")
+	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
+		Nome:              "Nome Original Valido",
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
+		QuantidadeInicial: 1,
+	})
+	if err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+
+	atualizado, err := AtualizarNomeProduto(db, empresaTeste, p.ID, "1234567890")
+	if err != nil {
+		t.Fatalf("nome de 10 caracteres deveria ser válido, got %v", err)
+	}
+	if atualizado.Nome != "1234567890" {
+		t.Errorf("Nome = %q, want %q", atualizado.Nome, "1234567890")
 	}
 }
 
@@ -725,10 +874,13 @@ func TestCriarProduto_TemplateInexistente(t *testing.T) {
 	}
 }
 
-// TestCriarProduto_SemTemplateGravaTemplateIDNulo prova a regressão da Story
-// 3.1: `template_id` ausente -> sucesso, sem exigência de estrutura, e a
-// coluna `template_id` fica NULL.
-func TestCriarProduto_SemTemplateGravaTemplateIDNulo(t *testing.T) {
+// TestCriarProduto_TemplateIDVazioRejeitado prova a AC2 da Story 10.1:
+// `template_id` ausente (após trim) -> ErroProdutoValidacao "template de
+// nomenclatura é obrigatório", nada gravado. Substitui o teste da Story 3.1
+// que provava o comportamento OPOSTO (cadastro sem template aceito) — esse
+// caminho deixou de existir; o fallback universal passou a ser o template
+// Genérico (AD-34), sempre selecionado explicitamente.
+func TestCriarProduto_TemplateIDVazioRejeitado(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
@@ -738,10 +890,43 @@ func TestCriarProduto_SemTemplateGravaTemplateIDNulo(t *testing.T) {
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.004")
 
+	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
+		Nome:              "qualquer texto livre, sem estrutura nenhuma",
+		CategoriaID:       categoriaID,
+		EstoqueID:         estoque.ID,
+		QuantidadeInicial: 1,
+	})
+	var erroValidacao *ErroProdutoValidacao
+	if !errors.As(err, &erroValidacao) {
+		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
+	}
+	if !strings.Contains(erroValidacao.Mensagem, "template de nomenclatura é obrigatório") {
+		t.Errorf("mensagem = %q, want citar %q", erroValidacao.Mensagem, "template de nomenclatura é obrigatório")
+	}
+	if n := contarProdutos(t, db); n != 0 {
+		t.Errorf("linhas em produtos = %d, want 0", n)
+	}
+}
+
+// TestCriarProduto_ComTemplateGenericoAceitaNomeLivre prova o fallback
+// universal da Story 10.1 (AD-34): `template_id` do template Genérico
+// ([NOME LIVRE]) + nome livre (≥10 caracteres, sem estrutura nenhuma) ->
+// sucesso, sem checar tokens/ordem — cobre AC2/AC5 na camada de service.
+func TestCriarProduto_ComTemplateGenericoAceitaNomeLivre(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Template Generico")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.004")
+
 	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
 		Nome:              "qualquer texto livre, sem estrutura nenhuma",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
 		QuantidadeInicial: 1,
 	})
 	if err != nil {
@@ -752,14 +937,40 @@ func TestCriarProduto_SemTemplateGravaTemplateIDNulo(t *testing.T) {
 	if err := db.QueryRow(`SELECT template_id FROM produtos WHERE id = $1`, p.ID).Scan(&templateID); err != nil {
 		t.Fatalf("falha ao ler produto gravado: %v", err)
 	}
-	if templateID.Valid {
-		t.Errorf("template_id = %v, want NULL", templateID)
+	if !templateID.Valid || templateID.String != templateGenericoID(t, db, empresaTeste) {
+		t.Errorf("template_id gravado = %v, want o id do template Genérico", templateID)
 	}
 }
 
+// seedProdutoLegadoSemTemplate insere diretamente via SQL (fora de
+// CriarProduto) um Produto com `template_id IS NULL` — simula um Produto
+// legado cadastrado ANTES da Story 10.1, cenário que CriarProduto não
+// consegue mais produzir agora que `template_id` é sempre obrigatório
+// (Always da spec-10-1: "Produto legado sem `template_id` continua aceitando
+// qualquer nome ... o endpoint não ganha campo de seleção de template").
+func seedProdutoLegadoSemTemplate(t *testing.T, db *sql.DB, nome, categoriaID, estoqueID string) string {
+	t.Helper()
+	var produtoID string
+	if err := db.QueryRow(
+		`INSERT INTO produtos (nome, categoria_id, empresa_id) VALUES ($1, $2, $3) RETURNING id`,
+		nome, categoriaID, empresaTeste,
+	).Scan(&produtoID); err != nil {
+		t.Fatalf("seed produto legado sem template: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO produto_estoque (produto_id, estoque_id, quantidade) VALUES ($1, $2, 1)`,
+		produtoID, estoqueID,
+	); err != nil {
+		t.Fatalf("seed produto_estoque do produto legado: %v", err)
+	}
+	return produtoID
+}
+
 // TestAtualizarNomeProduto_SemTemplateAceitaQualquerNome prova que renomear
-// um Produto sem `template_id` aceita qualquer texto (validado só pela regra
-// básica de nome).
+// um Produto LEGADO (cadastrado antes da Story 10.1, `template_id IS NULL`)
+// aceita qualquer texto que passe só na validação básica de nome — o
+// endpoint de renomear não ganha campo de seleção de template (Always da
+// spec-10-1).
 func TestAtualizarNomeProduto_SemTemplateAceitaQualquerNome(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
@@ -769,17 +980,9 @@ func TestAtualizarNomeProduto_SemTemplateAceitaQualquerNome(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.005")
-	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
-		Nome:              "Nome Original",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		QuantidadeInicial: 1,
-	})
-	if err != nil {
-		t.Fatalf("seed CriarProduto: %v", err)
-	}
+	produtoID := seedProdutoLegadoSemTemplate(t, db, "Nome Original Legado", categoriaID, estoque.ID)
 
-	atualizado, err := AtualizarNomeProduto(db, empresaTeste, p.ID, "Qualquer Nome Novo Sem Estrutura")
+	atualizado, err := AtualizarNomeProduto(db, empresaTeste, produtoID, "Qualquer Nome Novo Sem Estrutura")
 	if err != nil {
 		t.Fatalf("AtualizarNomeProduto erro inesperado: %v", err)
 	}
@@ -788,11 +991,33 @@ func TestAtualizarNomeProduto_SemTemplateAceitaQualquerNome(t *testing.T) {
 	}
 
 	var nomeGravado string
-	if err := db.QueryRow(`SELECT nome FROM produtos WHERE id = $1`, p.ID).Scan(&nomeGravado); err != nil {
+	if err := db.QueryRow(`SELECT nome FROM produtos WHERE id = $1`, produtoID).Scan(&nomeGravado); err != nil {
 		t.Fatalf("falha ao ler produto: %v", err)
 	}
 	if nomeGravado != "Qualquer Nome Novo Sem Estrutura" {
 		t.Errorf("nome gravado = %q, want %q", nomeGravado, "Qualquer Nome Novo Sem Estrutura")
+	}
+}
+
+// TestAtualizarNomeProduto_SemTemplateNomeCurtoRejeitado prova que o Produto
+// legado sem template (AtualizarNomeProduto_SemTemplateAceitaQualquerNome)
+// continua exigindo o mínimo de 10 caracteres — "aceita qualquer nome" não
+// dispensa a regra básica de tamanho (Story 10.1, AC1).
+func TestAtualizarNomeProduto_SemTemplateNomeCurtoRejeitado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Renomear Sem Template Curto")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.005")
+	produtoID := seedProdutoLegadoSemTemplate(t, db, "Nome Original Legado", categoriaID, estoque.ID)
+
+	_, err = AtualizarNomeProduto(db, empresaTeste, produtoID, "curto")
+	var erroValidacao *ErroProdutoValidacao
+	if !errors.As(err, &erroValidacao) {
+		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
 	}
 }
 
@@ -883,6 +1108,7 @@ func TestAtualizarNomeProduto_NomeInvalido(t *testing.T) {
 		Nome:              "Nome Original",
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoque.ID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
 		QuantidadeInicial: 1,
 	})
 	if err != nil {
@@ -908,6 +1134,7 @@ func criarProdutoBusca(t *testing.T, db *sql.DB, estoqueID, nome, codigo, catego
 		Codigo:            codigo,
 		CategoriaID:       categoriaID,
 		EstoqueID:         estoqueID,
+		TemplateID:        templateGenericoID(t, db, empresaTeste),
 		QuantidadeInicial: 1,
 	})
 	if err != nil {
@@ -964,7 +1191,7 @@ func TestBuscarProdutos_MatchPorPrefixo(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 
 	criarProdutoBusca(t, db, estoque.ID, "Parafuso Sextavado", "", categoriaID)
-	criarProdutoBusca(t, db, estoque.ID, "Parafina", "", categoriaID)
+	criarProdutoBusca(t, db, estoque.ID, "Parafina Comum", "", categoriaID)
 	criarProdutoBusca(t, db, estoque.ID, "Sem Relação Nenhuma", "", categoriaID)
 
 	resultado, err := BuscarProdutos(db, empresaTeste, "paraf")
@@ -974,8 +1201,8 @@ func TestBuscarProdutos_MatchPorPrefixo(t *testing.T) {
 	if len(resultado) != 2 {
 		t.Fatalf("len(resultado) = %d, want 2", len(resultado))
 	}
-	if resultado[0].Nome != "Parafina" || resultado[1].Nome != "Parafuso Sextavado" {
-		t.Errorf("ordem = [%q, %q], want [Parafina, Parafuso Sextavado] (rank 1, ORDER BY nome)",
+	if resultado[0].Nome != "Parafina Comum" || resultado[1].Nome != "Parafuso Sextavado" {
+		t.Errorf("ordem = [%q, %q], want [Parafina Comum, Parafuso Sextavado] (rank 1, ORDER BY nome)",
 			resultado[0].Nome, resultado[1].Nome)
 	}
 }
@@ -996,7 +1223,7 @@ func TestBuscarProdutos_MatchSoPorCategoria(t *testing.T) {
 	categoriaCivil := categoriaIDPorCodigo(t, db, "04.001")
 
 	semRelacao := criarProdutoBusca(t, db, estoque.ID, "Disjuntor Bipolar", "DISJ-1", categoriaEletrica)
-	criarProdutoBusca(t, db, estoque.ID, "Tubo PVC", "TUBO-1", categoriaCivil)
+	criarProdutoBusca(t, db, estoque.ID, "Tubo PVC 100mm", "TUBO-1", categoriaCivil)
 
 	resultado, err := BuscarProdutos(db, empresaTeste, "elétric")
 	if err != nil {
