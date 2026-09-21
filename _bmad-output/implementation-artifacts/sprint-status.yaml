@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-29-2026 14:50
-last_updated: 09-20-2026 22:03
+last_updated: 2026-09-21
 project: stockflow
 project_key: NOKEY
 tracking_system: file-system
@@ -122,7 +122,7 @@ development_status:
 
   epic-11: in-progress
   11-1-lançamento-de-saldo-inicial-com-lote-e-data-de-validade: done
-  11-2-migração-do-saldo-existente-para-lote-legado: awaiting-operator
+  11-2-migração-do-saldo-existente-para-lote-legado: done
   11-3-reserva-de-saldo-ao-enviar-pedido: done
   11-4-baixa-e-transferência-consomem-lote-automaticamente-e-respei: done
   11-5-aprovação-de-pedido-revalida-contra-reserva-e-debita-lote: done

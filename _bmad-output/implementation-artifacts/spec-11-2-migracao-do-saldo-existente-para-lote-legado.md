@@ -3,7 +3,7 @@ title: 'Story 11.2: Migração do saldo existente para Lote legado'
 type: 'feature'
 created: '2026-09-20'
 baseline_revision: 'f32d2fdbb4f135d4e2e6c6928dcba7ae6537d3c0'
-status: awaiting-operator
+status: done
 review_loop_iteration: 0
 followup_review_recommended: true
 context: []
@@ -135,3 +135,21 @@ Blocking condition: nenhuma — todo o código está entregue e verificado contr
 **Commands:**
 - `cd backend && go build ./... && go vet ./... && gofmt -l .` -- expected: sem erros e sem arquivos listados.
 - `cd backend && DATABASE_URL=postgres://stockflow:stockflow@localhost:5432/stockflow?sslmode=disable go test -count=1 -p 1 ./services/ ./cmd/...` -- expected: tudo passa.
+
+## Dispensa das ações do operador (2026-09-21)
+
+Decisão do usuário: **o corte do saldo (`./migrar-saldo-lotes`) não será executado** — o sistema ainda está em testes, em base de treinamento, sem saldo real a migrar. O código da story está entregue e em produção; as `operator_actions` (backup, dry-run, `--executar`) ficam **dispensadas**, não cumpridas.
+
+Consequência aceita: o saldo antigo em `produto_estoque` continua sendo lido pelo Catálogo e consumido pelo FEFO como "saldo legado" (sem Lote e sem validade); saldo novo entra por Lançamento de Saldo (Lote). Nada quebra com os dois coexistindo. O binário `migrar-saldo-lotes` segue na imagem caso o corte venha a ser necessário depois (aí valem as ações originais).
+
+## Operator Confirmation
+
+Confirmed 2026-09-21: the external actions this story owed were carried out.
+
+- Confirmar que a migração multi-Empresa da Story 9.4 (`migrar-multi-empresa`) já rodou por completo em produção (todo Produto e Estoque com `empresa_id`) antes do corte de saldo.
+- Fazer backup do banco de produção (`pg_dump`) imediatamente antes do corte de saldo — o corte zera `produto_estoque` e não tem rollback automático.
+- Só depois de as Stories 11.3, 11.4 e 11.5 (Baixa, Transferência e Pedidos lendo/debitando `lotes`) estarem em produção, rodar `./migrar-saldo-lotes` (dry-run) no container `api` e revisar o relatório (linhas a migrar, quantidade total, problemas de Empresa) até reportar `problemas: nenhum`.
+- Na janela de baixo uso acordada, rodar `./migrar-saldo-lotes --executar` — disparado manualmente por uma pessoa, nunca por um agente autônomo (AD-15, PRD §9).
+- Após o corte, conferir que `SELECT COALESCE(SUM(quantidade),0) FROM produto_estoque` é 0, que `SELECT count(*) FROM lotes` cresceu no nº de linhas migradas e que o total do Catálogo é o mesmo de antes do corte.
+
+_Appended by the bmad-loop orchestrator (`bmad-loop confirm`, #335): a human confirmed these external actions out of band, and the story was advanced from `awaiting-operator` to `done`._
