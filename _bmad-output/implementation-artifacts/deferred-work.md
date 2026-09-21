@@ -693,3 +693,11 @@ source_spec: `spec-12-1-cadastro-de-filiais-e-vinculo-de-estoque.md`
 severity: low
 reason: Componentes irmãos em `ConfiguracoesPage`/`EstoquesPage` sem estado compartilhado.
 status: open
+
+### DW-88: O workflow de CI roda `go test ./...` sem serviço Postgres nem `DATABASE_URL`, então os testes de integração da migração de Estoques (como toda a suíte de integração) são pulados e reportam verde.
+origin: spec-deferred 69477b88d1dc
+location: .github/workflows/deploy-cliente-aws.yml:27
+source_spec: `spec-12-2-migracao-dos-estoques-legados-para-filial-padrao.md`
+severity: low
+reason: `grep -n "DATABASE_URL\|services:" .github/workflows/*.yml` não retorna nada; `testDB` faz `t.Skip` sem `DATABASE_URL`. Pré-existente (já registrado na spec-11-2).
+status: open
