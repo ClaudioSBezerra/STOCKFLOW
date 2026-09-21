@@ -133,5 +133,5 @@ development_status:
   12-1-cadastro-de-filiais-e-vínculo-de-estoque: done
   12-2-migração-dos-estoques-legados-para-filial-padrão: awaiting-operator
   12-3-cadastro-de-centro-de-custo-e-destino-de-obra: done
-  12-4-fotos-de-exemplo-no-ambiente-de-treinamento: backlog
+  12-4-fotos-de-exemplo-no-ambiente-de-treinamento: awaiting-operator
   epic-12-retrospective: optional
