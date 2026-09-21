@@ -68,6 +68,7 @@ describe('EstoquesPage — gate de papel', () => {
     expect(await screen.findByRole('heading', { name: 'Locais' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Adicionar estoque' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Locais' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Lançar saldo' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Movimentações' })).toBeInTheDocument();
     expect(
       screen.queryByText('Você não tem acesso à área de Estoques.'),
@@ -81,8 +82,19 @@ describe('EstoquesPage — gate de papel', () => {
     expect(screen.getByText('Você não tem acesso à área de Estoques.')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Locais' })).not.toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: 'Movimentações' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Lançar saldo' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Adicionar estoque' })).not.toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('clicar na aba "Lançar saldo" monta a LancamentoSaldoSection', async () => {
+    const user = userEvent.setup();
+    render(<EstoquesPage />);
+
+    await user.click(await screen.findByRole('tab', { name: 'Lançar saldo' }));
+
+    expect(await screen.findByRole('heading', { name: 'Lançar saldo' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Quantidade')).toBeInTheDocument();
   });
 
   it('clicar na aba "Movimentações" monta a MovimentacoesSection', async () => {

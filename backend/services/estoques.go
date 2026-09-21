@@ -158,11 +158,18 @@ func ExcluirEstoque(db *sql.DB, empresaID string, id string) error {
 	// prática, mas custam nada e blindam contra o formato do lock acima mudar
 	// no futuro sem que este comentário seja atualizado junto).
 	const selectResiduo = `
-		SELECT p.nome
-		FROM produto_estoque pe
-		JOIN produtos p ON p.id = pe.produto_id
-		WHERE pe.estoque_id = $1 AND pe.quantidade > 0 AND p.deleted_at IS NULL
-		ORDER BY p.nome`
+		SELECT nome FROM (
+			SELECT p.id, p.nome
+			FROM produto_estoque pe
+			JOIN produtos p ON p.id = pe.produto_id
+			WHERE pe.estoque_id = $1 AND pe.quantidade > 0 AND p.deleted_at IS NULL
+			UNION
+			SELECT p.id, p.nome
+			FROM lotes l
+			JOIN produtos p ON p.id = l.produto_id
+			WHERE l.estoque_id = $1
+		) r
+		ORDER BY nome, id`
 	rows, err := tx.Query(selectResiduo, id)
 	if err != nil {
 		var pqErr *pq.Error

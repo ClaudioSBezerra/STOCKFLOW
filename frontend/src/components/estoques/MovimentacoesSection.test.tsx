@@ -115,6 +115,32 @@ describe('MovimentacoesSection', () => {
     expect(screen.getByText('—')).toBeInTheDocument();
   });
 
+  it('traduz o tipo "entrada" para "Entrada"', async () => {
+    stubFetch((url) => {
+      if (url === '/api/movimentacoes') {
+        return jsonOk({
+          movimentacoes: [
+            {
+              ...MOVIMENTACOES[0],
+              id: 'm-3',
+              tipo: 'entrada',
+              estoqueOrigemId: null,
+              estoqueOrigemNome: null,
+            },
+          ],
+        });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    render(<MovimentacoesSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+
+    expect(await screen.findByText('Entrada')).toBeInTheDocument();
+  });
+
   it('não tem nenhum botão de ação em nenhuma linha', async () => {
     stubFetch((url) => {
       if (url === '/api/movimentacoes') return jsonOk({ movimentacoes: MOVIMENTACOES });

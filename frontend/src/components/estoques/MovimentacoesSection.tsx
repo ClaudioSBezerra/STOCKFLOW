@@ -55,6 +55,7 @@ const ROTULO_TIPO: Record<string, string> = {
   baixa: 'Baixa',
   transferencia: 'Transferência',
   ajuste: 'Ajuste',
+  entrada: 'Entrada',
 };
 
 export function MovimentacoesSection() {

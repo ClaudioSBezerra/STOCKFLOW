@@ -3,10 +3,13 @@ import { rankPapel } from '@/components/shell/nav-items';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { LocaisEstoqueSection } from '@/components/estoques/LocaisEstoqueSection';
 import { MovimentacoesSection } from '@/components/estoques/MovimentacoesSection';
+import { LancamentoSaldoSection } from '@/components/estoques/LancamentoSaldoSection';
 
 /**
  * Página "Estoques" (`/estoques`, Story 2.1, spec-2-1; abas da Story 5.3,
- * spec-5-3). Renderizada dentro do `AppShell`/`RotaProtegida`. Duas abas
+ * spec-5-3; aba "Lançar saldo" da Story 11.1, `LancamentoSaldoSection`,
+ * lançamento de saldo com Lote e validade). Renderizada dentro do
+ * `AppShell`/`RotaProtegida`. Abas
  * (`@/components/ui/tabs`, molde de `CatalogoPage`): "Locais"
  * (`LocaisEstoqueSection`, cadastro/exclusão de Estoques) e "Movimentações"
  * (`MovimentacoesSection`, trilha só-leitura de Baixas/Transferências que
@@ -29,10 +32,14 @@ export function EstoquesPage() {
         <Tabs defaultValue="locais">
           <TabsList>
             <TabsTrigger value="locais">Locais</TabsTrigger>
+            <TabsTrigger value="lancar-saldo">Lançar saldo</TabsTrigger>
             <TabsTrigger value="movimentacoes">Movimentações</TabsTrigger>
           </TabsList>
           <TabsContent value="locais">
             <LocaisEstoqueSection />
+          </TabsContent>
+          <TabsContent value="lancar-saldo">
+            <LancamentoSaldoSection />
           </TabsContent>
           <TabsContent value="movimentacoes">
             <MovimentacoesSection />

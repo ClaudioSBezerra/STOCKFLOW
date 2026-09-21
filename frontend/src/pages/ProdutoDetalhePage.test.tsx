@@ -952,3 +952,54 @@ describe('ProdutoDetalhePage', () => {
     });
   });
 });
+
+describe('ProdutoDetalhePage — Lotes (Story 11.1)', () => {
+  const COM_LOTES = {
+    ...PRODUTO_DETALHE,
+    quantidadeTotal: 20,
+    porEstoque: [
+      {
+        estoqueId: 'e1',
+        estoqueNome: 'Almoxarifado Central',
+        quantidade: 20,
+        lotes: [
+          { id: 'l1', quantidade: 10, dataValidade: '2020-01-01', vencido: true, legado: false },
+          { id: 'l2', quantidade: 6, dataValidade: '2999-03-01', vencido: false, legado: false },
+          { id: null, quantidade: 4, dataValidade: null, vencido: false, legado: true },
+        ],
+      },
+    ],
+  };
+
+  it('lista os Lotes com validade, "validade desconhecida" e o badge Vencido só no vencido', async () => {
+    stubPadrao({ produto: COM_LOTES });
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+
+    const lista = await screen.findByRole('list', { name: 'Lotes' });
+    const itens = within(lista).getAllByRole('listitem');
+    expect(itens).toHaveLength(3);
+    expect(itens[0]).toHaveTextContent('validade 01/01/2020');
+    expect(within(itens[0]).getByText('Vencido')).toBeInTheDocument();
+    expect(itens[1]).toHaveTextContent('validade 01/03/2999');
+    expect(within(itens[1]).queryByText('Vencido')).not.toBeInTheDocument();
+    expect(itens[2]).toHaveTextContent('validade desconhecida');
+    expect(within(itens[2]).queryByText('Vencido')).not.toBeInTheDocument();
+    // Vencido nunca é a cor destrutiva; o saldo segue contado.
+    expect(within(itens[0]).getByText('Vencido').className).not.toContain('destructive');
+    expect(screen.getByText('Total: 20')).toBeInTheDocument();
+  });
+
+  it('sem lotes no payload não renderiza a lista de Lotes', async () => {
+    stubPadrao();
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+
+    await screen.findByText('Almoxarifado Central');
+    expect(screen.queryByRole('list', { name: 'Lotes' })).not.toBeInTheDocument();
+  });
+});

@@ -621,3 +621,11 @@ source_spec: `spec-7-5-aprovacao-rejeicao-com-revalidacao-de-estoque-item-a-item
 severity: low
 reason: `BuscarPedidoProprio` (services/pedidos.go) faz `SELECT id, usuario_id, solicitante, obra_centro_custo, observacao, status, criado_em FROM pedidos` — `decidido_por`/`decidido_em` de fato nunca entram no SELECT, então os ponteiros ficam `nil` por construção; mas se uma mudança futura estender esse SELECT (ex.: para outro campo), nada barra `decididoPor`/`decididoEm` de vazar junto sem que nenhum teste acuse.
 status: open
+
+### DW-79: `vencido` usa `CURRENT_DATE` do banco (fuso da sessão Postgres), não o fuso da Empresa.
+origin: spec-deferred 2ba32c041755
+location: backend/services/lotes.go, backend/services/catalogo.go (preencherLotesDetalhe)
+source_spec: `spec-11-1-lancamento-de-saldo-inicial-com-lote-e-data-de-validade.md`
+severity: low
+reason: Com o banco em UTC, um Lote que vence "hoje" aparece como vencido a partir de ~21h no Brasil. O intent-contract fixa `CURRENT_DATE`; revisar quando houver fuso por Empresa.
+status: open

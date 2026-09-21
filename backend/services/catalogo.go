@@ -66,6 +66,22 @@ type EstoqueQuantidade struct {
 	EstoqueID   string  `json:"estoqueId"`
 	EstoqueNome string  `json:"estoqueNome"`
 	Quantidade  float64 `json:"quantidade"`
+	// Lotes (Story 11.1): discriminação do saldo por Lote — SÓ no detalhe do
+	// Produto (`omitempty`: tabelas agrupadas/grade nunca a preenchem).
+	Lotes []LoteSaldo `json:"lotes,omitempty"`
+}
+
+// LoteSaldo é um Lote do saldo de um Produto num Estoque (detalhe do
+// Produto, Story 11.1). `ID` é `nil` e `Legado` é `true` para a entrada
+// sintética do saldo legado de `produto_estoque` (validade desconhecida, até
+// a Story 11.2 materializá-la em `lotes`). `Vencido` = validade anterior a
+// hoje; nunca oculta nem bloqueia saldo.
+type LoteSaldo struct {
+	ID           *string `json:"id"`
+	Quantidade   float64 `json:"quantidade"`
+	DataValidade *string `json:"dataValidade"`
+	Vencido      bool    `json:"vencido"`
+	Legado       bool    `json:"legado"`
 }
 
 // CatalogoGrupo é uma linha da tabela agrupada (`agrupar=true`): todos os
@@ -224,7 +240,7 @@ func montarFiltrosCatalogo(f FiltrosCatalogo, primeiroPlaceholder int) (string, 
 	}
 	if f.EstoqueID != "" {
 		condicoes = append(condicoes, fmt.Sprintf(
-			"EXISTS (SELECT 1 FROM produto_estoque fe WHERE fe.produto_id = p.id AND fe.estoque_id = $%d)", n,
+			"EXISTS (SELECT 1 FROM saldo_produto_estoque fe WHERE fe.produto_id = p.id AND fe.estoque_id = $%d)", n,
 		))
 		args = append(args, f.EstoqueID)
 		n++
@@ -235,7 +251,7 @@ func montarFiltrosCatalogo(f FiltrosCatalogo, primeiroPlaceholder int) (string, 
 			op = "="
 		}
 		condicoes = append(condicoes, fmt.Sprintf(
-			"COALESCE((SELECT SUM(fc.quantidade) FROM produto_estoque fc WHERE fc.produto_id = p.id), 0) %s 0", op,
+			"COALESCE((SELECT SUM(fc.quantidade) FROM saldo_produto_estoque fc WHERE fc.produto_id = p.id), 0) %s 0", op,
 		))
 	}
 
@@ -267,7 +283,7 @@ const catalogoGradeQueryBase = `
 	JOIN categorias c ON c.id = p.categoria_id
 	LEFT JOIN (
 		SELECT produto_id, SUM(quantidade) AS total
-		FROM produto_estoque
+		FROM saldo_produto_estoque
 		GROUP BY produto_id
 	) pe ON pe.produto_id = p.id`
 
@@ -413,7 +429,7 @@ const catalogoGrupoQueryBase = `
 		min(p.embalagem), min(p.unidade_medida::text)
 	FROM produtos p
 	JOIN categorias c ON c.id = p.categoria_id
-	LEFT JOIN produto_estoque pe ON pe.produto_id = p.id`
+	LEFT JOIN saldo_produto_estoque pe ON pe.produto_id = p.id`
 
 // catalogoGrupoQuerySuffix fecha a query de grupo (GROUP BY/ORDER BY), sem
 // `LIMIT`/`OFFSET` — ListarCatalogoAgrupado acrescenta os dois com
@@ -441,7 +457,7 @@ const catalogoGrupoQuerySuffix = `
 // ordenar por `estoqueNome`) é feita em Go.
 const catalogoPorEstoqueQuery = `
 	SELECT pe.produto_id, e.id, e.nome, pe.quantidade
-	FROM produto_estoque pe
+	FROM saldo_produto_estoque pe
 	JOIN estoques e ON e.id = pe.estoque_id
 	WHERE pe.produto_id = ANY($1) AND e.empresa_id = $2`
 
@@ -773,7 +789,7 @@ const produtoDetalheQuery = `
 	JOIN categorias c ON c.id = p.categoria_id
 	LEFT JOIN (
 		SELECT produto_id, SUM(quantidade) AS total
-		FROM produto_estoque
+		FROM saldo_produto_estoque
 		GROUP BY produto_id
 	) pe ON pe.produto_id = p.id
 	WHERE p.id = $1 AND p.deleted_at IS NULL AND p.empresa_id = $2`
@@ -864,5 +880,76 @@ func ObterProdutoDetalhe(db *sql.DB, empresaID string, id string) (ProdutoDetalh
 	})
 	det.PorEstoque = lista
 
+	if err := preencherLotesDetalhe(db, empresaID, id, det.PorEstoque); err != nil {
+		return ProdutoDetalhe{}, err
+	}
+
 	return det, nil
+}
+
+// preencherLotesDetalhe anexa a cada item de `porEstoque` os Lotes reais do
+// par (ordenados por validade, NULL por último) mais, quando
+// `produto_estoque.quantidade` > 0, uma entrada `legado` com validade
+// desconhecida (Story 11.1).
+func preencherLotesDetalhe(db *sql.DB, empresaID, produtoID string, porEstoque []EstoqueQuantidade) error {
+	if len(porEstoque) == 0 {
+		return nil
+	}
+	indice := make(map[string]int, len(porEstoque))
+	for i := range porEstoque {
+		indice[porEstoque[i].EstoqueID] = i
+	}
+
+	rows, err := db.Query(`
+		SELECT l.id, l.estoque_id, l.quantidade, to_char(l.data_validade, 'YYYY-MM-DD'),
+		       COALESCE(l.data_validade < CURRENT_DATE, false)
+		FROM lotes l
+		WHERE l.produto_id = $1 AND l.empresa_id = $2
+		ORDER BY l.estoque_id, l.data_validade ASC NULLS LAST, l.criado_em, l.id`, produtoID, empresaID)
+	if err != nil {
+		return fmt.Errorf("falha ao listar lotes do produto: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			l         LoteSaldo
+			loteID    string
+			estoqueID string
+			validade  sql.NullString
+		)
+		if err := rows.Scan(&loteID, &estoqueID, &l.Quantidade, &validade, &l.Vencido); err != nil {
+			return fmt.Errorf("falha ao ler lote do produto: %w", err)
+		}
+		l.ID = &loteID
+		l.DataValidade = ptrString(validade)
+		if i, ok := indice[estoqueID]; ok {
+			porEstoque[i].Lotes = append(porEstoque[i].Lotes, l)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("falha ao iterar lotes do produto: %w", err)
+	}
+
+	legado, err := db.Query(`
+		SELECT pe.estoque_id, pe.quantidade FROM produto_estoque pe
+		JOIN produtos p ON p.id = pe.produto_id AND p.empresa_id = $2
+		WHERE pe.produto_id = $1 AND pe.quantidade > 0`, produtoID, empresaID)
+	if err != nil {
+		return fmt.Errorf("falha ao listar saldo legado do produto: %w", err)
+	}
+	defer legado.Close()
+	for legado.Next() {
+		var estoqueID string
+		var quantidade float64
+		if err := legado.Scan(&estoqueID, &quantidade); err != nil {
+			return fmt.Errorf("falha ao ler saldo legado do produto: %w", err)
+		}
+		if i, ok := indice[estoqueID]; ok {
+			porEstoque[i].Lotes = append(porEstoque[i].Lotes, LoteSaldo{Quantidade: quantidade, Legado: true})
+		}
+	}
+	if err := legado.Err(); err != nil {
+		return fmt.Errorf("falha ao iterar saldo legado do produto: %w", err)
+	}
+	return nil
 }

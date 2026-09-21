@@ -1305,6 +1305,15 @@ func MesclarDuplicatas(db *sql.DB, empresaID string, produtoMantidoID string, pr
 		return ResultadoMesclagem{}, fmt.Errorf("falha ao reescrever produto_id das movimentações: %w", err)
 	}
 
+	// --- reescreve lotes ANTES do soft-delete (Story 11.1, AD-11 estendida) -
+
+	if _, err := tx.Exec(
+		`UPDATE lotes SET produto_id = $1 WHERE produto_id = ANY($2) AND empresa_id = $3`,
+		produtoMantidoID, pq.Array(produtoRemovidoIDs), empresaID,
+	); err != nil {
+		return ResultadoMesclagem{}, fmt.Errorf("falha ao reescrever produto_id dos lotes: %w", err)
+	}
+
 	// --- reescreve pedido_itens ANTES do soft-delete (Story 7.2, spec-7-2) -
 	//
 	// `pedido_itens` tem `PRIMARY KEY (pedido_id, produto_id, estoque_id)`:

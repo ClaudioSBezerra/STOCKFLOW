@@ -134,10 +134,51 @@ interface CategoriaDetalhe {
   nome: string;
 }
 
+interface LoteSaldo {
+  id: string | null;
+  quantidade: number;
+  dataValidade: string | null;
+  vencido: boolean;
+  legado: boolean;
+}
+
 interface EstoqueQuantidade {
   estoqueId: string;
   estoqueNome: string;
   quantidade: number;
+  // Story 11.1: Lotes do par (só no detalhe; ausente quando o Estoque não tem
+  // Lote nem saldo legado).
+  lotes?: LoteSaldo[];
+}
+
+// formatarDataValidade converte "YYYY-MM-DD" em "DD/MM/YYYY" sem passar por
+// `Date` (evita deslocamento de fuso).
+function formatarDataValidade(iso: string): string {
+  const [ano, mes, dia] = iso.split('-');
+  return `${dia}/${mes}/${ano}`;
+}
+
+function ListaLotes({ lotes }: { lotes: LoteSaldo[] }) {
+  return (
+    <ul className="text-label text-muted-foreground flex flex-col gap-1 pl-4" aria-label="Lotes">
+      {lotes.map((lote, i) => (
+        <li key={lote.id ?? `legado-${i}`} className="flex flex-wrap items-center gap-2">
+          <span className="tabular-nums">{formatarQuantidade(lote.quantidade)}</span>
+          <span>
+            {lote.dataValidade
+              ? `validade ${formatarDataValidade(lote.dataValidade)}`
+              : 'validade desconhecida'}
+          </span>
+          {lote.legado && <span>(saldo anterior)</span>}
+          {lote.vencido && (
+            <span className="bg-warning/10 rounded-full px-2 py-0.5 text-[color:var(--color-text-on-tint-warning)]">
+              Vencido
+            </span>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 interface ProdutoDetalhe {
@@ -577,54 +618,56 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
               ) : (
                 <ul className="flex flex-col gap-1">
                   {produto.porEstoque.map((linha) => (
-                    <li
-                      key={linha.estoqueId}
-                      className="text-body flex items-center justify-between gap-4"
-                    >
-                      <span>{linha.estoqueNome}</span>
-                      <span className="flex items-center gap-3">
-                        <span className="tabular-nums">{formatarQuantidade(linha.quantidade)}</span>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          aria-label={`Adicionar ao Carrinho em ${linha.estoqueNome}`}
-                          disabled={linha.quantidade <= 0}
-                          onClick={() => {
-                            setCarrinhoEstoque(linha);
-                            setQuantidadeCarrinho('');
-                            setErroCarrinho(null);
-                          }}
-                        >
-                          Adicionar ao Carrinho
-                        </Button>
-                        {podeRegistrarMovimentacao && (
-                          <>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              aria-label={`Registrar Baixa em ${linha.estoqueNome}`}
-                              onClick={() => {
-                                setBaixaEstoque(linha);
-                                setQuantidadeBaixa('');
-                                setErroBaixa(null);
-                              }}
-                            >
-                              Registrar Baixa
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              aria-label={`Transferir de ${linha.estoqueNome}`}
-                              onClick={() => abrirTransferencia(linha)}
-                            >
-                              Transferir
-                            </Button>
-                          </>
-                        )}
-                      </span>
+                    <li key={linha.estoqueId} className="text-body flex flex-col gap-1">
+                      <div className="flex items-center justify-between gap-4">
+                        <span>{linha.estoqueNome}</span>
+                        <span className="flex items-center gap-3">
+                          <span className="tabular-nums">{formatarQuantidade(linha.quantidade)}</span>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            aria-label={`Adicionar ao Carrinho em ${linha.estoqueNome}`}
+                            disabled={linha.quantidade <= 0}
+                            onClick={() => {
+                              setCarrinhoEstoque(linha);
+                              setQuantidadeCarrinho('');
+                              setErroCarrinho(null);
+                            }}
+                          >
+                            Adicionar ao Carrinho
+                          </Button>
+                          {podeRegistrarMovimentacao && (
+                            <>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                aria-label={`Registrar Baixa em ${linha.estoqueNome}`}
+                                onClick={() => {
+                                  setBaixaEstoque(linha);
+                                  setQuantidadeBaixa('');
+                                  setErroBaixa(null);
+                                }}
+                              >
+                                Registrar Baixa
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                aria-label={`Transferir de ${linha.estoqueNome}`}
+                                onClick={() => abrirTransferencia(linha)}
+                              >
+                                Transferir
+                              </Button>
+                            </>
+                          )}
+                        </span>
+                      </div>
+                      {linha.lotes && linha.lotes.length > 0 && (
+                        <ListaLotes lotes={linha.lotes} />
+                      )}
                     </li>
                   ))}
                 </ul>

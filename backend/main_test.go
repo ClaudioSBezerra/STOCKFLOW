@@ -941,7 +941,7 @@ func TestNewMux_EstoquesRotaCarregaRequireRole(t *testing.T) {
 	// `produto_estoque`/`produtos` entram na mesma TRUNCATE que `estoques`:
 	// Postgres recusa truncar uma tabela referenciada por FK de outra (mesmo
 	// vazia) a menos que todas entrem na mesma instrução (Story 3.1).
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("truncate estoques: %v", err)
 	}
 
@@ -1247,7 +1247,7 @@ func TestNewMux_ProdutosRotaCarregaRequireRole(t *testing.T) {
 	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 		t.Fatalf("truncate usuarios: %v", err)
 	}
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("truncate produtos: %v", err)
 	}
 
@@ -1352,7 +1352,7 @@ func TestNewMux_ProdutosRenomearRotaCarregaRequireRole(t *testing.T) {
 	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 		t.Fatalf("truncate usuarios: %v", err)
 	}
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("truncate produtos: %v", err)
 	}
 
@@ -1447,7 +1447,7 @@ func TestNewMux_ProdutosBaixaRotaCarregaRequireRole(t *testing.T) {
 	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 		t.Fatalf("truncate usuarios: %v", err)
 	}
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("truncate produtos: %v", err)
 	}
 
@@ -1544,7 +1544,7 @@ func TestNewMux_ProdutosTransferenciaRotaCarregaRequireRole(t *testing.T) {
 	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 		t.Fatalf("truncate usuarios: %v", err)
 	}
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("truncate produtos: %v", err)
 	}
 
@@ -1646,7 +1646,7 @@ func TestNewMux_MovimentacoesRotaCarregaRequireRole(t *testing.T) {
 	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 		t.Fatalf("truncate usuarios: %v", err)
 	}
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("truncate produtos: %v", err)
 	}
 
@@ -1755,7 +1755,7 @@ func TestNewMux_ImportacoesRotaCarregaRequireRole(t *testing.T) {
 	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 		t.Fatalf("truncate usuarios: %v", err)
 	}
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("truncate produtos: %v", err)
 	}
 
@@ -2380,7 +2380,7 @@ func TestNewMux_ProdutosBuscaRotaSoRequireAuth(t *testing.T) {
 	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 		t.Fatalf("truncate usuarios: %v", err)
 	}
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("truncate produtos: %v", err)
 	}
 
@@ -2433,7 +2433,7 @@ func TestNewMux_ProdutosCatalogoRotaSoRequireAuth(t *testing.T) {
 	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 		t.Fatalf("truncate usuarios: %v", err)
 	}
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("truncate produtos: %v", err)
 	}
 
@@ -2483,7 +2483,7 @@ func TestNewMux_ProdutosDetalheRotaSoRequireAuth(t *testing.T) {
 	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 		t.Fatalf("truncate usuarios: %v", err)
 	}
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("truncate produtos: %v", err)
 	}
 
@@ -2554,7 +2554,7 @@ func TestNewMux_ProdutosPorCodigoRotaSoRequireAuth(t *testing.T) {
 	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 		t.Fatalf("truncate usuarios: %v", err)
 	}
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("truncate produtos: %v", err)
 	}
 
@@ -2637,7 +2637,7 @@ func TestNewMux_CarrinhoRotasSoRequireAuth(t *testing.T) {
 	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 		t.Fatalf("truncate usuarios: %v", err)
 	}
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("truncate produtos: %v", err)
 	}
 
@@ -2746,7 +2746,7 @@ func TestNewMux_PedidosConsultaRotasSoRequireAuth(t *testing.T) {
 	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 		t.Fatalf("truncate usuarios: %v", err)
 	}
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("truncate produtos: %v", err)
 	}
 
@@ -2889,7 +2889,7 @@ func TestRealtimeStream_FluxoCompletoTicketStreamEvento(t *testing.T) {
 	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 		t.Fatalf("truncate usuarios: %v", err)
 	}
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("truncate produtos: %v", err)
 	}
 
@@ -3026,7 +3026,7 @@ func TestNewMux_ProdutosCatalogoExportarRotaRequireRoleAlmoxarife(t *testing.T) 
 	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 		t.Fatalf("truncate usuarios: %v", err)
 	}
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("truncate produtos: %v", err)
 	}
 
@@ -3081,4 +3081,60 @@ func TestNewMux_ProdutosCatalogoExportarRotaRequireRoleAlmoxarife(t *testing.T) 
 			t.Errorf("Content-Type = %q, want %q", ct, wantContentType)
 		}
 	})
+}
+
+// TestNewMux_LancarSaldoCarregaRequireRoleAlmoxarife prova, despachando pela
+// mesma instância de newMux usada por main() (Story 11.1), que
+// POST /api/lotes está atrás de RequireAuth + RequireRole(almoxarife): sem
+// token -> 401, `usuario` -> 403, `almoxarife` passa do gate (400 do próprio
+// handler para corpo inválido, nunca 403) sem gravar linha em `lotes`.
+func TestNewMux_LancarSaldoCarregaRequireRoleAlmoxarife(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate usuarios: %v", err)
+	}
+
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, t.TempDir())
+
+	const senha = "senha-123456"
+	segredos := map[string]string{}
+	casos := []struct {
+		email, papel string
+		status       int
+	}{
+		{"lotes-mux-usuario@empresa.com", "usuario", http.StatusForbidden},
+		{"lotes-mux-almox@empresa.com", "almoxarife", http.StatusBadRequest},
+	}
+	for _, c := range casos {
+		seedContaMux(t, db, c.email, c.papel, senha, segredos)
+	}
+	const corpo = `{"produtoId":"","estoqueId":"","quantidade":0}`
+	for _, c := range casos {
+		t.Run(c.papel, func(t *testing.T) {
+			token := tokenDeMux(t, mux, c.email, senha, segredos)
+			req := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/lotes", strings.NewReader(corpo))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+token)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+			if w.Code != c.status {
+				t.Errorf("status = %d, want %d (body=%s)", w.Code, c.status, w.Body.String())
+			}
+		})
+	}
+
+	t.Run("sem token -> 401", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/lotes", strings.NewReader(corpo)))
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("status = %d, want 401", w.Code)
+		}
+	})
+
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM lotes`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("lotes = %d (err=%v), want 0", n, err)
+	}
 }

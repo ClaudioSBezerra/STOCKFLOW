@@ -591,6 +591,16 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.RegistrarBaixaHandler(db, registro))))
 
+	// Lançamento de saldo com Lote e Data de Validade — Story 11.1 (Epic 11,
+	// AD-24, FR-47). POST /api/lotes atrás do MESMO gate de papel de
+	// Baixa/Transferência, RequireRole(almoxarife): 403 para `usuario`,
+	// decidido pelo middleware. Cria SEMPRE um Lote novo e a Movimentação
+	// `entrada` numa única transação (services.LancarSaldo), publicando nos
+	// canais `movimentacoes` e `produtos`.
+	registrar("POST /e/{slug}/api/lotes", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAlmoxarife)(
+			handlers.LancarSaldoHandler(db, registro))))
+
 	// Registrar Transferência entre Estoques — Story 5.2 (Epic 5,
 	// Movimentação de Estoque). POST
 	// /api/produtos/{id}/estoques/{estoqueId}/transferencia fica atrás do
