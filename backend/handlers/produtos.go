@@ -75,17 +75,15 @@ func (d *dimensaoRequest) paraInput() *services.DimensaoInput {
 // tratados pela validação de services.CriarProduto — nenhuma validação de
 // formato acontece aqui, só decodificação.
 type criarProdutoRequest struct {
-	Nome              string          `json:"nome"`
-	Observacoes       string          `json:"observacoes"`
-	CategoriaID       string          `json:"categoria_id"`
-	EstoqueID         string          `json:"estoque_id"`
-	TemplateID        string          `json:"template_id"`
-	QuantidadeInicial float64         `json:"quantidade_inicial"`
-	Comprimento       dimensaoRequest `json:"comprimento"`
-	Largura           dimensaoRequest `json:"largura"`
-	Diametro          dimensaoRequest `json:"diametro"`
-	Altura            dimensaoRequest `json:"altura"`
-	Espessura         dimensaoRequest `json:"espessura"`
+	Nome        string          `json:"nome"`
+	Observacoes string          `json:"observacoes"`
+	CategoriaID string          `json:"categoria_id"`
+	TemplateID  string          `json:"template_id"`
+	Comprimento dimensaoRequest `json:"comprimento"`
+	Largura     dimensaoRequest `json:"largura"`
+	Diametro    dimensaoRequest `json:"diametro"`
+	Altura      dimensaoRequest `json:"altura"`
+	Espessura   dimensaoRequest `json:"espessura"`
 	// CodigoFornecedor/EAN13/UnidadeMedida/Embalagem (Story 10.3, spec-10-3,
 	// FR45/FR46) — repassados 1:1 para services.CriarProdutoInput, sem
 	// validação de formato aqui (services.CriarProduto é a única fonte de
@@ -96,14 +94,17 @@ type criarProdutoRequest struct {
 	Embalagem        string `json:"embalagem"`
 }
 
-// CriarProdutoHandler expõe POST /api/produtos: cadastra um novo Produto e a
-// linha inicial de `produto_estoque`. `201 {"produto":{"id","nome","codigo"}}`
+// CriarProdutoHandler expõe POST /api/produtos: cadastra um novo Produto SEM
+// saldo (Story 11.6, FR8, AD-29: nenhuma linha em `produto_estoque`/`lotes`;
+// `estoque_id`/`quantidade_inicial` de clientes antigos são ignorados — os
+// campos não existem mais em `criarProdutoRequest`; o Lançamento de Saldo é o
+// único caminho de entrada de saldo). `201 {"produto":{"id","nome","codigo"}}`
 // no sucesso — `codigo` é o código sequencial gerado pelo servidor (Story
 // 10.2, spec-10-2, FR-45); um eventual `"codigo"` no payload de entrada é
 // simplesmente ignorado (o campo não existe mais em `criarProdutoRequest`).
 // `400 VALIDATION_ERROR` com a mensagem específica de campo devolvida
 // por services.ErroProdutoValidacao (nome ausente, dimensão incompleta,
-// quantidade negativa, categoria/estoque inexistente).
+// categoria inexistente).
 //
 // `registro` (Story 4.4, spec-4-4): no sucesso, publica
 // `{"resource":"produtos","id":<novo>,"change":"created"}` no canal
@@ -130,21 +131,19 @@ func CriarProdutoHandler(db *sql.DB, registro *realtime.Registry) http.HandlerFu
 		}
 
 		input := services.CriarProdutoInput{
-			Nome:              req.Nome,
-			Observacoes:       req.Observacoes,
-			CategoriaID:       req.CategoriaID,
-			EstoqueID:         req.EstoqueID,
-			TemplateID:        req.TemplateID,
-			QuantidadeInicial: req.QuantidadeInicial,
-			Comprimento:       req.Comprimento.paraInput(),
-			Largura:           req.Largura.paraInput(),
-			Diametro:          req.Diametro.paraInput(),
-			Altura:            req.Altura.paraInput(),
-			Espessura:         req.Espessura.paraInput(),
-			CodigoFornecedor:  req.CodigoFornecedor,
-			EAN13:             req.EAN13,
-			UnidadeMedida:     req.UnidadeMedida,
-			Embalagem:         req.Embalagem,
+			Nome:             req.Nome,
+			Observacoes:      req.Observacoes,
+			CategoriaID:      req.CategoriaID,
+			TemplateID:       req.TemplateID,
+			Comprimento:      req.Comprimento.paraInput(),
+			Largura:          req.Largura.paraInput(),
+			Diametro:         req.Diametro.paraInput(),
+			Altura:           req.Altura.paraInput(),
+			Espessura:        req.Espessura.paraInput(),
+			CodigoFornecedor: req.CodigoFornecedor,
+			EAN13:            req.EAN13,
+			UnidadeMedida:    req.UnidadeMedida,
+			Embalagem:        req.Embalagem,
 		}
 
 		produto, err := services.CriarProduto(db, empresa.ID, input)

@@ -84,6 +84,21 @@ func contarProdutos(t *testing.T, db *sql.DB) int {
 	return n
 }
 
+// assertProdutoSemSaldo falha se existir qualquer linha em `produto_estoque`
+// ou `lotes` para o Produto (Story 11.6).
+func assertProdutoSemSaldo(t *testing.T, db *sql.DB, produtoID string) {
+	t.Helper()
+	for _, tabela := range []string{"produto_estoque", "lotes"} {
+		var n int
+		if err := db.QueryRow(`SELECT count(*) FROM `+tabela+` WHERE produto_id = $1`, produtoID).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", tabela, err)
+		}
+		if n != 0 {
+			t.Errorf("linhas em %s para o Produto = %d, want 0 (cadastro não cria saldo)", tabela, n)
+		}
+	}
+}
+
 func contarProdutoEstoque(t *testing.T, db *sql.DB) int {
 	t.Helper()
 	var n int
@@ -98,8 +113,8 @@ func ptrStr(v string) *string     { return &v }
 
 // TestCriarProduto_SucessoCompleto prova a AC1: todos os campos + as 5
 // dimensões pareadas -> 201 equivalente (Produto{ID,Nome,Codigo}), uma linha
-// em `produtos` com as dimensões gravadas e uma linha em `produto_estoque`
-// com a quantidade inicial exata. `codigo` (Story 10.2, spec-10-2) não é mais
+// em `produtos` com as dimensões gravadas e NENHUMA linha em `produto_estoque`
+// (Story 11.6: o cadastro não cria saldo). `codigo` (Story 10.2, spec-10-2) não é mais
 // entrada — é o próximo número sequencial da Empresa, lido de
 // `contadores_produto` ANTES da chamada (nunca um valor fixo, já que
 // `empresaTeste` é compartilhada por toda a suíte).
@@ -107,10 +122,6 @@ func TestCriarProduto_SucessoCompleto(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Produtos")
-	if err != nil {
-		t.Fatalf("seed CriarEstoque: %v", err)
-	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 
 	var numeroAntes int
@@ -122,17 +133,15 @@ func TestCriarProduto_SucessoCompleto(t *testing.T) {
 	codigoEsperado := fmt.Sprintf("%06d", numeroAntes+1)
 
 	input := CriarProdutoInput{
-		Nome:              "  Tubo PVC 100mm  ",
-		Observacoes:       "  observação de teste  ",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
-		QuantidadeInicial: 12.5,
-		Comprimento:       &DimensaoInput{Valor: ptrFloat(6), Unidade: ptrStr("m")},
-		Largura:           &DimensaoInput{Valor: ptrFloat(100), Unidade: ptrStr("mm")},
-		Diametro:          &DimensaoInput{Valor: ptrFloat(10), Unidade: ptrStr("cm")},
-		Altura:            &DimensaoInput{Valor: ptrFloat(2), Unidade: ptrStr("m")},
-		Espessura:         &DimensaoInput{Valor: ptrFloat(5), Unidade: ptrStr("mm")},
+		Nome:        "  Tubo PVC 100mm  ",
+		Observacoes: "  observação de teste  ",
+		CategoriaID: categoriaID,
+		TemplateID:  templateGenericoID(t, db, empresaTeste),
+		Comprimento: &DimensaoInput{Valor: ptrFloat(6), Unidade: ptrStr("m")},
+		Largura:     &DimensaoInput{Valor: ptrFloat(100), Unidade: ptrStr("mm")},
+		Diametro:    &DimensaoInput{Valor: ptrFloat(10), Unidade: ptrStr("cm")},
+		Altura:      &DimensaoInput{Valor: ptrFloat(2), Unidade: ptrStr("m")},
+		Espessura:   &DimensaoInput{Valor: ptrFloat(5), Unidade: ptrStr("mm")},
 		// Story 10.3, spec-10-3: os 4 campos novos, com um EAN-13 de dígito
 		// verificador correto (7891234567895 — mesmo valor da I/O Matrix).
 		CodigoFornecedor: "  ABC-123  ",
@@ -209,19 +218,9 @@ func TestCriarProduto_SucessoCompleto(t *testing.T) {
 		t.Errorf("embalagem = %v, want %q (trim das pontas)", det.Embalagem, "Caixa com 10")
 	}
 
-	if n := contarProdutoEstoque(t, db); n != 1 {
-		t.Fatalf("linhas em produto_estoque = %d, want 1", n)
-	}
-	var quantidade float64
-	if err := db.QueryRow(
-		`SELECT quantidade FROM produto_estoque WHERE produto_id = $1 AND estoque_id = $2`,
-		p.ID, estoque.ID,
-	).Scan(&quantidade); err != nil {
-		t.Fatalf("falha ao ler produto_estoque: %v", err)
-	}
-	if quantidade != 12.5 {
-		t.Errorf("quantidade = %v, want 12.5", quantidade)
-	}
+	// Story 11.6 (FR8, AD-29): o cadastro NÃO cria saldo — nenhuma linha em
+	// `produto_estoque`/`lotes` para o Produto.
+	assertProdutoSemSaldo(t, db, p.ID)
 }
 
 // TestCriarProduto_SucessoSemDimensoes prova a AC1 no caso "sem dimensões":
@@ -236,14 +235,12 @@ func TestCriarProduto_SucessoSemDimensoes(t *testing.T) {
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.002")
 
-	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Produto Simples",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
-		QuantidadeInicial: 0,
-	})
+	p, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Produto Simples",
+		CategoriaID:   categoriaID,
+		TemplateID:    templateGenericoID(t, db, empresaTeste),
+	}, estoque.ID, 0)
 	if err != nil {
 		t.Fatalf("CriarProduto erro inesperado: %v", err)
 	}
@@ -307,23 +304,17 @@ func TestCriarProduto_DimensaoParIncompleto(t *testing.T) {
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
 			limparProdutos(t, db)
-			estoque, err := CriarEstoque(db, empresaTeste, "Canteiro "+c.nome)
-			if err != nil {
-				t.Fatalf("seed CriarEstoque: %v", err)
-			}
 			categoriaID := categoriaIDPorCodigo(t, db, "04.003")
 
 			input := CriarProdutoInput{
-				UnidadeMedida:     "un",
-				Nome:              "Produto " + c.nome,
-				CategoriaID:       categoriaID,
-				EstoqueID:         estoque.ID,
-				TemplateID:        templateGenericoID(t, db, empresaTeste),
-				QuantidadeInicial: 1,
+				UnidadeMedida: "un",
+				Nome:          "Produto " + c.nome,
+				CategoriaID:   categoriaID,
+				TemplateID:    templateGenericoID(t, db, empresaTeste),
 			}
 			c.apply(&input)
 
-			_, err = CriarProduto(db, empresaTeste, input)
+			_, err := CriarProduto(db, empresaTeste, input)
 			var erroValidacao *ErroProdutoValidacao
 			if !errors.As(err, &erroValidacao) {
 				t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
@@ -345,22 +336,16 @@ func TestCriarProduto_DimensaoParIncompleto(t *testing.T) {
 // Embalagem (spec-10-3, FR45/FR46) ------------------------------------------
 
 // criarProdutoInputValido monta um CriarProdutoInput mínimo válido (seed de
-// Estoque/Categoria/Template já resolvidos), sobrescrito pelos testes desta
+// Categoria/Template já resolvidos), sobrescrito pelos testes desta
 // seção — evita repetir os 4 seeds em cada um dos casos de EAN-13/Unidade de
 // Medida/limite de texto livre abaixo.
 func criarProdutoInputValido(t *testing.T, db *sql.DB, nome, codigoCategoria string) CriarProdutoInput {
 	t.Helper()
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro "+nome)
-	if err != nil {
-		t.Fatalf("seed CriarEstoque: %v", err)
-	}
 	return CriarProdutoInput{
-		Nome:              nome,
-		CategoriaID:       categoriaIDPorCodigo(t, db, codigoCategoria),
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
-		QuantidadeInicial: 1,
-		UnidadeMedida:     "un",
+		Nome:          nome,
+		CategoriaID:   categoriaIDPorCodigo(t, db, codigoCategoria),
+		TemplateID:    templateGenericoID(t, db, empresaTeste),
+		UnidadeMedida: "un",
 	}
 }
 
@@ -664,78 +649,11 @@ func TestCriarProduto_CategoriaInexistente(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Categoria Ausente")
-	if err != nil {
-		t.Fatalf("seed CriarEstoque: %v", err)
-	}
-
-	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Produto Categoria Ausente",
-		CategoriaID:       "00000000-0000-4000-8000-000000000000",
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
-		QuantidadeInicial: 1,
-	})
-	var erroValidacao *ErroProdutoValidacao
-	if !errors.As(err, &erroValidacao) {
-		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
-	}
-	if n := contarProdutos(t, db); n != 0 {
-		t.Errorf("linhas em produtos = %d, want 0", n)
-	}
-}
-
-// TestCriarProduto_EstoqueInexistente prova a AC2: um `estoque_id` que é UUID
-// válido mas sem linha correspondente -> ErroProdutoValidacao, e o INSERT em
-// `produtos` (que já teria rodado antes de detectar o problema em
-// produto_estoque) é desfeito pelo ROLLBACK da transação — nenhuma linha
-// órfã em `produtos`.
-func TestCriarProduto_EstoqueInexistente(t *testing.T) {
-	db := testDB(t)
-	limparProdutos(t, db)
-
-	categoriaID := categoriaIDPorCodigo(t, db, "04.004")
-
 	_, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Produto Estoque Ausente",
-		CategoriaID:       categoriaID,
-		EstoqueID:         "00000000-0000-4000-8000-000000000000",
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
-		QuantidadeInicial: 1,
-	})
-	var erroValidacao *ErroProdutoValidacao
-	if !errors.As(err, &erroValidacao) {
-		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
-	}
-	if n := contarProdutos(t, db); n != 0 {
-		t.Errorf("linhas em produtos = %d, want 0 (rollback deveria ter desfeito o INSERT)", n)
-	}
-	if n := contarProdutoEstoque(t, db); n != 0 {
-		t.Errorf("linhas em produto_estoque = %d, want 0", n)
-	}
-}
-
-// TestCriarProduto_QuantidadeInicialNegativa prova a validação de
-// `quantidade_inicial`: valor negativo -> ErroProdutoValidacao, nada gravado.
-func TestCriarProduto_QuantidadeInicialNegativa(t *testing.T) {
-	db := testDB(t)
-	limparProdutos(t, db)
-
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Quantidade Negativa")
-	if err != nil {
-		t.Fatalf("seed CriarEstoque: %v", err)
-	}
-	categoriaID := categoriaIDPorCodigo(t, db, "04.005")
-
-	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Produto Quantidade Negativa",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
-		QuantidadeInicial: -1,
+		UnidadeMedida: "un",
+		Nome:          "Produto Categoria Ausente",
+		CategoriaID:   "00000000-0000-4000-8000-000000000000",
+		TemplateID:    templateGenericoID(t, db, empresaTeste),
 	})
 	var erroValidacao *ErroProdutoValidacao
 	if !errors.As(err, &erroValidacao) {
@@ -746,38 +664,56 @@ func TestCriarProduto_QuantidadeInicialNegativa(t *testing.T) {
 	}
 }
 
-// TestCriarProduto_QuantidadeInicialAcimaDoLimite prova a validação de
-// `quantidade_inicial` contra a magnitude máxima de `NUMERIC(10,3)`
-// (limiteNumeric103): acima do limite -> ErroProdutoValidacao, nada gravado
-// — sem esta validação, o Postgres rejeitaria com "numeric field overflow"
-// (não mapeado), caindo no 500 genérico em vez de 400.
-func TestCriarProduto_QuantidadeInicialAcimaDoLimite(t *testing.T) {
+// TestCriarProduto_SemSaldoNemLote prova a Story 11.6 (FR8, AD-29, I/O
+// "Cadastro sem saldo"): o Produto nasce sem nenhuma linha em
+// `produto_estoque`/`lotes`, mesmo existindo Estoques na Empresa.
+func TestCriarProduto_SemSaldoNemLote(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Quantidade Acima Limite")
-	if err != nil {
+	if _, err := CriarEstoque(db, empresaTeste, "Canteiro Sem Saldo 116"); err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	categoriaID := categoriaIDPorCodigo(t, db, "04.007")
-
-	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Produto Quantidade Acima Limite",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
-		QuantidadeInicial: 1e12,
-	})
-	var erroValidacao *ErroProdutoValidacao
-	if !errors.As(err, &erroValidacao) {
-		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
+	p, err := CriarProduto(db, empresaTeste, criarProdutoInputValido(t, db, "Produto Sem Saldo 116", "04.001"))
+	if err != nil {
+		t.Fatalf("CriarProduto: %v", err)
 	}
-	if n := contarProdutos(t, db); n != 0 {
-		t.Errorf("linhas em produtos = %d, want 0", n)
-	}
+	assertProdutoSemSaldo(t, db, p.ID)
 	if n := contarProdutoEstoque(t, db); n != 0 {
 		t.Errorf("linhas em produto_estoque = %d, want 0", n)
+	}
+}
+
+// TestCriarProduto_SemSaldoApareceNoCatalogoComZero prova a I/O "Catálogo":
+// o Produto recém-criado aparece com quantidade total 0 (LEFT JOIN de saldo)
+// e some do filtro `comEstoque=true`.
+func TestCriarProduto_SemSaldoApareceNoCatalogoComZero(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	p, err := CriarProduto(db, empresaTeste, criarProdutoInputValido(t, db, "Produto Catalogo Zero 116", "04.001"))
+	if err != nil {
+		t.Fatalf("CriarProduto: %v", err)
+	}
+
+	itens, _, err := ListarCatalogoGrade(db, 1, FiltrosCatalogo{EmpresaID: empresaTeste})
+	if err != nil {
+		t.Fatalf("ListarCatalogoGrade: %v", err)
+	}
+	if len(itens) != 1 || itens[0].ID != p.ID {
+		t.Fatalf("catálogo = %+v, want só o Produto %s", itens, p.ID)
+	}
+	if itens[0].QuantidadeTotal != 0 {
+		t.Errorf("quantidadeTotal = %v, want 0", itens[0].QuantidadeTotal)
+	}
+
+	verdadeiro := true
+	comEstoque, _, err := ListarCatalogoGrade(db, 1, FiltrosCatalogo{EmpresaID: empresaTeste, ComEstoque: &verdadeiro})
+	if err != nil {
+		t.Fatalf("ListarCatalogoGrade(comEstoque): %v", err)
+	}
+	if len(comEstoque) != 0 {
+		t.Errorf("comEstoque=true devolveu %d itens, want 0", len(comEstoque))
 	}
 }
 
@@ -836,14 +772,12 @@ func TestCriarProduto_CodigoSequencialPorEmpresa(t *testing.T) {
 	}
 	templateID := templateGenericoID(t, db, empresa.ID)
 
-	p1, err := CriarProduto(db, empresa.ID, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Primeiro Produto Sequencial",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateID,
-		QuantidadeInicial: 1,
-	})
+	p1, err := criarProdutoComSaldo(db, empresa.ID, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Primeiro Produto Sequencial",
+		CategoriaID:   categoriaID,
+		TemplateID:    templateID,
+	}, estoque.ID, 1)
 	if err != nil {
 		t.Fatalf("CriarProduto (primeiro): %v", err)
 	}
@@ -851,14 +785,12 @@ func TestCriarProduto_CodigoSequencialPorEmpresa(t *testing.T) {
 		t.Errorf("primeiro código = %q, want %q", p1.Codigo, "000001")
 	}
 
-	p2, err := CriarProduto(db, empresa.ID, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Segundo Produto Sequencial",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateID,
-		QuantidadeInicial: 1,
-	})
+	p2, err := criarProdutoComSaldo(db, empresa.ID, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Segundo Produto Sequencial",
+		CategoriaID:   categoriaID,
+		TemplateID:    templateID,
+	}, estoque.ID, 1)
 	if err != nil {
 		t.Fatalf("CriarProduto (segundo): %v", err)
 	}
@@ -899,25 +831,21 @@ func TestCriarProduto_CodigoIndependentePorEmpresa(t *testing.T) {
 		t.Fatalf("seed CriarEstoque B: %v", err)
 	}
 
-	pA, err := CriarProduto(db, empresaA.ID, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Produto Empresa A",
-		CategoriaID:       categoriaA,
-		EstoqueID:         estoqueA.ID,
-		TemplateID:        templateGenericoID(t, db, empresaA.ID),
-		QuantidadeInicial: 1,
-	})
+	pA, err := criarProdutoComSaldo(db, empresaA.ID, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Produto Empresa A",
+		CategoriaID:   categoriaA,
+		TemplateID:    templateGenericoID(t, db, empresaA.ID),
+	}, estoqueA.ID, 1)
 	if err != nil {
 		t.Fatalf("CriarProduto empresa A: %v", err)
 	}
-	pB, err := CriarProduto(db, empresaB.ID, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Produto Empresa B",
-		CategoriaID:       categoriaB,
-		EstoqueID:         estoqueB.ID,
-		TemplateID:        templateGenericoID(t, db, empresaB.ID),
-		QuantidadeInicial: 1,
-	})
+	pB, err := criarProdutoComSaldo(db, empresaB.ID, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Produto Empresa B",
+		CategoriaID:   categoriaB,
+		TemplateID:    templateGenericoID(t, db, empresaB.ID),
+	}, estoqueB.ID, 1)
 	if err != nil {
 		t.Fatalf("CriarProduto empresa B: %v", err)
 	}
@@ -956,14 +884,12 @@ func TestCriarProduto_ContadorAusente(t *testing.T) {
 		t.Fatalf("categoria da empresa: %v", err)
 	}
 
-	_, err = CriarProduto(db, empresa.ID, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Produto Sem Contador",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateGenericoID(t, db, empresa.ID),
-		QuantidadeInicial: 1,
-	})
+	_, err = criarProdutoComSaldo(db, empresa.ID, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Produto Sem Contador",
+		CategoriaID:   categoriaID,
+		TemplateID:    templateGenericoID(t, db, empresa.ID),
+	}, estoque.ID, 1)
 	if err == nil {
 		t.Fatal("CriarProduto = nil, want erro (contador ausente)")
 	}
@@ -993,13 +919,11 @@ func TestCriarProduto_NomeInvalido(t *testing.T) {
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.006")
 
-	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "   ",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		QuantidadeInicial: 1,
-	})
+	_, err = criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "   ",
+		CategoriaID:   categoriaID,
+	}, estoque.ID, 1)
 	var erroValidacao *ErroProdutoValidacao
 	if !errors.As(err, &erroValidacao) {
 		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
@@ -1021,14 +945,12 @@ func TestCriarProduto_NomeAbaixoDoMinimoRejeitado(t *testing.T) {
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.006")
 
-	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "  123456789  ", // 9 caracteres após o trim
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
-		QuantidadeInicial: 1,
-	})
+	_, err = criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "  123456789  ", // 9 caracteres após o trim
+		CategoriaID:   categoriaID,
+		TemplateID:    templateGenericoID(t, db, empresaTeste),
+	}, estoque.ID, 1)
 	var erroValidacaoCurto *ErroProdutoValidacao
 	if !errors.As(err, &erroValidacaoCurto) {
 		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
@@ -1050,14 +972,12 @@ func TestCriarProduto_NomeNoMinimoExatoAceito(t *testing.T) {
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.006")
 
-	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "  1234567890  ", // 10 caracteres após o trim
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
-		QuantidadeInicial: 1,
-	})
+	_, err = criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "  1234567890  ", // 10 caracteres após o trim
+		CategoriaID:   categoriaID,
+		TemplateID:    templateGenericoID(t, db, empresaTeste),
+	}, estoque.ID, 1)
 	if err != nil {
 		t.Fatalf("nome de 10 caracteres deveria ser válido, got %v", err)
 	}
@@ -1075,14 +995,12 @@ func TestAtualizarNomeProduto_NomeAbaixoDoMinimoRejeitado(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.006")
-	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Nome Original Valido",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
-		QuantidadeInicial: 1,
-	})
+	p, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Nome Original Valido",
+		CategoriaID:   categoriaID,
+		TemplateID:    templateGenericoID(t, db, empresaTeste),
+	}, estoque.ID, 1)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
@@ -1113,14 +1031,12 @@ func TestAtualizarNomeProduto_NomeNoMinimoExatoAceito(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.006")
-	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Nome Original Valido",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
-		QuantidadeInicial: 1,
-	})
+	p, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Nome Original Valido",
+		CategoriaID:   categoriaID,
+		TemplateID:    templateGenericoID(t, db, empresaTeste),
+	}, estoque.ID, 1)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
@@ -1174,14 +1090,12 @@ func TestCriarProduto_ComTemplateNomeCompleto(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.002")
 	templateID, _ := templatePorSubtipo(t, db, "Tubo — PEAD/PPR")
 
-	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "TUBO PEAD PN80 DN50",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateID,
-		QuantidadeInicial: 1,
-	})
+	p, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "TUBO PEAD PN80 DN50",
+		CategoriaID:   categoriaID,
+		TemplateID:    templateID,
+	}, estoque.ID, 1)
 	if err != nil {
 		t.Fatalf("CriarProduto erro inesperado: %v", err)
 	}
@@ -1209,14 +1123,12 @@ func TestCriarProduto_ComTemplatePlaceholderFaltando(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.002")
 	templateID, _ := templatePorSubtipo(t, db, "Tubo — PEAD/PPR")
 
-	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "TUBO PEAD PN80", // falta o segmento DN[XX]
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateID,
-		QuantidadeInicial: 1,
-	})
+	_, err = criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "TUBO PEAD PN80", // falta o segmento DN[XX]
+		CategoriaID:   categoriaID,
+		TemplateID:    templateID,
+	}, estoque.ID, 1)
 	var erroValidacao *ErroProdutoValidacao
 	if !errors.As(err, &erroValidacao) {
 		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
@@ -1248,14 +1160,12 @@ func TestCriarProduto_TemplateInexistente(t *testing.T) {
 			}
 			categoriaID := categoriaIDPorCodigo(t, db, "04.003")
 
-			_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
-				UnidadeMedida:     "un",
-				Nome:              "Produto Template Ausente",
-				CategoriaID:       categoriaID,
-				EstoqueID:         estoque.ID,
-				TemplateID:        templateID,
-				QuantidadeInicial: 1,
-			})
+			_, err = criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+				UnidadeMedida: "un",
+				Nome:          "Produto Template Ausente",
+				CategoriaID:   categoriaID,
+				TemplateID:    templateID,
+			}, estoque.ID, 1)
 			var erroValidacao *ErroProdutoValidacao
 			if !errors.As(err, &erroValidacao) {
 				t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
@@ -1286,13 +1196,11 @@ func TestCriarProduto_TemplateIDVazioRejeitado(t *testing.T) {
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.004")
 
-	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "qualquer texto livre, sem estrutura nenhuma",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		QuantidadeInicial: 1,
-	})
+	_, err = criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "qualquer texto livre, sem estrutura nenhuma",
+		CategoriaID:   categoriaID,
+	}, estoque.ID, 1)
 	var erroValidacao *ErroProdutoValidacao
 	if !errors.As(err, &erroValidacao) {
 		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
@@ -1319,14 +1227,12 @@ func TestCriarProduto_ComTemplateGenericoAceitaNomeLivre(t *testing.T) {
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.004")
 
-	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "qualquer texto livre, sem estrutura nenhuma",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
-		QuantidadeInicial: 1,
-	})
+	p, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "qualquer texto livre, sem estrutura nenhuma",
+		CategoriaID:   categoriaID,
+		TemplateID:    templateGenericoID(t, db, empresaTeste),
+	}, estoque.ID, 1)
 	if err != nil {
 		t.Fatalf("CriarProduto erro inesperado: %v", err)
 	}
@@ -1434,14 +1340,12 @@ func TestAtualizarNomeProduto_ComTemplateRevalida(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.006")
 	templateID, _ := templatePorSubtipo(t, db, "Tubo — PEAD/PPR")
 
-	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "TUBO PEAD PN80 DN50",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateID,
-		QuantidadeInicial: 1,
-	})
+	p, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "TUBO PEAD PN80 DN50",
+		CategoriaID:   categoriaID,
+		TemplateID:    templateID,
+	}, estoque.ID, 1)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
@@ -1503,14 +1407,12 @@ func TestAtualizarNomeProduto_NomeInvalido(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.007")
-	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Nome Original",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
-		QuantidadeInicial: 1,
-	})
+	p, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Nome Original",
+		CategoriaID:   categoriaID,
+		TemplateID:    templateGenericoID(t, db, empresaTeste),
+	}, estoque.ID, 1)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}

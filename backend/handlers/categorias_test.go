@@ -174,14 +174,12 @@ func TestCategoriasHandler_ExcluirEmUso409(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed estoque: %v", err)
 	}
-	if _, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Produto Categoria Em Uso",
-		CategoriaID:       id,
-		EstoqueID:         e.ID,
-		TemplateID:        templateIDPorSubtipoHandler(t, db, "Genérico"),
-		QuantidadeInicial: 1,
-	}); err != nil {
+	if _, err := criarProdutoComSaldo(db, empresaTeste, services.CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Produto Categoria Em Uso",
+		CategoriaID:   id,
+		TemplateID:    templateIDPorSubtipoHandler(t, db, "Genérico"),
+	}, e.ID, 1); err != nil {
 		t.Fatalf("seed produto: %v", err)
 	}
 

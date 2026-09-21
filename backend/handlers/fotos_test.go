@@ -43,14 +43,12 @@ func criarProdutoParaFotoHandler(t *testing.T, db *sql.DB, nome string) string {
 	if err := db.QueryRow(`SELECT id FROM categorias WHERE codigo = $1 AND empresa_id = $2`, "04.001", empresaTeste).Scan(&categoriaID); err != nil {
 		t.Fatalf("seed categoria: %v", err)
 	}
-	p, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              nome,
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateIDPorSubtipoHandler(t, db, "Genérico"),
-		QuantidadeInicial: 1,
-	})
+	p, err := criarProdutoComSaldo(db, empresaTeste, services.CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          nome,
+		CategoriaID:   categoriaID,
+		TemplateID:    templateIDPorSubtipoHandler(t, db, "Genérico"),
+	}, estoque.ID, 1)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}

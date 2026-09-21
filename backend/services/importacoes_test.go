@@ -796,14 +796,12 @@ func TestCriarImportacao_CodigoExistente_AtualizaEmVezDeCriar(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 
-	produtoExistente, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Produto Nome Antigo",
-		CategoriaID:       categoriaAntiga,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
-		QuantidadeInicial: 10,
-	})
+	produtoExistente, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Produto Nome Antigo",
+		CategoriaID:   categoriaAntiga,
+		TemplateID:    templateGenericoID(t, db, empresaTeste),
+	}, estoque.ID, 10)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
@@ -913,14 +911,12 @@ func TestCriarImportacao_CodigoExistente_TemplateNomeInvalido_Rejeitada(t *testi
 	}
 	templateID, _ := templatePorSubtipo(t, db, "Tubo — PEAD/PPR")
 
-	produtoExistente, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "TUBO PEAD PN80 DN50",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateID,
-		QuantidadeInicial: 1,
-	})
+	produtoExistente, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "TUBO PEAD PN80 DN50",
+		CategoriaID:   categoriaID,
+		TemplateID:    templateID,
+	}, estoque.ID, 1)
 	if err != nil {
 		t.Fatalf("seed CriarProduto com template: %v", err)
 	}
@@ -969,14 +965,12 @@ func TestCriarImportacao_LinhaSemCodigo_NomeParecidoAindaAssimCria(t *testing.T)
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 
-	_, err = CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Produto Nome Igualzinho",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
-		QuantidadeInicial: 1,
-	})
+	_, err = criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Produto Nome Igualzinho",
+		CategoriaID:   categoriaID,
+		TemplateID:    templateGenericoID(t, db, empresaTeste),
+	}, estoque.ID, 1)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
@@ -1077,14 +1071,12 @@ func TestCriarImportacao_CodigoExistente_NovoEstoque_ParExistenteIntacto(t *test
 		t.Fatalf("seed CriarEstoque original: %v", err)
 	}
 
-	produtoExistente, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Produto Multi Estoque",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoqueOriginal.ID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
-		QuantidadeInicial: 5,
-	})
+	produtoExistente, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Produto Multi Estoque",
+		CategoriaID:   categoriaID,
+		TemplateID:    templateGenericoID(t, db, empresaTeste),
+	}, estoqueOriginal.ID, 5)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
@@ -1157,14 +1149,12 @@ func TestCriarImportacao_CodigoExistente_EstoqueInvalido_NaoAlteraProduto(t *tes
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 
-	produtoExistente, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Produto Nome Original",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoqueOriginal.ID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
-		QuantidadeInicial: 4,
-	})
+	produtoExistente, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Produto Nome Original",
+		CategoriaID:   categoriaID,
+		TemplateID:    templateGenericoID(t, db, empresaTeste),
+	}, estoqueOriginal.ID, 4)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}

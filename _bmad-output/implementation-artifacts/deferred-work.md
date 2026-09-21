@@ -661,3 +661,11 @@ source_spec: `spec-11-4-baixa-e-transferencia-consomem-lote-automaticamente-e-re
 severity: medium
 reason: `RegistrarTransferencia` nunca escreve `produto_estoque` do destino (fonte única `lotes`, AD-24); `DecidirPedido` segue com débito legado. Janela já documentada no Epic 11 e fechada pela 11.5 (que deve reusar `consumirFEFOTx`).
 status: open
+
+### DW-84: A importação em massa (`services/importacoes.go`) ainda grava saldo em `produto_estoque` (sem Lote) ao criar/atualizar Produto por linha da planilha.
+origin: spec-deferred 403a71c1f66c
+location: backend/services/importacoes.go
+source_spec: `spec-11-6-estoque-e-quantidade-inicial-saem-do-cadastro-de-produto.md`
+severity: medium
+reason: O épico manda a importação gerar Lote com `data_validade = NULL` (FR10, AD-30); hoje ela escreve a tabela legada. Comportamento pré-existente, não alterado pela 11.6 (a story trata só do formulário de cadastro).
+status: open

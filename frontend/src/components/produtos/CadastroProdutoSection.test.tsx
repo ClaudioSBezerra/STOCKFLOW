@@ -50,7 +50,6 @@ const CATEGORIAS = [
   { id: 'cat-1', codigo: '04.001', nome: 'Materiais Civis' },
   { id: 'cat-2', codigo: '04.002', nome: 'Materiais Elétricos' },
 ];
-const ESTOQUES = [{ id: 'est-1', nome: 'Canteiro A' }];
 const TEMPLATES = [
   { id: 'tpl-1', subtipo: 'Tubo — PEAD/PPR', template: 'TUBO PEAD [PN] DN[XX]' },
   {
@@ -67,7 +66,6 @@ const TEMPLATES = [
 function stubListasPadrao(extra?: Partial<Record<string, unknown>>) {
   return stubFetch((url, init) => {
     if (url === '/api/categorias') return jsonOk({ categorias: CATEGORIAS });
-    if (url === '/api/estoques') return jsonOk({ estoques: ESTOQUES });
     if (url === '/api/nomenclatura-templates') return jsonOk({ templates: TEMPLATES });
     if (url === '/api/produtos' && init?.method === 'POST') {
       const handler = extra?.postProdutos as FetchImpl | undefined;
@@ -109,9 +107,10 @@ function corpoDoPost(fetchMock: ReturnType<typeof vi.fn>): Record<string, unknow
   return JSON.parse(chamada[1].body as string) as Record<string, unknown>;
 }
 
-// preencherCamposObrigatorios preenche os 5 campos hoje obrigatórios no
+// preencherCamposObrigatorios preenche os 4 campos hoje obrigatórios no
 // cliente (Story 10.1, AC1/AC2; Story 10.3, spec-10-3, acrescenta Unidade de
-// Medida): nome (>=10 caracteres), categoria, estoque, template — seleciona
+// Medida; Story 11.6 tira Estoque e quantidade inicial): nome (>=10
+// caracteres), categoria, template — seleciona
 // sempre o Genérico ([NOME LIVRE]), que aceita qualquer nome sem estrutura,
 // para não acoplar os testes que não são sobre Nomenclatura Guiada ao
 // formato de nenhum template estrutural — e Unidade de Medida (sempre "un",
@@ -120,17 +119,14 @@ async function preencherCamposObrigatorios(user: ReturnType<typeof userEvent.set
   await user.type(screen.getByLabelText('Nome'), 'Tubo PVC 100mm');
   await user.click(screen.getByRole('combobox', { name: 'Categoria' }));
   await user.click(await screen.findByRole('option', { name: '04.001 — Materiais Civis' }));
-  await user.click(screen.getByRole('combobox', { name: 'Estoque' }));
-  await user.click(await screen.findByRole('option', { name: 'Canteiro A' }));
   await user.click(screen.getByRole('combobox', { name: 'Template de nomenclatura' }));
   await user.click(await screen.findByRole('option', { name: 'Genérico' }));
-  await user.type(screen.getByLabelText('Quantidade inicial'), '10');
   await user.click(screen.getByRole('combobox', { name: 'Unidade de Medida' }));
   await user.click(await screen.findByRole('option', { name: 'un' }));
 }
 
 describe('CadastroProdutoSection', () => {
-  it('carrega categorias e estoques no mount e popula os selects', async () => {
+  it('carrega categorias no mount e popula os selects', async () => {
     stubListasPadrao();
     const user = userEvent.setup();
     render(<CadastroProdutoSection />);
@@ -156,14 +152,13 @@ describe('CadastroProdutoSection', () => {
 
   // Story 10.1: falha ao carregar `/api/nomenclatura-templates` passa a
   // acionar `erroCarregar` e bloquear o formulário — o mesmo tratamento já
-  // dado a categorias/estoques — porque sem a lista de templates o
+  // dado a categorias — porque sem a lista de templates o
   // Almoxarife não tem como selecionar um, e o Template é sempre
   // obrigatório (substitui os dois testes da Story 3.2 que provavam a
   // degradação silenciosa/tolerante).
   it('falha em /api/nomenclatura-templates: aciona erroCarregar e bloqueia o formulário', async () => {
     stubFetch((url) => {
       if (url === '/api/categorias') return jsonOk({ categorias: CATEGORIAS });
-      if (url === '/api/estoques') return jsonOk({ estoques: ESTOQUES });
       if (url === '/api/nomenclatura-templates') {
         return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
       }
@@ -173,7 +168,7 @@ describe('CadastroProdutoSection', () => {
     render(<CadastroProdutoSection />);
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Não foi possível carregar categorias/estoques/templates. Recarregue a página.',
+      'Não foi possível carregar categorias/templates. Recarregue a página.',
     );
     expect(screen.getByRole('button', { name: 'Cadastrar produto' })).toBeDisabled();
   });
@@ -181,7 +176,6 @@ describe('CadastroProdutoSection', () => {
   it('rede falha em /api/nomenclatura-templates (fetch rejeita): aciona erroCarregar e bloqueia o formulário', async () => {
     stubFetch((url) => {
       if (url === '/api/categorias') return jsonOk({ categorias: CATEGORIAS });
-      if (url === '/api/estoques') return jsonOk({ estoques: ESTOQUES });
       if (url === '/api/nomenclatura-templates') return Promise.reject(new Error('falha de rede'));
       throw new Error(`URL inesperada: ${url}`);
     });
@@ -189,17 +183,16 @@ describe('CadastroProdutoSection', () => {
     render(<CadastroProdutoSection />);
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Não foi possível carregar categorias/estoques/templates. Recarregue a página.',
+      'Não foi possível carregar categorias/templates. Recarregue a página.',
     );
     expect(screen.getByRole('button', { name: 'Cadastrar produto' })).toBeDisabled();
   });
 
-  it('erro ao carregar categorias/estoques/templates: mostra mensagem em role="alert"', async () => {
+  it('erro ao carregar categorias/templates: mostra mensagem em role="alert"', async () => {
     stubFetch((url) => {
       if (url === '/api/categorias') {
         return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
       }
-      if (url === '/api/estoques') return jsonOk({ estoques: ESTOQUES });
       if (url === '/api/nomenclatura-templates') return jsonOk({ templates: TEMPLATES });
       throw new Error(`URL inesperada: ${url}`);
     });
@@ -207,7 +200,7 @@ describe('CadastroProdutoSection', () => {
     render(<CadastroProdutoSection />);
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Não foi possível carregar categorias/estoques/templates. Recarregue a página.',
+      'Não foi possível carregar categorias/templates. Recarregue a página.',
     );
   });
 
@@ -240,8 +233,9 @@ describe('CadastroProdutoSection', () => {
     const corpo = corpoDoPost(fetchMock);
     expect(corpo.nome).toBe('Tubo PVC 100mm');
     expect(corpo.categoria_id).toBe('cat-1');
-    expect(corpo.estoque_id).toBe('est-1');
-    expect(corpo.quantidade_inicial).toBe(10);
+    // Story 11.6: o cadastro não envia Estoque nem quantidade inicial.
+    expect(corpo).not.toHaveProperty('estoque_id');
+    expect(corpo).not.toHaveProperty('quantidade_inicial');
     expect(corpo.comprimento).toEqual({ valor: 6, unidade: 'm' });
     expect(corpo.largura).toBeUndefined();
     // Template passou a ser sempre obrigatório (Story 10.1) —
@@ -249,8 +243,26 @@ describe('CadastroProdutoSection', () => {
     expect(corpo.template_id).toBe('tpl-generico');
 
     expect(screen.getByLabelText('Nome')).toHaveValue('');
-    expect(screen.getByLabelText('Quantidade inicial')).toHaveValue(null);
   }, 15000);
+
+  // Story 11.6 (FR8, AD-29): sem Select de Estoque nem Input de quantidade
+  // inicial; o botão habilita só com nome/categoria/template/unidade e nenhuma
+  // chamada a `/api/estoques` acontece (o stub lançaria "URL inesperada").
+  it('sem campos de Estoque/quantidade inicial: botão habilita sem eles e não busca /api/estoques', async () => {
+    const fetchMock = stubListasPadrao();
+    const user = userEvent.setup();
+    render(<CadastroProdutoSection />);
+
+    expect(screen.queryByRole('combobox', { name: 'Estoque' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Estoque')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Quantidade inicial')).not.toBeInTheDocument();
+
+    await preencherCamposObrigatorios(user);
+    expect(screen.getByRole('button', { name: 'Cadastrar produto' })).toBeEnabled();
+
+    const urls = fetchMock.mock.calls.map((args: unknown[]) => args[0]);
+    expect(urls).not.toContain('/api/estoques');
+  });
 
   // Mesmo motivo do timeout explícito das duas acima.
   it('cadastro com template selecionado: mostra o formato e envia template_id no payload', async () => {
@@ -268,9 +280,6 @@ describe('CadastroProdutoSection', () => {
     await user.type(screen.getByLabelText('Nome'), 'TUBO PEAD PN80 DN50');
     await user.click(screen.getByRole('combobox', { name: 'Categoria' }));
     await user.click(await screen.findByRole('option', { name: '04.001 — Materiais Civis' }));
-    await user.click(screen.getByRole('combobox', { name: 'Estoque' }));
-    await user.click(await screen.findByRole('option', { name: 'Canteiro A' }));
-    await user.type(screen.getByLabelText('Quantidade inicial'), '10');
 
     await user.click(screen.getByRole('combobox', { name: 'Template de nomenclatura' }));
     await user.click(await screen.findByRole('option', { name: 'Tubo — PEAD/PPR' }));
@@ -310,11 +319,8 @@ describe('CadastroProdutoSection', () => {
     await user.type(screen.getByLabelText('Nome'), 'Produto Simples');
     await user.click(screen.getByRole('combobox', { name: 'Categoria' }));
     await user.click(await screen.findByRole('option', { name: '04.001 — Materiais Civis' }));
-    await user.click(screen.getByRole('combobox', { name: 'Estoque' }));
-    await user.click(await screen.findByRole('option', { name: 'Canteiro A' }));
     await user.click(screen.getByRole('combobox', { name: 'Template de nomenclatura' }));
     await user.click(await screen.findByRole('option', { name: 'Genérico' }));
-    await user.type(screen.getByLabelText('Quantidade inicial'), '0');
     await user.click(screen.getByRole('combobox', { name: 'Unidade de Medida' }));
     await user.click(await screen.findByRole('option', { name: 'un' }));
 
@@ -372,7 +378,7 @@ describe('CadastroProdutoSection', () => {
     );
   });
 
-  it('botão desabilitado com nome/categoria/estoque/template/quantidade em branco', async () => {
+  it('botão desabilitado com nome/categoria/template/unidade em branco', async () => {
     stubListasPadrao();
     const user = userEvent.setup();
     render(<CadastroProdutoSection />);
@@ -394,11 +400,8 @@ describe('CadastroProdutoSection', () => {
     await user.type(screen.getByLabelText('Nome'), 'curto');
     await user.click(screen.getByRole('combobox', { name: 'Categoria' }));
     await user.click(await screen.findByRole('option', { name: '04.001 — Materiais Civis' }));
-    await user.click(screen.getByRole('combobox', { name: 'Estoque' }));
-    await user.click(await screen.findByRole('option', { name: 'Canteiro A' }));
     await user.click(screen.getByRole('combobox', { name: 'Template de nomenclatura' }));
     await user.click(await screen.findByRole('option', { name: 'Genérico' }));
-    await user.type(screen.getByLabelText('Quantidade inicial'), '10');
     await user.click(screen.getByRole('combobox', { name: 'Unidade de Medida' }));
     await user.click(await screen.findByRole('option', { name: 'un' }));
 
@@ -410,7 +413,7 @@ describe('CadastroProdutoSection', () => {
   });
 
   // Story 10.1, AC2: nenhum template selecionado mantém o botão desabilitado
-  // mesmo com nome válido e categoria/estoque/quantidade preenchidos —
+  // mesmo com nome válido e categoria preenchidos —
   // template deixou de ser opcional.
   it('botão desabilitado sem nenhum template selecionado', async () => {
     stubListasPadrao();
@@ -420,9 +423,6 @@ describe('CadastroProdutoSection', () => {
     await user.type(screen.getByLabelText('Nome'), 'Nome Valido Sem Template');
     await user.click(screen.getByRole('combobox', { name: 'Categoria' }));
     await user.click(await screen.findByRole('option', { name: '04.001 — Materiais Civis' }));
-    await user.click(screen.getByRole('combobox', { name: 'Estoque' }));
-    await user.click(await screen.findByRole('option', { name: 'Canteiro A' }));
-    await user.type(screen.getByLabelText('Quantidade inicial'), '10');
     await user.click(screen.getByRole('combobox', { name: 'Unidade de Medida' }));
     await user.click(await screen.findByRole('option', { name: 'un' }));
 
@@ -434,8 +434,8 @@ describe('CadastroProdutoSection', () => {
   });
 
   // Story 10.3, spec-10-3, AC3: nenhuma Unidade de Medida selecionada mantém
-  // o botão desabilitado mesmo com nome/categoria/estoque/template/
-  // quantidade preenchidos — Embalagem/Código do Fornecedor/EAN-13
+  // o botão desabilitado mesmo com nome/categoria/template
+  // preenchidos — Embalagem/Código do Fornecedor/EAN-13
   // continuam opcionais no mesmo cadastro.
   it('botão desabilitado sem Unidade de Medida selecionada', async () => {
     stubListasPadrao();
@@ -445,11 +445,8 @@ describe('CadastroProdutoSection', () => {
     await user.type(screen.getByLabelText('Nome'), 'Nome Valido Sem Unidade');
     await user.click(screen.getByRole('combobox', { name: 'Categoria' }));
     await user.click(await screen.findByRole('option', { name: '04.001 — Materiais Civis' }));
-    await user.click(screen.getByRole('combobox', { name: 'Estoque' }));
-    await user.click(await screen.findByRole('option', { name: 'Canteiro A' }));
     await user.click(screen.getByRole('combobox', { name: 'Template de nomenclatura' }));
     await user.click(await screen.findByRole('option', { name: 'Genérico' }));
-    await user.type(screen.getByLabelText('Quantidade inicial'), '10');
 
     expect(screen.getByRole('button', { name: 'Cadastrar produto' })).toBeDisabled();
 

@@ -46,11 +46,10 @@ func seedProdutoComPendenciaHandler(t *testing.T, db *sql.DB, nome string, dims 
 	}
 	dims.Nome = nome
 	dims.CategoriaID = categoriaIDPorCodigoHandler(t, db, "04.001")
-	dims.EstoqueID = estoque.ID
 	if dims.TemplateID == "" {
 		dims.TemplateID = templateIDPorSubtipoHandler(t, db, "Genérico")
 	}
-	produto, err := services.CriarProduto(db, empresaTeste, dims)
+	produto, err := criarProdutoComSaldo(db, empresaTeste, dims, estoque.ID, 0)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
@@ -62,15 +61,18 @@ func seedProdutoComPendenciaHandler(t *testing.T, db *sql.DB, nome string, dims 
 // que sempre cria um Estoque novo) — usado pelos testes de
 // DetectarDuplicatasHandler, onde "local em comum" é a própria condição sob
 // teste.
-func seedProdutoComEstoqueHandler(t *testing.T, db *sql.DB, nome, estoqueID string, dims services.CriarProdutoInput) string {
+func seedProdutoComEstoqueHandler(t *testing.T, db *sql.DB, nome, estoqueID string, dims services.CriarProdutoInput, quantidade ...float64) string {
 	t.Helper()
 	dims.Nome = nome
 	dims.CategoriaID = categoriaIDPorCodigoHandler(t, db, "04.001")
-	dims.EstoqueID = estoqueID
 	if dims.TemplateID == "" {
 		dims.TemplateID = templateIDPorSubtipoHandler(t, db, "Genérico")
 	}
-	produto, err := services.CriarProduto(db, empresaTeste, dims)
+	var qtd float64
+	if len(quantidade) > 0 {
+		qtd = quantidade[0]
+	}
+	produto, err := criarProdutoComSaldo(db, empresaTeste, dims, estoqueID, qtd)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
@@ -967,15 +969,13 @@ func TestMesclarDuplicatasHandler_200(t *testing.T) {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
 	produtoA := seedProdutoComEstoqueHandler(t, db, "Tubo PVC 25mm", estoque.ID, services.CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Diametro:          &services.DimensaoInput{Valor: ptrFloatHandler(25), Unidade: ptrStrHandler("mm")},
-		QuantidadeInicial: 5,
-	})
+		UnidadeMedida: "un",
+		Diametro:      &services.DimensaoInput{Valor: ptrFloatHandler(25), Unidade: ptrStrHandler("mm")},
+	}, 5)
 	produtoB := seedProdutoComEstoqueHandler(t, db, "Tubo PVC 25mm", estoque.ID, services.CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Diametro:          &services.DimensaoInput{Valor: ptrFloatHandler(25), Unidade: ptrStrHandler("mm")},
-		QuantidadeInicial: 3,
-	})
+		UnidadeMedida: "un",
+		Diametro:      &services.DimensaoInput{Valor: ptrFloatHandler(25), Unidade: ptrStrHandler("mm")},
+	}, 3)
 
 	registro := realtime.NewRegistry()
 	eventos, cancelar := registro.Subscribe(empresaTeste)
@@ -1085,9 +1085,9 @@ func TestMesclarDuplicatasHandler_403PapelUsuario(t *testing.T) {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
 	produtoA := seedProdutoComEstoqueHandler(t, db, "Tubo Mesclar 403", estoque.ID, services.CriarProdutoInput{
-		UnidadeMedida: "un", QuantidadeInicial: 5})
+		UnidadeMedida: "un"}, 5)
 	produtoB := seedProdutoComEstoqueHandler(t, db, "Tubo Mesclar 403", estoque.ID, services.CriarProdutoInput{
-		UnidadeMedida: "un", QuantidadeInicial: 3})
+		UnidadeMedida: "un"}, 3)
 
 	body := `{"produtoMantidoId":"` + produtoA + `","produtoRemovidoIds":["` + produtoB + `"]}`
 	w := postMesclar(db, realtime.NewRegistry(), "Bearer "+token, body)
@@ -1130,9 +1130,9 @@ func TestMesclarDuplicatasHandler_409ProdutoJaMesclado(t *testing.T) {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
 	produtoA := seedProdutoComEstoqueHandler(t, db, "Anel Vedacao Mesclar 409", estoque.ID, services.CriarProdutoInput{
-		UnidadeMedida: "un", QuantidadeInicial: 2})
+		UnidadeMedida: "un"}, 2)
 	produtoB := seedProdutoComEstoqueHandler(t, db, "Anel Vedacao Mesclar 409", estoque.ID, services.CriarProdutoInput{
-		UnidadeMedida: "un", QuantidadeInicial: 3})
+		UnidadeMedida: "un"}, 3)
 
 	if _, err := db.Exec(`UPDATE produtos SET deleted_at = now() WHERE id = $1`, produtoB); err != nil {
 		t.Fatalf("falha ao simular mesclagem concorrente de B: %v", err)

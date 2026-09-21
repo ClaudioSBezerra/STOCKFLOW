@@ -153,9 +153,10 @@ type DimensaoInput struct {
 }
 
 // CriarProdutoInput agrupa os campos aceitos por CriarProduto (Story 3.1,
-// FR-8; `TemplateID` acrescentado pela Story 3.2). `EstoqueID`/
-// `QuantidadeInicial` alimentam o INSERT em `produto_estoque` feito na mesma
-// transação do INSERT em `produtos`.
+// FR-8; `TemplateID` acrescentado pela Story 3.2). Desde a Story 11.6
+// (FR8, AD-29) o cadastro NÃO recebe Estoque nem quantidade inicial: o Produto
+// nasce sem nenhuma linha de saldo — o Lançamento de Saldo (Story 11.1) é o
+// único caminho de entrada de saldo.
 //
 // `TemplateID` é sempre obrigatório desde a Story 10.1 (AC2) — vazio (após
 // trim) rejeita com ErroProdutoValidacao, não existe mais caminho de nome
@@ -164,17 +165,15 @@ type DimensaoInput struct {
 // Genérico (`[NOME LIVRE]`, Story 10.1, AD-34) aceita qualquer nome não
 // vazio, sem checar estrutura.
 type CriarProdutoInput struct {
-	Nome              string
-	Observacoes       string
-	CategoriaID       string
-	EstoqueID         string
-	TemplateID        string
-	QuantidadeInicial float64
-	Comprimento       *DimensaoInput
-	Largura           *DimensaoInput
-	Diametro          *DimensaoInput
-	Altura            *DimensaoInput
-	Espessura         *DimensaoInput
+	Nome        string
+	Observacoes string
+	CategoriaID string
+	TemplateID  string
+	Comprimento *DimensaoInput
+	Largura     *DimensaoInput
+	Diametro    *DimensaoInput
+	Altura      *DimensaoInput
+	Espessura   *DimensaoInput
 	// CodigoFornecedor/EAN13/UnidadeMedida/Embalagem (Story 10.3, spec-10-3,
 	// FR45/FR46): CodigoFornecedor/Embalagem são texto livre opcional, sem
 	// checagem de unicidade; EAN13 é opcional mas validado (formato + dígito
@@ -188,8 +187,8 @@ type CriarProdutoInput struct {
 }
 
 // ErroProdutoValidacao é o erro de validação devolvido por CriarProduto:
-// nome ausente/longo demais, categoria/estoque ausentes ou inexistentes,
-// quantidade inicial negativa, ou uma das 5 dimensões com valor sem unidade
+// nome ausente/longo demais, categoria ausente ou inexistente,
+// ou uma das 5 dimensões com valor sem unidade
 // (ou vice-versa) ou com valor/unidade fora do intervalo aceito. A mensagem
 // já vem pronta para exibição — nomeia o campo específico quando aplicável
 // (ex. "largura: valor e unidade devem ser informados juntos"). Sempre
@@ -301,8 +300,8 @@ func proximoCodigoProduto(tx *sql.Tx, empresaID string) (string, error) {
 // runas e `TemplateID` sempre obrigatórios, FR8; Story 10.2, spec-10-2,
 // FR-45, tira `codigo` da entrada — o servidor gera o próximo número
 // sequencial da Empresa via proximoCodigoProduto). Toda a validação acontece
-// ANTES de qualquer escrita — nome (10..255 runas), categoria/estoque
-// (presença), quantidade inicial, as 5 dimensões pareadas e o formato do
+// ANTES de qualquer escrita — nome (10..255 runas), categoria
+// (presença), as 5 dimensões pareadas e o formato do
 // nome contra o template selecionado, sempre presente (ver o bloco de
 // validação de Nomenclatura Guiada abaixo, incluindo o fallback Genérico
 // `[NOME LIVRE]`, AD-34) — de modo que um erro de validação NUNCA deixa um
@@ -310,19 +309,15 @@ func proximoCodigoProduto(tx *sql.Tx, empresaID string) (string, error) {
 //
 // Sucesso: uma única transação gera o próximo código sequencial da Empresa
 // (proximoCodigoProduto), insere a linha em `produtos` (`RETURNING id, nome,
-// codigo`, incluindo `template_id` quando informado) e a linha em
-// `produto_estoque` vinculando o Produto recém-criado ao Estoque informado
-// com a quantidade inicial, e comita as três juntas. `categoria_id`/
-// `estoque_id` que não correspondem a nenhuma linha (violação de FK,
+// codigo`, incluindo `template_id` quando informado) e comita as duas juntas
+// — nenhuma linha em `produto_estoque`/`lotes` é criada (Story 11.6).
+// `categoria_id` que não corresponde a nenhuma linha (violação de FK,
 // SQLSTATE 23503) ou que não são UUID válido (SQLSTATE 22P02, mesma
 // constante pqInvalidTextRepresentation de promocao.go) colapsam em
 // ErroProdutoValidacao — nunca um 500: input de cliente inválido não é erro
 // de servidor. `template_id` já foi validado (existência + formato do nome)
 // antes da transação abrir, então na prática o INSERT em `produtos` só pode
-// falhar por causa de `categoria_id`; o INSERT em `produto_estoque` (rodando
-// depois, já com um `produto_id` válido) só pode falhar por causa de
-// `estoque_id` — por isso a mensagem de cada ramo já nomeia o campo certo
-// sem precisar inspecionar o nome da constraint.
+// falhar por causa de `categoria_id`.
 func CriarProduto(db *sql.DB, empresaID string, input CriarProdutoInput) (Produto, error) {
 	nomeTrimado := strings.TrimSpace(input.Nome)
 	if n := utf8.RuneCountInString(nomeTrimado); n < 10 || n > 255 {
@@ -334,20 +329,6 @@ func CriarProduto(db *sql.DB, empresaID string, input CriarProdutoInput) (Produt
 	categoriaID := strings.TrimSpace(input.CategoriaID)
 	if categoriaID == "" {
 		return Produto{}, &ErroProdutoValidacao{Mensagem: "categoria é obrigatória"}
-	}
-	estoqueID := strings.TrimSpace(input.EstoqueID)
-	if estoqueID == "" {
-		return Produto{}, &ErroProdutoValidacao{Mensagem: "estoque é obrigatório"}
-	}
-	if input.QuantidadeInicial < 0 {
-		return Produto{}, &ErroProdutoValidacao{
-			Mensagem: "quantidade inicial deve ser maior ou igual a zero",
-		}
-	}
-	if input.QuantidadeInicial > limiteNumeric103 {
-		return Produto{}, &ErroProdutoValidacao{
-			Mensagem: fmt.Sprintf("quantidade inicial deve ser no máximo %s", limiteNumeric103Texto),
-		}
 	}
 
 	comprimentoValor, comprimentoUnidade, err := validarDimensao("comprimento", input.Comprimento)
@@ -494,28 +475,6 @@ func CriarProduto(db *sql.DB, empresaID string, input CriarProdutoInput) (Produt
 			return Produto{}, &ErroProdutoValidacao{Mensagem: "código já cadastrado"}
 		}
 		return Produto{}, fmt.Errorf("falha ao inserir produto: %w", err)
-	}
-
-	// Mesmo padrão do INSERT acima para o Estoque: a linha só nasce se o
-	// Estoque for da Empresa da requisição; `RowsAffected() == 0` é o sinal
-	// de "estoque de outra Empresa OU inexistente" — indistinguíveis de fora.
-	const insertProdutoEstoque = `
-		INSERT INTO produto_estoque (produto_id, estoque_id, quantidade)
-		SELECT $1, e.id, $3 FROM estoques e WHERE e.id = $2 AND e.empresa_id = $4`
-	res, err := tx.Exec(insertProdutoEstoque, p.ID, estoqueID, input.QuantidadeInicial, empresaID)
-	if err != nil {
-		var pqErr *pq.Error
-		if errors.As(err, &pqErr) && (pqErr.Code == pqForeignKeyViolation || pqErr.Code == pqInvalidTextRepresentation) {
-			return Produto{}, &ErroProdutoValidacao{Mensagem: "estoque informado não existe"}
-		}
-		return Produto{}, fmt.Errorf("falha ao inserir produto_estoque: %w", err)
-	}
-	linhasEstoque, err := res.RowsAffected()
-	if err != nil {
-		return Produto{}, fmt.Errorf("falha ao ler linhas afetadas em produto_estoque: %w", err)
-	}
-	if linhasEstoque == 0 {
-		return Produto{}, &ErroProdutoValidacao{Mensagem: "estoque informado não existe"}
 	}
 
 	if err := tx.Commit(); err != nil {

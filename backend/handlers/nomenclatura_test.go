@@ -171,14 +171,12 @@ func TestTemplatesNomenclaturaHandler_ExcluirEmUso409(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed estoque: %v", err)
 	}
-	if _, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "TUBO PVC 50MM",
-		CategoriaID:       categoriaIDPorCodigoHandler(t, db, "04.001"),
-		EstoqueID:         e.ID,
-		TemplateID:        id,
-		QuantidadeInicial: 1,
-	}); err != nil {
+	if _, err := criarProdutoComSaldo(db, empresaTeste, services.CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "TUBO PVC 50MM",
+		CategoriaID:   categoriaIDPorCodigoHandler(t, db, "04.001"),
+		TemplateID:    id,
+	}, e.ID, 1); err != nil {
 		t.Fatalf("seed produto: %v", err)
 	}
 

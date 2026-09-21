@@ -83,14 +83,12 @@ func montarAmbienteIsolamento(t *testing.T, db *sql.DB, slug, cnpjBase12, rotulo
 	}
 	a.estoque = estoque
 
-	produto, err := CriarProduto(db, a.empresa.ID, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Prancha Isolamento",
-		CategoriaID:       a.categoriaID,
-		EstoqueID:         a.estoque.ID,
-		TemplateID:        templateGenericoID(t, db, a.empresa.ID),
-		QuantidadeInicial: 20,
-	})
+	produto, err := criarProdutoComSaldo(db, a.empresa.ID, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Prancha Isolamento",
+		CategoriaID:   a.categoriaID,
+		TemplateID:    templateGenericoID(t, db, a.empresa.ID),
+	}, a.estoque.ID, 20)
 	if err != nil {
 		t.Fatalf("%s: CriarProduto: %v", rotulo, err)
 	}

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/lib/pq"
 )
 
 // limparEstoques zera `estoques` entre os testes desta suíte — `testDB` só
@@ -238,14 +240,12 @@ func TestExcluirEstoque_ComResiduo(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.007")
-	produto, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Tubo PVC 100mm",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
-		QuantidadeInicial: 5,
-	})
+	produto, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Tubo PVC 100mm",
+		CategoriaID:   categoriaID,
+		TemplateID:    templateGenericoID(t, db, empresaTeste),
+	}, estoque.ID, 5)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
@@ -370,14 +370,12 @@ func TestExcluirEstoque_SemResiduoAposProdutoEstoqueZerado(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "05.001")
-	if _, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Capacete de Segurança",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
-		QuantidadeInicial: 0,
-	}); err != nil {
+	if _, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Capacete de Segurança",
+		CategoriaID:   categoriaID,
+		TemplateID:    templateGenericoID(t, db, empresaTeste),
+	}, estoque.ID, 0); err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
 
@@ -391,11 +389,12 @@ func TestExcluirEstoque_SemResiduoAposProdutoEstoqueZerado(t *testing.T) {
 
 // TestExcluirEstoque_CorridaComCriarProdutoResidual prova que o
 // `SELECT ... FOR UPDATE` no início de ExcluirEstoque fecha a janela de
-// corrida com um CriarProduto concorrente: as duas goroutines abaixo disparam
-// ao mesmo tempo — uma exclui o Estoque, a outra cadastra um Produto nesse
-// mesmo Estoque com quantidade inicial > 0 (isto é, cria uma linha de
-// resíduo). Sem o lock, era possível o SELECT de resíduo de ExcluirEstoque
-// rodar ANTES do INSERT de CriarProduto committar, e o DELETE (com
+// corrida com uma escrita concorrente de saldo: as duas goroutines abaixo
+// disparam ao mesmo tempo — uma exclui o Estoque, a outra grava saldo > 0 de
+// um Produto (já cadastrado) nesse mesmo Estoque (isto é, cria uma linha de
+// resíduo). Desde a Story 11.6 o cadastro de Produto não cria mais saldo, então
+// a escrita concorrente é o INSERT em `produto_estoque` semeado direto. Sem o lock, era possível o SELECT de resíduo de ExcluirEstoque
+// rodar ANTES do INSERT de saldo committar, e o DELETE (com
 // ON DELETE CASCADE em produto_estoque.estoque_id) apagar silenciosamente a
 // linha de resíduo recém-criada junto do Estoque — as duas operações
 // "tendo sucesso" ao mesmo tempo, com o dado de resíduo perdido sem erro
@@ -404,11 +403,11 @@ func TestExcluirEstoque_SemResiduoAposProdutoEstoqueZerado(t *testing.T) {
 //
 // Com o lock, só duas ordens de chegada são possíveis, e ambas são seguras:
 //   - ExcluirEstoque trava a linha primeiro: se ele chega a commitar (sem
-//     resíduo visto), o INSERT de CriarProduto (que ficou bloqueado
+//     resíduo visto), o INSERT de saldo (que ficou bloqueado
 //     esperando o lock) roda depois contra um `estoque_id` que já não existe
-//     mais -> falha com erro de validação (referência inválida). O Estoque
+//     mais -> falha por violação de FK (referência inválida). O Estoque
 //     nunca teve uma linha de resíduo perdida — ela nunca chegou a existir.
-//   - CriarProduto commita primeiro (sua própria escrita em produto_estoque
+//   - O saldo commita primeiro (sua própria escrita em produto_estoque
 //     também exige, implicitamente, um lock em modo KEY SHARE sobre a linha
 //     de `estoques` referenciada, que conflita com o FOR UPDATE seguinte):
 //     ExcluirEstoque só adquire o lock depois, e o SELECT de resíduo dentro
@@ -426,6 +425,15 @@ func TestExcluirEstoque_CorridaComCriarProdutoResidual(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+	produto, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Produto Corrida Residuo",
+		CategoriaID:   categoriaID,
+		TemplateID:    templateGenericoID(t, db, empresaTeste),
+	})
+	if err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
 
 	start := make(chan struct{})
 	var wg sync.WaitGroup
@@ -440,14 +448,7 @@ func TestExcluirEstoque_CorridaComCriarProdutoResidual(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		<-start
-		_, errCriar = CriarProduto(db, empresaTeste, CriarProdutoInput{
-			UnidadeMedida:     "un",
-			Nome:              "Produto Corrida Residuo",
-			CategoriaID:       categoriaID,
-			EstoqueID:         estoque.ID,
-			TemplateID:        templateGenericoID(t, db, empresaTeste),
-			QuantidadeInicial: 5,
-		})
+		errCriar = inserirSaldoLegado(db, produto.ID, estoque.ID, 5)
 	}()
 	close(start)
 	wg.Wait()
@@ -463,11 +464,11 @@ func TestExcluirEstoque_CorridaComCriarProdutoResidual(t *testing.T) {
 	}
 
 	if excluiuComSucesso {
-		// A exclusão vem primeiro: o cadastro concorrente deve ter falhado
-		// referenciando um Estoque que já não existe mais.
-		var erroValidacao *ErroProdutoValidacao
-		if !errors.As(errCriar, &erroValidacao) {
-			t.Fatalf("CriarProduto deveria falhar com *ErroProdutoValidacao quando a exclusão vence a corrida, got %v", errCriar)
+		// A exclusão vem primeiro: o INSERT de saldo concorrente deve ter
+		// falhado por FK, referenciando um Estoque que já não existe mais.
+		var pqErr *pq.Error
+		if !errors.As(errCriar, &pqErr) || pqErr.Code != pqForeignKeyViolation {
+			t.Fatalf("INSERT de saldo deveria falhar com violação de FK quando a exclusão vence a corrida, got %v", errCriar)
 		}
 		if n := contarEstoques(t, db); n != 0 {
 			t.Errorf("estoque deveria ter sido removido, linhas = %d, want 0", n)
@@ -480,7 +481,7 @@ func TestExcluirEstoque_CorridaComCriarProdutoResidual(t *testing.T) {
 			t.Fatalf("ExcluirEstoque deveria falhar com *ErroEstoqueComResiduo quando o cadastro vence a corrida, got %v", errExcluir)
 		}
 		if !criouComSucesso {
-			t.Fatalf("CriarProduto deveria ter tido sucesso quando vence a corrida, got %v", errCriar)
+			t.Fatalf("INSERT de saldo deveria ter tido sucesso quando vence a corrida, got %v", errCriar)
 		}
 		if n := contarEstoques(t, db); n != 1 {
 			t.Errorf("estoque deveria continuar existindo, linhas = %d, want 1", n)

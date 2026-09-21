@@ -159,17 +159,10 @@ func TestCriarProdutoHandler_201ParaAlmoxarifeGestorAdm(t *testing.T) {
 			criarContaComPapel(t, db, "Conta "+c.papel, c.email, "senha-123456", c.papel)
 			token := tokenDeLogin(t, db, c.email, "senha-123456")
 
-			estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro "+c.papel)
-			if err != nil {
-				t.Fatalf("seed CriarEstoque: %v", err)
-			}
-
 			corpo := `{
 				"nome": "` + c.nome + `",
 				"categoria_id": "` + categoriaID + `",
-				"estoque_id": "` + estoque.ID + `",
 				"template_id": "` + templateIDPorSubtipoHandler(t, db, "Genérico") + `",
-				"quantidade_inicial": 10,
 				"unidade_medida": "un",
 				"comprimento": {"valor": 6, "unidade": "m"},
 				"largura": {"valor": 100, "unidade": "mm"},
@@ -206,15 +199,67 @@ func TestCriarProdutoHandler_201SemDimensoes(t *testing.T) {
 	criarContaComPapel(t, db, "Almox", "prod-semdim-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "prod-semdim-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Sem Dimensão")
-	if err != nil {
-		t.Fatalf("seed CriarEstoque: %v", err)
-	}
-
-	corpo := `{"nome":"Produto Simples","categoria_id":"` + categoriaID + `","estoque_id":"` + estoque.ID + `","template_id":"` + templateIDPorSubtipoHandler(t, db, "Genérico") + `","quantidade_inicial":1,"unidade_medida":"un"}`
+	corpo := `{"nome":"Produto Simples","categoria_id":"` + categoriaID + `","template_id":"` + templateIDPorSubtipoHandler(t, db, "Genérico") + `","unidade_medida":"un"}`
 	w := postProdutos(db, "Bearer "+token, corpo)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
+	}
+}
+
+// contarSaldoDoProdutoHandler devolve quantas linhas existem em
+// `produto_estoque` e em `lotes` para o Produto (Story 11.6).
+func contarSaldoDoProdutoHandler(t *testing.T, db *sql.DB, produtoID string) (produtoEstoque, lotes int) {
+	t.Helper()
+	if err := db.QueryRow(`SELECT count(*) FROM produto_estoque WHERE produto_id = $1`, produtoID).Scan(&produtoEstoque); err != nil {
+		t.Fatalf("count produto_estoque: %v", err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM lotes WHERE produto_id = $1`, produtoID).Scan(&lotes); err != nil {
+		t.Fatalf("count lotes: %v", err)
+	}
+	return produtoEstoque, lotes
+}
+
+// TestCriarProdutoHandler_201SemSaldo prova a Story 11.6 (FR8, AD-29), linhas
+// "Cadastro sem saldo" e "Cliente antigo" da I/O Matrix: sem `estoque_id`/
+// `quantidade_inicial` -> 201 e nenhuma linha em `produto_estoque`/`lotes`; COM
+// os dois campos (cliente antigo) -> 201, campos ignorados, nenhuma linha de
+// saldo.
+func TestCriarProdutoHandler_201SemSaldo(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	criarContaComPapel(t, db, "Almox Sem Saldo", "prod-sem-saldo-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "prod-sem-saldo-almox@empresa.com", "senha-123456")
+	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Sem Saldo 116")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	templateID := templateIDPorSubtipoHandler(t, db, "Genérico")
+
+	casos := map[string]string{
+		"sem os campos": `{"nome":"Produto Sem Saldo Novo","categoria_id":"` + categoriaID + `","template_id":"` + templateID + `","unidade_medida":"un"}`,
+		"cliente antigo": `{"nome":"Produto Sem Saldo Antigo","categoria_id":"` + categoriaID + `","template_id":"` + templateID + `","unidade_medida":"un",` +
+			`"estoque_id":"` + estoque.ID + `","quantidade_inicial":5}`,
+	}
+	for nome, corpo := range casos {
+		t.Run(nome, func(t *testing.T) {
+			w := postProdutos(db, "Bearer "+token, corpo)
+			if w.Code != http.StatusCreated {
+				t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
+			}
+			var resp struct {
+				Produto struct {
+					ID string `json:"id"`
+				} `json:"produto"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+			}
+			pe, lotes := contarSaldoDoProdutoHandler(t, db, resp.Produto.ID)
+			if pe != 0 || lotes != 0 {
+				t.Errorf("produto_estoque=%d lotes=%d, want 0/0 (cadastro não cria saldo)", pe, lotes)
+			}
+		})
 	}
 }
 
@@ -230,11 +275,6 @@ func TestCriarProdutoHandler_201IgnoraCodigoNoPayload(t *testing.T) {
 	criarContaComPapel(t, db, "Almox Codigo Payload", "prod-codigo-payload-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "prod-codigo-payload-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Codigo Payload")
-	if err != nil {
-		t.Fatalf("seed CriarEstoque: %v", err)
-	}
-
 	var numeroAntes int
 	if err := db.QueryRow(
 		`SELECT ultimo_numero FROM contadores_produto WHERE empresa_id = $1`, empresaTeste,
@@ -248,9 +288,7 @@ func TestCriarProdutoHandler_201IgnoraCodigoNoPayload(t *testing.T) {
 		"nome": "Produto Com Codigo No Payload",
 		"codigo": "` + codigoArbitrario + `",
 		"categoria_id": "` + categoriaID + `",
-		"estoque_id": "` + estoque.ID + `",
 		"template_id": "` + templateIDPorSubtipoHandler(t, db, "Genérico") + `",
-		"quantidade_inicial": 1,
 		"unidade_medida": "un"
 	}`
 	w := postProdutos(db, "Bearer "+token, corpo)
@@ -296,16 +334,9 @@ func TestCriarProdutoHandler_400DimensaoIncompleta(t *testing.T) {
 	criarContaComPapel(t, db, "Almox", "prod-dim-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "prod-dim-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Dimensão Incompleta")
-	if err != nil {
-		t.Fatalf("seed CriarEstoque: %v", err)
-	}
-
 	corpo := `{
 		"nome": "Produto Dimensão Incompleta",
 		"categoria_id": "` + categoriaID + `",
-		"estoque_id": "` + estoque.ID + `",
-		"quantidade_inicial": 1,
 		"largura": {"valor": 10}
 	}`
 	w := postProdutos(db, "Bearer "+token, corpo)
@@ -339,7 +370,7 @@ func TestCriarProdutoHandler_400PayloadInvalido(t *testing.T) {
 
 	casos := map[string]string{
 		"json inválido": `{"nome":`,
-		"nome vazio":    `{"nome":"","categoria_id":"x","estoque_id":"y","quantidade_inicial":1}`,
+		"nome vazio":    `{"nome":"","categoria_id":"x"}`,
 	}
 	for nome, corpo := range casos {
 		t.Run(nome, func(t *testing.T) {
@@ -355,25 +386,17 @@ func TestCriarProdutoHandler_400PayloadInvalido(t *testing.T) {
 	}
 }
 
-// TestCriarProdutoHandler_400CategoriaOuEstoqueInexistente prova a AC2 na
-// fronteira: `categoria_id`/`estoque_id` com UUID válido mas sem linha
-// correspondente -> 400 VALIDATION_ERROR, nada gravado.
-func TestCriarProdutoHandler_400CategoriaOuEstoqueInexistente(t *testing.T) {
+// TestCriarProdutoHandler_400CategoriaInexistente prova a AC2 na fronteira:
+// `categoria_id` com UUID válido mas sem linha correspondente -> 400 VALIDATION_ERROR, nada gravado.
+func TestCriarProdutoHandler_400CategoriaInexistente(t *testing.T) {
 	db := testDB(t)
 	limparProdutosHandler(t, db)
 	criarContaComPapel(t, db, "Almox", "prod-fk-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "prod-fk-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro FK")
-	if err != nil {
-		t.Fatalf("seed CriarEstoque: %v", err)
-	}
-
 	corpo := `{
 		"nome": "Produto Categoria Ausente",
-		"categoria_id": "00000000-0000-4000-8000-000000000000",
-		"estoque_id": "` + estoque.ID + `",
-		"quantidade_inicial": 1
+		"categoria_id": "00000000-0000-4000-8000-000000000000"
 	}`
 	w := postProdutos(db, "Bearer "+token, corpo)
 	if w.Code != http.StatusBadRequest {
@@ -396,12 +419,7 @@ func TestCriarProdutoHandler_400TemplateIDAusente(t *testing.T) {
 	criarContaComPapel(t, db, "Almox", "prod-semtemplate-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "prod-semtemplate-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Sem Template HTTP")
-	if err != nil {
-		t.Fatalf("seed CriarEstoque: %v", err)
-	}
-
-	corpo := `{"nome":"Produto Sem Template","categoria_id":"` + categoriaID + `","estoque_id":"` + estoque.ID + `","quantidade_inicial":1}`
+	corpo := `{"nome":"Produto Sem Template","categoria_id":"` + categoriaID + `"}`
 	w := postProdutos(db, "Bearer "+token, corpo)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
@@ -432,12 +450,7 @@ func TestCriarProdutoHandler_403ParaUsuario(t *testing.T) {
 	criarContaComPapel(t, db, "Usuária", "prod-forb-usuario@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "prod-forb-usuario@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Proibido Produto")
-	if err != nil {
-		t.Fatalf("seed CriarEstoque: %v", err)
-	}
-
-	corpo := `{"nome":"Produto Proibido","categoria_id":"` + categoriaID + `","estoque_id":"` + estoque.ID + `","quantidade_inicial":1}`
+	corpo := `{"nome":"Produto Proibido","categoria_id":"` + categoriaID + `"}`
 	w := postProdutos(db, "Bearer "+token, corpo)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusForbidden, w.Body.String())
@@ -521,17 +534,10 @@ func TestCriarProdutoHandler_201ComTemplateValido(t *testing.T) {
 	criarContaComPapel(t, db, "Almox", "prod-tpl-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "prod-tpl-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Template Válido")
-	if err != nil {
-		t.Fatalf("seed CriarEstoque: %v", err)
-	}
-
 	corpo := `{
 		"nome": "TUBO PEAD PN80 DN50",
 		"categoria_id": "` + categoriaID + `",
-		"estoque_id": "` + estoque.ID + `",
 		"template_id": "` + templateID + `",
-		"quantidade_inicial": 1,
 		"unidade_medida": "un"
 	}`
 	w := postProdutos(db, "Bearer "+token, corpo)
@@ -551,17 +557,10 @@ func TestCriarProdutoHandler_400TemplateNaoCorrespondeAoNome(t *testing.T) {
 	criarContaComPapel(t, db, "Almox", "prod-tpl-invalido-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "prod-tpl-invalido-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Template Inválido")
-	if err != nil {
-		t.Fatalf("seed CriarEstoque: %v", err)
-	}
-
 	corpo := `{
 		"nome": "TUBO PEAD PN80",
 		"categoria_id": "` + categoriaID + `",
-		"estoque_id": "` + estoque.ID + `",
-		"template_id": "` + templateID + `",
-		"quantidade_inicial": 1
+		"template_id": "` + templateID + `"
 	}`
 	w := postProdutos(db, "Bearer "+token, corpo)
 	if w.Code != http.StatusBadRequest {
@@ -594,17 +593,10 @@ func TestCriarProdutoHandler_400TemplateInexistente(t *testing.T) {
 	criarContaComPapel(t, db, "Almox", "prod-tpl-inexistente-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "prod-tpl-inexistente-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Template Inexistente")
-	if err != nil {
-		t.Fatalf("seed CriarEstoque: %v", err)
-	}
-
 	corpo := `{
 		"nome": "TUBO PEAD PN80 DN50",
 		"categoria_id": "` + categoriaID + `",
-		"estoque_id": "` + estoque.ID + `",
-		"template_id": "00000000-0000-4000-8000-000000000000",
-		"quantidade_inicial": 1
+		"template_id": "00000000-0000-4000-8000-000000000000"
 	}`
 	w := postProdutos(db, "Bearer "+token, corpo)
 	if w.Code != http.StatusBadRequest {
@@ -696,14 +688,12 @@ func TestAtualizarNomeProdutoHandler_200AlmoxarifeSucesso(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
-		UnidadeMedida:     "un",
-		TemplateID:        templateIDPorSubtipoHandler(t, db, "Genérico"),
-		Nome:              "Nome Original",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		QuantidadeInicial: 1,
-	})
+	produto, err := criarProdutoComSaldo(db, empresaTeste, services.CriarProdutoInput{
+		UnidadeMedida: "un",
+		TemplateID:    templateIDPorSubtipoHandler(t, db, "Genérico"),
+		Nome:          "Nome Original",
+		CategoriaID:   categoriaID,
+	}, estoque.ID, 1)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
@@ -738,14 +728,12 @@ func TestAtualizarNomeProdutoHandler_400NomeIncompativelComTemplate(t *testing.T
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "TUBO PEAD PN80 DN50",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateID,
-		QuantidadeInicial: 1,
-	})
+	produto, err := criarProdutoComSaldo(db, empresaTeste, services.CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "TUBO PEAD PN80 DN50",
+		CategoriaID:   categoriaID,
+		TemplateID:    templateID,
+	}, estoque.ID, 1)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
@@ -799,14 +787,12 @@ func TestAtualizarNomeProdutoHandler_400PayloadInvalido(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
-		UnidadeMedida:     "un",
-		TemplateID:        templateIDPorSubtipoHandler(t, db, "Genérico"),
-		Nome:              "Nome Original",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		QuantidadeInicial: 1,
-	})
+	produto, err := criarProdutoComSaldo(db, empresaTeste, services.CriarProdutoInput{
+		UnidadeMedida: "un",
+		TemplateID:    templateIDPorSubtipoHandler(t, db, "Genérico"),
+		Nome:          "Nome Original",
+		CategoriaID:   categoriaID,
+	}, estoque.ID, 1)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
@@ -843,14 +829,12 @@ func TestAtualizarNomeProdutoHandler_403ParaUsuario(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
-		UnidadeMedida:     "un",
-		TemplateID:        templateIDPorSubtipoHandler(t, db, "Genérico"),
-		Nome:              "Nome Original",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		QuantidadeInicial: 1,
-	})
+	produto, err := criarProdutoComSaldo(db, empresaTeste, services.CriarProdutoInput{
+		UnidadeMedida: "un",
+		TemplateID:    templateIDPorSubtipoHandler(t, db, "Genérico"),
+		Nome:          "Nome Original",
+		CategoriaID:   categoriaID,
+	}, estoque.ID, 1)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
@@ -906,14 +890,12 @@ func TestBuscarProdutosHandler_200ComResultados(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
-		UnidadeMedida:     "un",
-		TemplateID:        templateIDPorSubtipoHandler(t, db, "Genérico"),
-		Nome:              "Parafuso Sextavado M8",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		QuantidadeInicial: 1,
-	})
+	produto, err := criarProdutoComSaldo(db, empresaTeste, services.CriarProdutoInput{
+		UnidadeMedida: "un",
+		TemplateID:    templateIDPorSubtipoHandler(t, db, "Genérico"),
+		Nome:          "Parafuso Sextavado M8",
+		CategoriaID:   categoriaID,
+	}, estoque.ID, 1)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
@@ -1067,14 +1049,12 @@ func getProdutosCatalogo(db *sql.DB, authHeader, query string) *httptest.Respons
 // ListarCatalogoHandler.
 func seedProdutoCatalogoHandler(t *testing.T, db *sql.DB, estoqueID, nome, categoriaID string, qtd float64) string {
 	t.Helper()
-	p, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              nome,
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoqueID,
-		TemplateID:        templateIDPorSubtipoHandler(t, db, "Genérico"),
-		QuantidadeInicial: qtd,
-	})
+	p, err := criarProdutoComSaldo(db, empresaTeste, services.CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          nome,
+		CategoriaID:   categoriaID,
+		TemplateID:    templateIDPorSubtipoHandler(t, db, "Genérico"),
+	}, estoqueID, qtd)
 	if err != nil {
 		t.Fatalf("seed CriarProduto(%q): %v", nome, err)
 	}
@@ -1891,10 +1871,6 @@ func TestCriarProdutoHandler_PublicaEventoNoSucesso(t *testing.T) {
 	db := testDB(t)
 	limparProdutosHandler(t, db)
 	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Evento Criar")
-	if err != nil {
-		t.Fatalf("seed CriarEstoque: %v", err)
-	}
 	criarContaComPapel(t, db, "Evento Criar", "evento-criar@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "evento-criar@empresa.com", "senha-123456")
 
@@ -1909,7 +1885,7 @@ func TestCriarProdutoHandler_PublicaEventoNoSucesso(t *testing.T) {
 				middleware.RequireRole(services.PapelAlmoxarife)(
 					CriarProdutoHandler(db, registro)))))
 
-	body := `{"nome":"Produto Evento","categoria_id":"` + categoriaID + `","estoque_id":"` + estoque.ID + `","template_id":"` + templateIDPorSubtipoHandler(t, db, "Genérico") + `","quantidade_inicial":1,"unidade_medida":"un"}`
+	body := `{"nome":"Produto Evento","categoria_id":"` + categoriaID + `","template_id":"` + templateIDPorSubtipoHandler(t, db, "Genérico") + `","unidade_medida":"un"}`
 	r := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/produtos", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+token)
@@ -1949,11 +1925,11 @@ func TestAtualizarNomeProdutoHandler_PublicaEventoNoSucesso(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
+	produto, err := criarProdutoComSaldo(db, empresaTeste, services.CriarProdutoInput{
 		UnidadeMedida: "un",
 		TemplateID:    templateIDPorSubtipoHandler(t, db, "Genérico"),
-		Nome:          "Nome Original Evento", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
-	})
+		Nome:          "Nome Original Evento", CategoriaID: categoriaID,
+	}, estoque.ID, 1)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
@@ -2026,14 +2002,12 @@ func TestBuscarProdutoPorCodigoHandler_200ComProduto(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
-		UnidadeMedida:     "un",
-		TemplateID:        templateIDPorSubtipoHandler(t, db, "Genérico"),
-		Nome:              "Cabo Flexível 4mm",
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		QuantidadeInicial: 1,
-	})
+	produto, err := criarProdutoComSaldo(db, empresaTeste, services.CriarProdutoInput{
+		UnidadeMedida: "un",
+		TemplateID:    templateIDPorSubtipoHandler(t, db, "Genérico"),
+		Nome:          "Cabo Flexível 4mm",
+		CategoriaID:   categoriaID,
+	}, estoque.ID, 1)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
@@ -2151,11 +2125,11 @@ func TestBuscarProdutoPorCodigoHandler_200ParaUsuario(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
+	produto, err := criarProdutoComSaldo(db, empresaTeste, services.CriarProdutoInput{
 		UnidadeMedida: "un",
 		TemplateID:    templateIDPorSubtipoHandler(t, db, "Genérico"),
-		Nome:          "Produto Papel Usuario", CategoriaID: categoriaID, EstoqueID: estoque.ID, QuantidadeInicial: 1,
-	})
+		Nome:          "Produto Papel Usuario", CategoriaID: categoriaID,
+	}, estoque.ID, 1)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}

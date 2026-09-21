@@ -24,14 +24,18 @@ import { apiUrl, authHeaders } from '@/lib/api';
  * Unidade de Medida, `Select` com as 12 opções fixas do enum, obrigatório),
  * visível só a `almoxarife`+ (gate na própria página). Um `Card` com
  * formulário: `nome`/`observacoes`/`código do fornecedor`/`ean-13`/
- * `embalagem` (`Input`), `categoria`/`estoque`/`template de nomenclatura`/
- * `unidade de medida` (`Select`, os quatro obrigatórios — categoria/estoque/
- * template carregados de `GET /api/categorias`/`GET /api/estoques`/
- * `GET /api/nomenclatura-templates` num único `Promise.all`; falha em
- * QUALQUER um dos três aciona `erroCarregar` e bloqueia o cadastro, já que
- * sem a lista de templates o Almoxarife não tem como selecionar um) e as 5
- * dimensões pareadas (`Input` numérico + `Select` de unidade `mm/cm/m`),
- * todas opcionais — AD-9. `quantidade_inicial` é `Input` numérico obrigatório.
+ * `embalagem` (`Input`), `categoria`/`template de nomenclatura`/
+ * `unidade de medida` (`Select`, os três obrigatórios — categoria/template
+ * carregados de `GET /api/categorias`/`GET /api/nomenclatura-templates` num
+ * único `Promise.all`; falha em QUALQUER um dos dois aciona `erroCarregar` e
+ * bloqueia o cadastro, já que sem a lista de templates o Almoxarife não tem
+ * como selecionar um) e as 5 dimensões pareadas (`Input` numérico + `Select`
+ * de unidade `mm/cm/m`), todas opcionais — AD-9.
+ *
+ * Story 11.6 (FR8, AD-29): o cadastro NÃO tem Estoque destino nem quantidade
+ * inicial — o Produto nasce sem saldo e a entrada de saldo é feita
+ * exclusivamente pelo Lançamento de Saldo (Story 11.1). O formulário não faz
+ * `GET /api/estoques` nem envia `estoque_id`/`quantidade_inicial`.
  * `codigo` (Story 10.2) é um `Input` `disabled`, só leitura — nenhum estado
  * próprio, `value={produtoCriado?.codigo ?? ''}`: vazio antes do cadastro,
  * preenchido com o código gerado pelo servidor depois de um `201`. Nenhuma
@@ -51,8 +55,7 @@ import { apiUrl, authHeaders } from '@/lib/api';
  * o campo específico quando aplicável, ex. dimensão incompleta, ou o nome não
  * corresponder ao template selecionado); qualquer outro erro (rede, 500) ->
  * `<p role="alert">` genérico. Botão desabilitado durante o envio ou com
- * `nome`/`categoria_id`/`estoque_id`/`template_id`/`quantidade_inicial`/
- * `unidade_medida` em branco.
+ * `nome`/`categoria_id`/`template_id`/`unidade_medida` em branco.
  *
  * Categoria é sempre selecionada da lista fixa de `GET /api/categorias`
  * (AC4) — nunca um campo de texto livre.
@@ -94,11 +97,6 @@ interface Categoria {
   nome: string;
 }
 
-interface Estoque {
-  id: string;
-  nome: string;
-}
-
 interface NomenclaturaTemplate {
   id: string;
   subtipo: string;
@@ -133,7 +131,7 @@ const UNIDADES_MEDIDA = [
 ] as const;
 
 const MENSAGEM_ERRO_CARREGAR =
-  'Não foi possível carregar categorias/estoques/templates. Recarregue a página.';
+  'Não foi possível carregar categorias/templates. Recarregue a página.';
 const MENSAGEM_ERRO_CADASTRO =
   'Não foi possível cadastrar o produto agora. Tente novamente em instantes.';
 const MENSAGEM_ERRO_FOTO =
@@ -231,9 +229,7 @@ export function CadastroProdutoSection() {
   const [nome, setNome] = useState('');
   const [observacoes, setObservacoes] = useState('');
   const [categoriaId, setCategoriaId] = useState('');
-  const [estoqueId, setEstoqueId] = useState('');
   const [templateId, setTemplateId] = useState('');
-  const [quantidadeInicial, setQuantidadeInicial] = useState('');
   const [comprimento, setComprimento] = useState<DimensaoEstado>(DIMENSAO_VAZIA);
   const [largura, setLargura] = useState<DimensaoEstado>(DIMENSAO_VAZIA);
   const [diametro, setDiametro] = useState<DimensaoEstado>(DIMENSAO_VAZIA);
@@ -251,7 +247,6 @@ export function CadastroProdutoSection() {
   const [embalagem, setEmbalagem] = useState('');
 
   const [categorias, setCategorias] = useState<Categoria[]>([]);
-  const [estoques, setEstoques] = useState<Estoque[]>([]);
   const [templates, setTemplates] = useState<NomenclaturaTemplate[]>([]);
   const [erroCarregar, setErroCarregar] = useState<string | null>(null);
 
@@ -296,23 +291,20 @@ export function CadastroProdutoSection() {
     // Story 10.1: Template de nomenclatura passou a ser sempre obrigatório
     // no cadastro (AC2) — sem a lista, o Almoxarife não tem como selecionar
     // um, então uma falha aqui recebe o MESMO tratamento hoje dado a
-    // categorias/estoques (mesmo `Promise.all`, mesmo `erroCarregar`), em vez
+    // categorias (mesmo `Promise.all`, mesmo `erroCarregar`), em vez
     // de degradar silenciosamente como na Story 3.2.
     try {
-      const [resCategorias, resEstoques, resTemplates] = await Promise.all([
+      const [resCategorias, resTemplates] = await Promise.all([
         fetch(apiUrl('/api/categorias'), { headers: authHeaders() }),
-        fetch(apiUrl('/api/estoques'), { headers: authHeaders() }),
         fetch(apiUrl('/api/nomenclatura-templates'), { headers: authHeaders() }),
       ]);
-      if (!resCategorias.ok || !resEstoques.ok || !resTemplates.ok) {
+      if (!resCategorias.ok || !resTemplates.ok) {
         setErroCarregar(MENSAGEM_ERRO_CARREGAR);
         return;
       }
       const bodyCategorias = (await resCategorias.json()) as { categorias: Categoria[] };
-      const bodyEstoques = (await resEstoques.json()) as { estoques: Estoque[] };
       const bodyTemplates = (await resTemplates.json()) as { templates: NomenclaturaTemplate[] };
       setCategorias(bodyCategorias.categorias ?? []);
-      setEstoques(bodyEstoques.estoques ?? []);
       setTemplates(bodyTemplates.templates ?? []);
       setErroCarregar(null);
     } catch {
@@ -330,9 +322,7 @@ export function CadastroProdutoSection() {
     setNome('');
     setObservacoes('');
     setCategoriaId('');
-    setEstoqueId('');
     setTemplateId('');
-    setQuantidadeInicial('');
     setComprimento(DIMENSAO_VAZIA);
     setLargura(DIMENSAO_VAZIA);
     setDiametro(DIMENSAO_VAZIA);
@@ -350,9 +340,7 @@ export function CadastroProdutoSection() {
     enviando ||
     nome.trim().length < 10 ||
     categoriaId === '' ||
-    estoqueId === '' ||
     templateId === '' ||
-    quantidadeInicial.trim() === '' ||
     unidadeMedida === '';
 
   async function enviar(event: FormEvent<HTMLFormElement>) {
@@ -372,9 +360,7 @@ export function CadastroProdutoSection() {
           nome,
           observacoes: observacoes.trim() === '' ? undefined : observacoes.trim(),
           categoria_id: categoriaId,
-          estoque_id: estoqueId,
           template_id: templateId,
-          quantidade_inicial: Number(quantidadeInicial),
           comprimento: montarDimensao(comprimento),
           largura: montarDimensao(largura),
           diametro: montarDimensao(diametro),
@@ -607,33 +593,6 @@ export function CadastroProdutoSection() {
                 ))}
               </SelectContent>
             </Select>
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="produto-estoque">Estoque</Label>
-            <Select value={estoqueId} onValueChange={setEstoqueId}>
-              <SelectTrigger id="produto-estoque">
-                <SelectValue placeholder="Selecione um estoque" />
-              </SelectTrigger>
-              <SelectContent>
-                {estoques.map((estoque) => (
-                  <SelectItem key={estoque.id} value={estoque.id}>
-                    {estoque.nome}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="produto-quantidade-inicial">Quantidade inicial</Label>
-            <Input
-              id="produto-quantidade-inicial"
-              type="number"
-              inputMode="decimal"
-              value={quantidadeInicial}
-              onChange={(event) => setQuantidadeInicial(event.target.value)}
-            />
           </div>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

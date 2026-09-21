@@ -423,14 +423,12 @@ func TestExcluirEstoqueHandler_409ComResiduo(t *testing.T) {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.005")
-	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Tubo PVC 100mm",
-		CategoriaID:       categoriaID,
-		EstoqueID:         e.ID,
-		TemplateID:        templateIDPorSubtipoHandler(t, db, "Genérico"),
-		QuantidadeInicial: 5,
-	})
+	produto, err := criarProdutoComSaldo(db, empresaTeste, services.CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Tubo PVC 100mm",
+		CategoriaID:   categoriaID,
+		TemplateID:    templateIDPorSubtipoHandler(t, db, "Genérico"),
+	}, e.ID, 5)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}

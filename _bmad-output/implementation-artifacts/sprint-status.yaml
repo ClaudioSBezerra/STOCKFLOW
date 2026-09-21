@@ -126,7 +126,7 @@ development_status:
   11-3-reserva-de-saldo-ao-enviar-pedido: done
   11-4-baixa-e-transferência-consomem-lote-automaticamente-e-respei: done
   11-5-aprovação-de-pedido-revalida-contra-reserva-e-debita-lote: done
-  11-6-estoque-e-quantidade-inicial-saem-do-cadastro-de-produto: backlog
+  11-6-estoque-e-quantidade-inicial-saem-do-cadastro-de-produto: done
   epic-11-retrospective: optional
 
   epic-12: backlog

@@ -23,14 +23,12 @@ func seedProdutoComSaldo(t *testing.T, db *sql.DB, nomeEstoque string, quantidad
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
-	produto, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Produto " + nomeEstoque,
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateGenericoID(t, db, empresaTeste),
-		QuantidadeInicial: quantidadeInicial,
-	})
+	produto, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Produto " + nomeEstoque,
+		CategoriaID:   categoriaID,
+		TemplateID:    templateGenericoID(t, db, empresaTeste),
+	}, estoque.ID, quantidadeInicial)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}

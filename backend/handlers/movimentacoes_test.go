@@ -52,14 +52,12 @@ func seedProdutoComSaldoHandler(t *testing.T, db *sql.DB, nomeEstoque string, qu
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
-	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
-		UnidadeMedida:     "un",
-		Nome:              "Produto " + nomeEstoque,
-		CategoriaID:       categoriaID,
-		EstoqueID:         estoque.ID,
-		TemplateID:        templateIDPorSubtipoHandler(t, db, "Genérico"),
-		QuantidadeInicial: quantidadeInicial,
-	})
+	produto, err := criarProdutoComSaldo(db, empresaTeste, services.CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Produto " + nomeEstoque,
+		CategoriaID:   categoriaID,
+		TemplateID:    templateIDPorSubtipoHandler(t, db, "Genérico"),
+	}, estoque.ID, quantidadeInicial)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}

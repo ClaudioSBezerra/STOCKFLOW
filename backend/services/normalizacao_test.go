@@ -19,11 +19,10 @@ func seedProdutoNormalizacao(t *testing.T, db *sql.DB, nome string, dims CriarPr
 	}
 	dims.Nome = nome
 	dims.CategoriaID = categoriaIDPorCodigo(t, db, "04.001")
-	dims.EstoqueID = estoque.ID
 	if dims.TemplateID == "" {
 		dims.TemplateID = templateGenericoID(t, db, empresaTeste)
 	}
-	produto, err := CriarProduto(db, empresaTeste, dims)
+	produto, err := criarProdutoComSaldo(db, empresaTeste, dims, estoque.ID, 0)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
@@ -763,11 +762,10 @@ func seedProdutoComEstoque(t *testing.T, db *sql.DB, nome, estoqueID string, dim
 	t.Helper()
 	dims.Nome = nome
 	dims.CategoriaID = categoriaIDPorCodigo(t, db, "04.001")
-	dims.EstoqueID = estoqueID
 	if dims.TemplateID == "" {
 		dims.TemplateID = templateGenericoID(t, db, empresaTeste)
 	}
-	produto, err := CriarProduto(db, empresaTeste, dims)
+	produto, err := criarProdutoComSaldo(db, empresaTeste, dims, estoqueID, 0)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
@@ -1236,12 +1234,10 @@ func seedProdutoParaMesclagem(t *testing.T, db *sql.DB, nome, estoqueID string, 
 	t.Helper()
 	dims.Nome = nome
 	dims.CategoriaID = categoriaIDPorCodigo(t, db, "04.001")
-	dims.EstoqueID = estoqueID
-	dims.QuantidadeInicial = quantidade
 	if dims.TemplateID == "" {
 		dims.TemplateID = templateGenericoID(t, db, empresaTeste)
 	}
-	produto, err := CriarProduto(db, empresaTeste, dims)
+	produto, err := criarProdutoComSaldo(db, empresaTeste, dims, estoqueID, quantidade)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
