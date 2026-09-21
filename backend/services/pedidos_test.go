@@ -1935,3 +1935,114 @@ func TestGerarReciboPedidoPDF_GatePendente(t *testing.T) {
 		t.Fatalf("erro = %v, want ErrPedidoSemRecibo", err)
 	}
 }
+
+// --- Centro de Custo no envio (Story 12.3, spec-12-3) -----------------------
+
+func centroCustoGravado(t *testing.T, db *sql.DB, pedidoID string) sql.NullString {
+	t.Helper()
+	var v sql.NullString
+	if err := db.QueryRow(`SELECT centro_custo_id FROM pedidos WHERE id = $1`, pedidoID).Scan(&v); err != nil {
+		t.Fatalf("falha ao ler centro_custo_id: %v", err)
+	}
+	return v
+}
+
+func TestSubmeterPedidoComCentroCusto_SemCentroEComCentroValido(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	limparCentrosCustoDeTeste(t, db, empresaTeste)
+
+	usuarioID := semearConta(t, db, "Usuario Pedido CC", "pedido-cc@empresa.com", PapelUsuario, 0)
+	centro, err := CriarCentroCusto(db, empresaTeste, "Estoque do Cabo CC")
+	if err != nil {
+		t.Fatalf("seed centro: %v", err)
+	}
+	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Pedido CC", 20)
+
+	// Sem Centro (vazio e só espaços): comportamento de hoje, coluna NULL.
+	for _, id := range []string{"", "   "} {
+		if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, 1); err != nil {
+			t.Fatalf("seed carrinho: %v", err)
+		}
+		p, err := SubmeterPedidoComCentroCusto(db, empresaTeste, usuarioID, "Fulano", "Obra Livre", "", id)
+		if err != nil {
+			t.Fatalf("sem centro (%q): %v", id, err)
+		}
+		if p.CentroCustoID != nil || centroCustoGravado(t, db, p.ID).Valid {
+			t.Errorf("sem centro (%q): centro_custo_id deveria ser nulo", id)
+		}
+	}
+
+	// Com Centro válido: gravado e devolvido; texto livre inalterado.
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, 1); err != nil {
+		t.Fatalf("seed carrinho: %v", err)
+	}
+	p, err := SubmeterPedidoComCentroCusto(db, empresaTeste, usuarioID, "Fulano", "  Obra Norte ", "", centro.ID)
+	if err != nil {
+		t.Fatalf("com centro: %v", err)
+	}
+	if p.CentroCustoID == nil || *p.CentroCustoID != centro.ID {
+		t.Errorf("CentroCustoID = %v, want %s", p.CentroCustoID, centro.ID)
+	}
+	if g := centroCustoGravado(t, db, p.ID); !g.Valid || g.String != centro.ID {
+		t.Errorf("centro_custo_id gravado = %v, want %s", g, centro.ID)
+	}
+	if p.ObraCentroCusto != "Obra Norte" {
+		t.Errorf("ObraCentroCusto = %q, want texto livre inalterado", p.ObraCentroCusto)
+	}
+}
+
+func TestSubmeterPedidoComCentroCusto_InvalidoNaoGravaNemEsvaziaCarrinho(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	removerEmpresaDeTeste(t, db, "cc-pedido-outra")
+	outra := criarEmpresaDeTeste(t, db, "cc-pedido-outra", "778889990205", "CC Pedido Outra")
+	limparCentrosCustoDeTeste(t, db, empresaTeste, outra.ID)
+	t.Cleanup(func() { removerEmpresaDeTeste(t, db, "cc-pedido-outra") })
+
+	usuarioID := semearConta(t, db, "Usuario Pedido CC Inv", "pedido-cc-inv@empresa.com", PapelUsuario, 0)
+	alheio, err := CriarCentroCusto(db, outra.ID, "Centro Alheio")
+	if err != nil {
+		t.Fatalf("seed centro alheio: %v", err)
+	}
+	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Pedido CC Inv", 20)
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, 2); err != nil {
+		t.Fatalf("seed carrinho: %v", err)
+	}
+
+	for nome, id := range map[string]string{
+		"outra empresa": alheio.ID,
+		"inexistente":   "00000000-0000-0000-0000-000000000000",
+		"malformado":    "abc",
+	} {
+		antes := contarPedidos(t, db)
+		_, err := SubmeterPedidoComCentroCusto(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", id)
+		var ev *ErroPedidoValidacao
+		if !errors.As(err, &ev) || ev.Mensagem != "centro de custo inválido" {
+			t.Errorf("%s: erro = %v, want ErroPedidoValidacao \"centro de custo inválido\"", nome, err)
+		}
+		if depois := contarPedidos(t, db); depois != antes {
+			t.Errorf("%s: pedidos = %d, want %d", nome, depois, antes)
+		}
+		if n := contarItensCarrinho(t, db, usuarioID); n != 1 {
+			t.Errorf("%s: carrinho = %d itens, want 1 (intacto)", nome, n)
+		}
+	}
+}
+
+func TestSubmeterPedidoComCentroCusto_TextoLivreSegueObrigatorio(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	limparCentrosCustoDeTeste(t, db, empresaTeste)
+
+	usuarioID := semearConta(t, db, "Usuario Pedido CC Txt", "pedido-cc-txt@empresa.com", PapelUsuario, 0)
+	centro, err := CriarCentroCusto(db, empresaTeste, "Centro Texto Obrigatorio")
+	if err != nil {
+		t.Fatalf("seed centro: %v", err)
+	}
+	_, err = SubmeterPedidoComCentroCusto(db, empresaTeste, usuarioID, "Fulano", "   ", "", centro.ID)
+	var ev *ErroPedidoValidacao
+	if !errors.As(err, &ev) {
+		t.Fatalf("erro = %v, want *ErroPedidoValidacao", err)
+	}
+}

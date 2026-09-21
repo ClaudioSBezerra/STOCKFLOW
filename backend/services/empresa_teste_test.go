@@ -123,6 +123,7 @@ func removerEmpresaDeTeste(t *testing.T, db *sql.DB, slug string) {
 		`DELETE FROM nomenclatura_templates WHERE empresa_id = $1`,
 		// Story 10.2 (spec-10-2): `contadores_produto` também tem FK para
 		// `empresas`, sem CASCADE — mesma razão das linhas acima.
+		`DELETE FROM centros_custo WHERE empresa_id = $1`,
 		`DELETE FROM filiais WHERE empresa_id = $1`,
 		`DELETE FROM contadores_produto WHERE empresa_id = $1`,
 		`DELETE FROM empresas WHERE id = $1`,

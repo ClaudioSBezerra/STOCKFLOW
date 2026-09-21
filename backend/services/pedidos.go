@@ -40,6 +40,11 @@ type Pedido struct {
 	// SubmeterPedido para o handler publicar `produtos` (updated) — nunca
 	// serializado.
 	ProdutoIDs []string `json:"-"`
+	// CentroCustoID (Story 12.3): Centro de Custo cadastrado escolhido no
+	// envio, nil quando ausente. Nunca serializado aqui — só a resposta do
+	// POST /api/pedidos o expõe (o handler, como `centro_custo_id`); as
+	// listagens/detalhe/recibo não o leem nem o mostram.
+	CentroCustoID *string `json:"-"`
 }
 
 // PedidoItem é uma linha do SNAPSHOT imutável em `pedido_itens` (AD-17,
@@ -170,6 +175,16 @@ func (e *ErroPedidoIndisponivel) Error() string {
 // `reservas_pedido_item` (Story 11.3), esvazia `carrinho_itens` do usuário
 // e commita — tudo na MESMA transação (Always, spec-7-2).
 func SubmeterPedido(db *sql.DB, empresaID string, usuarioID, solicitante, obraCentroCusto, observacao string) (Pedido, error) {
+	return SubmeterPedidoComCentroCusto(db, empresaID, usuarioID, solicitante, obraCentroCusto, observacao, "")
+}
+
+// SubmeterPedidoComCentroCusto é SubmeterPedido (Story 12.3, AD-28) com o
+// Centro de Custo cadastrado opcional: `centroCustoID` vazio (ou só espaços)
+// = sem Centro; informado, é revalidado contra a Empresa do contexto ANTES
+// de ler o carrinho ou escrever — inexistente, malformado ou de outra
+// Empresa -> &ErroPedidoValidacao, nada gravado. O texto livre
+// `obraCentroCusto` segue obrigatório e inalterado (coexistem, sem cópia).
+func SubmeterPedidoComCentroCusto(db *sql.DB, empresaID string, usuarioID, solicitante, obraCentroCusto, observacao, centroCustoID string) (Pedido, error) {
 	solicitanteTrim := strings.TrimSpace(solicitante)
 	if solicitanteTrim == "" {
 		return Pedido{}, &ErroPedidoValidacao{Mensagem: "solicitante é obrigatório"}
@@ -177,6 +192,13 @@ func SubmeterPedido(db *sql.DB, empresaID string, usuarioID, solicitante, obraCe
 	obraTrim := strings.TrimSpace(obraCentroCusto)
 	if obraTrim == "" {
 		return Pedido{}, &ErroPedidoValidacao{Mensagem: "obra/centro de custo é obrigatório"}
+	}
+	var centroCustoNull sql.NullString
+	if idTrim := strings.TrimSpace(centroCustoID); idTrim != "" {
+		if err := validarCentroCustoDaEmpresa(db, empresaID, idTrim); err != nil {
+			return Pedido{}, err
+		}
+		centroCustoNull = sql.NullString{String: idTrim, Valid: true}
 	}
 
 	itens, _, err := ListarCarrinho(db, empresaID, usuarioID)
@@ -239,14 +261,18 @@ func SubmeterPedido(db *sql.DB, empresaID string, usuarioID, solicitante, obraCe
 	var pedido Pedido
 	var observacaoGravada sql.NullString
 	const insertPedido = `
-		INSERT INTO pedidos (usuario_id, solicitante, obra_centro_custo, observacao, empresa_id)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, usuario_id, solicitante, obra_centro_custo, observacao, status, criado_em`
-	if err := tx.QueryRow(insertPedido, usuarioID, solicitanteTrim, obraTrim, observacaoNull, empresaID).Scan(
+		INSERT INTO pedidos (usuario_id, solicitante, obra_centro_custo, observacao, empresa_id, centro_custo_id)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, usuario_id, solicitante, obra_centro_custo, observacao, status, criado_em, centro_custo_id`
+	var centroCustoGravado sql.NullString
+	if err := tx.QueryRow(insertPedido, usuarioID, solicitanteTrim, obraTrim, observacaoNull, empresaID, centroCustoNull).Scan(
 		&pedido.ID, &pedido.UsuarioID, &pedido.Solicitante, &pedido.ObraCentroCusto,
-		&observacaoGravada, &pedido.Status, &pedido.CriadoEm,
+		&observacaoGravada, &pedido.Status, &pedido.CriadoEm, &centroCustoGravado,
 	); err != nil {
 		return Pedido{}, fmt.Errorf("falha ao inserir pedido: %w", err)
+	}
+	if centroCustoGravado.Valid {
+		pedido.CentroCustoID = &centroCustoGravado.String
 	}
 	if observacaoGravada.Valid {
 		pedido.Observacao = &observacaoGravada.String

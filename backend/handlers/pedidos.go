@@ -31,6 +31,18 @@ type submeterPedidoRequest struct {
 	Solicitante     string `json:"solicitante"`
 	ObraCentroCusto string `json:"obraCentroCusto"`
 	Observacao      string `json:"observacao"`
+	// CentroCustoID (Story 12.3): Centro de Custo cadastrado, opcional.
+	// Ausente, `null` ou só espaços = sem Centro. Sempre revalidado no
+	// service contra a Empresa do contexto.
+	CentroCustoID *string `json:"centro_custo_id"`
+}
+
+// pedidoCriadoResponse é o Pedido do 201 de POST /api/pedidos: o `Pedido`
+// mais `centro_custo_id` (`null` quando ausente). Só esta resposta o expõe —
+// listagens/detalhe/recibo não (Never de spec-12-3).
+type pedidoCriadoResponse struct {
+	services.Pedido
+	CentroCustoID *string `json:"centro_custo_id"`
 }
 
 // SubmeterPedidoHandler expõe POST /api/pedidos: envia o carrinho ativo do
@@ -61,7 +73,11 @@ func SubmeterPedidoHandler(db *sql.DB, registro *realtime.Registry) http.Handler
 			return
 		}
 
-		pedido, err := services.SubmeterPedido(db, empresa.ID, usuario.ID, req.Solicitante, req.ObraCentroCusto, req.Observacao)
+		centroCustoID := ""
+		if req.CentroCustoID != nil {
+			centroCustoID = *req.CentroCustoID
+		}
+		pedido, err := services.SubmeterPedidoComCentroCusto(db, empresa.ID, usuario.ID, req.Solicitante, req.ObraCentroCusto, req.Observacao, centroCustoID)
 		var erroValidacao *services.ErroPedidoValidacao
 		var erroIndisponivel *services.ErroPedidoIndisponivel
 		switch {
@@ -71,7 +87,7 @@ func SubmeterPedidoHandler(db *sql.DB, registro *realtime.Registry) http.Handler
 			for _, produtoID := range idsUnicos(pedido.ProdutoIDs) {
 				registro.Publish(empresa.ID, "produtos", realtime.Evento{ID: produtoID, Change: "updated"})
 			}
-			escreverJSON(w, http.StatusCreated, map[string]any{"pedido": pedido})
+			escreverJSON(w, http.StatusCreated, map[string]any{"pedido": pedidoCriadoResponse{Pedido: pedido, CentroCustoID: pedido.CentroCustoID}})
 		case errors.As(err, &erroValidacao):
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
 		case errors.Is(err, services.ErrPedidoCarrinhoVazio):

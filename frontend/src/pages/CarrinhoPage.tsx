@@ -15,6 +15,7 @@ import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { formatarQuantidade } from '@/components/catalogo/formatacao';
 import { useCarrinho, type ItemCarrinho } from '@/lib/carrinho';
 import { useAuth } from '@/lib/auth';
+import { apiUrl, authHeaders } from '@/lib/api';
 
 /**
  * Página `/carrinho` (Story 7.1, spec-7-1, e Envio de Pedido, Story 7.2,
@@ -55,7 +56,18 @@ import { useAuth } from '@/lib/auth';
  * por `enviarPedido` já reflete o carrinho esvaziado. Falha (carrinho vazio
  * revalidado, item indisponível, validação) -> `toast.error` com a mensagem
  * do servidor, diálogo permanece aberto para nova tentativa.
+ *
+ * Centro de custo cadastrado (Story 12.3, spec-12-3, FR-51): ao abrir o
+ * diálogo, `GET /api/centros-custo` alimenta um `<select>` OPCIONAL "Centro de
+ * custo cadastrado". Falha ou lista vazia -> o `<select>` some e o envio segue
+ * só com o texto livre (que continua obrigatório). `centro_custo_id` só vai no
+ * envio quando um Centro foi escolhido.
  */
+interface CentroCustoOpcao {
+  id: string;
+  nome: string;
+}
+
 
 const MENSAGEM_CARRINHO_VAZIO =
   'Seu carrinho está vazio. Busque um produto ou aponte a câmera para um código.';
@@ -72,6 +84,8 @@ export function CarrinhoPage() {
   const [obraCentroCusto, setObraCentroCusto] = useState('');
   const [observacao, setObservacao] = useState('');
   const [enviando, setEnviando] = useState(false);
+  const [centrosCusto, setCentrosCusto] = useState<CentroCustoOpcao[]>([]);
+  const [centroCustoId, setCentroCustoId] = useState('');
   const vazio = !carregando && !erro && itens.length === 0;
 
   useEffect(() => {
@@ -98,7 +112,23 @@ export function CarrinhoPage() {
     setSolicitante(usuario?.nome ?? '');
     setObraCentroCusto('');
     setObservacao('');
+    setCentroCustoId('');
+    setCentrosCusto([]);
     setEnvioAberto(true);
+    void carregarCentrosCusto();
+  }
+
+  async function carregarCentrosCusto() {
+    try {
+      const res = await fetch(apiUrl('/api/centros-custo'), { headers: authHeaders() });
+      if (!res.ok) {
+        return;
+      }
+      const body = (await res.json()) as { centrosCusto?: CentroCustoOpcao[] };
+      setCentrosCusto(body.centrosCusto ?? []);
+    } catch {
+      // Sem a lista, o envio segue só com o texto livre.
+    }
   }
 
   async function confirmarEnvio() {
@@ -111,6 +141,7 @@ export function CarrinhoPage() {
         solicitante.trim(),
         obraCentroCusto.trim(),
         observacao.trim(),
+        centroCustoId || undefined,
       );
       if (!resultado.ok) {
         toast.error(resultado.mensagem);
@@ -233,6 +264,24 @@ export function CarrinhoPage() {
                 autoComplete="off"
               />
             </div>
+            {centrosCusto.length > 0 && (
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="pedido-centro-custo">Centro de custo cadastrado</Label>
+                <select
+                  id="pedido-centro-custo"
+                  value={centroCustoId}
+                  onChange={(event) => setCentroCustoId(event.target.value)}
+                  className="text-body min-h-touch-target-min rounded-md border border-border bg-background px-3"
+                >
+                  <option value="">Nenhum (opcional)</option>
+                  {centrosCusto.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.nome}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div className="flex flex-col gap-2">
               <Label htmlFor="pedido-observacao">Observação (opcional)</Label>
               <textarea

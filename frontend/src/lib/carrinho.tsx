@@ -91,6 +91,7 @@ interface CarrinhoContextValue {
     solicitante: string,
     obraCentroCusto: string,
     observacao: string,
+    centroCustoId?: string,
   ) => Promise<ResultadoOperacaoCarrinho>;
 }
 
@@ -242,12 +243,18 @@ export function CarrinhoProvider({ children }: { children: ReactNode }) {
       solicitante: string,
       obraCentroCusto: string,
       observacao: string,
+      centroCustoId?: string,
     ): Promise<ResultadoOperacaoCarrinho> => {
       try {
         const res = await fetch(apiUrl('/api/pedidos'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
-          body: JSON.stringify({ solicitante, obraCentroCusto, observacao }),
+          body: JSON.stringify({
+            solicitante,
+            obraCentroCusto,
+            observacao,
+            ...(centroCustoId ? { centro_custo_id: centroCustoId } : {}),
+          }),
         });
         if (!res.ok) {
           const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };

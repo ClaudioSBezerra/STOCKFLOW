@@ -392,6 +392,60 @@ describe('CarrinhoProvider — removerItem', () => {
   });
 });
 
+describe('CarrinhoProvider — enviarPedido (Story 12.3)', () => {
+  function SondaEnvio() {
+    const { enviarPedido } = useCarrinho();
+    return (
+      <div>
+        <button type="button" onClick={() => void enviarPedido('Fulano', 'Obra X', '')}>
+          enviar sem centro
+        </button>
+        <button type="button" onClick={() => void enviarPedido('Fulano', 'Obra X', '', 'cc-1')}>
+          enviar com centro
+        </button>
+      </div>
+    );
+  }
+
+  async function enviar(nomeBotao: string) {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/carrinho' && (!init || !init.method)) {
+        return jsonOk({ itens: [], removidos: [] });
+      }
+      if (url === '/api/pedidos' && init?.method === 'POST') {
+        return Promise.resolve({ ok: true, status: 201, json: async () => ({ pedido: {} }) });
+      }
+      throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
+    });
+    const user = await import('@testing-library/user-event').then((m) => m.default.setup());
+    render(
+      <CarrinhoProvider>
+        <SondaEnvio />
+      </CarrinhoProvider>,
+    );
+    await act(async () => {
+      await user.click(screen.getByRole('button', { name: nomeBotao }));
+    });
+    const chamada = fetchMock.mock.calls.find(([u]) => u === '/api/pedidos');
+    return JSON.parse(chamada?.[1]?.body as string) as Record<string, unknown>;
+  }
+
+  it('sem Centro escolhido: o corpo NÃO leva centro_custo_id', async () => {
+    const corpo = await enviar('enviar sem centro');
+    expect(corpo).toEqual({ solicitante: 'Fulano', obraCentroCusto: 'Obra X', observacao: '' });
+  });
+
+  it('com Centro escolhido: o corpo leva centro_custo_id', async () => {
+    const corpo = await enviar('enviar com centro');
+    expect(corpo).toEqual({
+      solicitante: 'Fulano',
+      obraCentroCusto: 'Obra X',
+      observacao: '',
+      centro_custo_id: 'cc-1',
+    });
+  });
+});
+
 describe('useCarrinho fora do Provider', () => {
   it('lança com uma mensagem clara', () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});

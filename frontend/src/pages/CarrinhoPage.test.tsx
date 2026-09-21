@@ -229,7 +229,7 @@ describe('CarrinhoPage', () => {
       await user.click(within(dialog).getByRole('button', { name: 'Confirmar' }));
 
       await waitFor(() =>
-        expect(enviarPedidoMock).toHaveBeenCalledWith('Maria Operária', 'Obra Sul 42', 'retirar pela manhã'),
+        expect(enviarPedidoMock).toHaveBeenCalledWith('Maria Operária', 'Obra Sul 42', 'retirar pela manhã', undefined),
       );
       await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith(
           'Pedido enviado. O saldo dos itens ficou reservado até a decisão do almoxarife.',
@@ -270,6 +270,103 @@ describe('CarrinhoPage', () => {
       );
       expect(toastSuccess).not.toHaveBeenCalled();
       expect(screen.getByRole('dialog')).toBeInTheDocument();
+    });
+
+    describe('Centro de custo cadastrado (Story 12.3)', () => {
+      const CENTROS = [
+        { id: 'cc-1', nome: 'Estoque do Cabo' },
+        { id: 'cc-2', nome: 'Obra Norte' },
+      ];
+
+      function stubCentros(impl: () => Promise<unknown>) {
+        const fn = vi.fn(impl);
+        vi.stubGlobal('fetch', fn);
+        return fn;
+      }
+
+      afterEach(() => {
+        vi.unstubAllGlobals();
+      });
+
+      it('escolher um Centro: enviarPedido recebe o id como 4º argumento; texto livre segue obrigatório', async () => {
+        carrinhoState.itens = [ITEM_1];
+        const fetchMock = stubCentros(() =>
+          Promise.resolve({ ok: true, status: 200, json: async () => ({ centrosCusto: CENTROS }) }),
+        );
+        const user = userEvent.setup();
+        render(<CarrinhoPage />);
+
+        await user.click(screen.getByRole('button', { name: 'Enviar Pedido' }));
+        const dialog = await screen.findByRole('dialog');
+        expect(fetchMock).toHaveBeenCalledWith('/api/centros-custo', expect.anything());
+        const select = await within(dialog).findByLabelText('Centro de custo cadastrado');
+        await user.selectOptions(select, 'cc-2');
+
+        // Só com o Centro (sem texto livre) o envio continua bloqueado.
+        expect(within(dialog).getByRole('button', { name: 'Confirmar' })).toBeDisabled();
+        await user.type(within(dialog).getByLabelText('Obra / centro de custo'), 'Obra Sul 42');
+        await user.click(within(dialog).getByRole('button', { name: 'Confirmar' }));
+
+        await waitFor(() =>
+          expect(enviarPedidoMock).toHaveBeenCalledWith('Maria Operária', 'Obra Sul 42', '', 'cc-2'),
+        );
+      });
+
+      it('sem escolher Centro: 4º argumento undefined', async () => {
+        carrinhoState.itens = [ITEM_1];
+        stubCentros(() =>
+          Promise.resolve({ ok: true, status: 200, json: async () => ({ centrosCusto: CENTROS }) }),
+        );
+        const user = userEvent.setup();
+        render(<CarrinhoPage />);
+
+        await user.click(screen.getByRole('button', { name: 'Enviar Pedido' }));
+        const dialog = await screen.findByRole('dialog');
+        await within(dialog).findByLabelText('Centro de custo cadastrado');
+        await user.type(within(dialog).getByLabelText('Obra / centro de custo'), 'Obra Sul 42');
+        await user.click(within(dialog).getByRole('button', { name: 'Confirmar' }));
+
+        await waitFor(() =>
+          expect(enviarPedidoMock).toHaveBeenCalledWith('Maria Operária', 'Obra Sul 42', '', undefined),
+        );
+      });
+
+      it('lista vazia: o <select> não aparece e o envio segue com o texto livre', async () => {
+        carrinhoState.itens = [ITEM_1];
+        const fetchMock = stubCentros(() =>
+          Promise.resolve({ ok: true, status: 200, json: async () => ({ centrosCusto: [] }) }),
+        );
+        const user = userEvent.setup();
+        render(<CarrinhoPage />);
+
+        await user.click(screen.getByRole('button', { name: 'Enviar Pedido' }));
+        const dialog = await screen.findByRole('dialog');
+        await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+        expect(within(dialog).queryByLabelText('Centro de custo cadastrado')).not.toBeInTheDocument();
+
+        await user.type(within(dialog).getByLabelText('Obra / centro de custo'), 'Obra Sul 42');
+        await user.click(within(dialog).getByRole('button', { name: 'Confirmar' }));
+        await waitFor(() => expect(enviarPedidoMock).toHaveBeenCalled());
+      });
+
+      it('falha ao carregar (!ok ou rede): o <select> não aparece e não há erro', async () => {
+        carrinhoState.itens = [ITEM_1];
+        const user = userEvent.setup();
+
+        stubCentros(() => Promise.resolve({ ok: false, status: 500, json: async () => ({}) }));
+        const { unmount } = render(<CarrinhoPage />);
+        await user.click(screen.getByRole('button', { name: 'Enviar Pedido' }));
+        const dialog = await screen.findByRole('dialog');
+        expect(within(dialog).queryByLabelText('Centro de custo cadastrado')).not.toBeInTheDocument();
+        unmount();
+
+        stubCentros(() => Promise.reject(new Error('rede')));
+        render(<CarrinhoPage />);
+        await user.click(screen.getByRole('button', { name: 'Enviar Pedido' }));
+        const dialog2 = await screen.findByRole('dialog');
+        expect(within(dialog2).queryByLabelText('Centro de custo cadastrado')).not.toBeInTheDocument();
+        expect(toastError).not.toHaveBeenCalled();
+      });
     });
   });
 });

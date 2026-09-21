@@ -725,6 +725,53 @@ describe('ConfiguracoesPage — Filiais (Story 12.1)', () => {
   );
 });
 
+describe('ConfiguracoesPage — Centros de custo (Story 12.3)', () => {
+  it('adm vê a seção "Centros de custo" e carrega GET /api/centros-custo', async () => {
+    authState.papel = 'adm';
+    const fetchMock = stubFetch((url) => {
+      if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
+      if (url === '/api/promocoes') return jsonOk({ solicitacoes: [] });
+      if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+      if (url === '/api/convites') return jsonOk({ convites: [] });
+      if (url.startsWith('/api/logs-acesso')) return jsonOk({ logs: [] });
+      if (url === '/api/centros-custo') return jsonOk({ centrosCusto: [] });
+      if (url === '/api/filiais') return jsonOk({ filiais: [] });
+      if (url === '/api/categorias') return jsonOk({ categorias: [] });
+      if (url === '/api/nomenclatura-templates') return jsonOk({ templates: [] });
+      if (url === '/api/solicitacoes-exclusao') return jsonOk({ solicitacoes: [] });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    render(<ConfiguracoesPage />);
+
+    expect(await screen.findByRole('heading', { name: 'Centros de custo' })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith('/api/centros-custo', expect.anything());
+  });
+
+  it.each(['usuario', 'almoxarife', 'gestor'])(
+    'papel %s NÃO vê a seção "Centros de custo" e nunca chama GET /api/centros-custo',
+    async (papel) => {
+      authState.papel = papel;
+      const fetchMock = stubFetch((url) => {
+        if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
+        if (url === '/api/promocoes') return jsonOk({ solicitacoes: [] });
+        if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+        if (url === '/api/convites') return jsonOk({ convites: [] });
+        throw new Error(`URL inesperada: ${url}`);
+      });
+
+      render(<ConfiguracoesPage />);
+
+      await screen.findByRole('heading', { name: 'Privacidade' });
+      expect(screen.queryByRole('heading', { name: 'Centros de custo' })).not.toBeInTheDocument();
+      expect(fetchMock).not.toHaveBeenCalledWith(
+        expect.stringContaining('/api/centros-custo'),
+        expect.anything(),
+      );
+    },
+  );
+});
+
 describe('ConfiguracoesPage — Categorias (Story 10.5)', () => {
   it('adm vê a seção "Categorias" e carrega GET /api/categorias', async () => {
     authState.papel = 'adm';

@@ -120,7 +120,7 @@ development_status:
   10-6-crud-de-templates-de-nomenclatura: done
   epic-10-retrospective: optional
 
-  epic-11: backlog
+  epic-11: in-progress
   11-1-lançamento-de-saldo-inicial-com-lote-e-data-de-validade: done
   11-2-migração-do-saldo-existente-para-lote-legado: awaiting-operator
   11-3-reserva-de-saldo-ao-enviar-pedido: done
@@ -129,9 +129,9 @@ development_status:
   11-6-estoque-e-quantidade-inicial-saem-do-cadastro-de-produto: done
   epic-11-retrospective: optional
 
-  epic-12: backlog
+  epic-12: in-progress
   12-1-cadastro-de-filiais-e-vínculo-de-estoque: done
   12-2-migração-dos-estoques-legados-para-filial-padrão: awaiting-operator
-  12-3-cadastro-de-centro-de-custo-e-destino-de-obra: backlog
+  12-3-cadastro-de-centro-de-custo-e-destino-de-obra: done
   12-4-fotos-de-exemplo-no-ambiente-de-treinamento: backlog
   epic-12-retrospective: optional

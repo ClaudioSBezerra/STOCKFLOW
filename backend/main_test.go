@@ -616,6 +616,7 @@ func removerEmpresaPlataformaMux(t *testing.T, db *sql.DB, slug string) {
 		// Story 10.2 (spec-10-2): `contadores_produto` também tem FK para
 		// `empresas`, sem CASCADE — toda Empresa provisionada nasce com uma
 		// linha lá (AD-26).
+		`DELETE FROM centros_custo WHERE empresa_id = $1`,
 		`DELETE FROM filiais WHERE empresa_id = $1`,
 		`DELETE FROM contadores_produto WHERE empresa_id = $1`,
 		`DELETE FROM empresas WHERE id = $1`,
@@ -3277,6 +3278,77 @@ func TestNewMux_FiliaisRotaCarregaRequireRole(t *testing.T) {
 	t.Run("GET: papel usuario -> 200 (rota sem RequireRole)", func(t *testing.T) {
 		token := tokenDeMux(t, mux, "filial-mux-usuario@empresa.com", senha, segredos)
 		w := despachar(http.MethodGet, prefixoEmpresaTeste+"/api/filiais", token, "")
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+		}
+	})
+}
+
+// TestNewMux_CentrosCustoRotaCarregaRequireRole (Story 12.3, spec-12-3) prova, pela
+// composição REAL de newMux, que POST /api/centros-custo está atrás de
+// RequireRole(adm): tokens `usuario`, `almoxarife` e `gestor` -> 403 FORBIDDEN
+// (nada gravado); `adm` -> 201. GET /api/centros-custo leva só RequireAuth: um
+// token `usuario` -> 200.
+func TestNewMux_CentrosCustoRotaCarregaRequireRole(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate usuarios: %v", err)
+	}
+	const nomeCentro = "Centro Mux 12.3"
+	limpar := func() { _, _ = db.Exec(`DELETE FROM centros_custo WHERE nome LIKE 'Centro Mux 12.3%'`) }
+	limpar()
+	t.Cleanup(limpar)
+
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, t.TempDir())
+
+	const senha = "senha-123456"
+	segredos := map[string]string{}
+	despachar := func(metodo, caminho, token, corpo string) *httptest.ResponseRecorder {
+		var req *http.Request
+		if corpo != "" {
+			req = httptest.NewRequest(metodo, caminho, strings.NewReader(corpo))
+			req.Header.Set("Content-Type", "application/json")
+		} else {
+			req = httptest.NewRequest(metodo, caminho, nil)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	papeis := []string{"usuario", "almoxarife", "gestor", "adm"}
+	for _, p := range papeis {
+		seedContaMux(t, db, "cc-mux-"+p+"@empresa.com", p, senha, segredos)
+	}
+
+	for _, p := range []string{"usuario", "almoxarife", "gestor"} {
+		t.Run("POST: papel "+p+" -> 403 FORBIDDEN", func(t *testing.T) {
+			token := tokenDeMux(t, mux, "cc-mux-"+p+"@empresa.com", senha, segredos)
+			w := despachar(http.MethodPost, prefixoEmpresaTeste+"/api/centros-custo", token, `{"nome":"`+nomeCentro+` `+p+`"}`)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403 (body=%s)", w.Code, w.Body.String())
+			}
+			var n int
+			if err := db.QueryRow(`SELECT count(*) FROM centros_custo WHERE nome LIKE 'Centro Mux 12.3%'`).Scan(&n); err != nil || n != 0 {
+				t.Errorf("centros gravados = %d (err=%v), want 0", n, err)
+			}
+		})
+	}
+
+	t.Run("POST: papel adm -> 201", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "cc-mux-adm@empresa.com", senha, segredos)
+		w := despachar(http.MethodPost, prefixoEmpresaTeste+"/api/centros-custo", token, `{"nome":"`+nomeCentro+`"}`)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want 201 (body=%s)", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("GET: papel usuario -> 200 (rota sem RequireRole)", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "cc-mux-usuario@empresa.com", senha, segredos)
+		w := despachar(http.MethodGet, prefixoEmpresaTeste+"/api/centros-custo", token, "")
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
 		}

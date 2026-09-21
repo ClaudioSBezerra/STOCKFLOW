@@ -435,6 +435,15 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	registrar("GET /e/{slug}/api/filiais", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarFiliaisHandler(db)))
 
+	// Centros de Custo — Story 12.3 (FR-51, AD-28). Mesmo desenho de Filiais:
+	// escrita só `adm`+ (403 abaixo); a listagem leva só RequireAuth (quem
+	// envia Pedido precisa listar para escolher o Centro de Custo).
+	registrar("POST /e/{slug}/api/centros-custo", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAdm)(
+			handlers.CriarCentroCustoHandler(db))))
+	registrar("GET /e/{slug}/api/centros-custo", middleware.RequireAuth(db, jwtSecret)(
+		handlers.ListarCentrosCustoHandler(db)))
+
 	// Cadastro manual de Produto com dimensões estruturadas — Story 3.1
 	// (FR-8). POST /api/produtos fica atrás de RequireRole(almoxarife): criar
 	// Produto é restrito a `almoxarife`+, decisão do middleware (403 para

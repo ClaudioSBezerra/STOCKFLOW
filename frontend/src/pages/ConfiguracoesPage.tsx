@@ -13,6 +13,7 @@ import { ConvitesSection } from '@/components/usuarios/ConvitesSection';
 import { SolicitacoesExclusaoSection } from '@/components/usuarios/SolicitacoesExclusaoSection';
 import { LogAcessoSection } from '@/components/logs/LogAcessoSection';
 import { CategoriasSection } from '@/components/categorias/CategoriasSection';
+import { CentrosCustoSection } from '@/components/centroscusto/CentrosCustoSection';
 import { FiliaisSection } from '@/components/filiais/FiliaisSection';
 import { TemplatesNomenclaturaSection } from '@/components/nomenclatura/TemplatesNomenclaturaSection';
 import { PrivacidadeSection } from '@/components/privacidade/PrivacidadeSection';
@@ -49,6 +50,9 @@ import { apiUrl, authHeaders } from '@/lib/api';
  *  - "Filiais" (`FiliaisSection`, Story 12.1): só montada para `adm`+.
  *    Lista e cadastra as Filiais da Empresa (`GET/POST /api/filiais`); todo
  *    Estoque novo é vinculado a uma delas.
+ *  - "Centros de custo" (`CentrosCustoSection`, Story 12.3): só montada para
+ *    `adm`+. Lista e cadastra os Centros de Custo da Empresa
+ *    (`GET/POST /api/centros-custo`); o envio de Pedido pode escolher um.
  *  - "Categorias" (`CategoriasSection`, Story 10.5): só montada para `adm`+.
  *    CRUD das categorias de produto da Empresa (`GET/POST /api/categorias`,
  *    `PUT/DELETE /api/categorias/{id}`); exclusão bloqueada (409) enquanto
@@ -556,6 +560,7 @@ export function ConfiguracoesPage() {
       {rankPapel(papel) >= rankPapel('adm') && <LogAcessoSection />}
 
       {rankPapel(papel) >= rankPapel('adm') && <FiliaisSection />}
+      {rankPapel(papel) >= rankPapel('adm') && <CentrosCustoSection />}
 
       {rankPapel(papel) >= rankPapel('adm') && <CategoriasSection />}
 
