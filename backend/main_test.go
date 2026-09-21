@@ -487,6 +487,19 @@ func TestNewMux_RegistraRotasDeAutenticacao(t *testing.T) {
 			statusQuerAo: http.StatusUnauthorized,
 		},
 		{
+			nome:         "filiais POST sem token chega no RequireAuth antes de RequireRole",
+			metodo:       http.MethodPost,
+			caminho:      prefixoEmpresaTeste + "/api/filiais",
+			corpo:        `{"nome":"Recife"}`,
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
+			nome:         "filiais GET sem token chega no RequireAuth (rota sem RequireRole)",
+			metodo:       http.MethodGet,
+			caminho:      prefixoEmpresaTeste + "/api/filiais",
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
 			nome:         "estoques GET sem token chega no RequireAuth (rota sem RequireRole)",
 			metodo:       http.MethodGet,
 			caminho:      prefixoEmpresaTeste + "/api/estoques",
@@ -603,6 +616,7 @@ func removerEmpresaPlataformaMux(t *testing.T, db *sql.DB, slug string) {
 		// Story 10.2 (spec-10-2): `contadores_produto` também tem FK para
 		// `empresas`, sem CASCADE — toda Empresa provisionada nasce com uma
 		// linha lá (AD-26).
+		`DELETE FROM filiais WHERE empresa_id = $1`,
 		`DELETE FROM contadores_produto WHERE empresa_id = $1`,
 		`DELETE FROM empresas WHERE id = $1`,
 	} {
@@ -1003,7 +1017,7 @@ func TestNewMux_EstoquesRotaCarregaRequireRole(t *testing.T) {
 		for _, c := range casos {
 			token := tokenDeMux(t, mux, c.email, senha, segredos)
 
-			w := despachar(http.MethodPost, prefixoEmpresaTeste+"/api/estoques", token, `{"nome":"`+c.nome+`"}`)
+			w := despachar(http.MethodPost, prefixoEmpresaTeste+"/api/estoques", token, `{"nome":"`+c.nome+`","filial_id":"`+filialTeste(t, db, empresaTeste)+`"}`)
 			if w.Code != http.StatusCreated {
 				t.Errorf("%s: status = %d, want %d (body=%s)", c.email, w.Code, http.StatusCreated, w.Body.String())
 			}
@@ -1381,7 +1395,7 @@ func TestNewMux_ProdutosRenomearRotaCarregaRequireRole(t *testing.T) {
 	if err := db.QueryRow(`SELECT id FROM categorias WHERE codigo = '04.001' AND empresa_id = $1`, empresaTeste).Scan(&categoriaID); err != nil {
 		t.Fatalf("buscar categoria de seed: %v", err)
 	}
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Mux Renomear")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Mux Renomear")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1474,7 +1488,7 @@ func TestNewMux_ProdutosBaixaRotaCarregaRequireRole(t *testing.T) {
 	if err := db.QueryRow(`SELECT id FROM categorias WHERE codigo = '04.001' AND empresa_id = $1`, empresaTeste).Scan(&categoriaID); err != nil {
 		t.Fatalf("buscar categoria de seed: %v", err)
 	}
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Mux Baixa")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Mux Baixa")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1569,11 +1583,11 @@ func TestNewMux_ProdutosTransferenciaRotaCarregaRequireRole(t *testing.T) {
 	if err := db.QueryRow(`SELECT id FROM categorias WHERE codigo = '04.001' AND empresa_id = $1`, empresaTeste).Scan(&categoriaID); err != nil {
 		t.Fatalf("buscar categoria de seed: %v", err)
 	}
-	estoqueOrigem, err := services.CriarEstoque(db, empresaTeste, "Canteiro Mux Transferencia Origem")
+	estoqueOrigem, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Mux Transferencia Origem")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque origem: %v", err)
 	}
-	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, "Canteiro Mux Transferencia Destino")
+	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Mux Transferencia Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
@@ -2501,7 +2515,7 @@ func TestNewMux_ProdutosDetalheRotaSoRequireAuth(t *testing.T) {
 	if err := db.QueryRow(`SELECT id FROM categorias WHERE empresa_id = $1 LIMIT 1`, empresaTeste).Scan(&categoriaID); err != nil {
 		t.Fatalf("seed categoria: %v", err)
 	}
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Detalhe Mux")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Detalhe Mux")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -2564,7 +2578,7 @@ func TestNewMux_ProdutosReservasRotaSoRequireAuth(t *testing.T) {
 	if err := db.QueryRow(`SELECT id FROM categorias WHERE empresa_id = $1 LIMIT 1`, empresaTeste).Scan(&categoriaID); err != nil {
 		t.Fatalf("seed categoria: %v", err)
 	}
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Reservas Mux")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Reservas Mux")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -2645,7 +2659,7 @@ func TestNewMux_ProdutosPorCodigoRotaSoRequireAuth(t *testing.T) {
 	if err := db.QueryRow(`SELECT id FROM categorias WHERE empresa_id = $1 LIMIT 1`, empresaTeste).Scan(&categoriaID); err != nil {
 		t.Fatalf("seed categoria: %v", err)
 	}
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro PorCodigo Mux")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro PorCodigo Mux")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -2734,7 +2748,7 @@ func TestNewMux_CarrinhoRotasSoRequireAuth(t *testing.T) {
 	if err := db.QueryRow(`SELECT id FROM categorias WHERE empresa_id = $1 LIMIT 1`, empresaTeste).Scan(&categoriaID); err != nil {
 		t.Fatalf("seed categoria: %v", err)
 	}
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Carrinho Mux")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Carrinho Mux")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -2841,7 +2855,7 @@ func TestNewMux_PedidosConsultaRotasSoRequireAuth(t *testing.T) {
 	if err := db.QueryRow(`SELECT id FROM categorias WHERE empresa_id = $1 LIMIT 1`, empresaTeste).Scan(&categoriaID); err != nil {
 		t.Fatalf("seed categoria: %v", err)
 	}
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Pedidos Mux")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Pedidos Mux")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -3196,4 +3210,75 @@ func TestNewMux_LancarSaldoCarregaRequireRoleAlmoxarife(t *testing.T) {
 	if err := db.QueryRow(`SELECT count(*) FROM lotes`).Scan(&n); err != nil || n != 0 {
 		t.Errorf("lotes = %d (err=%v), want 0", n, err)
 	}
+}
+
+// TestNewMux_FiliaisRotaCarregaRequireRole (Story 12.1, spec-12-1) prova, pela
+// composição REAL de newMux, que POST /api/filiais está atrás de
+// RequireRole(adm): tokens `usuario`, `almoxarife` e `gestor` -> 403 FORBIDDEN
+// (nada gravado); `adm` -> 201. GET /api/filiais leva só RequireAuth: um
+// token `usuario` -> 200.
+func TestNewMux_FiliaisRotaCarregaRequireRole(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate usuarios: %v", err)
+	}
+	const nomeFilial = "Filial Mux 12.1"
+	limpar := func() { _, _ = db.Exec(`DELETE FROM filiais WHERE nome LIKE 'Filial Mux 12.1%'`) }
+	limpar()
+	t.Cleanup(limpar)
+
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, t.TempDir())
+
+	const senha = "senha-123456"
+	segredos := map[string]string{}
+	despachar := func(metodo, caminho, token, corpo string) *httptest.ResponseRecorder {
+		var req *http.Request
+		if corpo != "" {
+			req = httptest.NewRequest(metodo, caminho, strings.NewReader(corpo))
+			req.Header.Set("Content-Type", "application/json")
+		} else {
+			req = httptest.NewRequest(metodo, caminho, nil)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	papeis := []string{"usuario", "almoxarife", "gestor", "adm"}
+	for _, p := range papeis {
+		seedContaMux(t, db, "filial-mux-"+p+"@empresa.com", p, senha, segredos)
+	}
+
+	for _, p := range []string{"usuario", "almoxarife", "gestor"} {
+		t.Run("POST: papel "+p+" -> 403 FORBIDDEN", func(t *testing.T) {
+			token := tokenDeMux(t, mux, "filial-mux-"+p+"@empresa.com", senha, segredos)
+			w := despachar(http.MethodPost, prefixoEmpresaTeste+"/api/filiais", token, `{"nome":"`+nomeFilial+` `+p+`"}`)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403 (body=%s)", w.Code, w.Body.String())
+			}
+			var n int
+			if err := db.QueryRow(`SELECT count(*) FROM filiais WHERE nome LIKE 'Filial Mux 12.1%'`).Scan(&n); err != nil || n != 0 {
+				t.Errorf("filiais gravadas = %d (err=%v), want 0", n, err)
+			}
+		})
+	}
+
+	t.Run("POST: papel adm -> 201", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "filial-mux-adm@empresa.com", senha, segredos)
+		w := despachar(http.MethodPost, prefixoEmpresaTeste+"/api/filiais", token, `{"nome":"`+nomeFilial+`"}`)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want 201 (body=%s)", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("GET: papel usuario -> 200 (rota sem RequireRole)", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "filial-mux-usuario@empresa.com", senha, segredos)
+		w := despachar(http.MethodGet, prefixoEmpresaTeste+"/api/filiais", token, "")
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+		}
+	})
 }

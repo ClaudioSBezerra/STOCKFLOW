@@ -105,11 +105,11 @@ func TestGerarCatalogoXLSX_GrupoComEstoques(t *testing.T) {
 	limparProdutos(t, db)
 
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
-	estA, err := CriarEstoque(db, empresaTeste, "Canteiro XLSX A")
+	estA, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro XLSX A")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque A: %v", err)
 	}
-	estB, err := CriarEstoque(db, empresaTeste, "Canteiro XLSX B")
+	estB, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro XLSX B")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque B: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestGerarCatalogoXLSX_GrupoSemEstoque(t *testing.T) {
 	limparProdutos(t, db)
 
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro XLSX Sem Estoque")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro XLSX Sem Estoque")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestGerarCatalogoXLSX_MultiplosGrupos(t *testing.T) {
 	limparProdutos(t, db)
 
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro XLSX Multiplos")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro XLSX Multiplos")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestGerarCatalogoXLSX_AutoFilterNoCabecalho(t *testing.T) {
 	limparProdutos(t, db)
 
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro XLSX AutoFilter")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro XLSX AutoFilter")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -382,7 +382,7 @@ func TestGerarCatalogoXLSX_FiltroSemResultado(t *testing.T) {
 	limparProdutos(t, db)
 
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro XLSX Filtro Vazio")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro XLSX Filtro Vazio")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -415,7 +415,7 @@ func TestGerarCatalogoXLSX_CategoriaEstoqueMalformadosSoCabecalho(t *testing.T) 
 	limparProdutos(t, db)
 
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro XLSX Malformado")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro XLSX Malformado")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}

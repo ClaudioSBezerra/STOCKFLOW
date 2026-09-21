@@ -51,7 +51,7 @@ func TestCriarEstoque_Sucesso(t *testing.T) {
 	db := testDB(t)
 	limparEstoques(t, db)
 
-	e, err := CriarEstoque(db, empresaTeste, "  Canteiro  A ")
+	e, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "  Canteiro  A ")
 	if err != nil {
 		t.Fatalf("CriarEstoque erro inesperado: %v", err)
 	}
@@ -75,10 +75,10 @@ func TestCriarEstoque_DuplicataExata(t *testing.T) {
 	db := testDB(t)
 	limparEstoques(t, db)
 
-	if _, err := CriarEstoque(db, empresaTeste, "Canteiro A"); err != nil {
+	if _, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro A"); err != nil {
 		t.Fatalf("primeiro CriarEstoque: %v", err)
 	}
-	_, err := CriarEstoque(db, empresaTeste, "Canteiro A")
+	_, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro A")
 	if !errors.Is(err, ErrNomeEstoqueDuplicado) {
 		t.Fatalf("erro = %v, want ErrNomeEstoqueDuplicado", err)
 	}
@@ -93,11 +93,11 @@ func TestCriarEstoque_DuplicataPorCaixaEEspaco(t *testing.T) {
 	db := testDB(t)
 	limparEstoques(t, db)
 
-	if _, err := CriarEstoque(db, empresaTeste, "Canteiro A"); err != nil {
+	if _, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro A"); err != nil {
 		t.Fatalf("primeiro CriarEstoque: %v", err)
 	}
 	for _, variante := range []string{"  canteiro   a ", "CANTEIRO A", "Canteiro  A"} {
-		_, err := CriarEstoque(db, empresaTeste, variante)
+		_, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), variante)
 		if !errors.Is(err, ErrNomeEstoqueDuplicado) {
 			t.Fatalf("CriarEstoque(%q): erro = %v, want ErrNomeEstoqueDuplicado", variante, err)
 		}
@@ -120,14 +120,14 @@ func TestCriarEstoque_NomeInvalido(t *testing.T) {
 	}
 	for nome, entrada := range casos {
 		t.Run(nome, func(t *testing.T) {
-			_, err := CriarEstoque(db, empresaTeste, entrada)
+			_, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), entrada)
 			if !errors.Is(err, ErrEstoqueValidacao) {
 				t.Fatalf("erro = %v, want ErrEstoqueValidacao", err)
 			}
 		})
 	}
 	// 255 runes exatos é válido.
-	if _, err := CriarEstoque(db, empresaTeste, strings.Repeat("y", 255)); err != nil {
+	if _, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), strings.Repeat("y", 255)); err != nil {
 		t.Fatalf("255 runes deveria ser válido, got %v", err)
 	}
 	if n := contarEstoques(t, db); n != 1 {
@@ -145,6 +145,9 @@ func TestCriarEstoque_Concorrencia(t *testing.T) {
 
 	entradas := []string{"Depósito Central", "  depósito   central "}
 	const n = 2
+	// Resolvida fora das goroutines: filialTeste usa t.Fatalf (só válido na
+	// goroutine do teste) e a criação concorrente da Filial colidiria.
+	filialID := filialTeste(t, db, empresaTeste)
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	errs := make([]error, n)
@@ -153,7 +156,7 @@ func TestCriarEstoque_Concorrencia(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			_, errs[i] = CriarEstoque(db, empresaTeste, entradas[i])
+			_, errs[i] = CriarEstoque(db, empresaTeste, filialID, entradas[i])
 		}(i)
 	}
 	close(start)
@@ -184,7 +187,7 @@ func TestExcluirEstoque_Sucesso(t *testing.T) {
 	db := testDB(t)
 	limparEstoques(t, db)
 
-	e, err := CriarEstoque(db, empresaTeste, "Canteiro Temp")
+	e, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Temp")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -201,7 +204,7 @@ func TestExcluirEstoque_Sucesso(t *testing.T) {
 func TestExcluirEstoque_IdInexistente(t *testing.T) {
 	db := testDB(t)
 	limparEstoques(t, db)
-	if _, err := CriarEstoque(db, empresaTeste, "Canteiro Vivo"); err != nil {
+	if _, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Vivo"); err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 
@@ -235,7 +238,7 @@ func TestExcluirEstoque_ComResiduo(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Com Residuo")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Com Residuo")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -365,7 +368,7 @@ func TestExcluirEstoque_SemResiduoAposProdutoEstoqueZerado(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Sem Residuo")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Sem Residuo")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -420,7 +423,7 @@ func TestExcluirEstoque_CorridaComCriarProdutoResidual(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Corrida Residuo")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Corrida Residuo")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -524,7 +527,7 @@ func TestListarEstoques_OrdenadoPorNomeNormalizado(t *testing.T) {
 	limparEstoques(t, db)
 
 	for _, nome := range []string{"Zinco", "  abc ", "Manga"} {
-		if _, err := CriarEstoque(db, empresaTeste, nome); err != nil {
+		if _, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), nome); err != nil {
 			t.Fatalf("CriarEstoque(%q): %v", nome, err)
 		}
 	}

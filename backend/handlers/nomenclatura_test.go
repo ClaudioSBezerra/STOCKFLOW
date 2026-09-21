@@ -167,7 +167,7 @@ func TestTemplatesNomenclaturaHandler_ExcluirEmUso409(t *testing.T) {
 	auth := tokenAdmTemplates(t, db, "tpl-adm-uso@empresa.com")
 	id := criarTemplateViaHandler(t, db, auth, "T10.6 Em Uso", "TUBO [TIPO]")
 
-	e, err := services.CriarEstoque(db, empresaTeste, "Canteiro Template Uso")
+	e, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Template Uso")
 	if err != nil {
 		t.Fatalf("seed estoque: %v", err)
 	}

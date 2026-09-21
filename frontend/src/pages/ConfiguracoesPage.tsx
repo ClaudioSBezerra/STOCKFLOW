@@ -13,6 +13,7 @@ import { ConvitesSection } from '@/components/usuarios/ConvitesSection';
 import { SolicitacoesExclusaoSection } from '@/components/usuarios/SolicitacoesExclusaoSection';
 import { LogAcessoSection } from '@/components/logs/LogAcessoSection';
 import { CategoriasSection } from '@/components/categorias/CategoriasSection';
+import { FiliaisSection } from '@/components/filiais/FiliaisSection';
 import { TemplatesNomenclaturaSection } from '@/components/nomenclatura/TemplatesNomenclaturaSection';
 import { PrivacidadeSection } from '@/components/privacidade/PrivacidadeSection';
 import { apiUrl, authHeaders } from '@/lib/api';
@@ -45,6 +46,9 @@ import { apiUrl, authHeaders } from '@/lib/api';
  *    Tabela somente-leitura de `GET /api/logs-acesso` (toda tentativa de login
  *    por senha ou SSO, sucesso ou falha), filtrável por período. Nenhuma ação
  *    de edição/exclusão — a trilha é append-only.
+ *  - "Filiais" (`FiliaisSection`, Story 12.1): só montada para `adm`+.
+ *    Lista e cadastra as Filiais da Empresa (`GET/POST /api/filiais`); todo
+ *    Estoque novo é vinculado a uma delas.
  *  - "Categorias" (`CategoriasSection`, Story 10.5): só montada para `adm`+.
  *    CRUD das categorias de produto da Empresa (`GET/POST /api/categorias`,
  *    `PUT/DELETE /api/categorias/{id}`); exclusão bloqueada (409) enquanto
@@ -550,6 +554,8 @@ export function ConfiguracoesPage() {
       {podeDecidir && <ConvitesSection />}
 
       {rankPapel(papel) >= rankPapel('adm') && <LogAcessoSection />}
+
+      {rankPapel(papel) >= rankPapel('adm') && <FiliaisSection />}
 
       {rankPapel(papel) >= rankPapel('adm') && <CategoriasSection />}
 

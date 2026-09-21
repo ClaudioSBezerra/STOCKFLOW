@@ -77,7 +77,7 @@ func montarAmbienteIsolamento(t *testing.T, db *sql.DB, slug, cnpjBase12, rotulo
 		t.Fatalf("%s: categoria da empresa: %v", rotulo, err)
 	}
 
-	estoque, err := CriarEstoque(db, a.empresa.ID, "Canteiro Isolamento")
+	estoque, err := CriarEstoque(db, a.empresa.ID, filialTeste(t, db, a.empresa.ID), "Canteiro Isolamento")
 	if err != nil {
 		t.Fatalf("%s: CriarEstoque: %v", rotulo, err)
 	}

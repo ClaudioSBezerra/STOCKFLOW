@@ -63,7 +63,7 @@ func TestListarCatalogoGrade_PaginacaoEOrdem(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Catalogo Grade")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Catalogo Grade")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestListarCatalogoGrade_ProdutoSemEstoque(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Catalogo SemEstoque")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Catalogo SemEstoque")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -158,11 +158,11 @@ func TestListarCatalogoGrade_QuantidadeSomadaEDimensoes(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoqueA, err := CriarEstoque(db, empresaTeste, "Estoque A")
+	estoqueA, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque A")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque A: %v", err)
 	}
-	estoqueB, err := CriarEstoque(db, empresaTeste, "Estoque B")
+	estoqueB, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque B")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque B: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestListarCatalogoGrade_PaginaAlemDaUltima(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Catalogo AlemUltima")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Catalogo AlemUltima")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -252,11 +252,11 @@ func TestListarCatalogoAgrupado_AgrupaPorNomeEDimensoes(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estAlmox, err := CriarEstoque(db, empresaTeste, "Almoxarifado Central")
+	estAlmox, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Almoxarifado Central")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	estObra, err := CriarEstoque(db, empresaTeste, "Obra Norte")
+	estObra, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Obra Norte")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -322,7 +322,7 @@ func TestListarCatalogoAgrupado_DimensoesDistintas(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Dimensoes Distintas")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Dimensoes Distintas")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestListarCatalogoAgrupado_DimensoesTodasNulas(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Dimensoes Nulas")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Dimensoes Nulas")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -402,7 +402,7 @@ func TestListarCatalogoAgrupado_GrupoSemLinhasDeEstoque(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Grupo Sem Estoque")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Grupo Sem Estoque")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -445,7 +445,7 @@ func TestListarCatalogoAgrupado_PaginacaoSobreGrupos(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Paginacao Grupos")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Paginacao Grupos")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -491,7 +491,7 @@ func TestListarCatalogoAgrupado_PaginaAlemDaUltima(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Agrupado AlemUltima")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Agrupado AlemUltima")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -525,7 +525,7 @@ func TestListarCatalogoAgrupado_NomeIgualDimensaoParcialSepara(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Dim Parcial")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Dim Parcial")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -560,11 +560,11 @@ func TestObterProdutoDetalhe_ComEstoqueDiscriminado(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoqueA, err := CriarEstoque(db, empresaTeste, "Zebra Detalhe")
+	estoqueA, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Zebra Detalhe")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque A: %v", err)
 	}
-	estoqueB, err := CriarEstoque(db, empresaTeste, "Alfa Detalhe")
+	estoqueB, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Alfa Detalhe")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque B: %v", err)
 	}
@@ -623,7 +623,7 @@ func TestObterProdutoDetalhe_SemEstoque(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Detalhe Sem Estoque")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Detalhe Sem Estoque")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -666,7 +666,7 @@ func TestObterProdutoDetalhe_SemUnidadeMedidaNemEmbalagem(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Detalhe Sem Unidade")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Detalhe Sem Unidade")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -728,7 +728,7 @@ func TestListarCatalogoGrade_FiltroCategoria(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Filtro Categoria")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Filtro Categoria")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -763,11 +763,11 @@ func TestListarCatalogoGrade_FiltroEstoque_LinhaComQuantidadeZero(t *testing.T) 
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estA, err := CriarEstoque(db, empresaTeste, "Estoque Filtro A")
+	estA, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Filtro A")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque A: %v", err)
 	}
-	estB, err := CriarEstoque(db, empresaTeste, "Estoque Filtro B")
+	estB, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Filtro B")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque B: %v", err)
 	}
@@ -802,7 +802,7 @@ func TestListarCatalogoGrade_FiltroComEstoque(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Com Estoque")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Com Estoque")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -844,11 +844,11 @@ func TestListarCatalogoGrade_TodosOsFiltrosComQCombinados(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estAlvo, err := CriarEstoque(db, empresaTeste, "Estoque Alvo Combinado")
+	estAlvo, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Alvo Combinado")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque alvo: %v", err)
 	}
-	estOutro, err := CriarEstoque(db, empresaTeste, "Estoque Outro Combinado")
+	estOutro, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Outro Combinado")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque outro: %v", err)
 	}
@@ -901,11 +901,11 @@ func TestListarCatalogoGrade_EstoqueEComEstoqueSemSobreposicao(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estFiltrado, err := CriarEstoque(db, empresaTeste, "Estoque Filtrado SemSobrep")
+	estFiltrado, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Filtrado SemSobrep")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque filtrado: %v", err)
 	}
-	estOutro, err := CriarEstoque(db, empresaTeste, "Estoque Outro SemSobrep")
+	estOutro, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Outro SemSobrep")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque outro: %v", err)
 	}
@@ -937,7 +937,7 @@ func TestListarCatalogoGrade_CategoriaEstoqueMalformadosColapsamEmZero(t *testin
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Malformado Grade")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Malformado Grade")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -971,7 +971,7 @@ func TestListarCatalogoGrade_FiltroQBuscaPorCategoria(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Q Categoria Grade")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Q Categoria Grade")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1008,7 +1008,7 @@ func TestListarCatalogoGrade_PaginacaoSobreConjuntoFiltrado(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Paginacao Filtrada")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Paginacao Filtrada")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1067,7 +1067,7 @@ func TestListarCatalogoAgrupado_FiltroParcialMostraSoQuemCasou(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Grupo Filtro Parcial")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Grupo Filtro Parcial")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1104,7 +1104,7 @@ func TestListarCatalogoAgrupado_FiltroRemoveGrupoInteiro(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Grupo Removido")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Grupo Removido")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1133,7 +1133,7 @@ func TestListarCatalogoAgrupado_FiltroQBuscaPorCategoria(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Grupo Q Categoria")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Grupo Q Categoria")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1165,7 +1165,7 @@ func TestListarCatalogoAgrupado_CategoriaEstoqueMalformadosColapsamEmZero(t *tes
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Malformado Agrupado")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Malformado Agrupado")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1201,7 +1201,7 @@ func TestListarTodosGruposCatalogo_SemPaginacao(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Exportar Sem Paginacao")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Exportar Sem Paginacao")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1235,11 +1235,11 @@ func TestListarTodosGruposCatalogo_FiltrosAplicados(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoqueA, err := CriarEstoque(db, empresaTeste, "Canteiro Exportar Filtro A")
+	estoqueA, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Exportar Filtro A")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque A: %v", err)
 	}
-	estoqueB, err := CriarEstoque(db, empresaTeste, "Canteiro Exportar Filtro B")
+	estoqueB, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Exportar Filtro B")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque B: %v", err)
 	}
@@ -1270,7 +1270,7 @@ func TestListarTodosGruposCatalogo_IDMalformadoColapsaEmVazio(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Exportar Malformado")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Exportar Malformado")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1314,7 +1314,7 @@ func TestListarCatalogoGrade_UnidadeEEmbalagem(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Grade Unidade")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Grade Unidade")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1368,7 +1368,7 @@ func TestListarCatalogoAgrupado_ColunasComunsEMultiplos(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Agrupado Colunas")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Agrupado Colunas")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1521,7 +1521,7 @@ func TestListarCatalogoAgrupado_GrupoSemEmbalagemNemUnidade(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Agrupado Sem Unidade")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Agrupado Sem Unidade")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}

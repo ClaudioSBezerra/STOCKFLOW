@@ -170,7 +170,7 @@ func TestCategoriasHandler_ExcluirEmUso409(t *testing.T) {
 	auth := tokenAdmCategorias(t, db, "cat-adm-uso@empresa.com")
 	id := criarCategoriaViaHandler(t, db, auth, "T3", "Em Uso")
 
-	e, err := services.CriarEstoque(db, empresaTeste, "Canteiro Categoria Uso")
+	e, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Categoria Uso")
 	if err != nil {
 		t.Fatalf("seed estoque: %v", err)
 	}

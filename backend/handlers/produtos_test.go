@@ -230,7 +230,7 @@ func TestCriarProdutoHandler_201SemSaldo(t *testing.T) {
 	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
 	criarContaComPapel(t, db, "Almox Sem Saldo", "prod-sem-saldo-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "prod-sem-saldo-almox@empresa.com", "senha-123456")
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Sem Saldo 116")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Sem Saldo 116")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -684,7 +684,7 @@ func TestAtualizarNomeProdutoHandler_200AlmoxarifeSucesso(t *testing.T) {
 	criarContaComPapel(t, db, "Almox", "renomear-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "renomear-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Renomear Handler")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Renomear Handler")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -724,7 +724,7 @@ func TestAtualizarNomeProdutoHandler_400NomeIncompativelComTemplate(t *testing.T
 	criarContaComPapel(t, db, "Almox", "renomear-tpl-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "renomear-tpl-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Renomear Template Handler")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Renomear Template Handler")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -783,7 +783,7 @@ func TestAtualizarNomeProdutoHandler_400PayloadInvalido(t *testing.T) {
 	criarContaComPapel(t, db, "Almox", "renomear-payload-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "renomear-payload-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Renomear Payload Inválido")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Renomear Payload Inválido")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -825,7 +825,7 @@ func TestAtualizarNomeProdutoHandler_403ParaUsuario(t *testing.T) {
 	criarContaComPapel(t, db, "Usuária", "renomear-forb-usuario@empresa.com", "senha-123456", "usuario")
 	tokenUsuario := tokenDeLogin(t, db, "renomear-forb-usuario@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Renomear Proibido")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Renomear Proibido")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -886,7 +886,7 @@ func TestBuscarProdutosHandler_200ComResultados(t *testing.T) {
 	criarContaComPapel(t, db, "Buscadora", "busca-200@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "busca-200@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Busca Handler")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Busca Handler")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1070,7 +1070,7 @@ func TestListarCatalogoHandler_200Grade(t *testing.T) {
 	criarContaComPapel(t, db, "Catalogo Grade", "catalogo-grade@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "catalogo-grade@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Catalogo Handler Grade")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Catalogo Handler Grade")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1129,11 +1129,11 @@ func TestListarCatalogoHandler_200AgrupadoComPorEstoque(t *testing.T) {
 	criarContaComPapel(t, db, "Catalogo Tabela", "catalogo-tabela@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "catalogo-tabela@empresa.com", "senha-123456")
 
-	estA, err := services.CriarEstoque(db, empresaTeste, "Estoque Handler A")
+	estA, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Handler A")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
-	estB, err := services.CriarEstoque(db, empresaTeste, "Estoque Handler B")
+	estB, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Handler B")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1198,7 +1198,7 @@ func TestListarCatalogoHandler_ContratoJSONColunasExplicitas(t *testing.T) {
 	criarContaComPapel(t, db, "Catalogo Contrato", "catalogo-contrato@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "catalogo-contrato@empresa.com", "senha-123456")
 
-	est, err := services.CriarEstoque(db, empresaTeste, "Estoque Contrato Handler")
+	est, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Contrato Handler")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1366,7 +1366,7 @@ func TestListarCatalogoHandler_FiltroCategoriaIsolado(t *testing.T) {
 	criarContaComPapel(t, db, "Catalogo FiltroCat", "catalogo-filtrocat@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "catalogo-filtrocat@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Handler FiltroCat")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Handler FiltroCat")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1392,11 +1392,11 @@ func TestListarCatalogoHandler_FiltroEstoqueIsolado(t *testing.T) {
 	criarContaComPapel(t, db, "Catalogo FiltroEst", "catalogo-filtroest@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "catalogo-filtroest@empresa.com", "senha-123456")
 
-	estA, err := services.CriarEstoque(db, empresaTeste, "Estoque Handler FiltroEst A")
+	estA, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Handler FiltroEst A")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque A: %v", err)
 	}
-	estB, err := services.CriarEstoque(db, empresaTeste, "Estoque Handler FiltroEst B")
+	estB, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Handler FiltroEst B")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque B: %v", err)
 	}
@@ -1422,7 +1422,7 @@ func TestListarCatalogoHandler_FiltroComEstoqueIsolado(t *testing.T) {
 	criarContaComPapel(t, db, "Catalogo FiltroDisp", "catalogo-filtrodisp@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "catalogo-filtrodisp@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Handler FiltroDisp")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Handler FiltroDisp")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1449,11 +1449,11 @@ func TestListarCatalogoHandler_TodosFiltrosCombinados(t *testing.T) {
 	criarContaComPapel(t, db, "Catalogo FiltroTodos", "catalogo-filtrotodos@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "catalogo-filtrotodos@empresa.com", "senha-123456")
 
-	estAlvo, err := services.CriarEstoque(db, empresaTeste, "Estoque Handler Alvo Todos")
+	estAlvo, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Handler Alvo Todos")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque alvo: %v", err)
 	}
-	estOutro, err := services.CriarEstoque(db, empresaTeste, "Estoque Handler Outro Todos")
+	estOutro, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Handler Outro Todos")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque outro: %v", err)
 	}
@@ -1523,7 +1523,7 @@ func TestListarCatalogoHandler_200VazioParaIDMalformado(t *testing.T) {
 	criarContaComPapel(t, db, "Catalogo IDMalformado", "catalogo-idmalformado@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "catalogo-idmalformado@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Handler IDMalformado")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Handler IDMalformado")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1554,7 +1554,7 @@ func TestListarCatalogoHandler_FiltroComAgrupar(t *testing.T) {
 	criarContaComPapel(t, db, "Catalogo FiltroAgrupar", "catalogo-filtroagrupar@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "catalogo-filtroagrupar@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Handler FiltroAgrupar")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Handler FiltroAgrupar")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1617,7 +1617,7 @@ func TestExportarCatalogoHandler_200ComHeadersEXLSXValido(t *testing.T) {
 	criarContaComPapel(t, db, "Exportar Almox", "exportar-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "exportar-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Exportar Handler")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Exportar Handler")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1719,7 +1719,7 @@ func TestExportarCatalogoHandler_FiltrosRepassadosAoService(t *testing.T) {
 	criarContaComPapel(t, db, "Exportar Filtro", "exportar-filtro@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "exportar-filtro@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Exportar Filtro Handler")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Exportar Filtro Handler")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1774,7 +1774,7 @@ func TestObterProdutoHandler_200ComPorEstoque(t *testing.T) {
 	criarContaComPapel(t, db, "Detalhe Handler", "detalhe-handler@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "detalhe-handler@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Detalhe Handler")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Detalhe Handler")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1851,7 +1851,7 @@ func TestObterProdutoHandler_200ParaUsuario(t *testing.T) {
 	criarContaComPapel(t, db, "Detalhe Papel Usuario", "detalhe-papel-usuario@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "detalhe-papel-usuario@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Detalhe Papel Usuario")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Detalhe Papel Usuario")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1921,7 +1921,7 @@ func TestAtualizarNomeProdutoHandler_PublicaEventoNoSucesso(t *testing.T) {
 	db := testDB(t)
 	limparProdutosHandler(t, db)
 	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Evento Renomear")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Evento Renomear")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1998,7 +1998,7 @@ func TestBuscarProdutoPorCodigoHandler_200ComProduto(t *testing.T) {
 	criarContaComPapel(t, db, "PorCodigo 200", "porcodigo-200@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "porcodigo-200@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro PorCodigo Handler")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro PorCodigo Handler")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -2121,7 +2121,7 @@ func TestBuscarProdutoPorCodigoHandler_200ParaUsuario(t *testing.T) {
 	criarContaComPapel(t, db, "PorCodigo Papel Usuario", "porcodigo-papel-usuario@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "porcodigo-papel-usuario@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro PorCodigo Papel Usuario")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro PorCodigo Papel Usuario")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}

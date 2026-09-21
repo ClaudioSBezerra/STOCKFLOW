@@ -669,3 +669,27 @@ source_spec: `spec-11-6-estoque-e-quantidade-inicial-saem-do-cadastro-de-produto
 severity: medium
 reason: O épico manda a importação gerar Lote com `data_validade = NULL` (FR10, AD-30); hoje ela escreve a tabela legada. Comportamento pré-existente, não alterado pela 11.6 (a story trata só do formulário de cadastro).
 status: open
+
+### DW-85: `CriarEstoque` devolve 500 (não 400) quando o nome contém byte NUL/sequência inválida (SQLSTATE 22021); `CriarFilial` já trata esse caso.
+origin: spec-deferred 418f54afb8db
+location: backend/services/estoques.go
+source_spec: `spec-12-1-cadastro-de-filiais-e-vinculo-de-estoque.md`
+severity: low
+reason: Comportamento pré-existente do cadastro de Estoque (Story 2.1), sem tratamento de `pqInvalidByteSequence`.
+status: open
+
+### DW-86: Etapas de `cmd/migrate-legado` (produtos, pedidos, movimentações) montam mapa nome→id de Estoque assumindo nome único por Empresa; agora a unicidade é por Filial.
+origin: spec-deferred 5b69db0d78b6
+location: backend/cmd/migrate-legado/{produtos,pedidos,movimentacoes}.go
+source_spec: `spec-12-1-cadastro-de-filiais-e-vinculo-de-estoque.md`
+severity: low
+reason: `SELECT nome_normalizado, id FROM estoques WHERE empresa_id = $1` em produtos.go:392, pedidos.go:258 e movimentacoes.go:236; com homônimos em Filiais distintas um sobrescreve o outro. Na prática o corte grava tudo na Filial padrão.
+status: open
+
+### DW-87: O `<select>` de Filial em "Locais" só carrega no mount; Filial recém-criada em `FiliaisSection` só aparece após recarregar a página.
+origin: spec-deferred db945d153a02
+location: frontend/src/components/estoques/LocaisEstoqueSection.tsx
+source_spec: `spec-12-1-cadastro-de-filiais-e-vinculo-de-estoque.md`
+severity: low
+reason: Componentes irmãos em `ConfiguracoesPage`/`EstoquesPage` sem estado compartilhado.
+status: open

@@ -167,6 +167,8 @@ func testDB(t *testing.T) (alvo, legado *sql.DB) {
 	// sintético, que agora nasce DENTRO dela (migrarMovimentacoes/migrarPedidos
 	// resolvem o autor por `lower(email) AND empresa_id`).
 	empresaTeste = garantirEmpresaTeste(t, alvo)
+	// Story 12.1: o corte cria Estoques na Filial padrão da Empresa-alvo.
+	filialTeste(t, alvo, empresaTeste)
 
 	// Garante o usuário sintético "Migração do sistema legado" (seed da
 	// migration 000022) — autor NOT NULL de toda Movimentação migrada. Outras
@@ -317,6 +319,11 @@ func TestMigrarEstoques_CorteInicial(t *testing.T) {
 	}
 	if got := contar(t, alvo, `SELECT count(*) FROM migracao_id_map WHERE entidade = 'estoque'`); got != 3 {
 		t.Errorf("count(migracao_id_map estoque) = %d, want 3", got)
+	}
+
+	// Story 12.1: todo Estoque migrado nasce na Filial padrão da Empresa-alvo.
+	if got := contar(t, alvo, `SELECT count(*) FROM estoques WHERE filial_id = $1`, filialTeste(t, alvo, empresaTeste)); got != 3 {
+		t.Errorf("estoques na Filial padrão = %d, want 3", got)
 	}
 
 	for idLegado, nome := range nomes {
@@ -564,6 +571,87 @@ func TestMigrarEstoques_ColisaoComAlvo(t *testing.T) {
 				t.Errorf("count(migracao_id_map) = %d, want 0 — nenhuma linha parcial", got)
 			}
 		})
+	}
+}
+
+// TestMigrarEstoques_EmpresaSemFilialAborta — Story 12.1: Empresa-alvo sem
+// nenhuma Filial (legada) aborta o corte ANTES de escrever, nunca gera
+// Estoque órfão.
+func TestMigrarEstoques_EmpresaSemFilialAborta(t *testing.T) {
+	alvo, legado := testDB(t)
+	inserirLegado(t, alvo, "doc-1", "Canteiro Central")
+
+	const slug = "migrate-legado-sem-filial"
+	limpar := func() {
+		_, _ = alvo.Exec(`DELETE FROM contadores_produto WHERE empresa_id IN (SELECT id FROM empresas WHERE slug = $1)`, slug)
+		_, _ = alvo.Exec(`DELETE FROM empresas WHERE slug = $1`, slug)
+	}
+	limpar()
+	t.Cleanup(limpar)
+	var semFilial string
+	if err := alvo.QueryRow(`
+		INSERT INTO empresas (nome_fantasia, razao_social, cnpj, logradouro, numero, bairro, cidade, cep, uf, slug)
+		VALUES ('Sem Filial', 'Sem Filial LTDA', '99888777012200', 'Rua', '1', 'Centro', 'Recife', '50000000', 'PE', $1)
+		RETURNING id`, slug).Scan(&semFilial); err != nil {
+		t.Fatalf("criar empresa sem filial: %v", err)
+	}
+
+	for _, executar := range []bool{true, false} {
+		res, err := migrarEstoques(alvo, legado, semFilial, executar)
+		if err == nil {
+			t.Fatalf("executar=%v: migrarEstoques deveria abortar sem Filial; res=%+v", executar, res)
+		}
+		if got := contar(t, alvo, `SELECT count(*) FROM estoques WHERE empresa_id = $1`, semFilial); got != 0 {
+			t.Errorf("executar=%v: estoques escritos = %d, want 0", executar, got)
+		}
+		if got := contar(t, alvo, `SELECT count(*) FROM migracao_id_map`); got != 0 {
+			t.Errorf("executar=%v: migracao_id_map = %d, want 0", executar, got)
+		}
+	}
+}
+
+// TestMigrarEstoques_EmpresaSemFilialTudoMapeado — Story 12.1: a Filial só é
+// exigida quando há Estoque a criar. Empresa-alvo sem Filial, com todos os
+// Estoques legados já em migracao_id_map -> sem erro, nada escrito.
+func TestMigrarEstoques_EmpresaSemFilialTudoMapeado(t *testing.T) {
+	alvo, legado := testDB(t)
+	inserirLegado(t, alvo, "doc-1", "Canteiro Mapeado")
+
+	const slug = "migrate-legado-mapeado-sem-filial"
+	limpar := func() {
+		_, _ = alvo.Exec(`DELETE FROM contadores_produto WHERE empresa_id IN (SELECT id FROM empresas WHERE slug = $1)`, slug)
+		_, _ = alvo.Exec(`DELETE FROM empresas WHERE slug = $1`, slug)
+	}
+	limpar()
+	t.Cleanup(limpar)
+	var semFilial string
+	if err := alvo.QueryRow(`
+		INSERT INTO empresas (nome_fantasia, razao_social, cnpj, logradouro, numero, bairro, cidade, cep, uf, slug)
+		VALUES ('Mapeado Sem Filial', 'Mapeado Sem Filial LTDA', '99888777012300', 'Rua', '1', 'Centro', 'Recife', '50000000', 'PE', $1)
+		RETURNING id`, slug).Scan(&semFilial); err != nil {
+		t.Fatalf("criar empresa sem filial: %v", err)
+	}
+
+	// Estoque já migrado: a linha legada consta em migracao_id_map.
+	var estoqueID string
+	if err := alvo.QueryRow(`INSERT INTO estoques (nome, empresa_id) VALUES ('Canteiro Mapeado', $1) RETURNING id`, semFilial).Scan(&estoqueID); err != nil {
+		t.Fatalf("seed estoque: %v", err)
+	}
+	if _, err := alvo.Exec(`INSERT INTO migracao_id_map (entidade, id_legado, id_novo) VALUES ('estoque', 'doc-1', $1)`, estoqueID); err != nil {
+		t.Fatalf("seed migracao_id_map: %v", err)
+	}
+
+	for _, executar := range []bool{true, false} {
+		res, err := migrarEstoques(alvo, legado, semFilial, executar)
+		if err != nil {
+			t.Fatalf("executar=%v: erro inesperado (Filial só é exigida com Estoque a criar): %v", executar, err)
+		}
+		if res.Migrados != 0 || res.JaMigrados != 1 {
+			t.Errorf("executar=%v: resultado = %+v, want Migrados=0 JaMigrados=1", executar, res)
+		}
+	}
+	if got := contar(t, alvo, `SELECT count(*) FROM estoques WHERE empresa_id = $1`, semFilial); got != 1 {
+		t.Errorf("estoques da Empresa = %d, want 1 (nada escrito)", got)
 	}
 }
 

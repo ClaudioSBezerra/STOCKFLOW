@@ -47,7 +47,7 @@ func postBaixa(db *sql.DB, authHeader, produtoID, estoqueID, body string) *httpt
 // Estoque novo — devolve (produtoID, estoqueID).
 func seedProdutoComSaldoHandler(t *testing.T, db *sql.DB, nomeEstoque string, quantidadeInicial float64) (produtoID, estoqueID string) {
 	t.Helper()
-	estoque, err := services.CriarEstoque(db, empresaTeste, nomeEstoque)
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), nomeEstoque)
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestRegistrarTransferenciaHandler_201(t *testing.T) {
 	token := tokenDeLogin(t, db, "transf-201-almox@empresa.com", "senha-123456")
 
 	produtoID, estoqueOrigemID := seedProdutoComSaldoHandler(t, db, "Canteiro Transf 201 Origem", 10)
-	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, "Canteiro Transf 201 Destino")
+	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Transf 201 Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
@@ -370,7 +370,7 @@ func TestRegistrarTransferenciaHandler_PublicaEventoNoSucesso(t *testing.T) {
 	token := tokenDeLogin(t, db, "transf-evento-almox@empresa.com", "senha-123456")
 
 	produtoID, estoqueOrigemID := seedProdutoComSaldoHandler(t, db, "Canteiro Transf Evento Origem", 10)
-	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, "Canteiro Transf Evento Destino")
+	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Transf Evento Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
@@ -424,7 +424,7 @@ func TestRegistrarTransferenciaHandler_400QuantidadeInvalida(t *testing.T) {
 	token := tokenDeLogin(t, db, "transf-400q-almox@empresa.com", "senha-123456")
 
 	produtoID, estoqueOrigemID := seedProdutoComSaldoHandler(t, db, "Canteiro Transf 400q Origem", 10)
-	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, "Canteiro Transf 400q Destino")
+	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Transf 400q Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
@@ -494,7 +494,7 @@ func TestRegistrarTransferenciaHandler_409QuantidadeIndisponivel(t *testing.T) {
 	token := tokenDeLogin(t, db, "transf-409-almox@empresa.com", "senha-123456")
 
 	produtoID, estoqueOrigemID := seedProdutoComSaldoHandler(t, db, "Canteiro Transf 409 Origem", 2.5)
-	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, "Canteiro Transf 409 Destino")
+	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Transf 409 Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
@@ -569,7 +569,7 @@ func TestRegistrarTransferenciaHandler_403PapelUsuario(t *testing.T) {
 	token := tokenDeLogin(t, db, "transf-403-usuario@empresa.com", "senha-123456")
 
 	produtoID, estoqueOrigemID := seedProdutoComSaldoHandler(t, db, "Canteiro Transf 403 Origem", 10)
-	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, "Canteiro Transf 403 Destino")
+	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Transf 403 Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
@@ -603,7 +603,7 @@ func TestRegistrarTransferenciaHandler_401SemToken(t *testing.T) {
 	limparProdutosHandler(t, db)
 
 	produtoID, estoqueOrigemID := seedProdutoComSaldoHandler(t, db, "Canteiro Transf 401 Origem", 10)
-	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, "Canteiro Transf 401 Destino")
+	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Transf 401 Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
@@ -648,7 +648,7 @@ func TestListarMovimentacoesHandler_200ComCampos(t *testing.T) {
 	token := tokenDeLogin(t, db, "hist-200-almox@empresa.com", "senha-123456")
 
 	produtoID, estoqueOrigemID := seedProdutoComSaldoHandler(t, db, "Canteiro Hist 200 Origem", 20)
-	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, "Canteiro Hist 200 Destino")
+	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Hist 200 Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}

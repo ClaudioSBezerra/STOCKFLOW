@@ -18,7 +18,7 @@ import (
 //
 // Registro em newMux (main.go):
 //   - POST /api/estoques -> RequireAuth -> RequireRole(almoxarife); corpo
-//     {"nome": string}. O 403 para papel abaixo de `almoxarife` é decidido
+//     {"nome": string, "filial_id": string} (Story 12.1: Filial obrigatória). O 403 para papel abaixo de `almoxarife` é decidido
 //     inteiramente por RequireRole — este handler só executa quando o papel
 //     já passou nesse gate.
 //   - GET /api/estoques -> RequireAuth apenas: qualquer conta autenticada
@@ -34,7 +34,8 @@ import (
 // ErrEstoqueValidacao -> 400, junto com nome só de espaços; um JSON inválido
 // ou um corpo acima de authRequestMaxBytes falham no Decode -> 400.
 type criarEstoqueRequest struct {
-	Nome string `json:"nome"`
+	Nome     string `json:"nome"`
+	FilialID string `json:"filial_id"`
 }
 
 // CriarEstoqueHandler expõe POST /api/estoques: cadastra um novo local de
@@ -60,12 +61,14 @@ func CriarEstoqueHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		estoque, err := services.CriarEstoque(db, empresa.ID, req.Nome)
+		estoque, err := services.CriarEstoque(db, empresa.ID, req.FilialID, req.Nome)
 		switch {
 		case err == nil:
 			escreverJSON(w, http.StatusCreated, map[string]any{"estoque": estoque})
 		case errors.Is(err, services.ErrEstoqueValidacao):
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "nome de estoque inválido")
+		case errors.Is(err, services.ErrFilialInvalida):
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", services.ErrFilialInvalida.Error())
 		case errors.Is(err, services.ErrNomeEstoqueDuplicado):
 			escreverErro(w, http.StatusConflict, "CONFLICT", "já existe um estoque com esse nome")
 		default:

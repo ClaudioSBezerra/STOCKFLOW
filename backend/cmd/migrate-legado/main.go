@@ -567,6 +567,26 @@ func migrarEstoques(alvo, legado *sql.DB, empresaID string, executar bool) (Resu
 		return res, fmt.Errorf("%d nome(s) de Estoque legado já existem no banco alvo fora do mapa — revisão manual necessária antes do corte", len(res.ColisoesAlvo))
 	}
 
+	// 4b) Story 12.1: os Estoques legados nascem na Filial padrão da
+	//    Empresa-alvo. Empresa sem Filial (legada, antes da Story 12.2) ->
+	//    aborta ANTES de qualquer escrita; nunca cria Estoque órfão. Só
+	//    exigido quando há Estoque a criar.
+	filialID := ""
+	for _, l := range legados {
+		if !mapeados[l.id] {
+			err = alvo.QueryRow(
+				`SELECT id FROM filiais WHERE empresa_id = $1 ORDER BY criado_em, id LIMIT 1`, empresaID,
+			).Scan(&filialID)
+			if errors.Is(err, sql.ErrNoRows) {
+				return res, fmt.Errorf("a Empresa-alvo não possui nenhuma Filial — corte abortado, nada foi escrito")
+			}
+			if err != nil {
+				return res, fmt.Errorf("falha ao buscar a Filial padrão da Empresa-alvo: %w", err)
+			}
+			break
+		}
+	}
+
 	// 5) Dry-run: só o SELECT no mapa, sem transação de escrita.
 	if !executar {
 		for _, l := range legados {
@@ -614,7 +634,7 @@ func migrarEstoques(alvo, legado *sql.DB, empresaID string, executar bool) (Resu
 		}
 
 		var novoID string
-		err = tx.QueryRow(`INSERT INTO estoques (nome, empresa_id) VALUES ($1, $2) RETURNING id`, l.nome, empresaID).Scan(&novoID)
+		err = tx.QueryRow(`INSERT INTO estoques (nome, empresa_id, filial_id) VALUES ($1, $2, $3) RETURNING id`, l.nome, empresaID, filialID).Scan(&novoID)
 		if err != nil {
 			var pqErr *pq.Error
 			if errors.As(err, &pqErr) && pqErr.Code == pqUniqueViolation {

@@ -579,7 +579,7 @@ func TestListarReservasSaldo(t *testing.T) {
 func TestMesclarDuplicatas_SomaReservasColididas(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
-	estoque, err := CriarEstoque(db, empresaTeste, "Estoque Mesclagem Reservas")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Mesclagem Reservas")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -628,7 +628,7 @@ func TestMesclarDuplicatas_SomaReservasColididas(t *testing.T) {
 func TestMesclarDuplicatas_ReescreveReservaSemColisao(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
-	estoque, err := CriarEstoque(db, empresaTeste, "Estoque Mesclagem Reservas 2")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Mesclagem Reservas 2")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -134,7 +134,7 @@ func TestAdicionarItemCarrinho_SemLinhaEmProdutoEstoque(t *testing.T) {
 	limparProdutos(t, db)
 
 	produtoID, _, _ := seedProdutoComSaldo(t, db, "Carrinho A Sem Saldo", 5)
-	outroEstoque, err := CriarEstoque(db, empresaTeste, "Carrinho B Sem Saldo")
+	outroEstoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Carrinho B Sem Saldo")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}

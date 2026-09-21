@@ -537,7 +537,7 @@ func processarProximaLinha(db *sql.DB, empresaID string, importacaoID string) (b
 	}
 
 	estoque, err := encontrarOuCriarEstoque(tx, empresaID, validada.estoqueNome)
-	if errors.Is(err, ErrEstoqueValidacao) {
+	if errors.Is(err, ErrEstoqueValidacao) || errors.Is(err, ErrEmpresaSemFilial) {
 		return true, rejeitarECommitar(tx, linhaID, numeroLinha, err.Error())
 	}
 	if err != nil {
@@ -688,7 +688,7 @@ func processarLinhaDeAtualizacao(
 	}
 
 	estoque, err := encontrarOuCriarEstoque(tx, empresaID, validada.estoqueNome)
-	if errors.Is(err, ErrEstoqueValidacao) {
+	if errors.Is(err, ErrEstoqueValidacao) || errors.Is(err, ErrEmpresaSemFilial) {
 		return true, rejeitarECommitar(tx, linhaID, numeroLinha, err.Error())
 	}
 	if err != nil {
@@ -949,25 +949,47 @@ func encontrarOuCriarEstoque(tx *sql.Tx, empresaID string, nome string) (Estoque
 	}
 
 	var e Estoque
+	// Story 12.1: a busca é por nome DENTRO da Empresa (o mesmo nome pode
+	// existir em Filiais distintas); havendo homônimos, prefere o da Filial
+	// padrão (a mais antiga da Empresa). O Estoque legado sem Filial também é
+	// encontrado por nome, como antes.
+	const filialPadraoSQL = `(SELECT id FROM filiais WHERE empresa_id = $2 ORDER BY criado_em, id LIMIT 1)`
+	const buscarExistente = `
+		SELECT id, nome FROM estoques
+		WHERE nome_normalizado = lower(regexp_replace(btrim($1), '\s+', ' ', 'g'))
+		  AND empresa_id = $2
+		ORDER BY (filial_id IS NOT DISTINCT FROM ` + filialPadraoSQL + `) DESC, criado_em, id
+		LIMIT 1`
+	err := tx.QueryRow(buscarExistente, nomeTrimado, empresaID).Scan(&e.ID, &e.Nome)
+	if err == nil {
+		return e, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Estoque{}, fmt.Errorf("falha ao encontrar ou criar estoque: %w", err)
+	}
+
+	filialID, err := filialPadraoDaEmpresa(tx, empresaID)
+	if err != nil {
+		return Estoque{}, err
+	}
 	// O alvo de inferência do ON CONFLICT acompanha o índice
-	// `idx_estoques_nome_normalizado`, que a migração 000032 reescopou para
-	// `(empresa_id, nome_normalizado)` (Story 9.1) — sem as duas colunas aqui,
-	// o Postgres não acharia o índice e a instrução falharia.
+	// `idx_estoques_nome_normalizado`, reescopado para
+	// `(filial_id, nome_normalizado)` pela migração 000044 (Story 12.1) — sem
+	// as duas colunas aqui, o Postgres não acharia o índice.
 	const inserir = `
-		INSERT INTO estoques (nome, empresa_id) VALUES ($1, $2)
-		ON CONFLICT (empresa_id, nome_normalizado) DO NOTHING
+		INSERT INTO estoques (nome, empresa_id, filial_id) VALUES ($1, $2, $3)
+		ON CONFLICT (filial_id, nome_normalizado) DO NOTHING
 		RETURNING id, nome`
-	err := tx.QueryRow(inserir, nomeTrimado, empresaID).Scan(&e.ID, &e.Nome)
+	err = tx.QueryRow(inserir, nomeTrimado, empresaID, filialID).Scan(&e.ID, &e.Nome)
 	if errors.Is(err, sql.ErrNoRows) {
-		// Conflito: já existe uma linha com esse nome_normalizado — commitada
-		// por outra transação (própria instrução, próprio snapshot, ver o
-		// comentário da função) ou por uma chamada anterior desta mesma
-		// transação (nome repetido dentro da mesma planilha).
-		const buscarExistente = `
+		// Conflito: outra transação criou o mesmo nome na Filial padrão entre
+		// a busca e o INSERT (própria instrução, próprio snapshot — ver o
+		// comentário da função).
+		const buscarNaFilial = `
 			SELECT id, nome FROM estoques
 			WHERE nome_normalizado = lower(regexp_replace(btrim($1), '\s+', ' ', 'g'))
-			  AND empresa_id = $2`
-		err = tx.QueryRow(buscarExistente, nomeTrimado, empresaID).Scan(&e.ID, &e.Nome)
+			  AND filial_id = $2`
+		err = tx.QueryRow(buscarNaFilial, nomeTrimado, filialID).Scan(&e.ID, &e.Nome)
 	}
 	if err != nil {
 		return Estoque{}, fmt.Errorf("falha ao encontrar ou criar estoque: %w", err)

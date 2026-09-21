@@ -142,7 +142,7 @@ func TestPedidoHandlers_PublicamProdutosNoEnvioENaDecisao(t *testing.T) {
 
 			produtoX, estoque1 := seedProdutoComSaldoHandler(t, db, "Canteiro Evento X1 "+nome, 10)
 			produtoY, estoqueY := seedProdutoComSaldoHandler(t, db, "Canteiro Evento Y "+nome, 10)
-			estoque2, err := services.CriarEstoque(db, empresaTeste, "Canteiro Evento X2 "+nome)
+			estoque2, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Evento X2 "+nome)
 			if err != nil {
 				t.Fatal(err)
 			}

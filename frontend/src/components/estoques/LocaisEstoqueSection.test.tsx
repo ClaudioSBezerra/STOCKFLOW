@@ -15,8 +15,22 @@ type FetchImpl = (
   init?: RequestInit,
 ) => Promise<{ ok: boolean; status?: number; json: () => Promise<unknown> }>;
 
+const FILIAIS = [
+  { id: 'f-1', nome: 'Matriz' },
+  { id: 'f-2', nome: 'Recife' },
+];
+
+// GET /api/filiais (Story 12.1) é respondido por padrão; `filiaisImpl` deixa
+// um teste sobrescrever a resposta.
+let filiaisImpl: FetchImpl | null = null;
+
 function stubFetch(impl: FetchImpl) {
-  const fn = vi.fn(impl);
+  const fn = vi.fn((url: string, init?: RequestInit) => {
+    if (url === '/api/filiais') {
+      return filiaisImpl ? filiaisImpl(url, init) : jsonOk({ filiais: FILIAIS });
+    }
+    return impl(url, init);
+  });
   vi.stubGlobal('fetch', fn);
   return fn;
 }
@@ -26,11 +40,12 @@ function jsonOk(body: unknown) {
 }
 
 const ESTOQUES = [
-  { id: 'e-1', nome: 'Almoxarifado Central' },
-  { id: 'e-2', nome: 'Canteiro A' },
+  { id: 'e-1', nome: 'Almoxarifado Central', filial_id: 'f-1', filial_nome: 'Matriz' },
+  { id: 'e-2', nome: 'Canteiro A', filial_id: 'f-2', filial_nome: 'Recife' },
 ];
 
 afterEach(() => {
+  filiaisImpl = null;
   vi.unstubAllGlobals();
   vi.clearAllMocks();
 });
@@ -83,12 +98,16 @@ describe('LocaisEstoqueSection', () => {
 
     const input = screen.getByLabelText('Nome do estoque');
     await user.type(input, 'Depósito Novo');
+    await user.selectOptions(await screen.findByLabelText('Filial'), 'f-2');
     await user.click(screen.getByRole('button', { name: 'Adicionar estoque' }));
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
         '/api/estoques',
-        expect.objectContaining({ method: 'POST', body: JSON.stringify({ nome: 'Depósito Novo' }) }),
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ nome: 'Depósito Novo', filial_id: 'f-2' }),
+        }),
       ),
     );
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Estoque criado.'));
@@ -117,6 +136,7 @@ describe('LocaisEstoqueSection', () => {
 
     const input = screen.getByLabelText('Nome do estoque');
     await user.type(input, 'Canteiro A');
+    await user.selectOptions(await screen.findByLabelText('Filial'), 'f-1');
     await user.click(screen.getByRole('button', { name: 'Adicionar estoque' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
@@ -125,7 +145,11 @@ describe('LocaisEstoqueSection', () => {
     expect(toastSuccess).not.toHaveBeenCalled();
     expect(input).toHaveValue('Canteiro A');
     // Só o GET de mount + o POST — nenhum GET extra após o 409.
-    expect(fetchMock.mock.calls.filter(([, init]) => (init?.method ?? 'GET') === 'GET')).toHaveLength(1);
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, init]) => url === '/api/estoques' && (init?.method ?? 'GET') === 'GET',
+      ),
+    ).toHaveLength(1);
   });
 
   it('GET !ok no mount mostra um role="alert" genérico', async () => {
@@ -313,6 +337,108 @@ describe('LocaisEstoqueSection', () => {
     expect(botao).toBeDisabled();
 
     await user.type(screen.getByLabelText('Nome do estoque'), 'Canteiro B');
+    // Filial é obrigatória: só com o nome, continua desabilitado.
+    expect(botao).toBeDisabled();
+    await user.selectOptions(await screen.findByLabelText('Filial'), 'f-1');
     expect(botao).toBeEnabled();
+  });
+
+  it('mostra a Filial em cada linha e "—" para Estoque legado sem Filial', async () => {
+    stubFetch((url) => {
+      if (url === '/api/estoques') {
+        return jsonOk({
+          estoques: [
+            ...ESTOQUES,
+            { id: 'e-3', nome: 'Legado', filial_id: null, filial_nome: null },
+          ],
+        });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    render(<LocaisEstoqueSection />);
+
+    expect(await screen.findByText('Filial: Matriz')).toBeInTheDocument();
+    expect(screen.getByText('Filial: Recife')).toBeInTheDocument();
+    expect(screen.getByText('Filial: —')).toBeInTheDocument();
+  });
+
+  it('carrega GET /api/filiais e uma única Filial já vem selecionada', async () => {
+    filiaisImpl = () => jsonOk({ filiais: [FILIAIS[0]] });
+    const fetchMock = stubFetch((url) => {
+      if (url === '/api/estoques') return jsonOk({ estoques: [] });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    const user = userEvent.setup();
+    render(<LocaisEstoqueSection />);
+
+    await waitFor(() => expect(screen.getByLabelText('Filial')).toHaveValue('f-1'));
+    expect(fetchMock).toHaveBeenCalledWith('/api/filiais', expect.anything());
+    await user.type(screen.getByLabelText('Nome do estoque'), 'Depósito');
+    expect(screen.getByRole('button', { name: 'Adicionar estoque' })).toBeEnabled();
+  });
+
+  it('sem filiais cadastradas: mostra o aviso role="alert" e mantém o botão desabilitado', async () => {
+    filiaisImpl = () => jsonOk({ filiais: [] });
+    stubFetch((url) => {
+      if (url === '/api/estoques') return jsonOk({ estoques: [] });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    const user = userEvent.setup();
+    render(<LocaisEstoqueSection />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Nenhuma filial cadastrada. Peça a um administrador para cadastrar uma filial antes de criar estoques.',
+    );
+    await user.type(screen.getByLabelText('Nome do estoque'), 'Depósito');
+    expect(screen.getByRole('button', { name: 'Adicionar estoque' })).toBeDisabled();
+  });
+
+  it('falha ao carregar filiais: mostra o erro de carga (não o aviso de sem filiais) e bloqueia o cadastro', async () => {
+    filiaisImpl = async () => ({ ok: false, status: 500, json: async () => ({}) });
+    stubFetch((url) => {
+      if (url === '/api/estoques') return jsonOk({ estoques: [] });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    const user = userEvent.setup();
+    render(<LocaisEstoqueSection />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Não foi possível carregar as filiais. Recarregue a página.',
+    );
+    expect(screen.queryByText(/Nenhuma filial cadastrada/)).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText('Nome do estoque'), 'Depósito');
+    expect(screen.getByRole('button', { name: 'Adicionar estoque' })).toBeDisabled();
+  });
+
+  it('cadastro 400: mostra a mensagem do servidor; sem mensagem usa a genérica', async () => {
+    let corpo400: unknown = { error: { code: 'VALIDATION_ERROR', message: 'a filial é obrigatória e deve pertencer à empresa' } };
+    stubFetch((url, init) => {
+      if (url === '/api/estoques' && (init?.method ?? 'GET') === 'GET') return jsonOk({ estoques: [] });
+      if (url === '/api/estoques' && init?.method === 'POST') {
+        return Promise.resolve({ ok: false, status: 400, json: async () => corpo400 });
+      }
+      throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
+    });
+
+    const user = userEvent.setup();
+    render(<LocaisEstoqueSection />);
+    await user.type(screen.getByLabelText('Nome do estoque'), 'Depósito');
+    await user.selectOptions(await screen.findByLabelText('Filial'), 'f-1');
+    await user.click(screen.getByRole('button', { name: 'Adicionar estoque' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'a filial é obrigatória e deve pertencer à empresa',
+    );
+
+    corpo400 = {};
+    await user.click(screen.getByRole('button', { name: 'Adicionar estoque' }));
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'Não foi possível cadastrar o estoque agora. Tente novamente em instantes.',
+      ),
+    );
   });
 });

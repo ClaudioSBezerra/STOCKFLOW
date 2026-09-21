@@ -280,11 +280,17 @@ func provisionarAdmPrimeiroAcesso(tx *sql.Tx, emailCfg EmailConfig, empresa Empr
 // Treinamento `empresaID`, dentro da transação de criação. Toda linha leva o
 // `empresa_id` do Treinamento; as Categorias vêm da cópia DELE (por código).
 func semearDadosTreinamento(tx *sql.Tx, empresaID string) error {
+	// Story 12.1: os Estoques de exemplo nascem na Filial padrão da própria
+	// Empresa de Treinamento (criada por ProvisionarEmpresa na mesma tx).
+	filialID, err := filialPadraoDaEmpresa(tx, empresaID)
+	if err != nil {
+		return fmt.Errorf("falha ao resolver filial da empresa de treinamento: %w", err)
+	}
 	estoques := make(map[string]string, len(estoquesExemploTreinamento))
 	for _, nome := range estoquesExemploTreinamento {
 		var id string
 		if err := tx.QueryRow(
-			`INSERT INTO estoques (nome, empresa_id) VALUES ($1, $2) RETURNING id`, nome, empresaID,
+			`INSERT INTO estoques (nome, empresa_id, filial_id) VALUES ($1, $2, $3) RETURNING id`, nome, empresaID, filialID,
 		).Scan(&id); err != nil {
 			return fmt.Errorf("falha ao criar estoque de exemplo %q: %w", nome, err)
 		}

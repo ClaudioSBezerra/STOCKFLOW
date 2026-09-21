@@ -791,7 +791,7 @@ func TestCriarImportacao_CodigoExistente_AtualizaEmVezDeCriar(t *testing.T) {
 	criadoPor := criarUsuarioImportacao(t, db, "importacao-atualiza@empresa.com")
 	categoriaAntiga := categoriaIDPorCodigo(t, db, "04.001")
 	categoriaNova := categoriaNomePorCodigo(t, db, "04.002")
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Atualiza Existente")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Atualiza Existente")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -905,7 +905,7 @@ func TestCriarImportacao_CodigoExistente_TemplateNomeInvalido_Rejeitada(t *testi
 	criadoPor := criarUsuarioImportacao(t, db, "importacao-template-invalido@empresa.com")
 	categoriaID := categoriaIDPorCodigo(t, db, "04.002")
 	categoriaNome := categoriaNomePorCodigo(t, db, "04.002")
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Template Invalido Import")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Template Invalido Import")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -960,7 +960,7 @@ func TestCriarImportacao_LinhaSemCodigo_NomeParecidoAindaAssimCria(t *testing.T)
 	criadoPor := criarUsuarioImportacao(t, db, "importacao-sem-codigo@empresa.com")
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 	categoriaNome := categoriaNomePorCodigo(t, db, "04.001")
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Sem Codigo")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Sem Codigo")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1066,7 +1066,7 @@ func TestCriarImportacao_CodigoExistente_NovoEstoque_ParExistenteIntacto(t *test
 	criadoPor := criarUsuarioImportacao(t, db, "importacao-novo-estoque@empresa.com")
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 	categoriaNome := categoriaNomePorCodigo(t, db, "04.001")
-	estoqueOriginal, err := CriarEstoque(db, empresaTeste, "Canteiro Estoque Original")
+	estoqueOriginal, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Estoque Original")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque original: %v", err)
 	}
@@ -1144,7 +1144,7 @@ func TestCriarImportacao_CodigoExistente_EstoqueInvalido_NaoAlteraProduto(t *tes
 	criadoPor := criarUsuarioImportacao(t, db, "importacao-estoque-invalido@empresa.com")
 	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
 	categoriaNome := categoriaNomePorCodigo(t, db, "04.001")
-	estoqueOriginal, err := CriarEstoque(db, empresaTeste, "Canteiro Estoque Invalido Original")
+	estoqueOriginal, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Estoque Invalido Original")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1307,5 +1307,65 @@ func TestContinuarImportacao_CorridaMesmoCodigoNovo_SemErroNemDuplicar(t *testin
 	}
 	if nProdutos != 1 {
 		t.Errorf("produtos com código %q = %d, want 1 (nenhuma duplicata mesmo sob corrida concorrente)", codigoDisputado, nProdutos)
+	}
+}
+
+// Story 12.1 (spec-12-1): importação numa Empresa SEM Filial com nome de
+// Estoque novo rejeita a linha com a mensagem de ErrEmpresaSemFilial (create
+// e update de Produto existente), termina a importação e não grava Estoque.
+func TestCriarImportacao_EmpresaSemFilial_EstoqueNovoRejeitado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	emp := empresaSemFilialDeTeste(t, db, "importacao-sem-filial-linha", "778889990109", "Importacao Sem Filial Linha")
+	criadoPor := criarUsuarioImportacao(t, db, "importacao-sem-filial@empresa.com")
+	categoria := categoriaNomePorCodigo(t, db, "04.001")
+
+	var categoriaID, legadoID string
+	if err := db.QueryRow(`SELECT id FROM categorias WHERE codigo = '04.001' AND empresa_id = $1`, emp.ID).Scan(&categoriaID); err != nil {
+		t.Fatalf("categoria da empresa: %v", err)
+	}
+	if err := db.QueryRow(`INSERT INTO estoques (nome, empresa_id) VALUES ('Legado Sem Filial', $1) RETURNING id`, emp.ID).Scan(&legadoID); err != nil {
+		t.Fatalf("seed estoque legado: %v", err)
+	}
+	existente, err := criarProdutoComSaldo(db, emp.ID, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Produto Existente Sem Filial",
+		CategoriaID:   categoriaID,
+		TemplateID:    templateGenericoID(t, db, emp.ID),
+	}, legadoID, 4)
+	if err != nil {
+		t.Fatalf("seed produto: %v", err)
+	}
+
+	linhas := [][]string{
+		CabecalhoEsperado,
+		// create: código novo + Estoque novo.
+		linhaBase("Produto Novo Sem Filial", "SKU-SEM-FILIAL", categoria, "2", "Estoque Novo Sem Filial"),
+		// update: Produto existente por código + Estoque novo.
+		linhaBase("Produto Existente Sem Filial", existente.Codigo, categoria, "3", "Estoque Novo Sem Filial"),
+	}
+	importacao, relatorio, err := CriarImportacao(db, emp.ID, criadoPor, "planilha.xlsx", linhas)
+	if err != nil {
+		t.Fatalf("CriarImportacao erro inesperado: %v", err)
+	}
+	if relatorio.Criados != 0 || relatorio.Atualizados != 0 || relatorio.Rejeitados != 2 {
+		t.Fatalf("relatorio = %+v, want Criados=0 Atualizados=0 Rejeitados=2", relatorio)
+	}
+	if len(relatorio.LinhasRejeitadas) != 2 {
+		t.Fatalf("linhas rejeitadas = %d, want 2", len(relatorio.LinhasRejeitadas))
+	}
+	for _, l := range relatorio.LinhasRejeitadas {
+		if !strings.Contains(l.Erro, ErrEmpresaSemFilial.Error()) {
+			t.Errorf("linha %d: erro = %q, want a mensagem de ErrEmpresaSemFilial", l.Linha, l.Erro)
+		}
+	}
+	if importacao.Status != "concluida" {
+		t.Errorf("status da importação = %q, want concluida", importacao.Status)
+	}
+	if n := contar(t, db, `SELECT count(*) FROM estoques WHERE empresa_id = $1`, emp.ID); n != 1 {
+		t.Errorf("estoques da Empresa = %d, want 1 (só o legado; nenhum gravado pela importação)", n)
+	}
+	if n := contar(t, db, `SELECT count(*) FROM produtos WHERE empresa_id = $1 AND codigo = 'SKU-SEM-FILIAL'`, emp.ID); n != 0 {
+		t.Errorf("produto da linha rejeitada gravado: %d", n)
 	}
 }

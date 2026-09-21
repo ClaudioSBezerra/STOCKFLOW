@@ -63,6 +63,7 @@ func removerEmpresaComDados(t *testing.T, db *sql.DB, slug string) {
 		// Story 10.2 (spec-10-2): `contadores_produto` também tem FK para
 		// `empresas`, sem CASCADE — toda Empresa provisionada nasce com uma
 		// linha lá (AD-26).
+		`DELETE FROM filiais WHERE empresa_id = $1`,
 		`DELETE FROM contadores_produto WHERE empresa_id = $1`,
 		`DELETE FROM empresas WHERE id = $1`,
 	} {
@@ -220,6 +221,20 @@ func TestCriarEmpresaComTreinamento_CriacaoCompleta(t *testing.T) {
 	}
 	if n := contar(t, db, `SELECT count(*) FROM movimentacoes WHERE empresa_id = $1`, treino.ID); n != 0 {
 		t.Errorf("movimentacoes do treino = %d, want 0 (cadastro não gera movimentação)", n)
+	}
+	// Story 12.1: cada Empresa nasce com uma Filial (nome = Nome Fantasia) e
+	// os Estoques semeados do Treinamento nascem nela.
+	for _, e := range []Empresa{empresa, treino} {
+		if n := contar(t, db, `SELECT count(*) FROM filiais WHERE empresa_id = $1 AND nome = $2`, e.ID, e.NomeFantasia); n != 1 {
+			t.Errorf("%s: filiais com o Nome Fantasia = %d, want 1", e.Slug, n)
+		}
+	}
+	if n := contar(t, db, `SELECT count(*) FROM estoques e JOIN filiais f ON f.id = e.filial_id
+		WHERE e.empresa_id = $1 AND f.empresa_id = $1`, treino.ID); n != 2 {
+		t.Errorf("estoques do treino vinculados à Filial do treino = %d, want 2", n)
+	}
+	if n := contar(t, db, `SELECT count(*) FROM estoques WHERE empresa_id = $1 AND filial_id IS NULL`, treino.ID); n != 0 {
+		t.Errorf("estoques do treino sem Filial = %d, want 0", n)
 	}
 	if n := contar(t, db, `SELECT count(*) FROM produtos WHERE empresa_id = $1`, empresa.ID) +
 		contar(t, db, `SELECT count(*) FROM estoques WHERE empresa_id = $1`, empresa.ID); n != 0 {

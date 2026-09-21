@@ -13,9 +13,14 @@ import (
 // Estoque é a projeção somente-leitura de um local de estoque devolvida por
 // POST/GET /api/estoques (Story 2.1): `id` (UUID v4) + `nome`, nada mais — a
 // tela "Locais" e as telas de catálogo (Epic 4) só precisam disso.
+//
+// Story 12.1: ganha `filial_id`/`filial_nome` (JSON `null` para Estoque
+// legado sem Filial, até o backfill da Story 12.2).
 type Estoque struct {
-	ID   string `json:"id"`
-	Nome string `json:"nome"`
+	ID         string  `json:"id"`
+	Nome       string  `json:"nome"`
+	FilialID   *string `json:"filial_id"`
+	FilialNome *string `json:"filial_nome"`
 }
 
 var (
@@ -33,31 +38,52 @@ var (
 	ErrEstoqueNaoEncontrado = errors.New("estoque não encontrado")
 )
 
-// CriarEstoque valida e insere um novo local de estoque (Story 2.1, FR12).
+// CriarEstoque valida e insere um novo local de estoque (Story 2.1, FR12;
+// vínculo obrigatório com Filial na Story 12.1, FR-51).
 //
 // O `nome` recebido é trimado nas pontas; vazio após o trim ou com mais de
-// 255 runes -> ErrEstoqueValidacao (nenhuma escrita). Caso válido, um único
-// INSERT ... RETURNING grava a linha — a coluna gerada `nome_normalizado` e
-// o índice único idx_estoques_nome_normalizado impõem a unicidade de nome no
-// próprio banco. Uma violação de unicidade (`pq` SQLSTATE 23505) é o único
-// sinal de nome duplicado: traduzida para ErrNomeEstoqueDuplicado, sem
-// nenhum SELECT-antes-de-INSERT que teria janela de corrida sob requisições
-// concorrentes.
-func CriarEstoque(db *sql.DB, empresaID string, nome string) (Estoque, error) {
+// 255 runes -> ErrEstoqueValidacao (nenhuma escrita). `filialID` é
+// obrigatório: vazio, malformado (22P02) ou de outra Empresa ->
+// ErrFilialInvalida. A revalidação da Filial contra a Empresa acontece na
+// PRÓPRIA inserção (INSERT ... SELECT ... FROM filiais WHERE id AND
+// empresa_id), sem SELECT prévio: nenhuma linha inserida = Filial inválida.
+// A unicidade de nome é por Filial, no índice idx_estoques_nome_normalizado
+// (`(filial_id, nome_normalizado)`); a violação (23505) é o único sinal de
+// nome duplicado -> ErrNomeEstoqueDuplicado.
+func CriarEstoque(db *sql.DB, empresaID string, filialID string, nome string) (Estoque, error) {
 	nomeTrimado := strings.TrimSpace(nome)
 	if nomeTrimado == "" || utf8.RuneCountInString(nomeTrimado) > 255 {
 		return Estoque{}, ErrEstoqueValidacao
 	}
+	filialID = strings.TrimSpace(filialID)
+	if filialID == "" {
+		return Estoque{}, ErrFilialInvalida
+	}
 
 	var e Estoque
-	const insert = `INSERT INTO estoques (nome, empresa_id) VALUES ($1, $2) RETURNING id, nome`
-	if err := db.QueryRow(insert, nomeTrimado, empresaID).Scan(&e.ID, &e.Nome); err != nil {
+	var filialNome string
+	const insert = `
+		INSERT INTO estoques (nome, empresa_id, filial_id)
+		SELECT $1, f.empresa_id, f.id FROM filiais f WHERE f.id = $3 AND f.empresa_id = $2
+		RETURNING id, nome, filial_id, (SELECT nome FROM filiais WHERE id = filial_id)`
+	var fid string
+	if err := db.QueryRow(insert, nomeTrimado, empresaID, filialID).Scan(&e.ID, &e.Nome, &fid, &filialNome); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Estoque{}, ErrFilialInvalida
+		}
 		var pqErr *pq.Error
-		if errors.As(err, &pqErr) && pqErr.Code == pqUniqueViolation {
-			return Estoque{}, ErrNomeEstoqueDuplicado
+		if errors.As(err, &pqErr) {
+			switch pqErr.Code {
+			case pqUniqueViolation:
+				return Estoque{}, ErrNomeEstoqueDuplicado
+			case pqInvalidTextRepresentation:
+				return Estoque{}, ErrFilialInvalida
+			}
 		}
 		return Estoque{}, fmt.Errorf("falha ao inserir estoque: %w", err)
 	}
+	e.FilialID = &fid
+	e.FilialNome = &filialNome
 	return e, nil
 }
 
@@ -69,7 +95,11 @@ func CriarEstoque(db *sql.DB, empresaID string, nome string) (Estoque, error) {
 // não é erro — devolve um slice vazio, nunca nil.
 func ListarEstoques(db *sql.DB, empresaID string) ([]Estoque, error) {
 	rows, err := db.Query(
-		`SELECT id, nome FROM estoques WHERE empresa_id = $1 ORDER BY nome_normalizado ASC`,
+		`SELECT e.id, e.nome, e.filial_id, f.nome
+		 FROM estoques e
+		 LEFT JOIN filiais f ON f.id = e.filial_id
+		 WHERE e.empresa_id = $1
+		 ORDER BY e.nome_normalizado ASC, f.nome_normalizado ASC NULLS FIRST, e.id`,
 		empresaID)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao listar estoques: %w", err)
@@ -79,8 +109,13 @@ func ListarEstoques(db *sql.DB, empresaID string) ([]Estoque, error) {
 	estoques := make([]Estoque, 0)
 	for rows.Next() {
 		var e Estoque
-		if err := rows.Scan(&e.ID, &e.Nome); err != nil {
+		var filialID, filialNome sql.NullString
+		if err := rows.Scan(&e.ID, &e.Nome, &filialID, &filialNome); err != nil {
 			return nil, fmt.Errorf("falha ao ler linha de estoque: %w", err)
+		}
+		if filialID.Valid {
+			e.FilialID = &filialID.String
+			e.FilialNome = &filialNome.String
 		}
 		estoques = append(estoques, e)
 	}

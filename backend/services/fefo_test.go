@@ -244,7 +244,7 @@ func TestRegistrarBaixa_EstoqueAlheioColapsaEmZero(t *testing.T) {
 	limparProdutos(t, db)
 	produtoID, _, usuarioID := seedProdutoComSaldo(t, db, "Baixa Alheio", 5)
 	alheia := empresaAlheiaLotes(t, db)
-	estoqueAlheio, err := CriarEstoque(db, alheia.ID, "Estoque Alheio Baixa")
+	estoqueAlheio, err := CriarEstoque(db, alheia.ID, filialTeste(t, db, alheia.ID), "Estoque Alheio Baixa")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestRegistrarTransferencia_PreservaValidadeParcial(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 	produtoID, origem, usuarioID := seedProdutoComSaldo(t, db, "Transf Val Origem", 0)
-	destino, err := CriarEstoque(db, empresaTeste, "Transf Val Destino")
+	destino, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Transf Val Destino")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +300,7 @@ func TestRegistrarTransferencia_SomaNoLoteDeDestinoComMesmaValidade(t *testing.T
 	db := testDB(t)
 	limparProdutos(t, db)
 	produtoID, origem, usuarioID := seedProdutoComSaldo(t, db, "Transf Merge Origem", 0)
-	destino, err := CriarEstoque(db, empresaTeste, "Transf Merge Destino")
+	destino, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Transf Merge Destino")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +327,7 @@ func TestRegistrarTransferencia_MultiLoteELegado(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 	produtoID, origem, usuarioID := seedProdutoComSaldo(t, db, "Transf Multi Origem", 3)
-	destino, err := CriarEstoque(db, empresaTeste, "Transf Multi Destino")
+	destino, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Transf Multi Destino")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +382,7 @@ func TestRegistrarTransferencia_RespeitaReservaEDestinoAlheio(t *testing.T) {
 		{NomeBase: "Transf Reservado", SaldoInicial: 10, QtdSolicitada: 8},
 	})
 	produtoID, origem := pares[0].ProdutoID, pares[0].EstoqueID
-	destino, err := CriarEstoque(db, empresaTeste, "Transf Reservado Destino")
+	destino, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Transf Reservado Destino")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,7 +398,7 @@ func TestRegistrarTransferencia_RespeitaReservaEDestinoAlheio(t *testing.T) {
 	}
 
 	alheia := empresaAlheiaLotes(t, db)
-	estoqueAlheio, err := CriarEstoque(db, alheia.ID, "Estoque Alheio Transf")
+	estoqueAlheio, err := CriarEstoque(db, alheia.ID, filialTeste(t, db, alheia.ID), "Estoque Alheio Transf")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +459,7 @@ func TestRegistrarTransferencia_LocksOpostosComLotesSemDeadlock(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 	produtoID, a, usuarioID := seedProdutoComSaldo(t, db, "FEFO Opostos A", 0)
-	bRow, err := CriarEstoque(db, empresaTeste, "FEFO Opostos B")
+	bRow, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "FEFO Opostos B")
 	if err != nil {
 		t.Fatal(err)
 	}

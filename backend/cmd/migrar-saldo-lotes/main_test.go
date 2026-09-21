@@ -89,6 +89,7 @@ func semearSaldo(t *testing.T, db *sql.DB, quantidades ...float64) (empresaID st
 		for _, stmt := range []string{
 			`DELETE FROM categorias WHERE empresa_id = $1`,
 			`DELETE FROM nomenclatura_templates WHERE empresa_id = $1`,
+			`DELETE FROM filiais WHERE empresa_id = $1`,
 			`DELETE FROM contadores_produto WHERE empresa_id = $1`,
 			`DELETE FROM empresas WHERE id = $1`,
 		} {

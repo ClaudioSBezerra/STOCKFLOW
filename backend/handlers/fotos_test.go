@@ -35,7 +35,7 @@ func limparProdutosFotos(t *testing.T, db *sql.DB) {
 // testes de fronteira HTTP desta suíte.
 func criarProdutoParaFotoHandler(t *testing.T, db *sql.DB, nome string) string {
 	t.Helper()
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Canteiro Foto HTTP "+nome)
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Foto HTTP "+nome)
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}

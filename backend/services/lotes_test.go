@@ -223,7 +223,7 @@ func TestLancarSaldo_AlvoInvalidoColapsaEm404(t *testing.T) {
 	produtoID, estoqueID, usuarioID := seedProdutoComSaldo(t, db, "Lotes Alvo", 0)
 
 	alheia := empresaAlheiaLotes(t, db)
-	estoqueAlheio, err := CriarEstoque(db, alheia.ID, "Estoque Alheio Lotes")
+	estoqueAlheio, err := CriarEstoque(db, alheia.ID, filialTeste(t, db, alheia.ID), "Estoque Alheio Lotes")
 	if err != nil {
 		t.Fatalf("CriarEstoque alheio: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestCatalogo_SaldoSomaLegadoMaisLotes(t *testing.T) {
 	limparProdutos(t, db)
 	produtoID, estoqueID, usuarioID := seedProdutoComSaldo(t, db, "Lotes Catalogo", 2)
 	// Produto só com Lote (sem saldo legado) num segundo Estoque.
-	outro, err := CriarEstoque(db, empresaTeste, "Lotes Catalogo Outro")
+	outro, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Lotes Catalogo Outro")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +364,7 @@ func TestExcluirEstoque_BarradoPorLote(t *testing.T) {
 func TestMesclarDuplicatas_ReescreveLotesDosRemovidos(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
-	estoque, err := CriarEstoque(db, empresaTeste, "Estoque Mesclagem Lotes")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Mesclagem Lotes")
 	if err != nil {
 		t.Fatal(err)
 	}

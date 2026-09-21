@@ -14,7 +14,7 @@ import (
 // conteúdo do Produto em si é irrelevante para esta suíte.
 func criarProdutoParaFoto(t *testing.T, db *sql.DB, nome string) Produto {
 	t.Helper()
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Foto "+nome)
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Foto "+nome)
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}

@@ -401,7 +401,8 @@ func CopiarListasPadrao(tx *sql.Tx, empresaID string) error {
 // ProvisionarEmpresa cria uma Empresa `ativa` dentro da transação `tx` do
 // chamador e copia para ela as listas padrão de Categoria (25) e de
 // Nomenclatura Guiada (28), além de semear a linha inicial do contador de
-// código de Produto (Story 10.2, spec-10-2, AD-26). Tudo na MESMA transação
+// código de Produto (Story 10.2, spec-10-2, AD-26) e a Filial padrão (nome =
+// Nome Fantasia, Story 12.1, spec-12-1). Tudo na MESMA transação
 // do chamador: um provisionamento que falhe no meio nunca deixa uma Empresa
 // sem suas listas nem sem contador.
 //
@@ -424,6 +425,14 @@ func ProvisionarEmpresa(tx *sql.Tx, dados DadosEmpresa) (Empresa, error) {
 		`INSERT INTO contadores_produto (empresa_id, ultimo_numero) VALUES ($1, 0)`, e.ID,
 	); err != nil {
 		return Empresa{}, fmt.Errorf("falha ao criar contador de código de produto para a empresa: %w", err)
+	}
+	// Story 12.1 (FR-51): toda Empresa nasce com uma Filial padrão (nome =
+	// Nome Fantasia), na MESMA transação — nunca lazy-init. Vale também para a
+	// Empresa de Treinamento (que chama ProvisionarEmpresa com tx própria).
+	if _, err := tx.Exec(
+		`INSERT INTO filiais (empresa_id, nome) VALUES ($1, $2)`, e.ID, e.NomeFantasia,
+	); err != nil {
+		return Empresa{}, fmt.Errorf("falha ao criar filial padrão da empresa: %w", err)
 	}
 	return e, nil
 }

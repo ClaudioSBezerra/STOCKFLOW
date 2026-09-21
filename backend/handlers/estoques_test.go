@@ -85,7 +85,8 @@ func deleteEstoques(db *sql.DB, authHeader, id string) *httptest.ResponseRecorde
 }
 
 // decodeEstoquesFio decodifica o corpo de GET /api/estoques travando o
-// conjunto de chaves de fio: cada elemento tem exatamente `id` e `nome`.
+// conjunto de chaves de fio: cada elemento tem exatamente `id`, `nome`,
+// `filial_id` e `filial_nome` (Story 12.1; os dois últimos podem ser null).
 func decodeEstoquesFio(t *testing.T, body []byte) []map[string]any {
 	t.Helper()
 	var resp struct {
@@ -95,8 +96,8 @@ func decodeEstoquesFio(t *testing.T, body []byte) []map[string]any {
 		t.Fatalf("falha ao decodificar estoques: %v (body=%s)", err, body)
 	}
 	for i, e := range resp.Estoques {
-		if len(e) != 2 {
-			t.Errorf("estoque[%d] tem chaves %v, want exatamente {id, nome}", i, chaves(e))
+		if len(e) != 4 {
+			t.Errorf("estoque[%d] tem chaves %v, want exatamente {id, nome, filial_id, filial_nome}", i, chaves(e))
 		}
 		if _, ok := e["id"].(string); !ok {
 			t.Errorf("estoque[%d].id ausente ou não-string: %v", i, e["id"])
@@ -133,7 +134,7 @@ func TestCriarEstoqueHandler_201ParaAlmoxarifeGestorAdm(t *testing.T) {
 			criarContaComPapel(t, db, "Conta "+c.papel, c.email, "senha-123456", c.papel)
 			token := tokenDeLogin(t, db, c.email, "senha-123456")
 
-			w := postEstoques(db, "Bearer "+token, `{"nome":"`+c.nome+`"}`)
+			w := postEstoques(db, "Bearer "+token, `{"nome":"`+c.nome+`","filial_id":"`+filialTeste(t, db, empresaTeste)+`"}`)
 			if w.Code != http.StatusCreated {
 				t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
 			}
@@ -149,6 +150,17 @@ func TestCriarEstoqueHandler_201ParaAlmoxarifeGestorAdm(t *testing.T) {
 			if resp.Estoque["nome"] != c.nome {
 				t.Errorf("estoque.nome = %v, want %q", resp.Estoque["nome"], c.nome)
 			}
+			filialEsperada := filialTeste(t, db, empresaTeste)
+			var nomeEsperado string
+			if err := db.QueryRow(`SELECT nome FROM filiais WHERE id = $1`, filialEsperada).Scan(&nomeEsperado); err != nil {
+				t.Fatalf("nome da filial: %v", err)
+			}
+			if resp.Estoque["filial_id"] != filialEsperada {
+				t.Errorf("estoque.filial_id = %v, want %q", resp.Estoque["filial_id"], filialEsperada)
+			}
+			if resp.Estoque["filial_nome"] != nomeEsperado {
+				t.Errorf("estoque.filial_nome = %v, want %q (nome da Filial escolhida)", resp.Estoque["filial_nome"], nomeEsperado)
+			}
 		})
 	}
 }
@@ -162,10 +174,11 @@ func TestCriarEstoqueHandler_409NomeDuplicado(t *testing.T) {
 	criarContaComPapel(t, db, "Almox", "dup-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "dup-almox@empresa.com", "senha-123456")
 
-	if w := postEstoques(db, "Bearer "+token, `{"nome":"Canteiro A"}`); w.Code != http.StatusCreated {
+	filial := filialTeste(t, db, empresaTeste)
+	if w := postEstoques(db, "Bearer "+token, `{"nome":"Canteiro A","filial_id":"`+filial+`"}`); w.Code != http.StatusCreated {
 		t.Fatalf("primeiro cadastro: status = %d, want 201 (body=%s)", w.Code, w.Body.String())
 	}
-	w := postEstoques(db, "Bearer "+token, `{"nome":"  canteiro   a "}`)
+	w := postEstoques(db, "Bearer "+token, `{"nome":"  canteiro   a ","filial_id":"`+filial+`"}`)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusConflict, w.Body.String())
 	}
@@ -188,12 +201,16 @@ func TestCriarEstoqueHandler_400PayloadInvalido(t *testing.T) {
 	// Decode falhar antes de qualquer regra de negócio -> 400.
 	corpoGrande := `{"nome":"` + strings.Repeat("x", authRequestMaxBytes+1) + `"}`
 
+	filial := filialTeste(t, db, empresaTeste)
 	casos := map[string]string{
-		"nome em branco": `{"nome":"   "}`,
-		"nome vazio":     `{"nome":""}`,
-		"nome ausente":   `{}`,
-		"json inválido":  `{"nome":`,
-		"corpo > limite": corpoGrande,
+		"nome em branco":     `{"nome":"   ","filial_id":"` + filial + `"}`,
+		"nome vazio":         `{"nome":"","filial_id":"` + filial + `"}`,
+		"nome ausente":       `{"filial_id":"` + filial + `"}`,
+		"json inválido":      `{"nome":`,
+		"corpo > limite":     corpoGrande,
+		"filial ausente":     `{"nome":"Canteiro Sem Filial"}`,
+		"filial malformada":  `{"nome":"Canteiro Filial Ruim","filial_id":"nao-e-uuid"}`,
+		"filial inexistente": `{"nome":"Canteiro Filial Ruim","filial_id":"00000000-0000-4000-8000-000000000000"}`,
 	}
 	for nome, corpo := range casos {
 		t.Run(nome, func(t *testing.T) {
@@ -258,7 +275,7 @@ func TestListarEstoquesHandler_200PorQualquerPapel(t *testing.T) {
 	limparEstoquesHandler(t, db)
 
 	for _, nome := range []string{"Zinco", "abc", "Manga"} {
-		if _, err := services.CriarEstoque(db, empresaTeste, nome); err != nil {
+		if _, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), nome); err != nil {
 			t.Fatalf("seed CriarEstoque(%q): %v", nome, err)
 		}
 	}
@@ -315,7 +332,7 @@ func TestExcluirEstoqueHandler_204ParaAlmoxarifeGestorAdm(t *testing.T) {
 			criarContaComPapel(t, db, "Conta "+c.papel, c.email, "senha-123456", c.papel)
 			token := tokenDeLogin(t, db, c.email, "senha-123456")
 
-			e, err := services.CriarEstoque(db, empresaTeste, "Canteiro "+c.papel)
+			e, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro "+c.papel)
 			if err != nil {
 				t.Fatalf("seed CriarEstoque: %v", err)
 			}
@@ -374,7 +391,7 @@ func TestExcluirEstoqueHandler_403ParaUsuario(t *testing.T) {
 	criarContaComPapel(t, db, "Usuária", "del-usuario@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "del-usuario@empresa.com", "senha-123456")
 
-	e, err := services.CriarEstoque(db, empresaTeste, "Canteiro Protegido")
+	e, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Protegido")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -418,7 +435,7 @@ func TestExcluirEstoqueHandler_409ComResiduo(t *testing.T) {
 	criarContaComPapel(t, db, "Almox", "del-residuo-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "del-residuo-almox@empresa.com", "senha-123456")
 
-	e, err := services.CriarEstoque(db, empresaTeste, "Canteiro Com Resíduo Handler")
+	e, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Com Resíduo Handler")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -500,5 +517,90 @@ func TestExcluirEstoqueHandler_409ComPedidoPendente(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("linhas em estoques com id = %d, want 1 (nada removido)", n)
+	}
+}
+
+// TestEstoquesHandler_FilialEMesmoNomeEmFiliaisDistintas cobre a I/O Matrix da
+// Story 12.1 na fronteira: Filial de outra Empresa -> 400 e nada gravado;
+// mesmo nome em Filiais distintas -> ambos 201; Estoque legado sem Filial
+// aparece com filial_id/filial_nome null.
+func TestEstoquesHandler_FilialEMesmoNomeEmFiliaisDistintas(t *testing.T) {
+	db := testDB(t)
+	limparEstoquesHandler(t, db)
+	criarContaComPapel(t, db, "Almox", "filial-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "filial-almox@empresa.com", "senha-123456")
+
+	filialA := filialTeste(t, db, empresaTeste)
+	var filialB string
+	if err := db.QueryRow(
+		`INSERT INTO filiais (empresa_id, nome) VALUES ($1, $2) RETURNING id`, empresaTeste, "Filial B 12.1 "+filialA[:8],
+	).Scan(&filialB); err != nil {
+		t.Fatalf("criar filial B: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM estoques WHERE filial_id = $1`, filialB)
+		_, _ = db.Exec(`DELETE FROM filiais WHERE id = $1`, filialB)
+	})
+
+	// Filial de outra Empresa -> 400, nada gravado.
+	const slugAlheia = "estoque-filial-alheia"
+	removerEmpresaPlataformaHandlers(t, db, slugAlheia)
+	t.Cleanup(func() { removerEmpresaPlataformaHandlers(t, db, slugAlheia) })
+	var alheiaID string
+	if err := db.QueryRow(
+		`INSERT INTO empresas (nome_fantasia, razao_social, cnpj, logradouro, numero, bairro, cidade, cep, uf, slug)
+		 VALUES ('Estoque Filial Alheia', 'Estoque Filial Alheia LTDA', '99888777012100', 'Rua', '1', 'Centro', 'Recife', '50000000', 'PE', $1)
+		 RETURNING id`, slugAlheia,
+	).Scan(&alheiaID); err != nil {
+		t.Fatalf("criar empresa alheia: %v", err)
+	}
+	filialAlheia := filialTeste(t, db, alheiaID)
+	w := postEstoques(db, "Bearer "+token, `{"nome":"Central","filial_id":"`+filialAlheia+`"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("filial alheia: status = %d, want 400 (body=%s)", w.Code, w.Body.String())
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM estoques`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("estoques gravados = %d (err=%v), want 0", n, err)
+	}
+
+	for _, f := range []string{filialA, filialB} {
+		w := postEstoques(db, "Bearer "+token, `{"nome":"Central","filial_id":"`+f+`"}`)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("Central em %s: status = %d, want 201 (body=%s)", f, w.Code, w.Body.String())
+		}
+	}
+	if w := postEstoques(db, "Bearer "+token, `{"nome":"central","filial_id":"`+filialA+`"}`); w.Code != http.StatusConflict {
+		t.Fatalf("mesmo nome na mesma filial: status = %d, want 409", w.Code)
+	}
+
+	// Estoque legado (filial NULL) segue listado, com null nos dois campos.
+	if _, err := db.Exec(`INSERT INTO estoques (nome, empresa_id) VALUES ('Legado', $1)`, empresaTeste); err != nil {
+		t.Fatalf("seed legado: %v", err)
+	}
+	lw := getEstoques(db, "Bearer "+token)
+	if lw.Code != http.StatusOK {
+		t.Fatalf("GET status = %d", lw.Code)
+	}
+	estoques := decodeEstoquesFio(t, lw.Body.Bytes())
+	if len(estoques) != 3 {
+		t.Fatalf("estoques = %d, want 3", len(estoques))
+	}
+	for _, e := range estoques {
+		if e["nome"] == "Legado" {
+			if e["filial_id"] != nil || e["filial_nome"] != nil {
+				t.Errorf("legado: filial_id/filial_nome = %v/%v, want null", e["filial_id"], e["filial_nome"])
+			}
+		} else if e["filial_id"] == nil || e["filial_nome"] == nil {
+			t.Errorf("%v: filial_id/filial_nome não devem ser null", e["nome"])
+		} else {
+			var nomeDaFilial string
+			if err := db.QueryRow(`SELECT nome FROM filiais WHERE id = $1`, e["filial_id"]).Scan(&nomeDaFilial); err != nil {
+				t.Fatalf("nome da filial %v: %v", e["filial_id"], err)
+			}
+			if e["filial_nome"] != nomeDaFilial {
+				t.Errorf("%v: filial_nome = %v, want %q", e["nome"], e["filial_nome"], nomeDaFilial)
+			}
+		}
 	}
 }

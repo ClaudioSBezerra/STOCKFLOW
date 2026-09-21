@@ -40,7 +40,7 @@ func getInconsistencias(db *sql.DB, authHeader string) *httptest.ResponseRecorde
 // EstoqueID/Nome são preenchidos aqui) e devolve seu id.
 func seedProdutoComPendenciaHandler(t *testing.T, db *sql.DB, nome string, dims services.CriarProdutoInput) string {
 	t.Helper()
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Estoque "+nome)
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque "+nome)
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestDetectarDuplicatasHandler_200ComGrupos(t *testing.T) {
 	criarContaComPapel(t, db, "Almox Duplicatas 200", "duplicatas-200-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "duplicatas-200-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Estoque Duplicatas Handler 200")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Duplicatas Handler 200")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestDetectarDuplicatasHandler_200ListaVaziaComProdutosNaoDuplicados(t *test
 	criarContaComPapel(t, db, "Almox Duplicatas Nao Qualificam", "duplicatas-nao-qualificam-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "duplicatas-nao-qualificam-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Estoque Duplicatas Nao Qualificam")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Duplicatas Nao Qualificam")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -964,7 +964,7 @@ func TestMesclarDuplicatasHandler_200(t *testing.T) {
 	criarContaComPapel(t, db, "Almox Mesclar 200", "mesclar-200-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "mesclar-200-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Estoque Mesclar Handler 200")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Mesclar Handler 200")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -1080,7 +1080,7 @@ func TestMesclarDuplicatasHandler_403PapelUsuario(t *testing.T) {
 	criarContaComPapel(t, db, "Usuario Mesclar 403", "mesclar-403-usuario@empresa.com", "senha-123456", "usuario")
 	token := tokenDeLogin(t, db, "mesclar-403-usuario@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Estoque Mesclar Handler 403")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Mesclar Handler 403")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -1125,7 +1125,7 @@ func TestMesclarDuplicatasHandler_409ProdutoJaMesclado(t *testing.T) {
 	criarContaComPapel(t, db, "Almox Mesclar 409", "mesclar-409-almox@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "mesclar-409-almox@empresa.com", "senha-123456")
 
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Estoque Mesclar Handler 409")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Mesclar Handler 409")
 	if err != nil {
 		t.Fatalf("CriarEstoque: %v", err)
 	}
@@ -1164,7 +1164,7 @@ func TestMesclarDuplicatasHandler_409ProdutoJaMesclado(t *testing.T) {
 // Produto válido, sem se importar com dimensões/local.
 func seedProdutoComEstoqueHandlerSimples(t *testing.T, db *sql.DB, nome string) string {
 	t.Helper()
-	estoque, err := services.CriarEstoque(db, empresaTeste, "Estoque "+nome)
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque "+nome)
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}

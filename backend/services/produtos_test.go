@@ -229,7 +229,7 @@ func TestCriarProduto_SucessoSemDimensoes(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Sem Dimensao")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Sem Dimensao")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -671,7 +671,7 @@ func TestCriarProduto_SemSaldoNemLote(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	if _, err := CriarEstoque(db, empresaTeste, "Canteiro Sem Saldo 116"); err != nil {
+	if _, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Sem Saldo 116"); err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
 	p, err := CriarProduto(db, empresaTeste, criarProdutoInputValido(t, db, "Produto Sem Saldo 116", "04.001"))
@@ -741,6 +741,7 @@ func removerEmpresaComProdutos(t *testing.T, db *sql.DB, slug string) {
 		`DELETE FROM convites_empresa WHERE empresa_id = $1`,
 		`DELETE FROM categorias WHERE empresa_id = $1`,
 		`DELETE FROM nomenclatura_templates WHERE empresa_id = $1`,
+		`DELETE FROM filiais WHERE empresa_id = $1`,
 		`DELETE FROM contadores_produto WHERE empresa_id = $1`,
 		`DELETE FROM empresas WHERE id = $1`,
 	} {
@@ -760,7 +761,7 @@ func TestCriarProduto_CodigoSequencialPorEmpresa(t *testing.T) {
 	removerEmpresaComProdutos(t, db, "codigo-sequencial")
 	empresa := criarEmpresaDeTeste(t, db, "codigo-sequencial", "998887770001", "Codigo Sequencial")
 
-	estoque, err := CriarEstoque(db, empresa.ID, "Canteiro Codigo Sequencial")
+	estoque, err := CriarEstoque(db, empresa.ID, filialTeste(t, db, empresa.ID), "Canteiro Codigo Sequencial")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -822,11 +823,11 @@ func TestCriarProduto_CodigoIndependentePorEmpresa(t *testing.T) {
 		t.Fatalf("categoria da empresa B: %v", err)
 	}
 
-	estoqueA, err := CriarEstoque(db, empresaA.ID, "Canteiro Independente A")
+	estoqueA, err := CriarEstoque(db, empresaA.ID, filialTeste(t, db, empresaA.ID), "Canteiro Independente A")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque A: %v", err)
 	}
-	estoqueB, err := CriarEstoque(db, empresaB.ID, "Canteiro Independente B")
+	estoqueB, err := CriarEstoque(db, empresaB.ID, filialTeste(t, db, empresaB.ID), "Canteiro Independente B")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque B: %v", err)
 	}
@@ -873,7 +874,7 @@ func TestCriarProduto_ContadorAusente(t *testing.T) {
 		t.Fatalf("apagar contador da empresa: %v", err)
 	}
 
-	estoque, err := CriarEstoque(db, empresa.ID, "Canteiro Contador Ausente")
+	estoque, err := CriarEstoque(db, empresa.ID, filialTeste(t, db, empresa.ID), "Canteiro Contador Ausente")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -913,7 +914,7 @@ func TestCriarProduto_NomeInvalido(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Nome Invalido")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Nome Invalido")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -939,7 +940,7 @@ func TestCriarProduto_NomeAbaixoDoMinimoRejeitado(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Nome Curto")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Nome Curto")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -966,7 +967,7 @@ func TestCriarProduto_NomeNoMinimoExatoAceito(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Nome No Minimo")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Nome No Minimo")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -990,7 +991,7 @@ func TestAtualizarNomeProduto_NomeAbaixoDoMinimoRejeitado(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Renomear Nome Curto")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Renomear Nome Curto")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1026,7 +1027,7 @@ func TestAtualizarNomeProduto_NomeNoMinimoExatoAceito(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Renomear Nome No Minimo")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Renomear Nome No Minimo")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1083,7 +1084,7 @@ func TestCriarProduto_ComTemplateNomeCompleto(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Template Completo")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Template Completo")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1116,7 +1117,7 @@ func TestCriarProduto_ComTemplatePlaceholderFaltando(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Template Incompleto")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Template Incompleto")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1154,7 +1155,7 @@ func TestCriarProduto_TemplateInexistente(t *testing.T) {
 	for nome, templateID := range casos {
 		t.Run(nome, func(t *testing.T) {
 			limparProdutos(t, db)
-			estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Template Ausente "+nome)
+			estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Template Ausente "+nome)
 			if err != nil {
 				t.Fatalf("seed CriarEstoque: %v", err)
 			}
@@ -1190,7 +1191,7 @@ func TestCriarProduto_TemplateIDVazioRejeitado(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Sem Template")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Sem Template")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1221,7 +1222,7 @@ func TestCriarProduto_ComTemplateGenericoAceitaNomeLivre(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Template Generico")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Template Generico")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1279,7 +1280,7 @@ func TestAtualizarNomeProduto_SemTemplateAceitaQualquerNome(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Renomear Sem Template")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Renomear Sem Template")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1311,7 +1312,7 @@ func TestAtualizarNomeProduto_SemTemplateNomeCurtoRejeitado(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Renomear Sem Template Curto")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Renomear Sem Template Curto")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1333,7 +1334,7 @@ func TestAtualizarNomeProduto_ComTemplateRevalida(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Renomear Com Template")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Renomear Com Template")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1402,7 +1403,7 @@ func TestAtualizarNomeProduto_NomeInvalido(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Renomear Nome Invalido")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Renomear Nome Invalido")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1475,7 +1476,7 @@ func TestBuscarProdutos_MatchExatoVemPrimeiro(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Busca 1")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Busca 1")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1503,7 +1504,7 @@ func TestBuscarProdutos_MatchPorPrefixo(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Busca 2")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Busca 2")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1534,7 +1535,7 @@ func TestBuscarProdutos_MatchSoPorCategoria(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Busca 3")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Busca 3")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1565,7 +1566,7 @@ func TestBuscarProdutos_MaisDe7MatchesLimitaA7(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Busca 4")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Busca 4")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1613,7 +1614,7 @@ func TestBuscarProdutos_CoringasLiteraisNaoViramWildcard(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Busca 5")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Busca 5")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1671,7 +1672,7 @@ func TestBuscarProdutos_CodigoAusenteDevolveNilNoPonteiro(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Busca 6")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Busca 6")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1703,7 +1704,7 @@ func TestBuscarProdutos_EmpateDeRankENomeDesempataPorID(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro Busca Empate")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Busca Empate")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1738,7 +1739,7 @@ func TestBuscarProdutoPorCodigo_MatchExatoEncontrado(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro PorCodigo 1")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro PorCodigo 1")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1773,7 +1774,7 @@ func TestBuscarProdutoPorCodigo_CodigoInexistente(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro PorCodigo 2")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro PorCodigo 2")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1794,7 +1795,7 @@ func TestBuscarProdutoPorCodigo_CaseSensitive(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	estoque, err := CriarEstoque(db, empresaTeste, "Canteiro PorCodigo 3")
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro PorCodigo 3")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1825,7 +1826,7 @@ func TestCriarProduto_CodigoContinuaDoMaiorNumericoExistente(t *testing.T) {
 	removerEmpresaComProdutos(t, db, "codigo-max-existente")
 	empresa := criarEmpresaDeTeste(t, db, "codigo-max-existente", "998887770098", "Codigo Max Existente")
 
-	estoque, err := CriarEstoque(db, empresa.ID, "Canteiro Codigo Max")
+	estoque, err := CriarEstoque(db, empresa.ID, filialTeste(t, db, empresa.ID), "Canteiro Codigo Max")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -1869,7 +1870,7 @@ func TestCriarProduto_CodigoConcorrenteNuncaRepete(t *testing.T) {
 	removerEmpresaComProdutos(t, db, "codigo-concorrente")
 	empresa := criarEmpresaDeTeste(t, db, "codigo-concorrente", "998887770005", "Codigo Concorrente")
 
-	estoque, err := CriarEstoque(db, empresa.ID, "Canteiro Codigo Concorrente")
+	estoque, err := CriarEstoque(db, empresa.ID, filialTeste(t, db, empresa.ID), "Canteiro Codigo Concorrente")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}

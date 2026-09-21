@@ -426,6 +426,15 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.ExcluirEstoqueHandler(db))))
 
+	// Filiais — Story 12.1 (FR-51, AD-27). Escrita só `adm`+ (403 abaixo,
+	// decidido por RequireRole); a listagem leva só RequireAuth (o almoxarife
+	// precisa listar para escolher a Filial do Estoque).
+	registrar("POST /e/{slug}/api/filiais", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAdm)(
+			handlers.CriarFilialHandler(db))))
+	registrar("GET /e/{slug}/api/filiais", middleware.RequireAuth(db, jwtSecret)(
+		handlers.ListarFiliaisHandler(db)))
+
 	// Cadastro manual de Produto com dimensões estruturadas — Story 3.1
 	// (FR-8). POST /api/produtos fica atrás de RequireRole(almoxarife): criar
 	// Produto é restrito a `almoxarife`+, decisão do middleware (403 para

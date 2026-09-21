@@ -18,7 +18,7 @@ import (
 // `almoxarife` semeada (mesmo padrão de semearConta, usuarios_test.go).
 func seedProdutoComSaldo(t *testing.T, db *sql.DB, nomeEstoque string, quantidadeInicial float64) (produtoID, estoqueID, usuarioID string) {
 	t.Helper()
-	estoque, err := CriarEstoque(db, empresaTeste, nomeEstoque)
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), nomeEstoque)
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestRegistrarBaixa_ProdutoSemSaldoNesteEstoque(t *testing.T) {
 	// Produto cadastrado num Estoque A; tenta baixa num Estoque B onde nunca
 	// teve saldo — nenhuma linha em produto_estoque para esse par.
 	produtoID, _, usuarioID := seedProdutoComSaldo(t, db, "Canteiro A Sem Saldo", 5)
-	outroEstoque, err := CriarEstoque(db, empresaTeste, "Canteiro B Sem Saldo")
+	outroEstoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro B Sem Saldo")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
@@ -296,7 +296,7 @@ func TestListarMovimentacoes_MaisRecentePrimeiroComNomesResolvidos(t *testing.T)
 	limparProdutos(t, db)
 
 	produtoID, estoqueOrigemID, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Hist Origem", 20)
-	estoqueDestino, err := CriarEstoque(db, empresaTeste, "Canteiro Hist Destino")
+	estoqueDestino, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Hist Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
@@ -551,7 +551,7 @@ func TestRegistrarTransferencia_Sucesso(t *testing.T) {
 	limparProdutos(t, db)
 
 	produtoID, estoqueOrigemID, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Transf Sucesso Origem", 10)
-	estoqueDestino, err := CriarEstoque(db, empresaTeste, "Canteiro Transf Sucesso Destino")
+	estoqueDestino, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Transf Sucesso Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
@@ -606,7 +606,7 @@ func TestRegistrarTransferencia_DestinoSemLinhaAinda(t *testing.T) {
 	limparProdutos(t, db)
 
 	produtoID, estoqueOrigemID, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Transf SemLinha Origem", 10)
-	estoqueDestino, err := CriarEstoque(db, empresaTeste, "Canteiro Transf SemLinha Destino")
+	estoqueDestino, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Transf SemLinha Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
@@ -691,7 +691,7 @@ func TestRegistrarTransferencia_QuantidadeZeroOuNegativa(t *testing.T) {
 	limparProdutos(t, db)
 
 	produtoID, estoqueOrigemID, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Transf QtdInvalida Origem", 10)
-	estoqueDestino, err := CriarEstoque(db, empresaTeste, "Canteiro Transf QtdInvalida Destino")
+	estoqueDestino, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Transf QtdInvalida Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
@@ -720,7 +720,7 @@ func TestRegistrarTransferencia_QuantidadeMaiorQueDisponivel(t *testing.T) {
 	limparProdutos(t, db)
 
 	produtoID, estoqueOrigemID, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Transf Excede Origem", 4.5)
-	estoqueDestino, err := CriarEstoque(db, empresaTeste, "Canteiro Transf Excede Destino")
+	estoqueDestino, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Transf Excede Destino")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
@@ -806,7 +806,7 @@ func TestRegistrarTransferencia_ConcorrenciaSemDeadlock(t *testing.T) {
 	limparProdutos(t, db)
 
 	produtoID, estoqueA, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Transf Corrida A", 20)
-	estoqueBRow, err := CriarEstoque(db, empresaTeste, "Canteiro Transf Corrida B")
+	estoqueBRow, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Transf Corrida B")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque B: %v", err)
 	}
@@ -877,11 +877,11 @@ func TestRegistrarTransferencia_ConcorrenciaMesmaOrigemNuncaFicaNegativo(t *test
 	limparProdutos(t, db)
 
 	produtoID, estoqueOrigem, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Transf DrenaOrigem", 10)
-	destino1, err := CriarEstoque(db, empresaTeste, "Canteiro Transf Drena Destino 1")
+	destino1, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Transf Drena Destino 1")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino1: %v", err)
 	}
-	destino2, err := CriarEstoque(db, empresaTeste, "Canteiro Transf Drena Destino 2")
+	destino2, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Transf Drena Destino 2")
 	if err != nil {
 		t.Fatalf("seed CriarEstoque destino2: %v", err)
 	}

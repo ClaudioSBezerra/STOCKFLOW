@@ -252,6 +252,7 @@ func removerEmpresaPlataformaHandlers(t *testing.T, db *sql.DB, slug string) {
 		// Story 10.2 (spec-10-2): `contadores_produto` também tem FK para
 		// `empresas`, sem CASCADE — toda Empresa provisionada nasce com uma
 		// linha lá (AD-26).
+		`DELETE FROM filiais WHERE empresa_id = $1`,
 		`DELETE FROM contadores_produto WHERE empresa_id = $1`,
 		`DELETE FROM empresas WHERE id = $1`,
 	} {
