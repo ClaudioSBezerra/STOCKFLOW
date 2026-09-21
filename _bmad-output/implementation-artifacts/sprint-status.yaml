@@ -120,7 +120,7 @@ development_status:
   10-6-crud-de-templates-de-nomenclatura: done
   epic-10-retrospective: optional
 
-  epic-11: in-progress
+  epic-11: done
   11-1-lançamento-de-saldo-inicial-com-lote-e-data-de-validade: done
   11-2-migração-do-saldo-existente-para-lote-legado: done
   11-3-reserva-de-saldo-ao-enviar-pedido: done
