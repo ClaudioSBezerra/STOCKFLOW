@@ -286,7 +286,7 @@ func TestExcluirEstoque_ComPedidoPendente(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	produtoID, estoqueID, autorID := seedProdutoComSaldo(t, db, "Canteiro Pedido Pendente", 5)
+	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Canteiro Pedido Pendente", 5)
 	usuarioID := semearConta(t, db, "Usuario Pedido Pendente Estoque", "pedido-pendente-estoque@empresa.com", PapelUsuario, 0)
 	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, 5); err != nil {
 		t.Fatalf("seed AdicionarItemCarrinho: %v", err)
@@ -295,11 +295,12 @@ func TestExcluirEstoque_ComPedidoPendente(t *testing.T) {
 		t.Fatalf("seed SubmeterPedido: %v", err)
 	}
 
-	// Zera o saldo residual (Baixa direta, simulando uma aprovação futura,
-	// Story 7.5) — o guard de resíduo (ErroEstoqueComResiduo) NÃO deveria
-	// disparar mais; só o guard de Pedido pendente.
-	if _, err := RegistrarBaixa(db, empresaTeste, produtoID, estoqueID, autorID, 5); err != nil {
-		t.Fatalf("seed RegistrarBaixa: %v", err)
+	// Zera o saldo residual direto no banco (uma Baixa manual agora respeita a
+	// reserva do Pedido pendente, Story 11.4) — o guard de resíduo
+	// (ErroEstoqueComResiduo) NÃO deveria disparar mais; só o guard de Pedido
+	// pendente.
+	if _, err := db.Exec(`UPDATE produto_estoque SET quantidade = 0 WHERE produto_id = $1 AND estoque_id = $2`, produtoID, estoqueID); err != nil {
+		t.Fatalf("seed zerar saldo: %v", err)
 	}
 
 	err := ExcluirEstoque(db, empresaTeste, estoqueID)

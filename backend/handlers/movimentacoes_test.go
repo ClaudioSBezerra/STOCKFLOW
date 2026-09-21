@@ -347,7 +347,7 @@ func TestRegistrarTransferenciaHandler_201(t *testing.T) {
 		t.Fatalf("falha ao ler saldo origem: %v", err)
 	}
 	if err := db.QueryRow(
-		`SELECT quantidade FROM produto_estoque WHERE produto_id = $1 AND estoque_id = $2`,
+		`SELECT quantidade FROM saldo_produto_estoque WHERE produto_id = $1 AND estoque_id = $2`,
 		produtoID, estoqueDestino.ID,
 	).Scan(&saldoDestino); err != nil {
 		t.Fatalf("falha ao ler saldo destino: %v", err)

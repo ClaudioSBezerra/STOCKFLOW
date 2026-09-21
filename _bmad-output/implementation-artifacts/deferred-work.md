@@ -653,3 +653,11 @@ source_spec: `spec-11-3-reserva-de-saldo-ao-enviar-pedido.md`
 severity: medium
 reason: `RegistrarBaixa`/`RegistrarTransferencia`/`DecidirPedido` continuam validando/debitando só `produto_estoque`. É a janela transitória documentada em Design Notes; fechada por 11.4 e 11.5.
 status: open
+
+### DW-83: A aprovação de Pedido (`DecidirPedido`) ainda lê/debita só `produto_estoque`, então saldo que a Transferência agora credita apenas em `lotes` no destino não é aprovável até a Story 11.5.
+origin: spec-deferred 0bd767ffc045
+location: backend/services/pedidos.go (DecidirPedido)
+source_spec: `spec-11-4-baixa-e-transferencia-consomem-lote-automaticamente-e-respeitam-saldo-reservado.md`
+severity: medium
+reason: `RegistrarTransferencia` nunca escreve `produto_estoque` do destino (fonte única `lotes`, AD-24); `DecidirPedido` segue com débito legado. Janela já documentada no Epic 11 e fechada pela 11.5 (que deve reusar `consumirFEFOTx`).
+status: open

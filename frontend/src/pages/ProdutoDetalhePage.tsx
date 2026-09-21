@@ -968,6 +968,16 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
               void confirmarBaixa();
             }}
           >
+            {baixaEstoque && (
+              <div className="flex flex-col gap-1">
+                <p className="text-body tabular-nums">
+                  Disponível para baixa: {formatarQuantidade(baixaEstoque.disponivel)}
+                </p>
+                <p className="text-label text-muted-foreground">
+                  O saldo reservado por Pedidos pendentes não pode ser baixado.
+                </p>
+              </div>
+            )}
             <div className="flex flex-col gap-2">
               <Label htmlFor="baixa-quantidade">Quantidade</Label>
               <Input
@@ -1021,6 +1031,16 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
               void confirmarTransferencia();
             }}
           >
+            {transferenciaEstoque && (
+              <div className="flex flex-col gap-1">
+                <p className="text-body tabular-nums">
+                  Disponível para transferência: {formatarQuantidade(transferenciaEstoque.disponivel)}
+                </p>
+                <p className="text-label text-muted-foreground">
+                  O saldo reservado por Pedidos pendentes não pode ser transferido.
+                </p>
+              </div>
+            )}
             <div className="flex flex-col gap-2">
               <Label htmlFor="transferencia-destino">Estoque destino</Label>
               <Select

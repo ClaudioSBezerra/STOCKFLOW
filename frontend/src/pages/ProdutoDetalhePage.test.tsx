@@ -584,6 +584,38 @@ describe('ProdutoDetalhePage', () => {
       expect(chamadasDetalhe.length).toBeGreaterThan(1);
     });
 
+    it('mostra o saldo disponível da linha e o aviso de reserva (Story 11.4)', async () => {
+      stubFetch((url, init) => {
+        if (url === '/api/produtos/p1' && (!init?.method || init.method === 'GET')) {
+          return jsonOk({
+            produto: {
+              ...PRODUTO_DETALHE,
+              porEstoque: [
+                { estoqueId: 'e1', estoqueNome: 'Almoxarifado Central', quantidade: 10, reservada: 8, disponivel: 2 },
+              ],
+            },
+          });
+        }
+        if (url === '/api/produtos/p1/fotos') return jsonOk({ fotos: [] });
+        throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
+      });
+
+      const user = userEvent.setup();
+      renderPagina();
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+      await screen.findByText('Cabo Flexível 4mm');
+
+      await user.click(screen.getByRole('button', { name: /Registrar Baixa/ }));
+      const dialogo = await screen.findByRole('dialog');
+      expect(within(dialogo).getByText('Disponível para baixa: 2')).toBeInTheDocument();
+      expect(
+        within(dialogo).getByText(/saldo reservado por Pedidos pendentes não pode ser baixado/),
+      ).toBeInTheDocument();
+      expect(within(dialogo).queryByText(/lote/i)).not.toBeInTheDocument();
+    });
+
     it('409 mostra a mensagem do servidor dentro do diálogo, sem fechar', async () => {
       const fetchMock = stubFetch((url, init) => {
         if (url === '/api/produtos/p1' && (!init?.method || init.method === 'GET')) {
@@ -821,6 +853,24 @@ describe('ProdutoDetalhePage', () => {
 
       await screen.findByText('Cabo Flexível 4mm');
       expect(screen.queryByRole('button', { name: /^Transferir de / })).not.toBeInTheDocument();
+    });
+
+    it('mostra o saldo disponível da linha e o aviso de reserva (Story 11.4)', async () => {
+      stubTransferencia({ ok: true, status: 201, json: async () => ({ movimentacao: { id: 'm1' } }) });
+
+      const user = userEvent.setup();
+      renderPagina();
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+      await screen.findByText('Cabo Flexível 4mm');
+
+      await user.click(screen.getByRole('button', { name: 'Transferir de Almoxarifado Central' }));
+      const dialogo = await screen.findByRole('dialog');
+      expect(within(dialogo).getByText('Disponível para transferência: 5')).toBeInTheDocument();
+      expect(
+        within(dialogo).getByText(/saldo reservado por Pedidos pendentes não pode ser transferido/),
+      ).toBeInTheDocument();
     });
 
     it('abrir o diálogo busca a lista de Estoques e exclui a linha de origem das opções', async () => {

@@ -3,6 +3,7 @@ package services
 import (
 	"database/sql"
 	"errors"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -121,7 +122,7 @@ func TestRegistrarBaixa_QuantidadeZeroOuNegativa(t *testing.T) {
 
 	produtoID, estoqueID, usuarioID := seedProdutoComSaldo(t, db, "Canteiro Baixa Invalida", 10)
 
-	for _, quantidade := range []float64{0, -5} {
+	for _, quantidade := range []float64{0, -5, 0.0004, math.NaN(), math.Inf(1)} {
 		_, err := RegistrarBaixa(db, empresaTeste, produtoID, estoqueID, usuarioID, quantidade)
 		var erroValidacao *ErroMovimentacaoValidacao
 		if !errors.As(err, &erroValidacao) {
@@ -587,10 +588,10 @@ func TestRegistrarTransferencia_Sucesso(t *testing.T) {
 		t.Errorf("UsuarioID = %q, want %q", mov.UsuarioID, usuarioID)
 	}
 
-	if saldo := saldoProdutoEstoque(t, db, produtoID, estoqueOrigemID); saldo != 7 {
+	if saldo := saldoVisao(t, db, produtoID, estoqueOrigemID); saldo != 7 {
 		t.Errorf("saldo origem pós-transferência = %v, want 7", saldo)
 	}
-	if saldo := saldoProdutoEstoque(t, db, produtoID, estoqueDestino.ID); saldo != 5 {
+	if saldo := saldoVisao(t, db, produtoID, estoqueDestino.ID); saldo != 5 {
 		t.Errorf("saldo destino pós-transferência = %v, want 5", saldo)
 	}
 	if n := contarMovimentacoes(t, db, produtoID); n != 1 {
@@ -620,10 +621,10 @@ func TestRegistrarTransferencia_DestinoSemLinhaAinda(t *testing.T) {
 		t.Errorf("EstoqueDestinoID = %v, want %q", mov.EstoqueDestinoID, estoqueDestino.ID)
 	}
 
-	if saldo := saldoProdutoEstoque(t, db, produtoID, estoqueOrigemID); saldo != 6 {
+	if saldo := saldoVisao(t, db, produtoID, estoqueOrigemID); saldo != 6 {
 		t.Errorf("saldo origem pós-transferência = %v, want 6", saldo)
 	}
-	if saldo := saldoProdutoEstoque(t, db, produtoID, estoqueDestino.ID); saldo != 4 {
+	if saldo := saldoVisao(t, db, produtoID, estoqueDestino.ID); saldo != 4 {
 		t.Errorf("saldo destino pós-transferência (linha nova) = %v, want 4", saldo)
 	}
 }
@@ -646,7 +647,7 @@ func TestRegistrarTransferencia_OrigemIgualDestino(t *testing.T) {
 		t.Errorf("mensagem = %q, want %q", erroValidacao.Mensagem, "estoque de origem e destino devem ser diferentes")
 	}
 
-	if saldo := saldoProdutoEstoque(t, db, produtoID, estoqueID); saldo != 10 {
+	if saldo := saldoVisao(t, db, produtoID, estoqueID); saldo != 10 {
 		t.Errorf("saldo não deveria ter mudado, got %v, want 10", saldo)
 	}
 	if n := contarMovimentacoes(t, db, produtoID); n != 0 {
@@ -674,7 +675,7 @@ func TestRegistrarTransferencia_OrigemIgualDestinoCaseInsensitive(t *testing.T) 
 		t.Errorf("mensagem = %q, want %q", erroValidacao.Mensagem, "estoque de origem e destino devem ser diferentes")
 	}
 
-	if saldo := saldoProdutoEstoque(t, db, produtoID, estoqueID); saldo != 10 {
+	if saldo := saldoVisao(t, db, produtoID, estoqueID); saldo != 10 {
 		t.Errorf("saldo não deveria ter mudado, got %v, want 10", saldo)
 	}
 	if n := contarMovimentacoes(t, db, produtoID); n != 0 {
@@ -697,7 +698,7 @@ func TestRegistrarTransferencia_QuantidadeZeroOuNegativa(t *testing.T) {
 		t.Fatalf("seed CriarEstoque destino: %v", err)
 	}
 
-	for _, quantidade := range []float64{0, -5, limiteNumeric103 + 0.001, limiteNumeric103 * 10} {
+	for _, quantidade := range []float64{0, -5, 0.0004, math.NaN(), limiteNumeric103 + 0.001, limiteNumeric103 * 10} {
 		_, err := RegistrarTransferencia(db, empresaTeste, produtoID, estoqueOrigemID, estoqueDestino.ID, usuarioID, quantidade)
 		var erroValidacao *ErroMovimentacaoValidacao
 		if !errors.As(err, &erroValidacao) {
@@ -705,7 +706,7 @@ func TestRegistrarTransferencia_QuantidadeZeroOuNegativa(t *testing.T) {
 		}
 	}
 
-	if saldo := saldoProdutoEstoque(t, db, produtoID, estoqueOrigemID); saldo != 10 {
+	if saldo := saldoVisao(t, db, produtoID, estoqueOrigemID); saldo != 10 {
 		t.Errorf("saldo origem não deveria ter mudado, got %v, want 10", saldo)
 	}
 	if n := contarMovimentacoes(t, db, produtoID); n != 0 {
@@ -735,7 +736,7 @@ func TestRegistrarTransferencia_QuantidadeMaiorQueDisponivel(t *testing.T) {
 		t.Errorf("Disponivel = %v, want 4.5 (saldo real da ORIGEM)", erroIndisponivel.Disponivel)
 	}
 
-	if saldo := saldoProdutoEstoque(t, db, produtoID, estoqueOrigemID); saldo != 4.5 {
+	if saldo := saldoVisao(t, db, produtoID, estoqueOrigemID); saldo != 4.5 {
 		t.Errorf("saldo origem não deveria ter mudado, got %v, want 4.5", saldo)
 	}
 	var existeLinhaDestino bool
@@ -779,7 +780,7 @@ func TestRegistrarTransferencia_EstoqueDestinoMalformadoOuInexistente(t *testing
 		})
 	}
 
-	if saldo := saldoProdutoEstoque(t, db, produtoID, estoqueOrigemID); saldo != 10 {
+	if saldo := saldoVisao(t, db, produtoID, estoqueOrigemID); saldo != 10 {
 		t.Errorf("saldo origem não deveria ter mudado, got %v, want 10", saldo)
 	}
 }
@@ -852,8 +853,8 @@ func TestRegistrarTransferencia_ConcorrenciaSemDeadlock(t *testing.T) {
 
 	// Cada rodada move 3 de A->B e 3 de B->A — líquido zero, os saldos
 	// voltam exatos ao inicial.
-	saldoA := saldoProdutoEstoque(t, db, produtoID, estoqueA)
-	saldoB := saldoProdutoEstoque(t, db, produtoID, estoqueB)
+	saldoA := saldoVisao(t, db, produtoID, estoqueA)
+	saldoB := saldoVisao(t, db, produtoID, estoqueB)
 	if saldoA < 0 || saldoB < 0 {
 		t.Fatalf("saldo negativo: A=%v B=%v", saldoA, saldoB)
 	}
@@ -925,7 +926,7 @@ func TestRegistrarTransferencia_ConcorrenciaMesmaOrigemNuncaFicaNegativo(t *test
 		t.Errorf("Disponivel visto pela perdedora = %v, want 4 (10 - 6 da vencedora)", erroIndisponivel.Disponivel)
 	}
 
-	if saldo := saldoProdutoEstoque(t, db, produtoID, estoqueOrigem); saldo != 4 {
+	if saldo := saldoVisao(t, db, produtoID, estoqueOrigem); saldo != 4 {
 		t.Errorf("saldo origem final = %v, want 4 (só a vencedora debitou)", saldo)
 	}
 	if n := contarMovimentacoes(t, db, produtoID); n != 1 {
