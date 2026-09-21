@@ -539,22 +539,24 @@ type itemPedidoParaDecisao struct {
 // Movimentação — todos os itens gravam `quantidade_aprovada=0` (nunca NULL
 // depois de decidido), status vira `'rejeitado'`.
 //
-// `aprovar=true`: os pares (produto_id, estoque_id) de TODOS os itens do
-// Pedido vêm de `SELECT ... ORDER BY produto_id, estoque_id` — ordem
-// ascendente sobre o LOTE INTEIRO (AD-10, mesmo molde de SubmeterPedido,
-// pedidos.go) — travados um a um nessa ordem via `SELECT ... FOR UPDATE`.
-// Ausência de linha em `produto_estoque` colapsa em "0 disponível" (mesmo
-// colapso de SubmeterPedido/RegistrarBaixa). Por item,
-// `quantidadeAprovada := min(quantidade solicitada, disponível)` — nunca
-// mais que o solicitado; se `> 0`, debita `produto_estoque` e insere uma
-// Movimentação (`tipo='baixa'`, `estoque_origem_id`=o do item,
-// `usuario_id`=o DECISOR — mesma convenção de RegistrarBaixa) na MESMA
-// transação; `quantidadeAprovada` é sempre gravada em `pedido_itens`, mesmo
-// quando 0. Status final do cabeçalho: `'aprovado'` se TODOS os itens
-// tiveram `quantidadeAprovada == quantidade`; senão `'parcialmente_aprovado'`
-// (inclui `quantidadeAprovada == 0` em TODOS os itens — o Almoxarife
-// escolheu aprovar, não rejeitar; nunca reclassificado como `'rejeitado'`
-// por baixo do capô).
+// `aprovar=true` (Story 11.5, AD-24/AD-25): os itens vêm ordenados por
+// (produto_id, estoque_id) e o conjunto COMPLETO de pares é travado por
+// travarSaldoParesTx (AD-10: produto_estoque + lotes, ordem canônica) ANTES de
+// ler reserva/saldo e de qualquer escrita. Por item,
+// `quantidadeAprovada := min(solicitada, reserva do PRÓPRIO Pedido, saldo
+// físico do par)` (arredondada a 3 casas; reserva ausente = 0). NÃO compara com
+// o saldo livre: reserva de outros Pedidos nunca reduz o aprovável. Em
+// condição normal (reserva íntegra) a aprovada é igual à solicitada; só um bug
+// de reserva reduz o item. Se `> 0`, debita por consumirFEFOTx (FEFO único) e
+// grava 1 Movimentação `tipo='baixa'` por fonte consumida
+// (inserirMovimentacaoConsumoTx; `lote_id` NULL para o legado,
+// `usuario_id`=o DECISOR, origem=Estoque do item) na MESMA transação;
+// `quantidadeAprovada` é sempre gravada em `pedido_itens`, mesmo quando 0.
+// Status final do cabeçalho: `'aprovado'` se TODOS os itens tiveram
+// `quantidadeAprovada == quantidade`; senão `'parcialmente_aprovado'` (inclui
+// 0 em TODOS os itens — o Almoxarife escolheu aprovar, não rejeitar; nunca
+// reclassificado como `'rejeitado'`). Débito, liberação das reservas
+// (liberarReservasPedidoTx) e decisão são atômicos.
 //
 // Sucesso: devolve a MESMA projeção de PedidoDetalhe (cabeçalho + itens,
 // cada um com `quantidadeAprovada` preenchido) — montada inteiramente com
@@ -619,46 +621,64 @@ func DecidirPedido(db *sql.DB, empresaID string, pedidoID, decisorID, papelDecis
 	novoStatus := "rejeitado"
 	itensResposta := make([]PedidoItem, 0, len(itens))
 	if aprovar {
-		const selectDisponivel = `
-			SELECT pe.quantidade FROM produto_estoque pe
-			JOIN produtos p ON p.id = pe.produto_id AND p.empresa_id = $3
-			JOIN estoques e ON e.id = pe.estoque_id AND e.empresa_id = $3
-			WHERE pe.produto_id = $1 AND pe.estoque_id = $2
-			FOR UPDATE OF pe`
-		const updateEstoque = `
-			UPDATE produto_estoque SET quantidade = quantidade - $1
-			WHERE produto_id = $2 AND estoque_id = $3`
-		const insertMovimentacao = `
-			INSERT INTO movimentacoes (produto_id, tipo, estoque_origem_id, quantidade, usuario_id, empresa_id)
-			VALUES ($1, 'baixa', $2, $3, $4, $5)`
+		const selectReserva = `
+			SELECT quantidade FROM reservas_pedido_item
+			WHERE pedido_id = $1 AND produto_id = $2 AND estoque_id = $3 AND empresa_id = $4`
 		const updateItem = `
 			UPDATE pedido_itens SET quantidade_aprovada = $1
 			WHERE pedido_id = $2 AND produto_id = $3 AND estoque_id = $4 AND empresa_id = $5`
 
+		// AD-10: trava o conjunto COMPLETO de pares ANTES de ler reserva/saldo
+		// e de qualquer escrita (travarSaldoParesTx ordena internamente).
+		pares := make([]ParSaldo, 0, len(itens))
+		for _, it := range itens {
+			pares = append(pares, ParSaldo{ProdutoID: it.ProdutoID, EstoqueID: it.EstoqueID})
+		}
+		if err := travarSaldoParesTx(tx, empresaID, pares); err != nil {
+			return PedidoDetalhe{}, fmt.Errorf("falha ao travar saldo dos pares na decisão: %w", err)
+		}
+
 		totalmenteAprovado := true
 		for _, it := range itens {
-			var disponivel float64
-			if err := tx.QueryRow(selectDisponivel, it.ProdutoID, it.EstoqueID, empresaID).Scan(&disponivel); err != nil {
+			var reserva float64
+			if err := tx.QueryRow(selectReserva, pedidoID, it.ProdutoID, it.EstoqueID, empresaID).Scan(&reserva); err != nil {
 				if !errors.Is(err, sql.ErrNoRows) {
-					return PedidoDetalhe{}, fmt.Errorf("falha ao travar linha de produto_estoque na decisão: %w", err)
+					return PedidoDetalhe{}, fmt.Errorf("falha ao ler reserva do item na decisão: %w", err)
 				}
-				disponivel = 0
+				reserva = 0
+			}
+			fisico, err := saldoFisicoParTx(tx, empresaID, it.ProdutoID, it.EstoqueID)
+			if err != nil {
+				return PedidoDetalhe{}, err
 			}
 
-			quantidadeAprovada := it.Quantidade
-			if disponivel < quantidadeAprovada {
-				quantidadeAprovada = disponivel
+			// Revalida contra a reserva do PRÓPRIO Pedido (limitada ao saldo
+			// físico), nunca contra o saldo livre.
+			quantidadeAprovada := arredondar3(it.Quantidade)
+			if r := arredondar3(reserva); r < quantidadeAprovada {
+				quantidadeAprovada = r
 			}
-			if quantidadeAprovada < it.Quantidade {
+			if f := arredondar3(fisico); f < quantidadeAprovada {
+				quantidadeAprovada = f
+			}
+			if quantidadeAprovada < 0 {
+				quantidadeAprovada = 0
+			}
+			if quantidadeAprovada < arredondar3(it.Quantidade) {
 				totalmenteAprovado = false
+			} else {
+				quantidadeAprovada = it.Quantidade
 			}
 
 			if quantidadeAprovada > 0 {
-				if _, err := tx.Exec(updateEstoque, quantidadeAprovada, it.ProdutoID, it.EstoqueID); err != nil {
-					return PedidoDetalhe{}, fmt.Errorf("falha ao debitar produto_estoque na decisão: %w", err)
+				consumos, err := consumirFEFOTx(tx, empresaID, it.ProdutoID, it.EstoqueID, quantidadeAprovada)
+				if err != nil {
+					return PedidoDetalhe{}, fmt.Errorf("falha ao debitar saldo por FEFO na decisão: %w", err)
 				}
-				if _, err := tx.Exec(insertMovimentacao, it.ProdutoID, it.EstoqueID, quantidadeAprovada, decisorID, empresaID); err != nil {
-					return PedidoDetalhe{}, fmt.Errorf("falha ao inserir movimentação de baixa na decisão: %w", err)
+				for _, c := range consumos {
+					if _, err := inserirMovimentacaoConsumoTx(tx, empresaID, "baixa", it.ProdutoID, it.EstoqueID, nil, decisorID, c); err != nil {
+						return PedidoDetalhe{}, err
+					}
 				}
 			}
 			if _, err := tx.Exec(updateItem, quantidadeAprovada, pedidoID, it.ProdutoID, it.EstoqueID, empresaID); err != nil {

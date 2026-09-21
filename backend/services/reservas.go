@@ -118,6 +118,32 @@ func saldoDisponivelParTx(q consultadorSQL, empresaID, produtoID, estoqueID stri
 	return disponivel, nil
 }
 
+// saldoFisicoParTx devolve o saldo FÍSICO do par: soma de `produto_estoque` e
+// `lotes`, SEM subtrair reservas, escopado à Empresa (ausência de linha = 0).
+// Base da revalidação de DecidirPedido (Story 11.5): a reserva do próprio
+// Pedido já é o direito ao saldo, então o livre não serve; o físico é só o
+// teto para o débito FEFO nunca faltar fonte. Chame DEPOIS de
+// travarSaldoParesTx na mesma transação.
+func saldoFisicoParTx(q consultadorSQL, empresaID, produtoID, estoqueID string) (float64, error) {
+	const consulta = `
+		SELECT
+			COALESCE((
+				SELECT SUM(pe.quantidade) FROM produto_estoque pe
+				JOIN produtos p ON p.id = pe.produto_id AND p.empresa_id = $3
+				JOIN estoques e ON e.id = pe.estoque_id AND e.empresa_id = $3
+				WHERE pe.produto_id = $1 AND pe.estoque_id = $2
+			), 0)
+			+ COALESCE((
+				SELECT SUM(l.quantidade) FROM lotes l
+				WHERE l.produto_id = $1 AND l.estoque_id = $2 AND l.empresa_id = $3
+			), 0)`
+	var fisico float64
+	if err := q.QueryRow(consulta, produtoID, estoqueID, empresaID).Scan(&fisico); err != nil {
+		return 0, fmt.Errorf("falha ao calcular saldo físico: %w", err)
+	}
+	return fisico, nil
+}
+
 // liberarReservasPedidoTx apaga todas as reservas do Pedido (liberar =
 // apagar) — chamado por DecidirPedido, na mesma transação da decisão.
 func liberarReservasPedidoTx(tx *sql.Tx, empresaID, pedidoID string) error {

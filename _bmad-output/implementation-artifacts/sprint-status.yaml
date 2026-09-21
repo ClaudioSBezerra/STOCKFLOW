@@ -125,7 +125,7 @@ development_status:
   11-2-migração-do-saldo-existente-para-lote-legado: awaiting-operator
   11-3-reserva-de-saldo-ao-enviar-pedido: done
   11-4-baixa-e-transferência-consomem-lote-automaticamente-e-respei: done
-  11-5-aprovação-de-pedido-revalida-contra-reserva-e-debita-lote: backlog
+  11-5-aprovação-de-pedido-revalida-contra-reserva-e-debita-lote: done
   11-6-estoque-e-quantidade-inicial-saem-do-cadastro-de-produto: backlog
   epic-11-retrospective: optional
 

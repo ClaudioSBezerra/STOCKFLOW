@@ -1342,6 +1342,347 @@ func TestDecidirPedido_OrdemLocksAscendenteSemDeadlock(t *testing.T) {
 	}
 }
 
+// --- DecidirPedido contra reserva + FEFO (Story 11.5) ------------------------
+
+// seedPedidoReservado semeia um Produto com `legado` em produto_estoque e
+// envia um Pedido de `qtd` para ele (a reserva nasce no envio). Lotes são
+// semeados ANTES do envio pelo `antes`, quando informado.
+func seedPedidoReservado(t *testing.T, db *sql.DB, nome, email string, legado, qtd float64, antes func(produtoID, estoqueID string)) (Pedido, string, string, string) {
+	t.Helper()
+	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, nome, legado)
+	if antes != nil {
+		antes(produtoID, estoqueID)
+	}
+	usuarioID := semearConta(t, db, nome+" U", email, PapelUsuario, 0)
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, qtd); err != nil {
+		t.Fatalf("seed AdicionarItemCarrinho (%s): %v", nome, err)
+	}
+	pedido, err := SubmeterPedido(db, empresaTeste, usuarioID, "Sol 115", "Obra 115", "")
+	if err != nil {
+		t.Fatalf("seed SubmeterPedido (%s): %v", nome, err)
+	}
+	return pedido, produtoID, estoqueID, usuarioID
+}
+
+func TestDecidirPedido_AprovaSaldoSoEmLotesPorFEFO(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	almoxID := semearConta(t, db, "D115 Lotes Almox", "d115-lotes-decisor@empresa.com", PapelAlmoxarife, 0)
+	agora := time.Now()
+	var l1, l2 string
+	pedido, produtoID, estoqueID, _ := seedPedidoReservado(t, db, "D115 Lotes", "d115-lotes@empresa.com", 0, 5, func(p, e string) {
+		// criado fora da ordem de validade: FEFO deve ignorar a criação
+		l2 = seedLote(t, db, p, e, 4, "2026-10-01", agora.Add(-2*time.Hour))
+		l1 = seedLote(t, db, p, e, 3, "2026-08-01", agora.Add(-1*time.Hour))
+	})
+
+	det, err := DecidirPedido(db, empresaTeste, pedido.ID, almoxID, PapelAlmoxarife, true)
+	if err != nil {
+		t.Fatalf("DecidirPedido: %v", err)
+	}
+	if det.Status != "aprovado" || det.Itens[0].QuantidadeAprovada == nil || *det.Itens[0].QuantidadeAprovada != 5 {
+		t.Fatalf("det = %+v, want aprovado com 5", det)
+	}
+	if q := qtdLote(t, db, l1); q != 0 {
+		t.Errorf("lote 08/2026 = %v, want 0", q)
+	}
+	if q := qtdLote(t, db, l2); q != 2 {
+		t.Errorf("lote 10/2026 = %v, want 2", q)
+	}
+	movs := movsDoProduto(t, db, produtoID)
+	if len(movs) != 2 {
+		t.Fatalf("movimentações = %+v, want 2", movs)
+	}
+	for _, m := range movs {
+		if m.Tipo != "baixa" || !m.LoteID.Valid || m.Destino.Valid {
+			t.Errorf("mov = %+v, want baixa com lote_id e sem destino", m)
+		}
+	}
+	if movs[0].Quantidade+movs[1].Quantidade != 5 {
+		t.Errorf("soma das movimentações = %+v, want 5", movs)
+	}
+	if n := contarReservasPedido(t, db, pedido.ID); n != 0 {
+		t.Errorf("reservas = %d, want 0", n)
+	}
+	var usuarioMov string
+	if err := db.QueryRow(`SELECT DISTINCT usuario_id FROM movimentacoes WHERE produto_id = $1`, produtoID).Scan(&usuarioMov); err != nil || usuarioMov != almoxID {
+		t.Errorf("usuario_id da movimentação = %q (%v), want decisor %q", usuarioMov, err, almoxID)
+	}
+	_ = estoqueID
+}
+
+func TestDecidirPedido_LegadoMaisLotesSegueFEFO(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	almoxID := semearConta(t, db, "D115 Mix Almox", "d115-mix-decisor@empresa.com", PapelAlmoxarife, 0)
+	agora := time.Now()
+	var datado, semVal string
+	pedido, produtoID, estoqueID, _ := seedPedidoReservado(t, db, "D115 Mix", "d115-mix@empresa.com", 3, 6, func(p, e string) {
+		datado = seedLote(t, db, p, e, 2, "2999-01-01", agora.Add(-2*time.Hour))
+		semVal = seedLote(t, db, p, e, 4, "", agora.Add(-3*time.Hour))
+	})
+	det, err := DecidirPedido(db, empresaTeste, pedido.ID, almoxID, PapelAlmoxarife, true)
+	if err != nil {
+		t.Fatalf("DecidirPedido: %v", err)
+	}
+	if det.Status != "aprovado" {
+		t.Errorf("status = %q, want aprovado", det.Status)
+	}
+	if q := qtdLote(t, db, datado); q != 0 {
+		t.Errorf("lote datado = %v, want 0", q)
+	}
+	if q := saldoProdutoEstoque(t, db, produtoID, estoqueID); q != 0 {
+		t.Errorf("legado = %v, want 0", q)
+	}
+	if q := qtdLote(t, db, semVal); q != 3 {
+		t.Errorf("lote sem validade = %v, want 3 (4 - 1)", q)
+	}
+	movs := movsDoProduto(t, db, produtoID)
+	if len(movs) != 3 {
+		t.Fatalf("movimentações = %+v, want 3 (datado, legado, sem validade)", movs)
+	}
+}
+
+func TestDecidirPedido_ReservaDeOutroPedidoNaoBloqueia(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	almoxID := semearConta(t, db, "D115 Outro Almox", "d115-outro-decisor@empresa.com", PapelAlmoxarife, 0)
+	pedidoA, produtoID, estoqueID, _ := seedPedidoReservado(t, db, "D115 Outro", "d115-outro-a@empresa.com", 10, 4, nil)
+	uB := semearConta(t, db, "D115 Outro B", "d115-outro-b@empresa.com", PapelUsuario, 1)
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, uB, produtoID, estoqueID, 6); err != nil {
+		t.Fatal(err)
+	}
+	pedidoB, err := SubmeterPedido(db, empresaTeste, uB, "Sol B", "Obra B", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := disponivelDoPar(t, db, produtoID, estoqueID); d != 0 {
+		t.Fatalf("disponível = %v, want 0", d)
+	}
+
+	det, err := DecidirPedido(db, empresaTeste, pedidoA.ID, almoxID, PapelAlmoxarife, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if det.Status != "aprovado" || *det.Itens[0].QuantidadeAprovada != 4 {
+		t.Errorf("A: %+v, want aprovado com 4", det)
+	}
+	if q := saldoProdutoEstoque(t, db, produtoID, estoqueID); q != 6 {
+		t.Errorf("físico = %v, want 6", q)
+	}
+	// A reserva de B permanece intacta e B também é aprovável.
+	if n := contarReservasPedido(t, db, pedidoB.ID); n != 1 {
+		t.Errorf("reservas de B = %d, want 1", n)
+	}
+	detB, err := DecidirPedido(db, empresaTeste, pedidoB.ID, almoxID, PapelAlmoxarife, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detB.Status != "aprovado" {
+		t.Errorf("B status = %q, want aprovado", detB.Status)
+	}
+	if q := saldoProdutoEstoque(t, db, produtoID, estoqueID); q != 0 {
+		t.Errorf("físico final = %v, want 0", q)
+	}
+}
+
+func TestDecidirPedido_BugDeReserva(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	almoxID := semearConta(t, db, "D115 Bug Almox", "d115-bug-decisor@empresa.com", PapelAlmoxarife, 0)
+
+	t.Run("sem reserva", func(t *testing.T) {
+		pedido, produtoID, estoqueID, _ := seedPedidoReservado(t, db, "D115 Bug Sem", "d115-bug-sem@empresa.com", 10, 4, nil)
+		if _, err := db.Exec(`DELETE FROM reservas_pedido_item WHERE pedido_id = $1`, pedido.ID); err != nil {
+			t.Fatal(err)
+		}
+		det, err := DecidirPedido(db, empresaTeste, pedido.ID, almoxID, PapelAlmoxarife, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if det.Status != "parcialmente_aprovado" || *det.Itens[0].QuantidadeAprovada != 0 {
+			t.Errorf("det = %+v, want parcialmente_aprovado com 0", det)
+		}
+		if n := contarMovimentacoes(t, db, produtoID); n != 0 {
+			t.Errorf("movimentações = %d, want 0", n)
+		}
+		if q := saldoProdutoEstoque(t, db, produtoID, estoqueID); q != 10 {
+			t.Errorf("físico = %v, want 10", q)
+		}
+		var gravada float64
+		if err := db.QueryRow(`SELECT quantidade_aprovada FROM pedido_itens WHERE pedido_id = $1`, pedido.ID).Scan(&gravada); err != nil || gravada != 0 {
+			t.Errorf("quantidade_aprovada gravada = %v (%v), want 0", gravada, err)
+		}
+	})
+
+	t.Run("reserva menor que o solicitado", func(t *testing.T) {
+		pedido, produtoID, estoqueID, _ := seedPedidoReservado(t, db, "D115 Bug Menor", "d115-bug-menor@empresa.com", 10, 4, nil)
+		if _, err := db.Exec(`UPDATE reservas_pedido_item SET quantidade = 3 WHERE pedido_id = $1`, pedido.ID); err != nil {
+			t.Fatal(err)
+		}
+		det, err := DecidirPedido(db, empresaTeste, pedido.ID, almoxID, PapelAlmoxarife, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if det.Status != "parcialmente_aprovado" || *det.Itens[0].QuantidadeAprovada != 3 {
+			t.Errorf("det = %+v, want parcialmente_aprovado com 3", det)
+		}
+		if q := saldoProdutoEstoque(t, db, produtoID, estoqueID); q != 7 {
+			t.Errorf("físico = %v, want 7", q)
+		}
+	})
+
+	t.Run("fisico abaixo da reserva", func(t *testing.T) {
+		pedido, produtoID, estoqueID, _ := seedPedidoReservado(t, db, "D115 Bug Fisico", "d115-bug-fisico@empresa.com", 10, 10, nil)
+		if _, err := db.Exec(`UPDATE produto_estoque SET quantidade = 4 WHERE produto_id = $1 AND estoque_id = $2`, produtoID, estoqueID); err != nil {
+			t.Fatal(err)
+		}
+		det, err := DecidirPedido(db, empresaTeste, pedido.ID, almoxID, PapelAlmoxarife, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if det.Status != "parcialmente_aprovado" || *det.Itens[0].QuantidadeAprovada != 4 {
+			t.Errorf("det = %+v, want parcialmente_aprovado com 4", det)
+		}
+		if q := saldoProdutoEstoque(t, db, produtoID, estoqueID); q != 0 {
+			t.Errorf("físico = %v, want 0", q)
+		}
+		if n := contarReservasPedido(t, db, pedido.ID); n != 0 {
+			t.Errorf("reservas = %d, want 0", n)
+		}
+	})
+}
+
+// TestDecidirPedido_FalhaNaMovimentacaoDesfazTudo prova a atomicidade: se a
+// Movimentação falha (decisor inexistente -> FK), o débito FEFO, a decisão e a
+// liberação da reserva são desfeitos.
+func TestDecidirPedido_FalhaNaMovimentacaoDesfazTudo(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	pedido, produtoID, estoqueID, _ := seedPedidoReservado(t, db, "D115 Rollback", "d115-rollback@empresa.com", 10, 4, nil)
+
+	_, err := DecidirPedido(db, empresaTeste, pedido.ID, "00000000-0000-0000-0000-000000000001", PapelAlmoxarife, true)
+	if err == nil {
+		t.Fatal("DecidirPedido com decisor inexistente deveria falhar")
+	}
+	if q := saldoProdutoEstoque(t, db, produtoID, estoqueID); q != 10 {
+		t.Errorf("físico = %v, want 10 (rollback do débito)", q)
+	}
+	if n := contarReservasPedido(t, db, pedido.ID); n != 1 {
+		t.Errorf("reservas = %d, want 1 (rollback da liberação)", n)
+	}
+	var status string
+	if err := db.QueryRow(`SELECT status FROM pedidos WHERE id = $1`, pedido.ID).Scan(&status); err != nil || status != "pendente" {
+		t.Errorf("status = %q (%v), want pendente", status, err)
+	}
+	if n := contarMovimentacoes(t, db, produtoID); n != 0 {
+		t.Errorf("movimentações = %d, want 0", n)
+	}
+}
+
+// TestDecidirPedido_ConcorrentesSoEmLotesDebitaUmaVez: duas aprovações do
+// MESMO Pedido com saldo só em Lotes — só a primeira vence e o débito é único.
+func TestDecidirPedido_ConcorrentesSoEmLotesDebitaUmaVez(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	almoxID := semearConta(t, db, "D115 Conc Almox", "d115-conc-decisor@empresa.com", PapelAlmoxarife, 0)
+	var lote string
+	pedido, produtoID, _, _ := seedPedidoReservado(t, db, "D115 Conc", "d115-conc@empresa.com", 0, 4, func(p, e string) {
+		lote = seedLote(t, db, p, e, 10, "2999-01-01", time.Now())
+	})
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, errs[i] = DecidirPedido(db, empresaTeste, pedido.ID, almoxID, PapelAlmoxarife, true)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	sucessos, conflitos := 0, 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			sucessos++
+		case errors.Is(err, ErrPedidoNaoPendente):
+			conflitos++
+		default:
+			t.Fatalf("erro inesperado: %v", err)
+		}
+	}
+	if sucessos != 1 || conflitos != 1 {
+		t.Fatalf("sucessos=%d conflitos=%d, want 1 e 1", sucessos, conflitos)
+	}
+	if q := qtdLote(t, db, lote); q != 6 {
+		t.Errorf("lote = %v, want 6 (10 - 4, uma vez)", q)
+	}
+	if n := contarMovimentacoes(t, db, produtoID); n != 1 {
+		t.Errorf("movimentações = %d, want 1", n)
+	}
+}
+
+// TestDecidirPedido_LocksOpostosComLotesSemDeadlock: dois Pedidos com os
+// mesmos pares (saldo em Lotes) e itens em ordens opostas, decididos em
+// paralelo, nunca dão deadlock (40P01).
+func TestDecidirPedido_LocksOpostosComLotesSemDeadlock(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	almoxID := semearConta(t, db, "D115 Locks Almox", "d115-locks-decisor@empresa.com", PapelAlmoxarife, 0)
+	u1 := semearConta(t, db, "D115 Locks U1", "d115-locks-u1@empresa.com", PapelUsuario, 0)
+	u2 := semearConta(t, db, "D115 Locks U2", "d115-locks-u2@empresa.com", PapelUsuario, 0)
+	pA, eA, _ := seedProdutoComSaldo(t, db, "D115 Locks A", 0)
+	pB, eB, _ := seedProdutoComSaldo(t, db, "D115 Locks B", 0)
+
+	for i := 0; i < 8; i++ {
+		seedLote(t, db, pA, eA, 20, "2999-01-01", time.Now())
+		seedLote(t, db, pB, eB, 20, "2999-01-01", time.Now())
+		enviar := func(u string, primeiro, segundo [2]string) Pedido {
+			if _, err := AdicionarItemCarrinho(db, empresaTeste, u, primeiro[0], primeiro[1], 1); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := AdicionarItemCarrinho(db, empresaTeste, u, segundo[0], segundo[1], 1); err != nil {
+				t.Fatal(err)
+			}
+			p, err := SubmeterPedido(db, empresaTeste, u, "Sol", "Obra", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}
+		p1 := enviar(u1, [2]string{pB, eB}, [2]string{pA, eA})
+		p2 := enviar(u2, [2]string{pA, eA}, [2]string{pB, eB})
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		errs := make([]error, 2)
+		for k, id := range []string{p1.ID, p2.ID} {
+			wg.Add(1)
+			go func(k int, id string) {
+				defer wg.Done()
+				<-start
+				_, errs[k] = DecidirPedido(db, empresaTeste, id, almoxID, PapelAlmoxarife, true)
+			}(k, id)
+		}
+		close(start)
+		wg.Wait()
+		for _, err := range errs {
+			var pqErr *pq.Error
+			if errors.As(err, &pqErr) && pqErr.Code == "40P01" {
+				t.Fatalf("iteração %d: deadlock 40P01: %v", i, err)
+			}
+			if err != nil {
+				t.Fatalf("iteração %d: erro inesperado: %v", i, err)
+			}
+		}
+	}
+}
+
 // --- Recibo do Pedido em PDF — Story 7.6, spec-7-6 -------------------------
 
 // TestMontarReciboPedidoConteudo_ConteudoCorreto cobre a AC "conteúdo do
