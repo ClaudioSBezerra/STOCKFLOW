@@ -148,6 +148,14 @@ const insertPedidoItem = `
 		estoque_id, estoque_nome, quantidade, quantidade_aprovada, empresa_id
 	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
 
+// insertReservaPedidoItem mantém a invariante da Story 11.3 ("Pedido
+// pendente => saldo reservado") para Pedidos legados ainda pendentes: uma
+// reserva por item, espelhando o backfill da migration 000043. Pedidos
+// decididos não reservam nada.
+const insertReservaPedidoItem = `
+	INSERT INTO reservas_pedido_item (pedido_id, produto_id, estoque_id, quantidade, empresa_id)
+	VALUES ($1, $2, $3, $4, $5)`
+
 // migrarPedidos é o ponto testável da migração de Pedidos legados. `alvo` é
 // o pool para o schema novo (DATABASE_URL); `legado` é o pool para o espelho
 // do Firestore (LEGADO_DATABASE_URL).
@@ -545,6 +553,14 @@ func migrarPedidos(alvo, legado *sql.DB, empresaID string, executar bool) (Resul
 				item.estoqueID, item.estoqueNome, item.quantidade, item.quantidadeAprovada, empresaID,
 			); err != nil {
 				return res, fmt.Errorf("falha ao inserir item do pedido id_legado=%s: %w", p.id, err)
+			}
+			if r.status == "pendente" {
+				if _, err := tx.Exec(
+					insertReservaPedidoItem,
+					pedidoNovoID, item.produtoID, item.estoqueID, item.quantidade, empresaID,
+				); err != nil {
+					return res, fmt.Errorf("falha ao reservar saldo do pedido id_legado=%s: %w", p.id, err)
+				}
 			}
 		}
 

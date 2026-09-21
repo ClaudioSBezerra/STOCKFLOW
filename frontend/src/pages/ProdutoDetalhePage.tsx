@@ -114,7 +114,8 @@ import {
  * usuário autenticado (`usuario`+, sem gate de papel — ao contrário de
  * Baixa/Transferir), primeiro ponto de entrada da AC1. Desabilitado
  * (`disabled`, mesmo tratamento visual `disabled:opacity-50` de qualquer
- * outro botão deste app) quando `linha.quantidade <= 0` — sem isso o
+ * outro botão deste app) quando `linha.disponivel <= 0` (Story 11.3: saldo
+ * físico menos reservas de Pedidos pendentes) — sem isso o
  * Usuário abriria o diálogo só para levar um 409 depois de um round-trip ao
  * servidor por uma linha que já mostra "0" na tabela. Abre um `Dialog`
  * (estado `carrinhoEstoque`) com um `Input type="number"` — molde exato do
@@ -149,6 +150,18 @@ interface EstoqueQuantidade {
   // Story 11.1: Lotes do par (só no detalhe; ausente quando o Estoque não tem
   // Lote nem saldo legado).
   lotes?: LoteSaldo[];
+  // Story 11.3: saldo reservado por Pedidos pendentes e o restante
+  // disponível (`max(saldo − reservada, 0)`).
+  reservada: number;
+  disponivel: number;
+}
+
+// Story 11.3: um Pedido pendente que reserva saldo de um par (Produto, Estoque).
+interface ReservaSaldo {
+  pedidoId: string;
+  solicitante: string;
+  quantidade: number;
+  criadoEm: string;
 }
 
 // formatarDataValidade converte "YYYY-MM-DD" em "DD/MM/YYYY" sem passar por
@@ -156,6 +169,13 @@ interface EstoqueQuantidade {
 function formatarDataValidade(iso: string): string {
   const [ano, mes, dia] = iso.split('-');
   return `${dia}/${mes}/${ano}`;
+}
+
+// formatarDataPedido converte o timestamp ISO do Pedido em dd/mm/aaaa (pt-BR).
+function formatarDataPedido(iso: string): string {
+  const data = new Date(iso);
+  if (Number.isNaN(data.getTime())) return iso;
+  return data.toLocaleDateString('pt-BR');
 }
 
 function ListaLotes({ lotes }: { lotes: LoteSaldo[] }) {
@@ -188,6 +208,8 @@ interface ProdutoDetalhe {
   categoria: CategoriaDetalhe;
   dimensoes: Dimensoes;
   quantidadeTotal: number;
+  quantidadeReservada: number;
+  quantidadeDisponivel: number;
   disponivel: boolean;
   porEstoque: EstoqueQuantidade[];
 }
@@ -203,6 +225,8 @@ type ErroDetalhe = 'nao-encontrado' | 'generico';
 const MENSAGEM_ERRO = 'Não foi possível carregar o produto agora. Tente novamente em instantes.';
 const MENSAGEM_NAO_ENCONTRADO = 'Produto não encontrado.';
 const MENSAGEM_SEM_ESTOQUE_REGISTRADO = 'Sem quantidade registrada por estoque.';
+const MENSAGEM_ERRO_RESERVAS =
+  'Não foi possível carregar os pedidos que reservaram este saldo. Feche e tente novamente.';
 const MENSAGEM_ERRO_BAIXA = 'Não foi possível registrar a baixa agora. Tente novamente em instantes.';
 const MENSAGEM_ERRO_TRANSFERENCIA =
   'Não foi possível registrar a transferência agora. Tente novamente em instantes.';
@@ -262,6 +286,19 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
   const [quantidadeCarrinho, setQuantidadeCarrinho] = useState('');
   const [enviandoCarrinho, setEnviandoCarrinho] = useState(false);
   const [erroCarrinho, setErroCarrinho] = useState<string | null>(null);
+
+  // Diálogo "quem reservou" (Story 11.3): `reservasEstoque` guarda a linha
+  // alvo; a lista vem de GET /api/produtos/{id}/estoques/{estoqueId}/reservas
+  // buscada quando o valor reservado é clicado.
+  const [reservasEstoque, setReservasEstoque] = useState<EstoqueQuantidade | null>(null);
+  const [reservas, setReservas] = useState<ReservaSaldo[] | null>(null);
+  const [erroReservas, setErroReservas] = useState<string | null>(null);
+  // `reservasSeqRef` descarta respostas obsoletas (fechar/reabrir em outro
+  // Estoque, ou refetch mais novo); `reservasAbertaRef` guarda o estoqueId do
+  // diálogo aberto (null = fechado) para o refetch disparado pelo recarregar
+  // do detalhe sem depender de estado no efeito.
+  const reservasSeqRef = useRef(0);
+  const reservasAbertaRef = useRef<string | null>(null);
 
   // Diálogo de Transferir (Story 5.2): `transferenciaEstoque` guarda a linha
   // de ORIGEM alvo — `null` fecha o diálogo. A lista de Estoques destino
@@ -333,6 +370,57 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
     }
   }, []);
 
+  // carregarReservas busca a lista de Pedidos pendentes com reserva do par
+  // (Story 11.3, FR-50). Só a chamada MAIS RECENTE aplica resultado ou erro —
+  // uma resposta lenta de um Estoque anterior nunca sobrescreve o estado novo.
+  const carregarReservas = useCallback(
+    async (estoqueId: string) => {
+      const seq = ++reservasSeqRef.current;
+      try {
+        const res = await fetch(apiUrl(`/api/produtos/${id}/estoques/${estoqueId}/reservas`), {
+          headers: authHeaders(),
+        });
+        if (seq !== reservasSeqRef.current) return;
+        if (!res.ok) {
+          setErroReservas(MENSAGEM_ERRO_RESERVAS);
+          return;
+        }
+        const body = (await res.json()) as { reservas: ReservaSaldo[] };
+        if (seq !== reservasSeqRef.current) return;
+        setErroReservas(null);
+        setReservas(body.reservas);
+      } catch {
+        if (seq === reservasSeqRef.current) {
+          setErroReservas(MENSAGEM_ERRO_RESERVAS);
+        }
+      }
+    },
+    [id],
+  );
+
+  // Quando o detalhe é recarregado (evento SSE `produtos`, reconexão, ação do
+  // próprio usuário) com o diálogo de reservas aberto, refaz a lista do
+  // Estoque aberto; se o Estoque sumiu do detalhe, fecha o diálogo. Reservada
+  // 0 mantém o diálogo aberto e a lista refeita mostra "nenhum pedido".
+  const sincronizarReservas = useCallback(
+    (detalhe: ProdutoDetalhe) => {
+      const aberto = reservasAbertaRef.current;
+      if (aberto === null) return;
+      const linha = detalhe.porEstoque.find((l) => l.estoqueId === aberto);
+      if (!linha) {
+        reservasAbertaRef.current = null;
+        reservasSeqRef.current += 1;
+        setReservasEstoque(null);
+        setReservas(null);
+        setErroReservas(null);
+        return;
+      }
+      setReservasEstoque(linha);
+      void carregarReservas(aberto);
+    },
+    [carregarReservas],
+  );
+
   // carregarDetalhe é o ÚNICO caminho de busca do Produto — chamado tanto na
   // primeira conexão SSE quanto em qualquer reconexão/refetch por evento
   // (ver doc do componente acima). Incrementa `seqRef` a cada chamada: uma
@@ -354,6 +442,7 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
       const data = (await res.json()) as { produto: ProdutoDetalhe };
       if (seq !== seqRef.current) return;
       setProduto(data.produto);
+      sincronizarReservas(data.produto);
       await carregarFotos(id, seq);
     } catch {
       if (seq === seqRef.current) {
@@ -364,7 +453,23 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
         setCarregando(false);
       }
     }
-  }, [id, carregarFotos]);
+  }, [id, carregarFotos, sincronizarReservas]);
+
+  function abrirReservas(linha: EstoqueQuantidade) {
+    reservasAbertaRef.current = linha.estoqueId;
+    setReservasEstoque(linha);
+    setReservas(null);
+    setErroReservas(null);
+    void carregarReservas(linha.estoqueId);
+  }
+
+  function fecharReservas() {
+    reservasAbertaRef.current = null;
+    reservasSeqRef.current += 1; // invalida qualquer resposta em voo
+    setReservasEstoque(null);
+    setReservas(null);
+    setErroReservas(null);
+  }
 
   // confirmarBaixa envia POST /api/produtos/{id}/estoques/{estoqueId}/baixa
   // para a linha guardada em `baixaEstoque` (molde exato do POST de
@@ -432,7 +537,7 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
         setErroCarrinho(resultado.mensagem);
         return;
       }
-      toast.success('Item adicionado ao carrinho.');
+      toast.success('Item adicionado ao carrinho. O saldo só é reservado ao enviar o Pedido.');
       setCarrinhoEstoque(null);
       setQuantidadeCarrinho('');
     } finally {
@@ -623,12 +728,25 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
                         <span>{linha.estoqueNome}</span>
                         <span className="flex items-center gap-3">
                           <span className="tabular-nums">{formatarQuantidade(linha.quantidade)}</span>
+                          <span className="text-label text-muted-foreground tabular-nums">
+                            Disponível: {formatarQuantidade(linha.disponivel)}
+                          </span>
+                          {linha.reservada > 0 && (
+                            <button
+                              type="button"
+                              className="text-label tabular-nums underline underline-offset-2"
+                              aria-label={`Saldo reservado: ${formatarQuantidade(linha.reservada)} — ver pedidos em ${linha.estoqueNome}`}
+                              onClick={() => abrirReservas(linha)}
+                            >
+                              Saldo reservado: {formatarQuantidade(linha.reservada)}
+                            </button>
+                          )}
                           <Button
                             type="button"
                             variant="outline"
                             size="sm"
                             aria-label={`Adicionar ao Carrinho em ${linha.estoqueNome}`}
-                            disabled={linha.quantidade <= 0}
+                            disabled={linha.disponivel <= 0}
                             onClick={() => {
                               setCarrinhoEstoque(linha);
                               setQuantidadeCarrinho('');
@@ -674,6 +792,8 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
               )}
               <p className="text-label text-muted-foreground">
                 Total: {formatarQuantidade(produto.quantidadeTotal)}
+                {produto.quantidadeReservada > 0 &&
+                  ` — Reservado: ${formatarQuantidade(produto.quantidadeReservada)} — Disponível: ${formatarQuantidade(produto.quantidadeDisponivel)}`}
               </p>
             </div>
 
@@ -746,6 +866,10 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
           <DialogHeader>
             <DialogTitle>Adicionar ao Carrinho — {carrinhoEstoque?.estoqueNome}</DialogTitle>
           </DialogHeader>
+          <p className="text-label text-muted-foreground">
+            Adicionar ao carrinho não trava saldo: o saldo só fica reservado depois que o pedido for
+            enviado.
+          </p>
           <form
             className="flex flex-col gap-4"
             onSubmit={(event) => {
@@ -774,6 +898,50 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Quem reservou (Story 11.3): lista de Pedidos pendentes/solicitantes
+          com reserva do par (Produto, Estoque). Só leitura. */}
+      <Dialog
+        open={reservasEstoque !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            fecharReservas();
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Saldo reservado — {reservasEstoque?.estoqueNome}</DialogTitle>
+          </DialogHeader>
+          {erroReservas && (
+            <p role="alert" className="text-body text-destructive">
+              {erroReservas}
+            </p>
+          )}
+          {!erroReservas && reservas === null && (
+            <output className="text-body text-muted-foreground">Carregando reservas...</output>
+          )}
+          {reservas !== null && reservas.length === 0 && (
+            <p className="text-body text-muted-foreground">Nenhum pedido reserva este saldo.</p>
+          )}
+          {reservas !== null && reservas.length > 0 && (
+            <ul className="flex flex-col gap-1" aria-label="Pedidos com saldo reservado">
+              {reservas.map((reserva) => (
+                <li key={reserva.pedidoId} className="text-body flex justify-between gap-4">
+                  <span className="flex flex-col">
+                    <span>{reserva.solicitante}</span>
+                    <span className="text-label text-muted-foreground">
+                      Pedido <span className="font-mono">{reserva.pedidoId.slice(0, 8)}</span> —{' '}
+                      {formatarDataPedido(reserva.criadoEm)}
+                    </span>
+                  </span>
+                  <span className="tabular-nums">{formatarQuantidade(reserva.quantidade)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
         </DialogContent>
       </Dialog>
 

@@ -36,6 +36,10 @@ type Pedido struct {
 	// Story 7.6 depois — o frontend desta story não exibe estes campos).
 	DecididoPor *string    `json:"decididoPor"`
 	DecididoEm  *time.Time `json:"decididoEm"`
+	// ProdutoIDs (Story 11.3): ids dos Produtos dos itens, preenchido só por
+	// SubmeterPedido para o handler publicar `produtos` (updated) — nunca
+	// serializado.
+	ProdutoIDs []string `json:"-"`
 }
 
 // PedidoItem é uma linha do SNAPSHOT imutável em `pedido_itens` (AD-17,
@@ -149,12 +153,12 @@ func (e *ErroPedidoIndisponivel) Error() string {
 // escrito.
 //
 // Só então abre a transação de escrita: os pares (produto_id, estoque_id)
-// dos itens são ordenados ascendentemente (molde de RegistrarTransferencia,
-// movimentacoes.go — AD-10 do epic-7-context.md) e travados um a um via
-// `SELECT ... FOR UPDATE`, revalidando `quantidade <= disponível` no
-// momento do envio — NUNCA confia no snapshot da montagem do carrinho
-// (Always, spec-7-2). Ausência de linha em produto_estoque colapsa em
-// "0 disponível", mesmo colapso de RegistrarBaixa. Qualquer item
+// dos itens são ordenados ascendentemente (AD-10 do epic-7-context.md) e
+// travados (produto_estoque e lotes, travarSaldoParesTx), revalidando
+// `quantidade <= disponível` no momento do envio — NUNCA confia no snapshot
+// da montagem do carrinho (Always, spec-7-2). O disponível (Story 11.3) é
+// saldoDisponivelParTx: produto_estoque + lotes − reservas ativas; ausência
+// de linha colapsa em "0 disponível". Qualquer item
 // insuficiente -> &ErroPedidoIndisponivel{Itens: [...]} com TODOS os itens
 // insuficientes (não só o primeiro), rollback da transação inteira — nada é
 // debitado, nada é gravado (Never, spec-7-2: o débito real é da Story 7.5).
@@ -162,7 +166,8 @@ func (e *ErroPedidoIndisponivel) Error() string {
 // Caso contrário: insere `pedidos` (status default 'pendente'), insere uma
 // linha de `pedido_itens` por item com o SNAPSHOT de nome/estoque (já
 // resolvidos por ListarCarrinho) e `categoria_nome` via join com
-// `categorias` (Code Map de spec-7-2), esvazia `carrinho_itens` do usuário
+// `categorias` (Code Map de spec-7-2), insere UMA reserva por item em
+// `reservas_pedido_item` (Story 11.3), esvazia `carrinho_itens` do usuário
 // e commita — tudo na MESMA transação (Always, spec-7-2).
 func SubmeterPedido(db *sql.DB, empresaID string, usuarioID, solicitante, obraCentroCusto, observacao string) (Pedido, error) {
 	solicitanteTrim := strings.TrimSpace(solicitante)
@@ -201,25 +206,22 @@ func SubmeterPedido(db *sql.DB, empresaID string, usuarioID, solicitante, obraCe
 	}
 	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
 
-	// Os dois JOINs escopam a linha travada à Empresa da requisição (Story
-	// 9.1, AD-20); `FOR UPDATE OF pe` trava só `produto_estoque`. Um Produto
-	// ou Estoque de outra Empresa cai no mesmo `sql.ErrNoRows` de "par sem
-	// saldo" -> `disponivel = 0`, sem revelar existência.
-	const selectDisponivel = `
-		SELECT pe.quantidade FROM produto_estoque pe
-		JOIN produtos p ON p.id = pe.produto_id AND p.empresa_id = $3
-		JOIN estoques e ON e.id = pe.estoque_id AND e.empresa_id = $3
-		WHERE pe.produto_id = $1 AND pe.estoque_id = $2
-		FOR UPDATE OF pe`
+	// Story 11.3 (AD-25): trava produto_estoque e lotes dos pares (ordem
+	// canônica, AD-10) e SÓ ENTÃO lê o saldo DISPONÍVEL (físico − reservas
+	// ativas) — a mesma função que o carrinho usa. Par sem saldo em nenhuma
+	// tabela (ou de outra Empresa) = 0 disponível, sem revelar existência.
+	pares := make([]ParSaldo, 0, len(itensOrdenados))
+	for _, item := range itensOrdenados {
+		pares = append(pares, ParSaldo{ProdutoID: item.ProdutoID, EstoqueID: item.EstoqueID})
+	}
+	if err := travarSaldoParesTx(tx, empresaID, pares); err != nil {
+		return Pedido{}, fmt.Errorf("falha ao travar saldo no envio do pedido: %w", err)
+	}
 	var indisponiveis []string
 	for _, item := range itensOrdenados {
-		var disponivel float64
-		if err := tx.QueryRow(selectDisponivel, item.ProdutoID, item.EstoqueID, empresaID).Scan(&disponivel); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				disponivel = 0
-			} else {
-				return Pedido{}, fmt.Errorf("falha ao travar linha de produto_estoque no envio do pedido: %w", err)
-			}
+		disponivel, err := saldoDisponivelParTx(tx, empresaID, item.ProdutoID, item.EstoqueID)
+		if err != nil {
+			return Pedido{}, fmt.Errorf("falha ao calcular disponível no envio do pedido: %w", err)
 		}
 		if item.Quantidade > disponivel {
 			indisponiveis = append(indisponiveis, item.ProdutoNome)
@@ -257,6 +259,9 @@ func SubmeterPedido(db *sql.DB, empresaID string, usuarioID, solicitante, obraCe
 	const insertItem = `
 		INSERT INTO pedido_itens (pedido_id, produto_id, produto_nome, categoria_nome, estoque_id, estoque_nome, quantidade, empresa_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
+	const insertReserva = `
+		INSERT INTO reservas_pedido_item (pedido_id, produto_id, estoque_id, quantidade, empresa_id)
+		VALUES ($1, $2, $3, $4, $5)`
 	for _, item := range itensOrdenados {
 		var categoriaNome string
 		if err := tx.QueryRow(selectCategoriaNome, item.ProdutoID, empresaID).Scan(&categoriaNome); err != nil {
@@ -268,6 +273,9 @@ func SubmeterPedido(db *sql.DB, empresaID string, usuarioID, solicitante, obraCe
 		); err != nil {
 			return Pedido{}, fmt.Errorf("falha ao inserir item de pedido: %w", err)
 		}
+		if _, err := tx.Exec(insertReserva, pedido.ID, item.ProdutoID, item.EstoqueID, item.Quantidade, empresaID); err != nil {
+			return Pedido{}, fmt.Errorf("falha ao reservar saldo do item de pedido: %w", err)
+		}
 	}
 
 	if _, err := tx.Exec(`DELETE FROM carrinho_itens WHERE usuario_id = $1`, usuarioID); err != nil {
@@ -276,6 +284,9 @@ func SubmeterPedido(db *sql.DB, empresaID string, usuarioID, solicitante, obraCe
 
 	if err := tx.Commit(); err != nil {
 		return Pedido{}, fmt.Errorf("falha ao commitar envio de pedido: %w", err)
+	}
+	for _, item := range itensOrdenados {
+		pedido.ProdutoIDs = append(pedido.ProdutoIDs, item.ProdutoID)
 	}
 
 	return pedido, nil
@@ -711,6 +722,13 @@ func DecidirPedido(db *sql.DB, empresaID string, pedidoID, decisorID, papelDecis
 			return PedidoDetalhe{}, ErrPedidoNaoPendente
 		}
 		return PedidoDetalhe{}, fmt.Errorf("falha ao registrar decisão do pedido: %w", err)
+	}
+	// Story 11.3: liberar = apagar. Depois do UPDATE guardado (uma decisão
+	// concorrente perdedora já saiu acima com ErrPedidoNaoPendente); a parte
+	// aprovada já saiu do saldo físico pelo débito desta transação e a não
+	// aprovada volta a ficar disponível por deixar de ser reservada.
+	if err := liberarReservasPedidoTx(tx, empresaID, pedidoID); err != nil {
+		return PedidoDetalhe{}, err
 	}
 	if observacao.Valid {
 		det.Observacao = &observacao.String

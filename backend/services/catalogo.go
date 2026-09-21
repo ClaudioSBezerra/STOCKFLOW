@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -69,6 +70,11 @@ type EstoqueQuantidade struct {
 	// Lotes (Story 11.1): discriminação do saldo por Lote — SÓ no detalhe do
 	// Produto (`omitempty`: tabelas agrupadas/grade nunca a preenchem).
 	Lotes []LoteSaldo `json:"lotes,omitempty"`
+	// Reservada/Disponivel (Story 11.3): SÓ no detalhe do Produto. Ponteiro
+	// para o 0 ser serializado no detalhe e omitido nas demais tabelas.
+	// Disponivel = GREATEST(saldo − reservada, 0).
+	Reservada  *float64 `json:"reservada,omitempty"`
+	Disponivel *float64 `json:"disponivel,omitempty"`
 }
 
 // LoteSaldo é um Lote do saldo de um Produto num Estoque (detalhe do
@@ -759,6 +765,10 @@ type ProdutoDetalhe struct {
 	QuantidadeTotal float64             `json:"quantidadeTotal"`
 	Disponivel      bool                `json:"disponivel"`
 	PorEstoque      []EstoqueQuantidade `json:"porEstoque"`
+	// QuantidadeReservada/QuantidadeDisponivel (Story 11.3): somas por Estoque
+	// de `reservada`/`disponivel`; `QuantidadeTotal` segue o saldo físico.
+	QuantidadeReservada  float64 `json:"quantidadeReservada"`
+	QuantidadeDisponivel float64 `json:"quantidadeDisponivel"`
 	// UnidadeMedida/Embalagem (Story 10.3, spec-10-3): campos próprios do
 	// detalhe, mesmo padrão ponteiro de Codigo. `NULL` no banco (Produto
 	// legado ainda não passado pelo backfill da migration 000038, ou criado
@@ -883,8 +893,66 @@ func ObterProdutoDetalhe(db *sql.DB, empresaID string, id string) (ProdutoDetalh
 	if err := preencherLotesDetalhe(db, empresaID, id, det.PorEstoque); err != nil {
 		return ProdutoDetalhe{}, err
 	}
+	if err := preencherReservasDetalhe(db, empresaID, id, &det); err != nil {
+		return ProdutoDetalhe{}, err
+	}
+	// Story 11.3: no detalhe, "disponível" reflete o saldo NÃO reservado — um
+	// Produto 100% reservado não aparece como disponível. (Grade/agrupada
+	// seguem com o saldo físico.)
+	det.Disponivel = det.QuantidadeDisponivel > 0
 
 	return det, nil
+}
+
+// preencherReservasDetalhe preenche `reservada`/`disponivel` de cada Estoque
+// do detalhe e os totais `quantidadeReservada`/`quantidadeDisponivel`
+// (Story 11.3). O saldo físico por Estoque já está em `Quantidade`;
+// reservado = soma das reservas ativas do par; disponível =
+// GREATEST(saldo − reservado, 0).
+func preencherReservasDetalhe(db *sql.DB, empresaID, produtoID string, det *ProdutoDetalhe) error {
+	rows, err := db.Query(`
+		SELECT estoque_id, SUM(quantidade) FROM reservas_pedido_item
+		WHERE produto_id = $1 AND empresa_id = $2
+		GROUP BY estoque_id`, produtoID, empresaID)
+	if err != nil {
+		return fmt.Errorf("falha ao listar reservas do produto: %w", err)
+	}
+	defer rows.Close()
+	reservado := make(map[string]float64)
+	for rows.Next() {
+		var estoqueID string
+		var quantidade float64
+		if err := rows.Scan(&estoqueID, &quantidade); err != nil {
+			return fmt.Errorf("falha ao ler reservas do produto: %w", err)
+		}
+		reservado[estoqueID] = quantidade
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("falha ao iterar reservas do produto: %w", err)
+	}
+
+	for i := range det.PorEstoque {
+		eq := &det.PorEstoque[i]
+		res := arredondar3(reservado[eq.EstoqueID])
+		disp := arredondar3(eq.Quantidade - res)
+		if disp < 0 {
+			disp = 0
+		}
+		eq.Reservada = &res
+		eq.Disponivel = &disp
+		det.QuantidadeReservada += res
+		det.QuantidadeDisponivel += disp
+	}
+	det.QuantidadeReservada = arredondar3(det.QuantidadeReservada)
+	det.QuantidadeDisponivel = arredondar3(det.QuantidadeDisponivel)
+	return nil
+}
+
+// arredondar3 arredonda para 3 casas decimais (a escala de NUMERIC(10,3)),
+// eliminando o ruído de ponto flutuante de somas/subtrações (ex.:
+// 1.1 − 0.8 = 0.30000000000000004).
+func arredondar3(x float64) float64 {
+	return math.Round(x*1000) / 1000
 }
 
 // preencherLotesDetalhe anexa a cada item de `porEstoque` os Lotes reais do

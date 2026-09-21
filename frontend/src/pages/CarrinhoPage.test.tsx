@@ -231,7 +231,9 @@ describe('CarrinhoPage', () => {
       await waitFor(() =>
         expect(enviarPedidoMock).toHaveBeenCalledWith('Maria Operária', 'Obra Sul 42', 'retirar pela manhã'),
       );
-      await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Pedido enviado.'));
+      await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith(
+          'Pedido enviado. O saldo dos itens ficou reservado até a decisão do almoxarife.',
+        ));
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
       expect(toastError).not.toHaveBeenCalled();
     });

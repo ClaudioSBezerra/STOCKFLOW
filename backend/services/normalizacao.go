@@ -1404,6 +1404,67 @@ func MesclarDuplicatas(db *sql.DB, empresaID string, produtoMantidoID string, pr
 		}
 	}
 
+	// --- reescreve reservas_pedido_item ANTES do soft-delete (Story 11.3) -
+	//
+	// UNIQUE (pedido_id, produto_id, estoque_id): mesma colisão de
+	// pedido_itens — soma-e-descarta quando o Pedido já reserva o produto
+	// mantido no mesmo Estoque; senão UPDATE simples do produto_id.
+	reservasRemovidasRows, err := tx.Query(
+		`SELECT id, pedido_id, estoque_id, quantidade FROM reservas_pedido_item
+		 WHERE produto_id = ANY($1) AND empresa_id = $2 ORDER BY id`,
+		pq.Array(produtoRemovidoIDs), empresaID,
+	)
+	if err != nil {
+		return ResultadoMesclagem{}, fmt.Errorf("falha ao consultar reservas dos produtos removidos: %w", err)
+	}
+	defer reservasRemovidasRows.Close()
+
+	var reservasRemovidas []struct {
+		id         string
+		pedidoID   string
+		estoqueID  string
+		quantidade float64
+	}
+	for reservasRemovidasRows.Next() {
+		var rv struct {
+			id         string
+			pedidoID   string
+			estoqueID  string
+			quantidade float64
+		}
+		if err := reservasRemovidasRows.Scan(&rv.id, &rv.pedidoID, &rv.estoqueID, &rv.quantidade); err != nil {
+			return ResultadoMesclagem{}, fmt.Errorf("falha ao ler reserva do produto removido: %w", err)
+		}
+		reservasRemovidas = append(reservasRemovidas, rv)
+	}
+	if err := reservasRemovidasRows.Err(); err != nil {
+		return ResultadoMesclagem{}, fmt.Errorf("falha ao iterar reservas dos produtos removidos: %w", err)
+	}
+	reservasRemovidasRows.Close()
+
+	for _, rv := range reservasRemovidas {
+		res, err := tx.Exec(
+			`UPDATE reservas_pedido_item SET quantidade = quantidade + $1
+			 WHERE pedido_id = $2 AND produto_id = $3 AND estoque_id = $4 AND empresa_id = $5`,
+			rv.quantidade, rv.pedidoID, produtoMantidoID, rv.estoqueID, empresaID,
+		)
+		if err != nil {
+			return ResultadoMesclagem{}, fmt.Errorf("falha ao consolidar reserva colidida: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			if _, err := tx.Exec(`DELETE FROM reservas_pedido_item WHERE id = $1`, rv.id); err != nil {
+				return ResultadoMesclagem{}, fmt.Errorf("falha ao apagar reserva consolidada: %w", err)
+			}
+			continue
+		}
+		if _, err := tx.Exec(
+			`UPDATE reservas_pedido_item SET produto_id = $1 WHERE id = $2`,
+			produtoMantidoID, rv.id,
+		); err != nil {
+			return ResultadoMesclagem{}, fmt.Errorf("falha ao reescrever produto_id de reservas_pedido_item: %w", err)
+		}
+	}
+
 	// --- soft-delete dos removidos -------------------------------------
 
 	if _, err := tx.Exec(

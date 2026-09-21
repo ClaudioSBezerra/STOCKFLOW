@@ -259,6 +259,14 @@ func TestMigrarPedidos_CorteInicial(t *testing.T) {
 		t.Errorf("criado_em = %v, want %v (legado preservado)", p.criadoEm, criado)
 	}
 
+	// Story 11.3: Pedido pendente legado nasce com 1 reserva por item.
+	if got := contar(t, alvo, `SELECT count(*) FROM reservas_pedido_item`); got != 3 {
+		t.Errorf("count(reservas_pedido_item) = %d, want 3 (um por item pendente)", got)
+	}
+	if got := contar(t, alvo, `SELECT count(*) FROM reservas_pedido_item WHERE pedido_id = $1`, p.id); got != 2 {
+		t.Errorf("reservas de ped-1 = %d, want 2", got)
+	}
+
 	itens := lerItensDoPedido(t, alvo, p.id)
 	if len(itens) != 2 {
 		t.Fatalf("itens de ped-1 = %d, want 2", len(itens))

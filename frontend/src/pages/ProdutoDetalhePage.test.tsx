@@ -100,10 +100,12 @@ const PRODUTO_DETALHE = {
     espessura: null,
   },
   quantidadeTotal: 8,
+  quantidadeReservada: 0,
+  quantidadeDisponivel: 8,
   disponivel: true,
   porEstoque: [
-    { estoqueId: 'e1', estoqueNome: 'Almoxarifado Central', quantidade: 5 },
-    { estoqueId: 'e2', estoqueNome: 'Obra Norte', quantidade: 3 },
+    { estoqueId: 'e1', estoqueNome: 'Almoxarifado Central', quantidade: 5, reservada: 0, disponivel: 5 },
+    { estoqueId: 'e2', estoqueNome: 'Obra Norte', quantidade: 3, reservada: 0, disponivel: 3 },
   ],
 };
 
@@ -117,9 +119,13 @@ function stubPadrao(overrides?: {
   produto?: unknown;
   fotos?: { nome: string; url: string }[];
   produtoOk?: boolean;
+  reservas?: { pedidoId: string; solicitante: string; quantidade: number; criadoEm: string }[];
 }) {
   const fotos = overrides?.fotos ?? [];
   return stubFetch((url, init) => {
+    if (/^\/api\/produtos\/p1\/estoques\/[^/]+\/reservas$/.test(url)) {
+      return jsonOk({ reservas: overrides?.reservas ?? [] });
+    }
     if (url === '/api/produtos/p1') {
       if (overrides?.produtoOk === false) {
         return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
@@ -194,8 +200,10 @@ const PRODUTO_P2 = {
     espessura: null,
   },
   quantidadeTotal: 1,
+  quantidadeReservada: 0,
+  quantidadeDisponivel: 1,
   disponivel: true,
-  porEstoque: [{ estoqueId: 'e3', estoqueNome: 'Depósito Sul', quantidade: 1 }],
+  porEstoque: [{ estoqueId: 'e3', estoqueNome: 'Depósito Sul', quantidade: 1, reservada: 0, disponivel: 1 }],
 };
 
 describe('ProdutoDetalhePage', () => {
@@ -644,8 +652,8 @@ describe('ProdutoDetalhePage', () => {
         produto: {
           ...PRODUTO_DETALHE,
           porEstoque: [
-            { estoqueId: 'e1', estoqueNome: 'Almoxarifado Central', quantidade: 5 },
-            { estoqueId: 'e2', estoqueNome: 'Obra Norte', quantidade: 0 },
+            { estoqueId: 'e1', estoqueNome: 'Almoxarifado Central', quantidade: 5, reservada: 0, disponivel: 5 },
+            { estoqueId: 'e2', estoqueNome: 'Obra Norte', quantidade: 0, reservada: 0, disponivel: 0 },
           ],
         },
       });
@@ -685,7 +693,9 @@ describe('ProdutoDetalhePage', () => {
 
       await waitFor(() => expect(adicionarItemMock).toHaveBeenCalledWith('p1', 'e1', 2));
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-      expect(toastSuccess).toHaveBeenCalledWith('Item adicionado ao carrinho.');
+      expect(toastSuccess).toHaveBeenCalledWith(
+        'Item adicionado ao carrinho. O saldo só é reservado ao enviar o Pedido.',
+      );
     });
 
     it('falha (409/404): mostra a mensagem do servidor dentro do diálogo, sem fechar, sem toast', async () => {
@@ -962,6 +972,8 @@ describe('ProdutoDetalhePage — Lotes (Story 11.1)', () => {
         estoqueId: 'e1',
         estoqueNome: 'Almoxarifado Central',
         quantidade: 20,
+        reservada: 0,
+        disponivel: 20,
         lotes: [
           { id: 'l1', quantidade: 10, dataValidade: '2020-01-01', vencido: true, legado: false },
           { id: 'l2', quantidade: 6, dataValidade: '2999-03-01', vencido: false, legado: false },
@@ -1001,5 +1013,268 @@ describe('ProdutoDetalhePage — Lotes (Story 11.1)', () => {
 
     await screen.findByText('Almoxarifado Central');
     expect(screen.queryByRole('list', { name: 'Lotes' })).not.toBeInTheDocument();
+  });
+});
+
+const reserva = (pedidoId: string, solicitante: string) => ({
+  pedidoId,
+  solicitante,
+  quantidade: 3,
+  criadoEm: '2026-09-20T12:00:00Z',
+});
+
+describe('ProdutoDetalhePage — Reservas (Story 11.3)', () => {
+  const COM_RESERVA = {
+    ...PRODUTO_DETALHE,
+    quantidadeTotal: 8,
+    quantidadeReservada: 5,
+    quantidadeDisponivel: 3,
+    porEstoque: [
+      { estoqueId: 'e1', estoqueNome: 'Almoxarifado Central', quantidade: 5, reservada: 5, disponivel: 0 },
+      { estoqueId: 'e2', estoqueNome: 'Obra Norte', quantidade: 3, reservada: 0, disponivel: 3 },
+    ],
+  };
+
+  it('mostra reservado/disponível por Estoque, só oferece o botão de reservado quando > 0', async () => {
+    stubPadrao({ produto: COM_RESERVA });
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+
+    await screen.findByText('Almoxarifado Central');
+    expect(screen.getAllByText(/^Disponível: /)).toHaveLength(2);
+    expect(
+      screen.getByRole('button', { name: 'Saldo reservado: 5 — ver pedidos em Almoxarifado Central' }),
+    ).toHaveTextContent('Saldo reservado: 5');
+    expect(
+      screen.queryByRole('button', { name: /^Saldo reservado: .* ver pedidos em Obra Norte/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/Total: 8 — Reservado: 5 — Disponível: 3/)).toBeInTheDocument();
+  });
+
+  it('"Adicionar ao Carrinho" desabilita com disponível 0 mesmo com saldo físico', async () => {
+    stubPadrao({ produto: COM_RESERVA });
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText('Almoxarifado Central');
+
+    const botoes = screen.getAllByRole('button', { name: /Adicionar ao Carrinho/ });
+    expect(botoes[0]).toBeDisabled();
+    expect(botoes[1]).toBeEnabled();
+  });
+
+  it('clicar no reservado abre a lista de Pedidos/solicitantes', async () => {
+    const fetchMock = stubPadrao({
+      produto: COM_RESERVA,
+      reservas: [
+        { pedidoId: 'aaaaaaaa-1111-2222-3333-444444444444', solicitante: 'Maria Operária', quantidade: 3, criadoEm: '2026-09-20T12:00:00Z' },
+        { pedidoId: 'bbbbbbbb-1111-2222-3333-444444444444', solicitante: 'João Obra', quantidade: 2, criadoEm: '2026-09-20T12:00:00Z' },
+      ],
+    });
+    const user = userEvent.setup();
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText('Almoxarifado Central');
+
+    await user.click(
+      screen.getByRole('button', { name: 'Saldo reservado: 5 — ver pedidos em Almoxarifado Central' }),
+    );
+
+    const lista = await screen.findByRole('list', { name: 'Pedidos com saldo reservado' });
+    const itens = within(lista).getAllByRole('listitem');
+    expect(itens).toHaveLength(2);
+    expect(itens[0]).toHaveTextContent('Maria Operária');
+    expect(itens[0]).toHaveTextContent('3');
+    // Linha distingue Pedidos do mesmo solicitante: id curto (8 chars) + data.
+    expect(itens[0]).toHaveTextContent('Pedido aaaaaaaa');
+    expect(itens[0]).toHaveTextContent(new Date('2026-09-20T12:00:00Z').toLocaleDateString('pt-BR'));
+    expect(itens[1]).toHaveTextContent('João Obra');
+    expect(itens[1]).toHaveTextContent('Pedido bbbbbbbb');
+    expect(fetchMock).toHaveBeenCalledWith('/api/produtos/p1/estoques/e1/reservas', expect.anything());
+  });
+
+  it('o diálogo de Carrinho deixa claro que NÃO trava saldo', async () => {
+    stubPadrao();
+    const user = userEvent.setup();
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText('Almoxarifado Central');
+
+    await user.click(screen.getAllByRole('button', { name: /Adicionar ao Carrinho/ })[0]);
+    const dialogo = await screen.findByRole('dialog');
+    expect(within(dialogo).getByText(/não trava saldo/)).toBeInTheDocument();
+  });
+
+  const DUAS_RESERVAS = {
+    ...PRODUTO_DETALHE,
+    quantidadeReservada: 6,
+    quantidadeDisponivel: 2,
+    porEstoque: [
+      { estoqueId: 'e1', estoqueNome: 'Almoxarifado Central', quantidade: 5, reservada: 3, disponivel: 2 },
+      { estoqueId: 'e2', estoqueNome: 'Obra Norte', quantidade: 3, reservada: 3, disponivel: 0 },
+    ],
+  };
+
+  it('resposta lenta de um Estoque anterior nunca sobrescreve o diálogo do Estoque novo (dados)', async () => {
+    type Resp = { ok: boolean; status?: number; json: () => Promise<unknown> };
+    const pendentes: Record<string, (r: Resp) => void> = {};
+    stubFetch((url) => {
+      if (url === '/api/produtos/p1') return jsonOk({ produto: DUAS_RESERVAS });
+      if (url === '/api/produtos/p1/fotos') return jsonOk({ fotos: [] });
+      const m = /\/estoques\/([^/]+)\/reservas$/.exec(url);
+      if (m) {
+        return new Promise<Resp>((resolve) => {
+          pendentes[m[1]] = resolve;
+        });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    const user = userEvent.setup();
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText('Almoxarifado Central');
+
+    // Abre e2, fecha; abre e1 (novo alvo) e responde e1 ANTES da resposta lenta de e2.
+    await user.click(screen.getByRole('button', { name: /ver pedidos em Obra Norte/ }));
+    await screen.findByRole('dialog');
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: /ver pedidos em Almoxarifado Central/ }));
+    await waitFor(() => expect(pendentes.e1).toBeDefined());
+    await act(async () => {
+      pendentes.e1({ ok: true, status: 200, json: async () => ({ reservas: [reserva('11111111-0000', 'Nova Pessoa')] }) });
+    });
+    await screen.findByText('Nova Pessoa');
+
+    // Resposta de e2 chega depois, com dados e depois como erro: ignorada.
+    await act(async () => {
+      pendentes.e2({ ok: true, status: 200, json: async () => ({ reservas: [reserva('22222222-0000', 'Pessoa Velha')] }) });
+    });
+    expect(screen.queryByText('Pessoa Velha')).not.toBeInTheDocument();
+    expect(screen.getByText('Nova Pessoa')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('erro tardio de um Estoque anterior não sobrescreve a lista do Estoque novo', async () => {
+    type Resp = { ok: boolean; status?: number; json: () => Promise<unknown> };
+    const pendentes: Record<string, (r: Resp) => void> = {};
+    stubFetch((url) => {
+      if (url === '/api/produtos/p1') return jsonOk({ produto: DUAS_RESERVAS });
+      if (url === '/api/produtos/p1/fotos') return jsonOk({ fotos: [] });
+      const m = /\/estoques\/([^/]+)\/reservas$/.exec(url);
+      if (m) {
+        return new Promise<Resp>((resolve) => {
+          pendentes[m[1]] = resolve;
+        });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    const user = userEvent.setup();
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText('Almoxarifado Central');
+
+    await user.click(screen.getByRole('button', { name: /ver pedidos em Obra Norte/ }));
+    await screen.findByRole('dialog');
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: /ver pedidos em Almoxarifado Central/ }));
+    await waitFor(() => expect(pendentes.e1).toBeDefined());
+    await act(async () => {
+      pendentes.e1({ ok: true, status: 200, json: async () => ({ reservas: [reserva('11111111-0000', 'Nova Pessoa')] }) });
+    });
+    await screen.findByText('Nova Pessoa');
+
+    await act(async () => {
+      pendentes.e2({ ok: false, status: 500, json: async () => ({}) });
+    });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByText('Nova Pessoa')).toBeInTheDocument();
+  });
+
+  it('recarregar o detalhe (evento SSE) com o diálogo aberto refaz a lista do Estoque aberto', async () => {
+    let produtoAtual: unknown = DUAS_RESERVAS;
+    let reservasAtuais = [reserva('aaaaaaaa-0000', 'Maria Antes')];
+    stubFetch((url) => {
+      if (url === '/api/produtos/p1') return jsonOk({ produto: produtoAtual });
+      if (url === '/api/produtos/p1/fotos') return jsonOk({ fotos: [] });
+      if (url === '/api/produtos/p1/estoques/e1/reservas') return jsonOk({ reservas: reservasAtuais });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    const user = userEvent.setup();
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText('Almoxarifado Central');
+    await user.click(screen.getByRole('button', { name: /ver pedidos em Almoxarifado Central/ }));
+    await screen.findByText('Maria Antes');
+
+    reservasAtuais = [reserva('bbbbbbbb-0000', 'João Depois')];
+    produtoAtual = {
+      ...DUAS_RESERVAS,
+      porEstoque: [
+        { estoqueId: 'e1', estoqueNome: 'Almoxarifado Central', quantidade: 5, reservada: 3, disponivel: 2 },
+        DUAS_RESERVAS.porEstoque[1],
+      ],
+    };
+    act(() => {
+      aoReceberEvento({ resource: 'produtos', id: 'p1', change: 'updated' });
+    });
+
+    await screen.findByText('João Depois');
+    expect(screen.queryByText('Maria Antes')).not.toBeInTheDocument();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('recarregar o detalhe sem reserva no Estoque aberto mostra a lista vazia; Estoque removido fecha o diálogo', async () => {
+    let produtoAtual: unknown = DUAS_RESERVAS;
+    let reservasAtuais = [reserva('aaaaaaaa-0000', 'Maria Antes')];
+    stubFetch((url) => {
+      if (url === '/api/produtos/p1') return jsonOk({ produto: produtoAtual });
+      if (url === '/api/produtos/p1/fotos') return jsonOk({ fotos: [] });
+      if (url === '/api/produtos/p1/estoques/e1/reservas') return jsonOk({ reservas: reservasAtuais });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    const user = userEvent.setup();
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText('Almoxarifado Central');
+    await user.click(screen.getByRole('button', { name: /ver pedidos em Almoxarifado Central/ }));
+    await screen.findByText('Maria Antes');
+
+    // Pedido decidido: reserva some.
+    reservasAtuais = [];
+    produtoAtual = {
+      ...DUAS_RESERVAS,
+      porEstoque: [
+        { estoqueId: 'e1', estoqueNome: 'Almoxarifado Central', quantidade: 5, reservada: 0, disponivel: 5 },
+        DUAS_RESERVAS.porEstoque[1],
+      ],
+    };
+    act(() => {
+      aoReceberEvento({ resource: 'produtos', id: 'p1', change: 'updated' });
+    });
+    await screen.findByText('Nenhum pedido reserva este saldo.');
+
+    // Estoque some do detalhe: diálogo fecha.
+    produtoAtual = { ...DUAS_RESERVAS, porEstoque: [DUAS_RESERVAS.porEstoque[1]] };
+    act(() => {
+      aoReceberEvento({ resource: 'produtos', id: 'p1', change: 'updated' });
+    });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 });

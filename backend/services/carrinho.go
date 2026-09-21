@@ -138,6 +138,10 @@ var ErrCarrinhoItemNaoEncontrado = errors.New("item não encontrado no carrinho"
 // quantidade já somada ao carrinho pela vencedora antes de validar a sua
 // própria.
 //
+// Story 11.3: "disponível" é saldoDisponivelParTx (produto_estoque + lotes −
+// reservas de Pedidos pendentes) e o lock cobre também os `lotes` do par
+// (travarSaldoParesTx); o carrinho continua NÃO reservando saldo.
+//
 // `quantidade_já_no_carrinho_para_o_par + quantidade` > disponível ->
 // &ErroCarrinhoIndisponivel{Restante: disponivel - jaNoCarrinho}, carrinho
 // inalterado. Caso contrário, upsert incrementando e commit único.
@@ -189,16 +193,15 @@ func AdicionarItemCarrinho(db *sql.DB, empresaID string, usuarioID, produtoID, e
 		return ItemCarrinho{}, ErrCarrinhoEstoqueNaoEncontrado
 	}
 
-	var disponivel float64
-	const selectDisponivel = `
-		SELECT quantidade FROM produto_estoque
-		WHERE produto_id = $1 AND estoque_id = $2
-		FOR UPDATE`
-	if err := tx.QueryRow(selectDisponivel, produtoID, estoqueID).Scan(&disponivel); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ItemCarrinho{}, &ErroCarrinhoIndisponivel{Restante: 0}
-		}
-		return ItemCarrinho{}, fmt.Errorf("falha ao travar linha de produto_estoque: %w", err)
+	// Story 11.3: valida contra o saldo DISPONÍVEL (físico − reservas de
+	// Pedidos pendentes), a mesma função do envio. O carrinho continua NÃO
+	// travando saldo — o lock abaixo só serializa adições concorrentes ao par.
+	if err := travarSaldoParesTx(tx, empresaID, []ParSaldo{{ProdutoID: produtoID, EstoqueID: estoqueID}}); err != nil {
+		return ItemCarrinho{}, fmt.Errorf("falha ao travar saldo do carrinho: %w", err)
+	}
+	disponivel, err := saldoDisponivelParTx(tx, empresaID, produtoID, estoqueID)
+	if err != nil {
+		return ItemCarrinho{}, err
 	}
 
 	var jaNoCarrinho float64
@@ -217,9 +220,7 @@ func AdicionarItemCarrinho(db *sql.DB, empresaID string, usuarioID, produtoID, e
 		return ItemCarrinho{}, &ErroCarrinhoIndisponivel{Restante: restante}
 	}
 
-	// A linha de produto_estoque travada acima referencia um estoque_id com
-	// FK `ON DELETE CASCADE` para estoques(id) (estoques.go) — se chegamos
-	// até aqui, a linha de estoques correspondente existe garantidamente.
+	// A existência do Estoque foi verificada acima, na mesma transação.
 	var estoqueNome string
 	if err := tx.QueryRow(
 		`SELECT nome FROM estoques WHERE id = $1 AND empresa_id = $2`, estoqueID, empresaID,

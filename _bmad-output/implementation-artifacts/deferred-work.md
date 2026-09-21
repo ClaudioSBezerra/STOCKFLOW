@@ -637,3 +637,19 @@ source_spec: `spec-11-2-migracao-do-saldo-existente-para-lote-legado.md`
 severity: low
 reason: `grep -n "DATABASE_URL\|services:" .github/workflows/*.yml` não retorna nada; o `testDB` de `services` e dos `cmd/*` faz `t.Skip` sem `DATABASE_URL`. Pré-existente, vale para toda a suíte de integração do repositório.
 status: open
+
+### DW-81: As tabelas do Catálogo (grade, agrupada, exportação) ainda mostram só o saldo físico; saldo reservado/disponível aparece apenas no detalhe do Produto.
+origin: spec-deferred e5471cd84ea2
+location: backend/services/catalogo.go (catalogoGradeQueryBase, catalogoGrupoQueryBase, catalogoPorEstoqueQuery)
+source_spec: `spec-11-3-reserva-de-saldo-ao-enviar-pedido.md`
+severity: medium
+reason: O contrato da story limitou a exibição ao detalhe (FR-7). A AC da 11.3 só exige o cálculo (soma − reservas ativas, nunca materializado), mas o contexto do épico diz "Catálogo e Estoque mostram saldo disponível separado do reservado". Os indicadores `disponivel` da grade/agrupada seguem refletindo saldo físico.
+status: open
+
+### DW-82: Baixa, Transferência e a revalidação da aprovação ainda não respeitam o saldo reservado nem leem `lotes` (Stories 11.4/11.5), então `disponivel` pode ficar negativo/zero após Baixa e saldo só em Lote
+origin: spec-deferred 5405b735297b
+location: backend/services/movimentacoes.go, backend/services/pedidos.go (DecidirPedido)
+source_spec: `spec-11-3-reserva-de-saldo-ao-enviar-pedido.md`
+severity: medium
+reason: `RegistrarBaixa`/`RegistrarTransferencia`/`DecidirPedido` continuam validando/debitando só `produto_estoque`. É a janela transitória documentada em Design Notes; fechada por 11.4 e 11.5.
+status: open

@@ -578,6 +578,12 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	registrar("GET /e/{slug}/api/produtos/{id}", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ObterProdutoHandler(db)))
 
+	// Quem reservou o saldo — Story 11.3 (FR-50). Lista os Pedidos pendentes
+	// com reserva ativa do par (Produto, Estoque); só RequireAuth, como o
+	// detalhe do Produto. Produto/Estoque alheio/inexistente -> 404.
+	registrar("GET /e/{slug}/api/produtos/{id}/estoques/{estoqueId}/reservas", middleware.RequireAuth(db, jwtSecret)(
+		handlers.ListarReservasSaldoHandler(db)))
+
 	// Registrar Baixa (consumo) — Story 5.1 (Epic 5, Movimentação de
 	// Estoque). POST /api/produtos/{id}/estoques/{estoqueId}/baixa fica
 	// atrás de RequireRole(almoxarife), mesmo mínimo de papel do

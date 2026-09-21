@@ -67,6 +67,10 @@ func SubmeterPedidoHandler(db *sql.DB, registro *realtime.Registry) http.Handler
 		switch {
 		case err == nil:
 			registro.Publish(empresa.ID, "pedidos", realtime.Evento{ID: pedido.ID, Change: "created"})
+			// Story 11.3: o envio reserva saldo — atualiza detalhes abertos.
+			for _, produtoID := range idsUnicos(pedido.ProdutoIDs) {
+				registro.Publish(empresa.ID, "produtos", realtime.Evento{ID: produtoID, Change: "updated"})
+			}
 			escreverJSON(w, http.StatusCreated, map[string]any{"pedido": pedido})
 		case errors.As(err, &erroValidacao):
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
@@ -178,6 +182,14 @@ func DecidirPedidoHandler(db *sql.DB, registro *realtime.Registry) http.HandlerF
 		switch {
 		case err == nil:
 			registro.Publish(empresa.ID, "pedidos", realtime.Evento{ID: pedido.ID, Change: pedido.Status})
+			// Story 11.3: a decisão libera a reserva (e debita a parte aprovada).
+			produtoIDs := make([]string, 0, len(pedido.Itens))
+			for _, it := range pedido.Itens {
+				produtoIDs = append(produtoIDs, it.ProdutoID)
+			}
+			for _, produtoID := range idsUnicos(produtoIDs) {
+				registro.Publish(empresa.ID, "produtos", realtime.Evento{ID: produtoID, Change: "updated"})
+			}
 			escreverJSON(w, http.StatusOK, map[string]any{"pedido": pedido})
 		case errors.Is(err, services.ErrPedidoNaoEncontrado):
 			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "pedido não encontrado")
@@ -265,4 +277,19 @@ func BaixarReciboPedidoHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao gerar recibo do pedido")
 		}
 	}
+}
+
+// idsUnicos remove ids repetidos preservando a ordem — o mesmo Produto em
+// vários Estoques/itens de um Pedido publica um único evento `produtos`.
+func idsUnicos(ids []string) []string {
+	vistos := make(map[string]struct{}, len(ids))
+	unicos := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if _, ok := vistos[id]; ok {
+			continue
+		}
+		vistos[id] = struct{}{}
+		unicos = append(unicos, id)
+	}
+	return unicos
 }

@@ -116,7 +116,7 @@ export function CarrinhoPage() {
         toast.error(resultado.mensagem);
         return;
       }
-      toast.success('Pedido enviado.');
+      toast.success('Pedido enviado. O saldo dos itens ficou reservado até a decisão do almoxarife.');
       setEnvioAberto(false);
     } finally {
       setEnviando(false);
@@ -205,6 +205,9 @@ export function CarrinhoPage() {
           <DialogHeader>
             <DialogTitle>Enviar Pedido</DialogTitle>
           </DialogHeader>
+          <p className="text-label text-muted-foreground">
+            Ao enviar, o saldo dos itens fica reservado até a decisão do almoxarife.
+          </p>
           <form
             className="flex flex-col gap-4"
             onSubmit={(event) => {
