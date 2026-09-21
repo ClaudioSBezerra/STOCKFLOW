@@ -3,7 +3,7 @@ title: 'Story 12.2: Migração dos Estoques legados para Filial padrão'
 type: 'feature'
 created: '2026-09-21'
 baseline_revision: 'af62addf1e814dbce3c93ebcbe78325a239df38e'
-status: awaiting-operator
+status: done
 review_loop_iteration: 0
 followup_review_recommended: true
 context: []
@@ -136,3 +136,26 @@ Code review independente (2026-09-21, 4 revisores: Blind Hunter, Edge Case Hunte
 - [x] [Review][Patch][aplicado 2026-09-21] Erro `lock_timeout` (55P03) chega cru ao operador e o dry-run não avisa `nome_fantasia` vazio/longo que só falharia no `--executar` [backend/services/migracao_estoques_filial.go, backend/cmd/migrar-estoques-filial/main.go] — traduzir a mensagem e diagnosticar no dry-run
 - [x] [Review][Patch][aplicado 2026-09-21] Nada confirma qual banco será alterado antes de `--executar` (irreversível: `SET NOT NULL`) — ecoar host/nome do banco no relatório
 - [x] [Review][Defer] Sem caminho de reversão/auditoria da execução (só stdout) — deferred, a spec declara "sem rollback automático" e o runbook exige `pg_dump`
+
+## Dispensa das ações do operador (2026-09-21)
+
+Decisão do usuário: **o corte (`./migrar-estoques-filial --executar`) não será executado** por ora — o sistema ainda está em testes, em base de treinamento. O código da story está entregue e em produção; as `operator_actions` (backup, dry-run, `--executar`, conferências) ficam **dispensadas**, não cumpridas.
+
+Consequências aceitas enquanto o corte não roda:
+- Estoques existentes ficam com `filial_id` nulo e aparecem com Filial "—"; `estoques.filial_id` continua NULLABLE.
+- Para criar Estoque novo numa Empresa sem Filial, o `adm` cadastra uma Filial em Configurações antes; a importação de planilha que precisa criar Estoque falha, por linha, com `ErrEmpresaSemFilial`.
+- A unicidade `(filial_id, nome_normalizado)` não vale para Estoques sem Filial (NULLs são distintos no índice único), então nomes duplicados são possíveis entre eles.
+
+O binário `migrar-estoques-filial` segue na imagem; se o corte vier a ser necessário, valem as ações originais.
+
+## Operator Confirmation
+
+Confirmed 2026-09-21: the external actions this story owed were carried out.
+
+- Confirmar que a migração multi-Empresa da Story 9.4 (`migrar-multi-empresa`) já rodou por completo em produção (todo Estoque com `empresa_id`) e que o deploy da Story 12.1 (API com `filial_id` obrigatório no cadastro de Estoque) já está no ar.
+- Fazer backup do banco de produção (`pg_dump`) imediatamente antes do corte — o binário cria Filiais, vincula Estoques e aplica `NOT NULL` em `estoques.filial_id`, sem rollback automático.
+- Rodar `./migrar-estoques-filial` (dry-run) no container `api` e revisar o relatório (Empresas sem Filial, Estoques a vincular, ~11 na Ferreira Costa) até reportar `problemas: nenhum`; corrigir à mão qualquer Estoque sem `empresa_id` ou com nome duplicado apontado.
+- Na janela de baixo uso acordada, rodar `./migrar-estoques-filial --executar` — disparado manualmente por uma pessoa, nunca por um agente autônomo (AD-15, PRD §9).
+- Após o corte, conferir que `SELECT count(*) FROM estoques WHERE filial_id IS NULL` é 0, que `is_nullable` de `estoques.filial_id` é `NO` e que a lista de Estoques no app mostra todos vinculados à Filial padrão.
+
+_Appended by the bmad-loop orchestrator (`bmad-loop confirm`, #335): a human confirmed these external actions out of band, and the story was advanced from `awaiting-operator` to `done`._
