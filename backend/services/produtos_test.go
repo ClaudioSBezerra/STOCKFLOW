@@ -1814,3 +1814,110 @@ func TestBuscarProdutoPorCodigo_CaseSensitive(t *testing.T) {
 		t.Errorf("erro = %v, want ErrProdutoNaoEncontrado ('cab-004' != 'CAB-004', case-sensitive)", err)
 	}
 }
+
+// TestCriarProduto_CodigoContinuaDoMaiorNumericoExistente prova que o código
+// automático nunca colide com códigos que já existem na Empresa (legado ou
+// importados por planilha): parte de GREATEST(contador, maior código
+// puramente numérico) + 1. Códigos não numéricos ("SKU-9") são ignorados sem
+// erro de cast.
+func TestCriarProduto_CodigoContinuaDoMaiorNumericoExistente(t *testing.T) {
+	db := testDB(t)
+	removerEmpresaComProdutos(t, db, "codigo-max-existente")
+	empresa := criarEmpresaDeTeste(t, db, "codigo-max-existente", "998887770098", "Codigo Max Existente")
+
+	estoque, err := CriarEstoque(db, empresa.ID, "Canteiro Codigo Max")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	var categoriaID string
+	if err := db.QueryRow(
+		`SELECT id FROM categorias WHERE codigo = $1 AND empresa_id = $2`, "04.001", empresa.ID,
+	).Scan(&categoriaID); err != nil {
+		t.Fatalf("categoria da empresa: %v", err)
+	}
+	for i, codigo := range []string{"000041", "SKU-9", "7", "12ABC"} {
+		if _, err := db.Exec(
+			`INSERT INTO produtos (nome, codigo, categoria_id, empresa_id) VALUES ($1, $2, $3, $4)`,
+			fmt.Sprintf("Produto legado %d para o teste", i), codigo, categoriaID, empresa.ID,
+		); err != nil {
+			t.Fatalf("seed produto legado %q: %v", codigo, err)
+		}
+	}
+	templateID := templateGenericoID(t, db, empresa.ID)
+
+	for i, want := range []string{"000042", "000043"} {
+		p, err := criarProdutoComSaldo(db, empresa.ID, CriarProdutoInput{
+			UnidadeMedida: "un",
+			Nome:          fmt.Sprintf("Produto novo depois do legado %d", i),
+			CategoriaID:   categoriaID,
+			TemplateID:    templateID,
+		}, estoque.ID, 1)
+		if err != nil {
+			t.Fatalf("CriarProduto #%d: %v", i, err)
+		}
+		if p.Codigo != want {
+			t.Errorf("código #%d = %q, want %q", i, p.Codigo, want)
+		}
+	}
+}
+
+// TestCriarProduto_CodigoConcorrenteNuncaRepete dispara cadastros simultâneos
+// numa Empresa que já tem um código legado alto: todos recebem códigos
+// distintos e maiores que o legado (o UPDATE do contador serializa).
+func TestCriarProduto_CodigoConcorrenteNuncaRepete(t *testing.T) {
+	db := testDB(t)
+	removerEmpresaComProdutos(t, db, "codigo-concorrente")
+	empresa := criarEmpresaDeTeste(t, db, "codigo-concorrente", "998887770005", "Codigo Concorrente")
+
+	estoque, err := CriarEstoque(db, empresa.ID, "Canteiro Codigo Concorrente")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	var categoriaID string
+	if err := db.QueryRow(
+		`SELECT id FROM categorias WHERE codigo = $1 AND empresa_id = $2`, "04.001", empresa.ID,
+	).Scan(&categoriaID); err != nil {
+		t.Fatalf("categoria da empresa: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO produtos (nome, codigo, categoria_id, empresa_id) VALUES ($1, $2, $3, $4)`,
+		"Produto legado alto para o teste", "000100", categoriaID, empresa.ID,
+	); err != nil {
+		t.Fatalf("seed produto legado: %v", err)
+	}
+	templateID := templateGenericoID(t, db, empresa.ID)
+
+	const n = 8
+	codigos := make(chan string, n)
+	erros := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			p, err := criarProdutoComSaldo(db, empresa.ID, CriarProdutoInput{
+				UnidadeMedida: "un",
+				Nome:          fmt.Sprintf("Produto concorrente numero %d", i),
+				CategoriaID:   categoriaID,
+				TemplateID:    templateID,
+			}, estoque.ID, 1)
+			if err != nil {
+				erros <- err
+				return
+			}
+			codigos <- p.Codigo
+		}(i)
+	}
+	vistos := map[string]bool{}
+	for i := 0; i < n; i++ {
+		select {
+		case err := <-erros:
+			t.Fatalf("CriarProduto concorrente: %v", err)
+		case c := <-codigos:
+			if vistos[c] {
+				t.Errorf("código repetido: %s", c)
+			}
+			vistos[c] = true
+			if c <= "000100" {
+				t.Errorf("código %s não passa do legado 000100", c)
+			}
+		}
+	}
+}

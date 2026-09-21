@@ -280,10 +280,26 @@ func validarDimensao(campo string, d *DimensaoInput) (sql.NullFloat64, sql.NullS
 // (toda Empresa nasce com sua linha via ProvisionarEmpresa, AD-26) e vira
 // erro interno (`fmt.Errorf`, não ErroProdutoValidacao — não é input de
 // cliente inválido).
+//
+// O próximo número é `GREATEST(contador, maior código puramente numérico da
+// Empresa) + 1`: um código legado ou importado por planilha (que continua
+// trazendo o `codigo` da planilha, Story 3.3/3.4) nunca colide com a
+// sequência. O `UPDATE` trava a linha do contador, então dois cadastros
+// concorrentes se serializam nela — o segundo relê o contador já avançado
+// pelo primeiro, sem a corrida de um `SELECT MAX()+1` solto. O `CASE`
+// impede o cast de códigos não numéricos (o Postgres não garante a ordem de
+// avaliação de um `WHERE ... AND`); 9 dígitos no máximo cabem num INTEGER.
 func proximoCodigoProduto(tx *sql.Tx, empresaID string) (string, error) {
 	var numero int
 	err := tx.QueryRow(
-		`UPDATE contadores_produto SET ultimo_numero = ultimo_numero + 1 WHERE empresa_id = $1 RETURNING ultimo_numero`,
+		`UPDATE contadores_produto c
+		    SET ultimo_numero = GREATEST(
+		          c.ultimo_numero,
+		          COALESCE((SELECT MAX(CASE WHEN p.codigo ~ '^[0-9]{1,9}$' THEN p.codigo::integer END)
+		                      FROM produtos p WHERE p.empresa_id = c.empresa_id), 0)
+		        ) + 1
+		  WHERE c.empresa_id = $1
+		RETURNING c.ultimo_numero`,
 		empresaID,
 	).Scan(&numero)
 	if err != nil {
