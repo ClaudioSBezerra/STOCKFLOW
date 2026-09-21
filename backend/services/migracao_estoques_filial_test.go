@@ -408,3 +408,36 @@ func TestDiagnosticarEstoquesFilial_NaoEscreve(t *testing.T) {
 		t.Error("estoques.filial_id deveria seguir NULLABLE")
 	}
 }
+
+// TestMigrarEstoquesParaFilial_NomeFantasiaInvalidoAbortaNoDryRunETambemNoCorte:
+// Empresa sem Filial cujo Nome Fantasia (que viraria o nome da Filial padrão)
+// está em branco -> o diagnóstico (dry-run) já acusa e o corte aborta sem
+// escrever nada, em vez de só o `--executar` falhar.
+func TestMigrarEstoquesParaFilial_NomeFantasiaInvalidoAbortaNoDryRunETambemNoCorte(t *testing.T) {
+	db := testDB(t)
+	prepararMigracaoEstoquesFilial(t, db)
+	emp := empresaSemFilialDeTeste(t, db, "migra-estoques-sem-nome", "778889990299", "Migra Estoques Sem Nome")
+	if _, err := db.Exec(`UPDATE empresas SET nome_fantasia = '   ' WHERE id = $1`, emp.ID); err != nil {
+		t.Skipf("o schema não permite nome_fantasia em branco (%v) — cenário inalcançável", err)
+	}
+
+	diag, err := DiagnosticarEstoquesFilial(db)
+	if err != nil {
+		t.Fatalf("DiagnosticarEstoquesFilial: %v", err)
+	}
+	if diag.EmpresasNomeInvalido != 1 {
+		t.Errorf("EmpresasNomeInvalido = %d, want 1", diag.EmpresasNomeInvalido)
+	}
+
+	_, err = MigrarEstoquesParaFilial(db)
+	var semNome *ErroFilialPadraoSemNome
+	if !errors.As(err, &semNome) || semNome.Empresas != 1 {
+		t.Fatalf("erro = %v, want ErroFilialPadraoSemNome{1}", err)
+	}
+	if filialIDNotNull(t, db) {
+		t.Error("NOT NULL foi aplicado apesar do abort")
+	}
+	if n := contar(t, db, `SELECT count(*) FROM filiais WHERE empresa_id = $1`, emp.ID); n != 0 {
+		t.Errorf("filiais criadas apesar do abort: %d", n)
+	}
+}

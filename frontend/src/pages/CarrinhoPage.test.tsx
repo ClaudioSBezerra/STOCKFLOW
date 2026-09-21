@@ -331,6 +331,44 @@ describe('CarrinhoPage', () => {
         );
       });
 
+      it('falha ao carregar a lista: avisa que o envio segue só com o texto livre', async () => {
+        carrinhoState.itens = [ITEM_1];
+        stubCentros(() => Promise.resolve({ ok: false, status: 500, json: async () => ({}) }));
+        const user = userEvent.setup();
+        render(<CarrinhoPage />);
+
+        await user.click(screen.getByRole('button', { name: 'Enviar Pedido' }));
+        const dialog = await screen.findByRole('dialog');
+        expect(await within(dialog).findByText(/não foi possível carregar os centros de custo/i)).toBeInTheDocument();
+        expect(within(dialog).queryByLabelText('Centro de custo cadastrado')).not.toBeInTheDocument();
+      });
+
+      it('resposta antiga de uma abertura anterior do diálogo não sobrescreve a lista da abertura atual', async () => {
+        carrinhoState.itens = [ITEM_1];
+        const respostas: Array<(v: unknown) => void> = [];
+        stubCentros(() => new Promise((resolve) => respostas.push(resolve)));
+        const user = userEvent.setup();
+        render(<CarrinhoPage />);
+
+        // 1ª abertura: a resposta fica pendente; fecha e reabre.
+        await user.click(screen.getByRole('button', { name: 'Enviar Pedido' }));
+        await screen.findByRole('dialog');
+        await user.keyboard('{Escape}');
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+        await user.click(screen.getByRole('button', { name: 'Enviar Pedido' }));
+        const dialog = await screen.findByRole('dialog');
+        await waitFor(() => expect(respostas).toHaveLength(2));
+
+        // A resposta da 2ª abertura chega primeiro; depois a antiga (1ª) chega
+        // com OUTRA lista e não pode sobrescrevê-la.
+        respostas[1]({ ok: true, status: 200, json: async () => ({ centrosCusto: CENTROS }) });
+        await within(dialog).findByLabelText('Centro de custo cadastrado');
+        respostas[0]({ ok: true, status: 200, json: async () => ({ centrosCusto: [{ id: 'velho', nome: 'Centro Velho' }] }) });
+        await new Promise((r) => setTimeout(r, 20));
+        expect(within(dialog).queryByRole('option', { name: 'Centro Velho' })).not.toBeInTheDocument();
+        expect(within(dialog).getByRole('option', { name: 'Obra Norte' })).toBeInTheDocument();
+      });
+
       it('lista vazia: o <select> não aparece e o envio segue com o texto livre', async () => {
         carrinhoState.itens = [ITEM_1];
         const fetchMock = stubCentros(() =>

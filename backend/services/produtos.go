@@ -272,8 +272,8 @@ func validarDimensao(campo string, d *DimensaoInput) (sql.NullFloat64, sql.NullS
 }
 
 // proximoCodigoProduto gera o próximo código sequencial de Produto para
-// `empresaID` (Story 10.2, spec-10-2, FR-45): incrementa atomicamente
-// `contadores_produto.ultimo_numero` via `UPDATE ... RETURNING`, DENTRO da
+// `empresaID` (Story 10.2, spec-10-2, FR-45; refinado em 2026-09-21): avança
+// atomicamente `contadores_produto.ultimo_numero` via `UPDATE ... RETURNING`, DENTRO da
 // transação `tx` do chamador, e formata o resultado com zero-padding de 6
 // dígitos (ex. "000001"). Nunca faz lazy-init da linha do contador — a
 // ausência de linha (`sql.ErrNoRows`) é um estado impossível em produção
@@ -428,75 +428,88 @@ func CriarProduto(db *sql.DB, empresaID string, input CriarProdutoInput) (Produt
 		return Produto{}, err
 	}
 
-	tx, err := db.Begin()
-	if err != nil {
-		return Produto{}, fmt.Errorf("falha ao iniciar transação: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
+	// O código sequencial é gerado dentro da transação; se uma importação
+	// concorrente gravar o mesmo número no meio do caminho (colisão no índice
+	// único), a transação é refeita — o UPDATE do contador relê o MAX.
+	const maxTentativasCodigo = 3
+	for tentativa := 1; ; tentativa++ {
+		p, colisaoCodigo, err := func() (Produto, bool, error) {
+			tx, err := db.Begin()
+			if err != nil {
+				return Produto{}, false, fmt.Errorf("falha ao iniciar transação: %w", err)
+			}
+			defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
 
-	// Código sequencial da Empresa (Story 10.2, spec-10-2, FR-45) — gerado
-	// DENTRO da mesma transação do INSERT em `produtos`, antes dele, nunca a
-	// partir de entrada do cliente.
-	codigo, err := proximoCodigoProduto(tx, empresaID)
-	if err != nil {
-		return Produto{}, err
-	}
+			// Código sequencial da Empresa (Story 10.2, spec-10-2, FR-45) — gerado
+			// DENTRO da mesma transação do INSERT em `produtos`, antes dele, nunca a
+			// partir de entrada do cliente.
+			codigo, err := proximoCodigoProduto(tx, empresaID)
+			if err != nil {
+				return Produto{}, false, err
+			}
 
-	// A Categoria informada precisa pertencer À MESMA Empresa (Story 9.1,
-	// AD-20): em vez de um SELECT-antes-de-INSERT (que teria janela de
-	// corrida), o próprio INSERT lê `categorias` com o filtro de Empresa —
-	// uma Categoria de outra Empresa simplesmente não produz linha, e o
-	// `sql.ErrNoRows` do RETURNING colapsa na MESMA mensagem de "categoria
-	// informada não existe" de um id inexistente (nunca revela existência).
-	const insertProduto = `
-		INSERT INTO produtos (
-			nome, codigo, categoria_id, observacoes, template_id,
-			comprimento_valor, comprimento_unidade,
-			largura_valor, largura_unidade,
-			diametro_valor, diametro_unidade,
-			altura_valor, altura_unidade,
-			espessura_valor, espessura_unidade,
-			codigo_fornecedor, ean13, unidade_medida, embalagem,
-			empresa_id
-		)
-		SELECT $1, $2, c.id, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
-		FROM categorias c
-		WHERE c.id = $3 AND c.empresa_id = $20
-		RETURNING id, nome, codigo`
-	var p Produto
-	err = tx.QueryRow(insertProduto,
-		nomeTrimado, codigo, categoriaID, observacoes, templateID,
-		comprimentoValor, comprimentoUnidade,
-		larguraValor, larguraUnidade,
-		diametroValor, diametroUnidade,
-		alturaValor, alturaUnidade,
-		espessuraValor, espessuraUnidade,
-		codigoFornecedor, ean13, unidadeMedida, embalagem,
-		empresaID,
-	).Scan(&p.ID, &p.Nome, &p.Codigo)
-	if err != nil {
-		var pqErr *pq.Error
-		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && (pqErr.Code == pqForeignKeyViolation || pqErr.Code == pqInvalidTextRepresentation)) {
-			return Produto{}, &ErroProdutoValidacao{Mensagem: "categoria informada não existe"}
+			// A Categoria informada precisa pertencer À MESMA Empresa (Story 9.1,
+			// AD-20): em vez de um SELECT-antes-de-INSERT (que teria janela de
+			// corrida), o próprio INSERT lê `categorias` com o filtro de Empresa —
+			// uma Categoria de outra Empresa simplesmente não produz linha, e o
+			// `sql.ErrNoRows` do RETURNING colapsa na MESMA mensagem de "categoria
+			// informada não existe" de um id inexistente (nunca revela existência).
+			const insertProduto = `
+			INSERT INTO produtos (
+				nome, codigo, categoria_id, observacoes, template_id,
+				comprimento_valor, comprimento_unidade,
+				largura_valor, largura_unidade,
+				diametro_valor, diametro_unidade,
+				altura_valor, altura_unidade,
+				espessura_valor, espessura_unidade,
+				codigo_fornecedor, ean13, unidade_medida, embalagem,
+				empresa_id
+			)
+			SELECT $1, $2, c.id, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+			FROM categorias c
+			WHERE c.id = $3 AND c.empresa_id = $20
+			RETURNING id, nome, codigo`
+			var p Produto
+			err = tx.QueryRow(insertProduto,
+				nomeTrimado, codigo, categoriaID, observacoes, templateID,
+				comprimentoValor, comprimentoUnidade,
+				larguraValor, larguraUnidade,
+				diametroValor, diametroUnidade,
+				alturaValor, alturaUnidade,
+				espessuraValor, espessuraUnidade,
+				codigoFornecedor, ean13, unidadeMedida, embalagem,
+				empresaID,
+			).Scan(&p.ID, &p.Nome, &p.Codigo)
+			if err != nil {
+				var pqErr *pq.Error
+				if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && (pqErr.Code == pqForeignKeyViolation || pqErr.Code == pqInvalidTextRepresentation)) {
+					return Produto{}, false, &ErroProdutoValidacao{Mensagem: "categoria informada não existe"}
+				}
+				// Violação do índice único `idx_produtos_codigo` (empresa_id, codigo;
+				// migration 000032): o código é gerado pelo servidor, então a única
+				// causa possível é uma importação concorrente que gravou o mesmo
+				// número entre o UPDATE do contador e este INSERT (a importação não
+				// trava o contador). A transação inteira é refeita por quem chama
+				// (CriarProduto), que relê o MAX já com o código da importação.
+				if errors.As(err, &pqErr) && pqErr.Code == pqUniqueViolation {
+					return Produto{}, true, nil
+				}
+				return Produto{}, false, fmt.Errorf("falha ao inserir produto: %w", err)
+			}
+
+			if err := tx.Commit(); err != nil {
+				return Produto{}, false, fmt.Errorf("falha ao commitar cadastro de produto: %w", err)
+			}
+			return p, false, nil
+		}()
+		if colisaoCodigo {
+			if tentativa < maxTentativasCodigo {
+				continue
+			}
+			return Produto{}, fmt.Errorf("não foi possível gerar um código de produto único após %d tentativas", maxTentativasCodigo)
 		}
-		// Violação do índice único `idx_produtos_codigo` (empresa_id, codigo;
-		// migration 000032): na prática, hoje, só uma colisão eventual entre
-		// o código sequencial recém-gerado e um código legado/manual já
-		// gravado antes da Story 10.2 (spec-10-2, Design Notes) — não há
-		// lógica nova de desvio/realocação, o Produto simplesmente não é
-		// gravado. A importação (services/importacoes.go) depende da mesma
-		// unicidade para que o match por código de processarProximaLinha seja
-		// determinístico.
-		if errors.As(err, &pqErr) && pqErr.Code == pqUniqueViolation {
-			return Produto{}, &ErroProdutoValidacao{Mensagem: "código já cadastrado"}
-		}
-		return Produto{}, fmt.Errorf("falha ao inserir produto: %w", err)
+		return p, err
 	}
-
-	if err := tx.Commit(); err != nil {
-		return Produto{}, fmt.Errorf("falha ao commitar cadastro de produto: %w", err)
-	}
-	return p, nil
 }
 
 // AtualizarNomeProduto edita SÓ o `nome` de um Produto existente (Story 3.2,

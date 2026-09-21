@@ -207,6 +207,12 @@ interface ProdutoDetalhe {
   codigo: string | null;
   categoria: CategoriaDetalhe;
   dimensoes: Dimensoes;
+  // Story 10.3 (+ decisão do code review): unidade/embalagem e os códigos de
+  // compra; null quando nunca preenchidos (Produto importado/legado).
+  unidadeMedida?: string | null;
+  embalagem?: string | null;
+  codigoFornecedor?: string | null;
+  ean13?: string | null;
   quantidadeTotal: number;
   quantidadeReservada: number;
   quantidadeDisponivel: number;
@@ -713,6 +719,17 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
               </span>
               <IndicadorDisponibilidade disponivel={produto.disponivel} />
             </div>
+
+            <dl className="text-body grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
+              <dt className="text-muted-foreground">Unidade de medida</dt>
+              <dd>{produto.unidadeMedida ?? '—'}</dd>
+              <dt className="text-muted-foreground">Embalagem</dt>
+              <dd>{produto.embalagem ?? '—'}</dd>
+              <dt className="text-muted-foreground">Código do fornecedor</dt>
+              <dd className="font-mono">{produto.codigoFornecedor ?? '—'}</dd>
+              <dt className="text-muted-foreground">EAN-13</dt>
+              <dd className="font-mono">{produto.ean13 ?? '—'}</dd>
+            </dl>
 
             <div className="flex flex-col gap-2">
               <h2 className="text-heading-md">Quantidade por Estoque</h2>

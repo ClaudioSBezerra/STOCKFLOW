@@ -133,6 +133,6 @@ Blocking condition: nenhuma — todo o código está entregue e verificado contr
 
 Code review independente (2026-09-21, 4 revisores: Blind Hunter, Edge Case Hunter, Verification Gap, Acceptance Auditor; achados verificados no código antes de classificar).
 
-- [ ] [Review][Patch] Erro `lock_timeout` (55P03) chega cru ao operador e o dry-run não avisa `nome_fantasia` vazio/longo que só falharia no `--executar` [backend/services/migracao_estoques_filial.go, backend/cmd/migrar-estoques-filial/main.go] — traduzir a mensagem e diagnosticar no dry-run
-- [ ] [Review][Patch] Nada confirma qual banco será alterado antes de `--executar` (irreversível: `SET NOT NULL`) — ecoar host/nome do banco no relatório
+- [x] [Review][Patch][aplicado 2026-09-21] Erro `lock_timeout` (55P03) chega cru ao operador e o dry-run não avisa `nome_fantasia` vazio/longo que só falharia no `--executar` [backend/services/migracao_estoques_filial.go, backend/cmd/migrar-estoques-filial/main.go] — traduzir a mensagem e diagnosticar no dry-run
+- [x] [Review][Patch][aplicado 2026-09-21] Nada confirma qual banco será alterado antes de `--executar` (irreversível: `SET NOT NULL`) — ecoar host/nome do banco no relatório
 - [x] [Review][Defer] Sem caminho de reversão/auditoria da execução (só stdout) — deferred, a spec declara "sem rollback automático" e o runbook exige `pg_dump`

@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,6 +46,11 @@ type Pedido struct {
 	// POST /api/pedidos o expõe (o handler, como `centro_custo_id`); as
 	// listagens/detalhe/recibo não o leem nem o mostram.
 	CentroCustoID *string `json:"-"`
+	// CentroCustoNome (decisão do code review, 2026-09-21): nome do Centro de
+	// Custo cadastrado escolhido no envio, nil quando o Pedido não escolheu
+	// nenhum. Exibido no detalhe, na Fila e no recibo; o texto livre
+	// `ObraCentroCusto` continua sendo o campo obrigatório.
+	CentroCustoNome *string `json:"centroCusto"`
 }
 
 // PedidoItem é uma linha do SNAPSHOT imutável em `pedido_itens` (AD-17,
@@ -344,8 +350,9 @@ func ListarPedidosProprios(db *sql.DB, empresaID string, usuarioID, filtroStatus
 	// esta agregação de fora). Reaproveita o mesmo placeholder $2.
 	q := `
 		SELECT p.id, p.usuario_id, p.solicitante, p.obra_centro_custo, p.observacao, p.status, p.criado_em,
-		       COALESCE(i.qtd, 0)
+		       COALESCE(i.qtd, 0), cc.nome
 		FROM pedidos p
+		LEFT JOIN centros_custo cc ON cc.id = p.centro_custo_id AND cc.empresa_id = p.empresa_id
 		LEFT JOIN (
 			SELECT pedido_id, count(*) AS qtd FROM pedido_itens WHERE empresa_id = $2 GROUP BY pedido_id
 		) i ON i.pedido_id = p.id
@@ -367,14 +374,18 @@ func ListarPedidosProprios(db *sql.DB, empresaID string, usuarioID, filtroStatus
 	for rows.Next() {
 		var r PedidoResumo
 		var observacao sql.NullString
+		var centroCusto sql.NullString
 		if err := rows.Scan(
 			&r.ID, &r.UsuarioID, &r.Solicitante, &r.ObraCentroCusto,
-			&observacao, &r.Status, &r.CriadoEm, &r.QtdItens,
+			&observacao, &r.Status, &r.CriadoEm, &r.QtdItens, &centroCusto,
 		); err != nil {
 			return nil, fmt.Errorf("falha ao ler linha de pedido próprio: %w", err)
 		}
 		if observacao.Valid {
 			r.Observacao = &observacao.String
+		}
+		if centroCusto.Valid {
+			r.CentroCustoNome = &centroCusto.String
 		}
 		resumos = append(resumos, r)
 	}
@@ -402,8 +413,9 @@ func ListarPedidosFila(db *sql.DB, empresaID string, filtroStatus string) ([]Ped
 	// equivalente em ListarPedidosProprios.
 	q := `
 		SELECT p.id, p.usuario_id, p.solicitante, p.obra_centro_custo, p.observacao, p.status, p.criado_em,
-		       COALESCE(i.qtd, 0)
+		       COALESCE(i.qtd, 0), cc.nome
 		FROM pedidos p
+		LEFT JOIN centros_custo cc ON cc.id = p.centro_custo_id AND cc.empresa_id = p.empresa_id
 		LEFT JOIN (
 			SELECT pedido_id, count(*) AS qtd FROM pedido_itens WHERE empresa_id = $1 GROUP BY pedido_id
 		) i ON i.pedido_id = p.id
@@ -425,14 +437,18 @@ func ListarPedidosFila(db *sql.DB, empresaID string, filtroStatus string) ([]Ped
 	for rows.Next() {
 		var r PedidoResumo
 		var observacao sql.NullString
+		var centroCusto sql.NullString
 		if err := rows.Scan(
 			&r.ID, &r.UsuarioID, &r.Solicitante, &r.ObraCentroCusto,
-			&observacao, &r.Status, &r.CriadoEm, &r.QtdItens,
+			&observacao, &r.Status, &r.CriadoEm, &r.QtdItens, &centroCusto,
 		); err != nil {
 			return nil, fmt.Errorf("falha ao ler linha da fila de pedidos: %w", err)
 		}
 		if observacao.Valid {
 			r.Observacao = &observacao.String
+		}
+		if centroCusto.Valid {
+			r.CentroCustoNome = &centroCusto.String
 		}
 		resumos = append(resumos, r)
 	}
@@ -478,12 +494,15 @@ func ListarPedidosParaSessao(db *sql.DB, empresaID string, usuarioID, papel stri
 func BuscarPedidoProprio(db *sql.DB, empresaID string, pedidoID, usuarioID, papel string) (PedidoDetalhe, error) {
 	var det PedidoDetalhe
 	var observacao sql.NullString
+	var centroCusto sql.NullString
 	const selectPedido = `
-		SELECT id, usuario_id, solicitante, obra_centro_custo, observacao, status, criado_em
-		FROM pedidos WHERE id = $1 AND empresa_id = $2`
+		SELECT p.id, p.usuario_id, p.solicitante, p.obra_centro_custo, p.observacao, p.status, p.criado_em, cc.nome
+		FROM pedidos p
+		LEFT JOIN centros_custo cc ON cc.id = p.centro_custo_id AND cc.empresa_id = p.empresa_id
+		WHERE p.id = $1 AND p.empresa_id = $2`
 	if err := db.QueryRow(selectPedido, pedidoID, empresaID).Scan(
 		&det.ID, &det.UsuarioID, &det.Solicitante, &det.ObraCentroCusto,
-		&observacao, &det.Status, &det.CriadoEm,
+		&observacao, &det.Status, &det.CriadoEm, &centroCusto,
 	); err != nil {
 		var pqErr *pq.Error
 		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
@@ -493,6 +512,9 @@ func BuscarPedidoProprio(db *sql.DB, empresaID string, pedidoID, usuarioID, pape
 	}
 	if observacao.Valid {
 		det.Observacao = &observacao.String
+	}
+	if centroCusto.Valid {
+		det.CentroCustoNome = &centroCusto.String
 	}
 
 	if det.UsuarioID != usuarioID && RankPapel(papel) < RankPapel(PapelAlmoxarife) {
@@ -692,6 +714,13 @@ func DecidirPedido(db *sql.DB, empresaID string, pedidoID, decisorID, papelDecis
 			}
 			if quantidadeAprovada < arredondar3(it.Quantidade) {
 				totalmenteAprovado = false
+				// Com reserva dura (AD-25) isto só deveria ocorrer por bug de
+				// reserva ou saldo físico inconsistente — registra para não
+				// ficar invisível (o Almoxarife só vê "parcial").
+				slog.Warn("aprovação de pedido reduziu a quantidade de um item",
+					"pedido_id", pedidoID, "produto_id", it.ProdutoID, "estoque_id", it.EstoqueID,
+					"solicitada", it.Quantidade, "reserva", reserva, "saldo_fisico", fisico,
+					"aprovada", quantidadeAprovada)
 			} else {
 				quantidadeAprovada = it.Quantidade
 			}
@@ -753,13 +782,15 @@ func DecidirPedido(db *sql.DB, empresaID string, pedidoID, decisorID, papelDecis
 	var observacao sql.NullString
 	var decididoPor sql.NullString
 	var decididoEm sql.NullTime
+	var centroCustoDecisao sql.NullString
 	const registrarDecisao = `
 		UPDATE pedidos SET status = $2, decidido_por = $3, decidido_em = now()
 		WHERE id = $1 AND status = 'pendente' AND empresa_id = $4
-		RETURNING id, usuario_id, solicitante, obra_centro_custo, observacao, status, criado_em, decidido_por, decidido_em`
+		RETURNING id, usuario_id, solicitante, obra_centro_custo, observacao, status, criado_em, decidido_por, decidido_em,
+		  (SELECT cc.nome FROM centros_custo cc WHERE cc.id = pedidos.centro_custo_id AND cc.empresa_id = pedidos.empresa_id)`
 	if err := tx.QueryRow(registrarDecisao, pedidoID, novoStatus, decisorID, empresaID).Scan(
 		&det.ID, &det.UsuarioID, &det.Solicitante, &det.ObraCentroCusto,
-		&observacao, &det.Status, &det.CriadoEm, &decididoPor, &decididoEm,
+		&observacao, &det.Status, &det.CriadoEm, &decididoPor, &decididoEm, &centroCustoDecisao,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			// Outra requisição decidiu este Pedido entre o SELECT inicial e
@@ -778,6 +809,9 @@ func DecidirPedido(db *sql.DB, empresaID string, pedidoID, decisorID, papelDecis
 	}
 	if observacao.Valid {
 		det.Observacao = &observacao.String
+	}
+	if centroCustoDecisao.Valid {
+		det.CentroCustoNome = &centroCustoDecisao.String
 	}
 	if decididoPor.Valid {
 		det.DecididoPor = &decididoPor.String
@@ -839,6 +873,7 @@ type ReciboPedidoConteudo struct {
 	PedidoID        string
 	Solicitante     string
 	ObraCentroCusto string
+	CentroCusto     string // nome do Centro de Custo cadastrado; "" quando não escolhido
 	Status          string
 	Aprovador       string
 	DecididoEm      time.Time
@@ -907,6 +942,7 @@ func MontarReciboPedidoConteudo(db *sql.DB, empresaID string, pedidoID, usuarioI
 		PedidoID:        det.ID,
 		Solicitante:     det.Solicitante,
 		ObraCentroCusto: det.ObraCentroCusto,
+		CentroCusto:     nomeCentroCusto(det.CentroCustoNome),
 		Status:          det.Status,
 		Aprovador:       aprovador,
 		DecididoEm:      decididoEm,
@@ -985,6 +1021,11 @@ func RenderizarReciboPedidoPDF(conteudo ReciboPedidoConteudo) ([]byte, error) {
 	if err := escreverLinha("Obra/Centro de Custo: "+conteudo.ObraCentroCusto, 11); err != nil {
 		return nil, err
 	}
+	if conteudo.CentroCusto != "" {
+		if err := escreverLinha("Centro de Custo: "+conteudo.CentroCusto, 11); err != nil {
+			return nil, err
+		}
+	}
 	if err := escreverLinha("Aprovador: "+conteudo.Aprovador, 11); err != nil {
 		return nil, err
 	}
@@ -1035,4 +1076,11 @@ func GerarReciboPedidoPDF(db *sql.DB, empresaID string, pedidoID, usuarioID, pap
 		return nil, err
 	}
 	return RenderizarReciboPedidoPDF(conteudo)
+}
+
+func nomeCentroCusto(n *string) string {
+	if n == nil {
+		return ""
+	}
+	return *n
 }

@@ -91,6 +91,10 @@ const PRODUTO_DETALHE = {
   id: 'p1',
   nome: 'Cabo Flexível 4mm',
   codigo: 'CAB-004',
+  unidadeMedida: 'm',
+  embalagem: 'Rolo 100m',
+  codigoFornecedor: 'FORN-778',
+  ean13: '7891234567895',
   categoria: { id: 'c1', codigo: '05.002', nome: 'Materiais Elétricos' },
   dimensoes: {
     comprimento: { valor: 100, unidade: 'm' },
@@ -225,6 +229,20 @@ describe('ProdutoDetalhePage', () => {
     expect(screen.getByText('Almoxarifado Central')).toBeInTheDocument();
     expect(screen.getByText('Obra Norte')).toBeInTheDocument();
     expect(screen.getByText('Disponível')).toBeInTheDocument();
+  });
+
+  it('mostra unidade de medida, embalagem, código do fornecedor e EAN-13 no detalhe', async () => {
+    stubPadrao();
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+
+    await screen.findByText('Cabo Flexível 4mm');
+    expect(screen.getByText('Rolo 100m')).toBeInTheDocument();
+    expect(screen.getByText('FORN-778')).toHaveClass('font-mono');
+    expect(screen.getByText('7891234567895')).toHaveClass('font-mono');
+    expect(screen.getByText('Unidade de medida').nextElementSibling).toHaveTextContent('m');
   });
 
   it('fallback: busca o detalhe mesmo sem SSE conectar, após o timer de escape (incidente real 2026-09-04)', async () => {

@@ -144,6 +144,55 @@ func templateIDPorSubtipoHandler(t *testing.T, db *sql.DB, subtipo string) strin
 // TestCriarProdutoHandler_201ParaAlmoxarifeGestorAdm prova a AC1 na fronteira
 // HTTP: uma sessão `almoxarife`+ com corpo válido (incluindo as 5 dimensões
 // pareadas) recebe 201 e o corpo `{"produto":{"id","nome"}}`.
+// TestCriarProdutoHandler_MapeiaFornecedorEAN13EEmbalagem prova a ponte
+// HTTP -> service dos três campos da Story 10.3: renomear uma tag json ou
+// esquecer o repasse para CriarProdutoInput descartaria os valores em silêncio
+// (os testes de service setam a struct direto e os de frontend só olham o corpo
+// enviado). Um EAN-13 inválido vira 400.
+func TestCriarProdutoHandler_MapeiaFornecedorEAN13EEmbalagem(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	criarContaComPapel(t, db, "Conta almox", "prod-map-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "prod-map-almox@empresa.com", "senha-123456")
+	base := func(extra string) string {
+		return `{
+			"nome": "Produto com campos de compra",
+			"categoria_id": "` + categoriaID + `",
+			"template_id": "` + templateIDPorSubtipoHandler(t, db, "Genérico") + `",
+			"unidade_medida": "cx",
+			` + extra + `
+		}`
+	}
+
+	w := postProdutos(db, "Bearer "+token, base(`"codigo_fornecedor": "FORN-778", "ean13": "7891234567000", "embalagem": "CX 24"`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Produto struct {
+			ID string `json:"id"`
+		} `json:"produto"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	var fornecedor, ean, embalagem sql.NullString
+	if err := db.QueryRow(
+		`SELECT codigo_fornecedor, ean13, embalagem FROM produtos WHERE id = $1`, resp.Produto.ID,
+	).Scan(&fornecedor, &ean, &embalagem); err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	if fornecedor.String != "FORN-778" || ean.String != "7891234567000" || embalagem.String != "CX 24" {
+		t.Errorf("persistido = (%q, %q, %q), want (FORN-778, 7891234567000, CX 24)", fornecedor.String, ean.String, embalagem.String)
+	}
+
+	w = postProdutos(db, "Bearer "+token, base(`"ean13": "7891234567001"`))
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("EAN-13 inválido: status = %d, want 400 (body=%s)", w.Code, w.Body.String())
+	}
+}
+
 func TestCriarProdutoHandler_201ParaAlmoxarifeGestorAdm(t *testing.T) {
 	db := testDB(t)
 	limparProdutosHandler(t, db)

@@ -482,8 +482,8 @@ func TestExcluirNomenclaturaTemplate_EmUso(t *testing.T) {
 	if !errors.As(err, &emUso) || emUso.Produtos != 1 {
 		t.Fatalf("erro = %v, want ErroTemplateEmUso{1}", err)
 	}
-	if !strings.Contains(err.Error(), "1 produto") {
-		t.Errorf("mensagem sem contagem: %q", err.Error())
+	if !strings.HasSuffix(err.Error(), "em uso por 1 produto") {
+		t.Errorf("mensagem singular incorreta: %q", err.Error())
 	}
 	var n int
 	db.QueryRow(`SELECT count(*) FROM nomenclatura_templates WHERE id = $1`, tpl.ID).Scan(&n)
@@ -564,5 +564,57 @@ func TestNomenclaturaTemplates_ProvisionarCopiaPadrao(t *testing.T) {
 	e := empresaDeTemplates(t, db, "templates-provisionamento", "106000000003")
 	if n := contarTemplatesDaEmpresa(t, db, e.ID); n != 29 {
 		t.Errorf("templates copiados = %d, want 29", n)
+	}
+}
+
+// TestErroTemplateEmUso_SingularEPlural fixa o singular ("1 produto") e o
+// plural ("2 produtos"): um Contains("1 produto") aceitaria também "1 produtos".
+func TestErroTemplateEmUso_SingularEPlural(t *testing.T) {
+	if got := (&ErroTemplateEmUso{Produtos: 1}).Error(); !strings.HasSuffix(got, "em uso por 1 produto") {
+		t.Errorf("singular = %q", got)
+	}
+	if got := (&ErroTemplateEmUso{Produtos: 2}).Error(); !strings.HasSuffix(got, "em uso por 2 produtos") {
+		t.Errorf("plural = %q", got)
+	}
+}
+
+// TestExcluirNomenclaturaTemplate_ConcorrenteNaoRemoveOFallback: numa Empresa
+// com DOIS templates-marcador, duas exclusões simultâneas (uma de cada) não
+// podem apagar os dois — o FOR UPDATE ordenado de travarTemplateEMarcadores
+// serializa a contagem, então exatamente uma vence e sobra um fallback.
+func TestExcluirNomenclaturaTemplate_ConcorrenteNaoRemoveOFallback(t *testing.T) {
+	db := testDB(t)
+	e := empresaDeTemplates(t, db, "templates-concorrente", "106000000077")
+	genID := idTemplateGenerico(t, db, e.ID)
+	outro, err := CriarNomenclaturaTemplate(db, e.ID, "Livre Concorrente", TemplateGenericoMarcador)
+	if err != nil {
+		t.Fatalf("seed segundo marcador: %v", err)
+	}
+
+	erros := make(chan error, 2)
+	for _, id := range []string{genID, outro.ID} {
+		go func(id string) { erros <- ExcluirNomenclaturaTemplate(db, e.ID, id) }(id)
+	}
+	var okCount, bloqueados int
+	for i := 0; i < 2; i++ {
+		err := <-erros
+		switch {
+		case err == nil:
+			okCount++
+		case errors.Is(err, ErrTemplateFallbackObrigatorio):
+			bloqueados++
+		default:
+			t.Fatalf("erro inesperado: %v", err)
+		}
+	}
+	if okCount != 1 || bloqueados != 1 {
+		t.Errorf("exclusões: %d ok, %d bloqueadas; want 1 e 1", okCount, bloqueados)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM nomenclatura_templates WHERE empresa_id = $1 AND template = $2`, e.ID, TemplateGenericoMarcador).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("marcadores restantes = %d, want 1 (a Empresa não pode ficar sem fallback)", n)
 	}
 }

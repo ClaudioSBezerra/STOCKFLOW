@@ -25,6 +25,8 @@ interface CentroCusto {
 const NOME_MAX = 255;
 
 const MENSAGEM_ERRO_CARREGAR = 'Não foi possível carregar os centros de custo. Recarregue a página.';
+const MENSAGEM_ERRO_RECARREGAR_APOS_CADASTRO =
+  'Centro de custo criado, mas não foi possível atualizar a lista. Recarregue a página — não cadastre de novo.';
 const MENSAGEM_ERRO_CADASTRO =
   'Não foi possível cadastrar o centro de custo agora. Tente novamente em instantes.';
 
@@ -41,11 +43,11 @@ export function CentrosCustoSection() {
   const [erroCarregar, setErroCarregar] = useState<string | null>(null);
   const [carregou, setCarregou] = useState(false);
 
-  const carregar = useCallback(async () => {
+  const carregar = useCallback(async (mensagemErro: string = MENSAGEM_ERRO_CARREGAR) => {
     try {
       const res = await fetch(apiUrl('/api/centros-custo'), { headers: authHeaders() });
       if (!res.ok) {
-        setErroCarregar(MENSAGEM_ERRO_CARREGAR);
+        setErroCarregar(mensagemErro);
         return;
       }
       const body = (await res.json()) as { centrosCusto: CentroCusto[] };
@@ -53,7 +55,7 @@ export function CentrosCustoSection() {
       setErroCarregar(null);
       setCarregou(true);
     } catch {
-      setErroCarregar(MENSAGEM_ERRO_CARREGAR);
+      setErroCarregar(mensagemErro);
     }
   }, []);
 
@@ -86,7 +88,7 @@ export function CentrosCustoSection() {
       }
       toast.success('Centro de custo criado.');
       setNome('');
-      await carregar();
+      await carregar(MENSAGEM_ERRO_RECARREGAR_APOS_CADASTRO);
     } catch {
       setErro(MENSAGEM_ERRO_CADASTRO);
     } finally {

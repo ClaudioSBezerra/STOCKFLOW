@@ -773,11 +773,14 @@ type ProdutoDetalhe struct {
 	// detalhe, mesmo padrão ponteiro de Codigo. `NULL` no banco (Produto
 	// legado ainda não passado pelo backfill da migration 000038, ou criado
 	// via importação, Never desta spec) vira `null` no JSON — nunca "un"
-	// forçado aqui. Código do Fornecedor/EAN-13 NÃO entram nesta projeção
-	// (Never, spec-10-3): ficam gravados, sem superfície de leitura nesta
-	// story.
-	UnidadeMedida *string `json:"unidadeMedida"`
-	Embalagem     *string `json:"embalagem"`
+	// forçado aqui. Código do Fornecedor/EAN-13 entram no detalhe por decisão
+	// do code review dos Épicos 10-12 (2026-09-21): antes ficavam gravados
+	// sem nenhuma superfície de leitura. Edição e busca por eles ficam para
+	// uma story futura.
+	UnidadeMedida    *string `json:"unidadeMedida"`
+	Embalagem        *string `json:"embalagem"`
+	CodigoFornecedor *string `json:"codigoFornecedor"`
+	EAN13            *string `json:"ean13"`
 }
 
 // produtoDetalheQuery devolve um único Produto por `id` — mesmas colunas de
@@ -794,7 +797,7 @@ const produtoDetalheQuery = `
 		p.altura_valor, p.altura_unidade,
 		p.espessura_valor, p.espessura_unidade,
 		COALESCE(pe.total, 0) AS quantidade_total,
-		p.unidade_medida, p.embalagem
+		p.unidade_medida, p.embalagem, p.codigo_fornecedor, p.ean13
 	FROM produtos p
 	JOIN categorias c ON c.id = p.categoria_id
 	LEFT JOIN (
@@ -823,6 +826,7 @@ func ObterProdutoDetalhe(db *sql.DB, empresaID string, id string) (ProdutoDetalh
 		comp, larg, diam, alt, esp parDimensao
 		quantidade                 float64
 		unidadeMedida, embalagem   sql.NullString
+		codigoFornecedor, ean13    sql.NullString
 	)
 	err := db.QueryRow(produtoDetalheQuery, id, empresaID).Scan(
 		&det.ID, &det.Nome, &codigo,
@@ -833,7 +837,7 @@ func ObterProdutoDetalhe(db *sql.DB, empresaID string, id string) (ProdutoDetalh
 		&alt.valor, &alt.unidade,
 		&esp.valor, &esp.unidade,
 		&quantidade,
-		&unidadeMedida, &embalagem,
+		&unidadeMedida, &embalagem, &codigoFornecedor, &ean13,
 	)
 	if err != nil {
 		var pqErr *pq.Error
@@ -853,6 +857,14 @@ func ObterProdutoDetalhe(db *sql.DB, empresaID string, id string) (ProdutoDetalh
 	if embalagem.Valid {
 		e := embalagem.String
 		det.Embalagem = &e
+	}
+	if codigoFornecedor.Valid {
+		cf := codigoFornecedor.String
+		det.CodigoFornecedor = &cf
+	}
+	if ean13.Valid {
+		e := strings.TrimSpace(ean13.String)
+		det.EAN13 = &e
 	}
 	det.Dimensoes = DimensoesProduto{
 		Comprimento: comp.paraDimensao(),

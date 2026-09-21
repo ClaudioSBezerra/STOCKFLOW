@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -86,6 +86,10 @@ export function CarrinhoPage() {
   const [enviando, setEnviando] = useState(false);
   const [centrosCusto, setCentrosCusto] = useState<CentroCustoOpcao[]>([]);
   const [centroCustoId, setCentroCustoId] = useState('');
+  const [centrosCustoIndisponiveis, setCentrosCustoIndisponiveis] = useState(false);
+  // Descarta a resposta de uma abertura anterior do diálogo que chegue depois
+  // de ele ter sido fechado/reaberto (senão sobrescreveria a lista zerada).
+  const cargaCentrosCustoRef = useRef(0);
   const vazio = !carregando && !erro && itens.length === 0;
 
   useEffect(() => {
@@ -114,20 +118,32 @@ export function CarrinhoPage() {
     setObservacao('');
     setCentroCustoId('');
     setCentrosCusto([]);
+    setCentrosCustoIndisponiveis(false);
     setEnvioAberto(true);
     void carregarCentrosCusto();
   }
 
   async function carregarCentrosCusto() {
+    const carga = ++cargaCentrosCustoRef.current;
     try {
       const res = await fetch(apiUrl('/api/centros-custo'), { headers: authHeaders() });
+      if (carga !== cargaCentrosCustoRef.current) {
+        return;
+      }
       if (!res.ok) {
+        setCentrosCustoIndisponiveis(true);
         return;
       }
       const body = (await res.json()) as { centrosCusto?: CentroCustoOpcao[] };
+      if (carga !== cargaCentrosCustoRef.current) {
+        return;
+      }
       setCentrosCusto(body.centrosCusto ?? []);
     } catch {
-      // Sem a lista, o envio segue só com o texto livre.
+      // Sem a lista, o envio segue só com o texto livre — mas avisa.
+      if (carga === cargaCentrosCustoRef.current) {
+        setCentrosCustoIndisponiveis(true);
+      }
     }
   }
 
@@ -264,6 +280,11 @@ export function CarrinhoPage() {
                 autoComplete="off"
               />
             </div>
+            {centrosCustoIndisponiveis && (
+              <p role="status" className="text-label text-muted-foreground">
+                Não foi possível carregar os centros de custo cadastrados; o envio segue só com o texto livre.
+              </p>
+            )}
             {centrosCusto.length > 0 && (
               <div className="flex flex-col gap-2">
                 <Label htmlFor="pedido-centro-custo">Centro de custo cadastrado</Label>

@@ -40,6 +40,7 @@ const PEDIDOS = [
     usuarioId: 'u-1',
     solicitante: 'Ana Silva',
     obraCentroCusto: 'Obra Norte',
+    centroCusto: 'Estoque do Cabo',
     observacao: null,
     status: 'pendente',
     criadoEm: '2026-09-02T12:00:00Z',
@@ -88,6 +89,17 @@ describe('FilaPedidosSection', () => {
     expect(await screen.findByText('Obra Norte')).toBeInTheDocument();
     expect(listarFilaPedidosMock).toHaveBeenCalledWith(undefined);
     expect(screen.queryByText('Carregando pedidos...')).not.toBeInTheDocument();
+  });
+
+  it('mostra o Centro de custo cadastrado do Pedido, e nada quando ele não escolheu um', async () => {
+    render(<FilaPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+
+    expect(await screen.findByText('Centro de custo: Estoque do Cabo')).toBeInTheDocument();
+    // O 2º Pedido não tem Centro: só uma linha "Centro de custo:" na tela.
+    expect(screen.getAllByText(/^Centro de custo:/)).toHaveLength(1);
   });
 
   it('mostra Pedidos de VÁRIOS solicitantes', async () => {

@@ -355,6 +355,14 @@ func InserirEmpresa(tx *sql.Tx, dados DadosEmpresa) (Empresa, error) {
 		}
 		return Empresa{}, fmt.Errorf("falha ao inserir empresa: %w", err)
 	}
+	// Contador de código de Produto (AD-26) nasce junto com a Empresa, em
+	// QUALQUER caminho que a crie (ProvisionarEmpresa e a adoção da fundadora
+	// em migracao_multi_empresa.go) — nunca lazy-init em CriarProduto.
+	if _, err := tx.Exec(
+		`INSERT INTO contadores_produto (empresa_id, ultimo_numero) VALUES ($1, 0) ON CONFLICT (empresa_id) DO NOTHING`, e.ID,
+	); err != nil {
+		return Empresa{}, fmt.Errorf("falha ao criar contador de código de produto para a empresa: %w", err)
+	}
 	return e, nil
 }
 
@@ -406,10 +414,10 @@ func CopiarListasPadrao(tx *sql.Tx, empresaID string) error {
 // do chamador: um provisionamento que falhe no meio nunca deixa uma Empresa
 // sem suas listas nem sem contador.
 //
-// A linha de `contadores_produto` (`ultimo_numero=0`) nasce SEMPRE aqui,
-// nunca via lazy-init em CriarProduto — cobre tanto a Empresa real quanto a
-// Empresa-treino (empresas_plataforma.go chama ProvisionarEmpresa com `tx`s
-// distintas para cada uma, então cada uma ganha sua própria linha).
+// A linha de `contadores_produto` (`ultimo_numero=0`) nasce em InserirEmpresa
+// (que esta função compõe), nunca via lazy-init em CriarProduto — cobre a
+// Empresa real, a Empresa-treino e a fundadora adotada pela migração
+// multi-Empresa.
 //
 // Erros: os mesmos de InserirEmpresa (*ErroEmpresaValidacao,
 // ErrCNPJDuplicado, ErrSlugDuplicado).
@@ -420,11 +428,6 @@ func ProvisionarEmpresa(tx *sql.Tx, dados DadosEmpresa) (Empresa, error) {
 	}
 	if err := CopiarListasPadrao(tx, e.ID); err != nil {
 		return Empresa{}, err
-	}
-	if _, err := tx.Exec(
-		`INSERT INTO contadores_produto (empresa_id, ultimo_numero) VALUES ($1, 0)`, e.ID,
-	); err != nil {
-		return Empresa{}, fmt.Errorf("falha ao criar contador de código de produto para a empresa: %w", err)
 	}
 	// Story 12.1 (FR-51): toda Empresa nasce com uma Filial padrão (nome =
 	// Nome Fantasia), na MESMA transação — nunca lazy-init. Vale também para a

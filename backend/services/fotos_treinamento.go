@@ -1,11 +1,13 @@
 package services
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 // Fotos de exemplo do Ambiente de Treinamento — Story 12.4 (Epic 12, FR-51;
@@ -94,6 +96,29 @@ func SemearFotosTreinamento(db *sql.DB, fotosDir, slug string, executar bool) (R
 			return res, fmt.Errorf("falha ao criar diretório de fotos: %w", err)
 		}
 	}
+	// Sonda de escrita também no dry-run: sem ela o dry-run passava e só o
+	// `--executar` falhava, no meio do laço, com fotos parciais.
+	if err := sondarDiretorioDeFotos(fotosDir); err != nil {
+		return res, err
+	}
+
+	// A sequência lista-fotos -> grava-foto não é atômica; duas execuções
+	// simultâneas para o mesmo Treinamento duplicariam fotos. Um advisory lock
+	// de sessão, por slug, serializa as execuções reais.
+	if executar {
+		ctx := context.Background()
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			return res, fmt.Errorf("falha ao obter conexão para o lock da semeadura: %w", err)
+		}
+		defer conn.Close()
+		if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock(hashtext($1))`, "seed-fotos-treinamento:"+slug); err != nil {
+			return res, fmt.Errorf("falha ao travar a semeadura de fotos: %w", err)
+		}
+		defer func() {
+			_, _ = conn.ExecContext(ctx, `SELECT pg_advisory_unlock(hashtext($1))`, "seed-fotos-treinamento:"+slug)
+		}()
+	}
 
 	for _, p := range produtosExemploTreinamento {
 		var produtoID string
@@ -129,4 +154,22 @@ func SemearFotosTreinamento(db *sql.DB, fotosDir, slug string, executar bool) (R
 		return res, ErrTreinamentoSemProdutosExemplo
 	}
 	return res, nil
+}
+
+// sondarDiretorioDeFotos confirma que dá para gravar em `dir` (ou, se ele
+// ainda não existe, no diretório pai onde `--executar` o criaria) criando e
+// apagando um arquivo temporário.
+func sondarDiretorioDeFotos(dir string) error {
+	alvo := dir
+	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+		alvo = filepath.Dir(dir)
+	}
+	f, err := os.CreateTemp(alvo, ".sonda-*")
+	if err != nil {
+		return fmt.Errorf("diretório de fotos %q sem permissão de escrita: %w", dir, err)
+	}
+	nome := f.Name()
+	_ = f.Close()
+	_ = os.Remove(nome)
+	return nil
 }

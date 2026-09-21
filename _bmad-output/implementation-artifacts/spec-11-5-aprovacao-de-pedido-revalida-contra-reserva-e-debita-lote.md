@@ -115,5 +115,5 @@ Status: done
 
 Code review independente (2026-09-21, 4 revisores: Blind Hunter, Edge Case Hunter, Verification Gap, Acceptance Auditor; achados verificados no código antes de classificar).
 
-- [ ] [Review][Patch] Quantidade aprovada reduzida por reserva ausente/saldo físico menor acontece em silêncio — só ocorre por bug de reserva e nada registra que ocorreu [backend/services/pedidos.go: DecidirPedido] — `slog.Warn` com pedido/produto/estoque/motivo
+- [x] [Review][Patch][aplicado 2026-09-21] Quantidade aprovada reduzida por reserva ausente/saldo físico menor acontece em silêncio — só ocorre por bug de reserva e nada registra que ocorreu [backend/services/pedidos.go: DecidirPedido] — `slog.Warn` com pedido/produto/estoque/motivo
 - [x] [Review][Defer] Importação de planilha e seed de treinamento ainda gravam `produto_estoque` (saldo legado sem Lote); o FEFO consome o legado, então convivem — deferred na spec 11.6

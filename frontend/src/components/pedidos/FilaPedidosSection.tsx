@@ -320,6 +320,11 @@ export function FilaPedidosSection() {
                     <span className="text-label text-muted-foreground min-w-0 truncate">
                       {pedido.obraCentroCusto}
                     </span>
+                    {pedido.centroCusto && (
+                      <span className="text-label text-muted-foreground min-w-0 truncate">
+                        Centro de custo: {pedido.centroCusto}
+                      </span>
+                    )}
                     <span className="text-label text-muted-foreground">
                       {new Date(pedido.criadoEm).toLocaleString('pt-BR')} ·{' '}
                       {pedido.qtdItens} {pedido.qtdItens === 1 ? 'item' : 'itens'}
@@ -360,6 +365,11 @@ export function FilaPedidosSection() {
                 : 'Itens do pedido'}
             </DialogTitle>
           </DialogHeader>
+          {detalheDe?.centroCusto && (
+            <p className="text-body text-muted-foreground">
+              Centro de custo: {detalheDe.centroCusto}
+            </p>
+          )}
           {carregandoItens && (
             <output className="text-body text-muted-foreground">Carregando itens...</output>
           )}

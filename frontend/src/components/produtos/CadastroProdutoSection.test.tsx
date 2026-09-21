@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { CadastroProdutoSection } from './CadastroProdutoSection';
 
 const toastSuccess = vi.hoisted(() => vi.fn());
@@ -129,7 +130,11 @@ describe('CadastroProdutoSection', () => {
   it('carrega categorias no mount e popula os selects', async () => {
     stubListasPadrao();
     const user = userEvent.setup();
-    render(<CadastroProdutoSection />);
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
 
     await user.click(screen.getByRole('combobox', { name: 'Categoria' }));
     expect(await screen.findByRole('option', { name: '04.001 — Materiais Civis' })).toBeInTheDocument();
@@ -139,7 +144,11 @@ describe('CadastroProdutoSection', () => {
   it('carrega templates de nomenclatura no mount e popula o select, sem a opção "nome livre"', async () => {
     stubListasPadrao();
     const user = userEvent.setup();
-    render(<CadastroProdutoSection />);
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
 
     await user.click(screen.getByRole('combobox', { name: 'Template de nomenclatura' }));
     expect(await screen.findByRole('option', { name: 'Tubo — PEAD/PPR' })).toBeInTheDocument();
@@ -165,7 +174,11 @@ describe('CadastroProdutoSection', () => {
       throw new Error(`URL inesperada: ${url}`);
     });
 
-    render(<CadastroProdutoSection />);
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Não foi possível carregar categorias/templates. Recarregue a página.',
@@ -180,7 +193,11 @@ describe('CadastroProdutoSection', () => {
       throw new Error(`URL inesperada: ${url}`);
     });
 
-    render(<CadastroProdutoSection />);
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Não foi possível carregar categorias/templates. Recarregue a página.',
@@ -197,7 +214,11 @@ describe('CadastroProdutoSection', () => {
       throw new Error(`URL inesperada: ${url}`);
     });
 
-    render(<CadastroProdutoSection />);
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Não foi possível carregar categorias/templates. Recarregue a página.',
@@ -219,7 +240,11 @@ describe('CadastroProdutoSection', () => {
     });
 
     const user = userEvent.setup();
-    render(<CadastroProdutoSection />);
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
     await preencherCamposObrigatorios(user);
 
     await user.type(screen.getByLabelText('Comprimento'), '6');
@@ -251,7 +276,11 @@ describe('CadastroProdutoSection', () => {
   it('sem campos de Estoque/quantidade inicial: botão habilita sem eles e não busca /api/estoques', async () => {
     const fetchMock = stubListasPadrao();
     const user = userEvent.setup();
-    render(<CadastroProdutoSection />);
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
 
     expect(screen.queryByRole('combobox', { name: 'Estoque' })).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Estoque')).not.toBeInTheDocument();
@@ -276,7 +305,11 @@ describe('CadastroProdutoSection', () => {
     });
 
     const user = userEvent.setup();
-    render(<CadastroProdutoSection />);
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
     await user.type(screen.getByLabelText('Nome'), 'TUBO PEAD PN80 DN50');
     await user.click(screen.getByRole('combobox', { name: 'Categoria' }));
     await user.click(await screen.findByRole('option', { name: '04.001 — Materiais Civis' }));
@@ -315,7 +348,11 @@ describe('CadastroProdutoSection', () => {
     });
 
     const user = userEvent.setup();
-    render(<CadastroProdutoSection />);
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
     await user.type(screen.getByLabelText('Nome'), 'Produto Simples');
     await user.click(screen.getByRole('combobox', { name: 'Categoria' }));
     await user.click(await screen.findByRole('option', { name: '04.001 — Materiais Civis' }));
@@ -348,7 +385,11 @@ describe('CadastroProdutoSection', () => {
     });
 
     const user = userEvent.setup();
-    render(<CadastroProdutoSection />);
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
     await preencherCamposObrigatorios(user);
     await user.type(screen.getByLabelText('Largura'), '10');
 
@@ -368,7 +409,11 @@ describe('CadastroProdutoSection', () => {
     });
 
     const user = userEvent.setup();
-    render(<CadastroProdutoSection />);
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
     await preencherCamposObrigatorios(user);
 
     await user.click(screen.getByRole('button', { name: 'Cadastrar produto' }));
@@ -381,7 +426,11 @@ describe('CadastroProdutoSection', () => {
   it('botão desabilitado com nome/categoria/template/unidade em branco', async () => {
     stubListasPadrao();
     const user = userEvent.setup();
-    render(<CadastroProdutoSection />);
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
 
     const botao = screen.getByRole('button', { name: 'Cadastrar produto' });
     expect(botao).toBeDisabled();
@@ -395,7 +444,11 @@ describe('CadastroProdutoSection', () => {
   it('botão desabilitado com nome abaixo do mínimo de 10 caracteres', async () => {
     stubListasPadrao();
     const user = userEvent.setup();
-    render(<CadastroProdutoSection />);
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
 
     await user.type(screen.getByLabelText('Nome'), 'curto');
     await user.click(screen.getByRole('combobox', { name: 'Categoria' }));
@@ -418,7 +471,11 @@ describe('CadastroProdutoSection', () => {
   it('botão desabilitado sem nenhum template selecionado', async () => {
     stubListasPadrao();
     const user = userEvent.setup();
-    render(<CadastroProdutoSection />);
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
 
     await user.type(screen.getByLabelText('Nome'), 'Nome Valido Sem Template');
     await user.click(screen.getByRole('combobox', { name: 'Categoria' }));
@@ -440,7 +497,11 @@ describe('CadastroProdutoSection', () => {
   it('botão desabilitado sem Unidade de Medida selecionada', async () => {
     stubListasPadrao();
     const user = userEvent.setup();
-    render(<CadastroProdutoSection />);
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
 
     await user.type(screen.getByLabelText('Nome'), 'Nome Valido Sem Unidade');
     await user.click(screen.getByRole('combobox', { name: 'Categoria' }));
@@ -469,7 +530,11 @@ describe('CadastroProdutoSection', () => {
     });
 
     const user = userEvent.setup();
-    render(<CadastroProdutoSection />);
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
     await preencherCamposObrigatorios(user);
 
     await user.type(screen.getByLabelText('Código do Fornecedor'), '  ABC-123  ');
@@ -501,7 +566,11 @@ describe('CadastroProdutoSection', () => {
     });
 
     const user = userEvent.setup();
-    render(<CadastroProdutoSection />);
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
     await preencherCamposObrigatorios(user);
 
     await user.click(screen.getByRole('button', { name: 'Cadastrar produto' }));
@@ -528,7 +597,11 @@ describe('CadastroProdutoSection', () => {
     });
 
     const user = userEvent.setup();
-    render(<CadastroProdutoSection />);
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
 
     const campoCodigo = screen.getByLabelText('Código');
     expect(campoCodigo).toBeDisabled();
@@ -542,6 +615,86 @@ describe('CadastroProdutoSection', () => {
 
     expect(screen.getByLabelText('Código')).toBeDisabled();
     expect(screen.getByLabelText('Código')).toHaveValue('000007');
+  });
+
+  it('campo Código volta a ficar vazio quando o usuário começa o próximo cadastro (não exibe o código do Produto anterior)', async () => {
+    stubListasPadrao({
+      postProdutos: () =>
+        Promise.resolve({
+          ok: true,
+          status: 201,
+          json: async () => ({ produto: { id: 'p-8', nome: 'Tubo PVC 100mm', codigo: '000008' } }),
+        }),
+    });
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
+    await preencherCamposObrigatorios(user);
+    await user.click(screen.getByRole('button', { name: 'Cadastrar produto' }));
+    await waitFor(() => expect(screen.getByLabelText('Código')).toHaveValue('000008'));
+
+    await user.type(screen.getByLabelText('Nome'), 'P');
+    expect(screen.getByLabelText('Código')).toHaveValue('');
+  });
+
+  it('depois do cadastro orienta o Almoxarife a lançar o saldo, com link para Estoques', async () => {
+    stubListasPadrao({
+      postProdutos: () =>
+        Promise.resolve({
+          ok: true,
+          status: 201,
+          json: async () => ({ produto: { id: 'p-9', nome: 'Tubo PVC 100mm', codigo: '000009' } }),
+        }),
+    });
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByText(/cadastrado sem saldo/i)).not.toBeInTheDocument();
+    await preencherCamposObrigatorios(user);
+    await user.click(screen.getByRole('button', { name: 'Cadastrar produto' }));
+
+    const aviso = await screen.findByText(/cadastrado sem saldo em estoque/i);
+    expect(aviso).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Estoques' })).toHaveAttribute('href', '/estoques');
+  });
+
+  it('o seletor de Unidade de Medida oferece exatamente as 12 unidades aceitas pelo servidor', async () => {
+    stubListasPadrao();
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
+    await user.click(screen.getByRole('combobox', { name: 'Unidade de Medida' }));
+    const opcoes = (await screen.findAllByRole('option')).map((o) => o.textContent);
+    expect([...opcoes].sort()).toEqual(
+      ['un', 'm', 'm²', 'm³', 'kg', 'L', 'cx', 'rolo', 'barra', 'mm', 'cm', 'kg/m²'].sort(),
+    );
+  });
+
+  it('nome é contado em caracteres (runas), não em unidades UTF-16: 5 emojis não liberam o botão', async () => {
+    stubListasPadrao();
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
+    await preencherCamposObrigatorios(user);
+    const nome = screen.getByLabelText('Nome');
+    await user.clear(nome);
+    await user.type(nome, '😀😀😀😀😀');
+    expect(screen.getByRole('button', { name: 'Cadastrar produto' })).toBeDisabled();
+
+    await user.type(nome, '😀😀😀😀😀');
+    expect(screen.getByRole('button', { name: 'Cadastrar produto' })).toBeEnabled();
   });
 });
 
@@ -562,7 +715,11 @@ describe('CadastroProdutoSection — Adicionar foto', () => {
         }),
       ...extra,
     });
-    render(<CadastroProdutoSection />);
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
     await preencherCamposObrigatorios(user);
     await user.click(screen.getByRole('button', { name: 'Cadastrar produto' }));
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Produto cadastrado.'));

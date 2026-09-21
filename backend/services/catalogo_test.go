@@ -696,6 +696,40 @@ func TestObterProdutoDetalhe_SemUnidadeMedidaNemEmbalagem(t *testing.T) {
 	if det.Embalagem != nil {
 		t.Errorf("embalagem = %v, want nil", *det.Embalagem)
 	}
+	if det.CodigoFornecedor != nil || det.EAN13 != nil {
+		t.Errorf("codigoFornecedor/ean13 = %v/%v, want nil/nil", det.CodigoFornecedor, det.EAN13)
+	}
+}
+
+// TestObterProdutoDetalhe_CodigoFornecedorEEAN13 prova que o detalhe expõe o
+// Código do Fornecedor e o EAN-13 gravados no cadastro (decisão do code review
+// dos Épicos 10-12: antes ficavam gravados sem nenhuma superfície de leitura).
+func TestObterProdutoDetalhe_CodigoFornecedorEEAN13(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Detalhe Fornecedor")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	produtoID, _ := criarProdutoCatComSaldo(t, db, CriarProdutoInput{
+		UnidadeMedida:    "un",
+		Nome:             "Produto Com Fornecedor E EAN",
+		CategoriaID:      categoriaIDPorCodigo(t, db, "04.001"),
+		CodigoFornecedor: "FORN-778",
+		EAN13:            "7891234567895",
+	}, estoque.ID, 1)
+
+	det, err := ObterProdutoDetalhe(db, empresaTeste, produtoID)
+	if err != nil {
+		t.Fatalf("ObterProdutoDetalhe: %v", err)
+	}
+	if det.CodigoFornecedor == nil || *det.CodigoFornecedor != "FORN-778" {
+		t.Errorf("codigoFornecedor = %v, want FORN-778", det.CodigoFornecedor)
+	}
+	if det.EAN13 == nil || *det.EAN13 != "7891234567895" {
+		t.Errorf("ean13 = %v, want 7891234567895", det.EAN13)
+	}
 }
 
 // TestObterProdutoDetalhe_IDInexistente prova a linha "id inexistente" da

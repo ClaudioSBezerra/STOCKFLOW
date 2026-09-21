@@ -116,5 +116,5 @@ Status: done
 
 Code review independente (2026-09-21, 4 revisores: Blind Hunter, Edge Case Hunter, Verification Gap, Acceptance Auditor; achados verificados no código antes de classificar).
 
-- [ ] [Review][Patch] (decisão do usuário 2026-09-21: orientar na tela com atalho para o Lançamento de Saldo; API continua ignorando os campos antigos) Cliente antigo que ainda envia `estoque_id`/`quantidade_inicial` recebe 201 e Produto com saldo zero, sem aviso; e o formulário não leva o Almoxarife à tela de Lançamento de Saldo depois de cadastrar — aceitar (por spec) ou rejeitar/avisar?
+- [x] [Review][Patch][aplicado 2026-09-21] (decisão do usuário 2026-09-21: orientar na tela com atalho para o Lançamento de Saldo; API continua ignorando os campos antigos) Cliente antigo que ainda envia `estoque_id`/`quantidade_inicial` recebe 201 e Produto com saldo zero, sem aviso; e o formulário não leva o Almoxarife à tela de Lançamento de Saldo depois de cadastrar — aceitar (por spec) ou rejeitar/avisar?
 - [x] [Review][Defer] AC3 ("Lançamento é o único caminho de entrada de saldo") não é literalmente verdadeira enquanto a importação em massa grava `produto_estoque` [backend/services/importacoes.go:611,720] — deferred, já registrado na spec

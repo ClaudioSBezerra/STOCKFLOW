@@ -8,6 +8,7 @@ import (
 	"image/jpeg"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -221,5 +222,57 @@ func TestFotosTreinamento_SemProdutosDeExemploOuApagadosRecusa(t *testing.T) {
 	}
 	if n := arquivosDe(t, dir); n != 0 {
 		t.Errorf("arquivos = %d, want 0", n)
+	}
+}
+
+// TestFotosTreinamento_DryRunDetectaDiretorioNaoGravavel: o dry-run sonda a
+// escrita em `fotosDir` (antes só o `--executar` falhava, no meio do laço). Um
+// caminho DENTRO de um arquivo comum é inalcançável em qualquer usuário.
+func TestFotosTreinamento_DryRunDetectaDiretorioNaoGravavel(t *testing.T) {
+	db := testDB(t)
+	slug, _ := treinamentoParaFotos(t, db, "fotos-sonda", "972345670091")
+	arquivo := filepath.Join(t.TempDir(), "arquivo-comum")
+	if err := os.WriteFile(arquivo, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := SemearFotosTreinamento(db, filepath.Join(arquivo, "fotos"), slug, false)
+	if err == nil || !strings.Contains(err.Error(), "sem permissão de escrita") {
+		t.Fatalf("erro = %v, want falha de diretório sem permissão de escrita já no dry-run", err)
+	}
+}
+
+// TestFotosTreinamento_ExecucoesSimultaneasNaoDuplicam: o advisory lock por
+// slug serializa duas execuções reais; a 2ª encontra tudo já semeado (a
+// sequência lista-fotos -> grava-foto sozinha não é atômica).
+func TestFotosTreinamento_ExecucoesSimultaneasNaoDuplicam(t *testing.T) {
+	db := testDB(t)
+	slug, _ := treinamentoParaFotos(t, db, "fotos-simultaneo", "972345670092")
+	dir := t.TempDir()
+
+	type saida struct {
+		res ResultadoFotosTreinamento
+		err error
+	}
+	ch := make(chan saida, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			res, err := SemearFotosTreinamento(db, dir, slug, true)
+			ch <- saida{res, err}
+		}()
+	}
+	semeadas := 0
+	for i := 0; i < 2; i++ {
+		o := <-ch
+		if o.err != nil {
+			t.Fatalf("execução simultânea: %v", o.err)
+		}
+		semeadas += o.res.Semeadas
+	}
+	if semeadas != 5 {
+		t.Errorf("Semeadas somadas = %d, want 5 (sem duplicar)", semeadas)
+	}
+	if n := arquivosDe(t, dir); n != 5 {
+		t.Errorf("arquivos em disco = %d, want 5", n)
 	}
 }

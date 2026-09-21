@@ -114,6 +114,6 @@ rodou sobre este diff. Recuperação manual (Claude, 2026-09-20):
 
 Code review independente (2026-09-21, 4 revisores: Blind Hunter, Edge Case Hunter, Verification Gap, Acceptance Auditor; achados verificados no código antes de classificar).
 
-- [ ] [Review][Patch] Cliente conta o nome em unidades UTF-16 e o servidor em runas: emoji/caracteres astrais liberam o botão com menos de 10 runas [frontend/src/components/produtos/CadastroProdutoSection.tsx: desabilitado] — usar `[...nome.trim()].length`
+- [x] [Review][Patch][aplicado 2026-09-21] Cliente conta o nome em unidades UTF-16 e o servidor em runas: emoji/caracteres astrais liberam o botão com menos de 10 runas [frontend/src/components/produtos/CadastroProdutoSection.tsx: desabilitado] — usar `[...nome.trim()].length`
 - [x] [Review][Defer] Importação de planilha continua sem template obrigatório nem nome mínimo [backend/services/importacoes.go] — deferred, escopo explícito da story (FR8: regras valem para cadastro novo/próxima edição)
 - [x] [Review][Defer] down.sql/backfill de 000036 casam por `subtipo` e não pelo texto `[NOME LIVRE]`; após a 10.6 um Genérico renomeado escapa do rollback [backend/migrations/000036_*] — deferred, baixo

@@ -20,13 +20,15 @@
 -- migration, não de código Go — o banco de teste sempre aplica as migrations
 -- do zero (auth_test.go, `migrateOnce`), então não existe um estado real de
 -- "Empresa criada antes desta migration rodar" para simular num teste
--- unitário. A cobertura aqui é por REVISÃO MANUAL do SQL de backfill acima
--- (idempotente por natureza — um `INSERT` simples sem `ON CONFLICT`, mesmo
--- padrão de outras migrations aditivas do projeto, ex. 000032/000035/000036),
--- e transitivamente pelos testes de `services` que dependem de toda Empresa
--- (inclusive `empresaTeste`, criada no primeiro `testDB` de cada pacote) ter
--- uma linha de contador — se o backfill estivesse quebrado, TODOS os testes
--- de CriarProduto falhariam com "contador ausente", não só um caso isolado.
+-- unitário. A cobertura aqui é por REVISÃO MANUAL do SQL de backfill abaixo:
+-- roda uma única vez (o `CREATE TABLE` acima não é reexecutável, então o
+-- `INSERT` não precisa de `ON CONFLICT`), mesmo padrão aditivo de outras
+-- migrations (ex. 000032/000035/000036).
+-- (Comentário corrigido em 2026-09-21 pelo code review dos Épicos 10-12: a
+-- versão anterior chamava o INSERT de "idempotente" e afirmava que uma falha
+-- do backfill derrubaria toda a suíte — as Empresas de teste nascem por
+-- ProvisionarEmpresa/InserirEmpresa, que semeiam o contador em código, então
+-- o backfill SQL em si não tem cobertura automatizada.)
 CREATE TABLE contadores_produto (
   empresa_id UUID PRIMARY KEY REFERENCES empresas(id),
   ultimo_numero INTEGER NOT NULL DEFAULT 0

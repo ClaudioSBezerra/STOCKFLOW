@@ -42,5 +42,9 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
+    // 5s (padrão) estoura em CadastroProdutoSection.test.tsx quando a suíte
+    // inteira roda em paralelo: cada teste faz 3 interações com o Select do
+    // Radix. O teste em si é rápido isolado; é lentidão sob carga.
+    testTimeout: 20000,
   },
 });

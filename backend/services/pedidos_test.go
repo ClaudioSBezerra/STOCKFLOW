@@ -2046,3 +2046,91 @@ func TestSubmeterPedidoComCentroCusto_TextoLivreSegueObrigatorio(t *testing.T) {
 		t.Fatalf("erro = %v, want *ErroPedidoValidacao", err)
 	}
 }
+
+// TestPedido_CentroCustoAparecemEmDetalheFilaDecisaoERecibo prova a decisão do
+// code review dos Épicos 10-12: o Centro de Custo cadastrado escolhido no envio
+// deixa de ser write-only e aparece no detalhe, na lista/Fila, na resposta da
+// decisão e no conteúdo do recibo; um Pedido sem Centro devolve nil/vazio.
+func TestPedido_CentroCustoAparecemEmDetalheFilaDecisaoERecibo(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	limparCentrosCustoDeTeste(t, db, empresaTeste)
+
+	usuarioID := semearConta(t, db, "Usuario CC Exibe", "pedido-cc-exibe@empresa.com", PapelUsuario, 0)
+	almoxID := semearConta(t, db, "Almox CC Exibe", "cc-exibe-decisor@empresa.com", PapelAlmoxarife, 0)
+	centro, err := CriarCentroCusto(db, empresaTeste, "Estoque do Cabo Exibe")
+	if err != nil {
+		t.Fatalf("seed centro: %v", err)
+	}
+	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Pedido CC Exibe", 20)
+	for _, id := range []string{centro.ID, ""} {
+		if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioID, produtoID, estoqueID, 1); err != nil {
+			t.Fatalf("seed carrinho: %v", err)
+		}
+		if _, err := SubmeterPedidoComCentroCusto(db, empresaTeste, usuarioID, "Fulano", "Obra "+id[:min(len(id), 1)], "", id); err != nil {
+			t.Fatalf("submeter (%q): %v", id, err)
+		}
+	}
+
+	fila, err := ListarPedidosFila(db, empresaTeste, "")
+	if err != nil {
+		t.Fatalf("ListarPedidosFila: %v", err)
+	}
+	var comCentro, semCentro *PedidoResumo
+	for i := range fila {
+		if fila[i].CentroCustoNome != nil {
+			comCentro = &fila[i]
+		} else {
+			semCentro = &fila[i]
+		}
+	}
+	if comCentro == nil || *comCentro.CentroCustoNome != "Estoque do Cabo Exibe" {
+		t.Fatalf("Fila: nenhum pedido com o Centro de Custo esperado: %+v", fila)
+	}
+	if semCentro == nil {
+		t.Fatalf("Fila: o pedido sem Centro deveria ter CentroCustoNome nil")
+	}
+	proprios, err := ListarPedidosProprios(db, empresaTeste, usuarioID, "")
+	if err != nil {
+		t.Fatalf("ListarPedidosProprios: %v", err)
+	}
+	achou := false
+	for _, p := range proprios {
+		if p.CentroCustoNome != nil && *p.CentroCustoNome == "Estoque do Cabo Exibe" {
+			achou = true
+		}
+	}
+	if !achou {
+		t.Errorf("Meus Pedidos não trouxe o Centro de Custo")
+	}
+
+	det, err := BuscarPedidoProprio(db, empresaTeste, comCentro.ID, usuarioID, PapelUsuario)
+	if err != nil {
+		t.Fatalf("BuscarPedidoProprio: %v", err)
+	}
+	if det.CentroCustoNome == nil || *det.CentroCustoNome != "Estoque do Cabo Exibe" {
+		t.Errorf("detalhe: CentroCustoNome = %v", det.CentroCustoNome)
+	}
+	semDet, err := BuscarPedidoProprio(db, empresaTeste, semCentro.ID, usuarioID, PapelUsuario)
+	if err != nil || semDet.CentroCustoNome != nil {
+		t.Errorf("detalhe sem centro: err=%v CentroCustoNome=%v, want nil", err, semDet.CentroCustoNome)
+	}
+
+	decidido, err := DecidirPedido(db, empresaTeste, comCentro.ID, almoxID, PapelAlmoxarife, true)
+	if err != nil {
+		t.Fatalf("DecidirPedido: %v", err)
+	}
+	if decidido.CentroCustoNome == nil || *decidido.CentroCustoNome != "Estoque do Cabo Exibe" {
+		t.Errorf("resposta da decisão: CentroCustoNome = %v", decidido.CentroCustoNome)
+	}
+	recibo, err := MontarReciboPedidoConteudo(db, empresaTeste, comCentro.ID, almoxID, PapelAlmoxarife)
+	if err != nil {
+		t.Fatalf("MontarReciboPedidoConteudo: %v", err)
+	}
+	if recibo.CentroCusto != "Estoque do Cabo Exibe" {
+		t.Errorf("recibo.CentroCusto = %q", recibo.CentroCusto)
+	}
+	if pdf, err := RenderizarReciboPedidoPDF(recibo); err != nil || len(pdf) == 0 {
+		t.Errorf("RenderizarReciboPedidoPDF: len=%d err=%v", len(pdf), err)
+	}
+}

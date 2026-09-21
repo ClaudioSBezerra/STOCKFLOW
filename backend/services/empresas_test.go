@@ -360,6 +360,19 @@ func TestInserirEmpresa_NaoCopiaListas(t *testing.T) {
 	if categorias != 0 || templates != 0 {
 		t.Errorf("InserirEmpresa copiou listas: categorias=%d templates=%d, want 0 e 0", categorias, templates)
 	}
+
+	// Contador de código de Produto (AD-26): a fundadora adotada pela migração
+	// multi-Empresa passa por InserirEmpresa, NÃO por ProvisionarEmpresa — sem
+	// a linha do contador, o primeiro CriarProduto falharia ("contador ausente").
+	var contadores, ultimo int
+	if err := db.QueryRow(
+		`SELECT count(*), COALESCE(max(ultimo_numero), -1) FROM contadores_produto WHERE empresa_id = $1`, e.ID,
+	).Scan(&contadores, &ultimo); err != nil {
+		t.Fatalf("contar contador: %v", err)
+	}
+	if contadores != 1 || ultimo != 0 {
+		t.Errorf("contador da Empresa criada por InserirEmpresa: linhas=%d ultimo_numero=%d, want 1 e 0", contadores, ultimo)
+	}
 }
 
 // TestCopiarListasPadrao_Idempotente prova o `WHERE NOT EXISTS` que permite

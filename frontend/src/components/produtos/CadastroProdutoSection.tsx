@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { XIcon } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/card';
@@ -259,6 +260,10 @@ export function CadastroProdutoSection() {
   // (`components/ui/input.tsx` não encaminha `ref`, mesmo padrão de
   // `ImportacaoProdutosSection`).
   const [produtoCriado, setProdutoCriado] = useState<ProdutoCriado | null>(null);
+  // O campo Código só mostra o código do Produto recém-criado até o usuário
+  // começar o próximo cadastro (senão exibiria o código do Produto anterior
+  // ao lado de um formulário novo).
+  const [codigoVisivel, setCodigoVisivel] = useState(false);
   const [fotoInputKey, setFotoInputKey] = useState(0);
   const [arquivoFoto, setArquivoFoto] = useState<File | null>(null);
   const [enviandoFoto, setEnviandoFoto] = useState(false);
@@ -338,7 +343,7 @@ export function CadastroProdutoSection() {
 
   const desabilitado =
     enviando ||
-    nome.trim().length < 10 ||
+    [...nome.trim()].length < 10 ||
     categoriaId === '' ||
     templateId === '' ||
     unidadeMedida === '';
@@ -386,6 +391,7 @@ export function CadastroProdutoSection() {
       // descartado junto (Story 3.6: revoga todo o cache de Object URLs,
       // não só o último).
       setProdutoCriado(body.produto);
+      setCodigoVisivel(true);
       setArquivoFoto(null);
       setErroFoto(null);
       setFotoInputKey((k) => k + 1);
@@ -501,7 +507,10 @@ export function CadastroProdutoSection() {
             <Input
               id="produto-nome"
               value={nome}
-              onChange={(event) => setNome(event.target.value)}
+              onChange={(event) => {
+                setNome(event.target.value);
+                setCodigoVisivel(false);
+              }}
               aria-describedby={templateSelecionado ? 'produto-nome-formato' : undefined}
             />
             {templateSelecionado && (
@@ -531,7 +540,7 @@ export function CadastroProdutoSection() {
             <Label htmlFor="produto-codigo">Código</Label>
             <Input
               id="produto-codigo"
-              value={produtoCriado?.codigo ?? ''}
+              value={codigoVisivel ? (produtoCriado?.codigo ?? '') : ''}
               disabled
             />
           </div>
@@ -650,6 +659,13 @@ export function CadastroProdutoSection() {
 
         {produtoCriado && (
           <div className="mt-4 flex flex-col gap-2 rounded-md border border-border p-4">
+            <p role="status" className="text-body text-muted-foreground">
+              Produto cadastrado sem saldo em estoque. Para dar entrada, use{' '}
+              <Link to="/estoques" className="underline">
+                Estoques
+              </Link>{' '}
+              → aba &quot;Lançar saldo&quot;.
+            </p>
             <p className="text-body font-medium">Adicionar foto — {produtoCriado.nome}</p>
             <Input
               key={fotoInputKey}

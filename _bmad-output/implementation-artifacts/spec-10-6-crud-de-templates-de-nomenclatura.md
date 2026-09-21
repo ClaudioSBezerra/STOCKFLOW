@@ -119,6 +119,6 @@ por Produto referenciando, migration 000040 só adiciona CHECKs de não-vazio.
 Code review independente (2026-09-21, 4 revisores: Blind Hunter, Edge Case Hunter, Verification Gap, Acceptance Auditor; achados verificados no código antes de classificar).
 
 - [x] [Review][Defer] Template só com tokens adjacentes (`[A][B]`) ou um token sem literal degenera em regex ambígua que aceita qualquer nome [backend/services/nomenclatura_crud.go: validarTemplateNomenclatura] — deferred, exige decidir a regra de validação
-- [ ] [Review][Patch] Concorrência de `travarTemplateEMarcadores` (FOR UPDATE ordenado) e os desvios de FK só são exercitados em teste sequencial; duas exclusões simultâneas dos dois últimos `[NOME LIVRE]` poderiam deixar a Empresa sem fallback se o lock regredir [backend/services/nomenclatura_test.go]
-- [ ] [Review][Patch] Teste de "1 produto" aceita também "1 produtos" (substring) — plural invertido passaria [backend/services/nomenclatura_test.go, backend/handlers/nomenclatura_test.go:191]
-- [ ] [Review][Patch] AD-34 diz "nunca removível via CRUD" mas o código (e o AC do epics) só protege o ÚLTIMO `[NOME LIVRE]`; alinhar o texto da AD [ARCHITECTURE-SPINE.md AD-34]
+- [x] [Review][Patch][aplicado 2026-09-21] Concorrência de `travarTemplateEMarcadores` (FOR UPDATE ordenado) e os desvios de FK só são exercitados em teste sequencial; duas exclusões simultâneas dos dois últimos `[NOME LIVRE]` poderiam deixar a Empresa sem fallback se o lock regredir [backend/services/nomenclatura_test.go]
+- [x] [Review][Patch][aplicado 2026-09-21] Teste de "1 produto" aceita também "1 produtos" (substring) — plural invertido passaria [backend/services/nomenclatura_test.go, backend/handlers/nomenclatura_test.go:191]
+- [x] [Review][Patch][aplicado 2026-09-21] AD-34 diz "nunca removível via CRUD" mas o código (e o AC do epics) só protege o ÚLTIMO `[NOME LIVRE]`; alinhar o texto da AD [ARCHITECTURE-SPINE.md AD-34]

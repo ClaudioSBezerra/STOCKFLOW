@@ -12,6 +12,25 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Postgres real para os testes de integracao (services/handlers/cmd):
+    # sem DATABASE_URL eles dao t.Skip e o gate ficava verde mesmo com
+    # regressao (achado do code review dos Epics 10-12, 2026-09-21).
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: stockflow
+          POSTGRES_PASSWORD: stockflow
+          POSTGRES_DB: stockflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U stockflow -d stockflow"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://stockflow:stockflow@localhost:5432/stockflow?sslmode=disable
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -23,8 +42,10 @@ jobs:
           cache: true
           cache-dependency-path: backend/go.sum
 
+      # -p 1: todas as suites compartilham um unico banco (ver comentario em
+      # backend/main_test.go) -- em paralelo elas se atropelam.
       - name: Run Go tests
-        run: go test ./...
+        run: go test -p 1 ./...
         working-directory: backend
 
       - name: Set up Node.js

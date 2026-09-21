@@ -32,6 +32,9 @@ interface PedidoCabecalho {
   usuarioId: string;
   solicitante: string;
   obraCentroCusto: string;
+  // Nome do Centro de Custo cadastrado escolhido no envio (Story 12.3 +
+  // decisão do code review); null/ausente quando o Pedido não escolheu um.
+  centroCusto?: string | null;
   observacao: string | null;
   status: StatusPedido;
   criadoEm: string;

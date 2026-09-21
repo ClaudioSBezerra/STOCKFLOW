@@ -108,6 +108,32 @@ describe('CentrosCustoSection', () => {
     expect(input).toHaveValue('');
   });
 
+  it('cadastro 201 mas o recarregamento falha: avisa que foi criado e para não recadastrar', async () => {
+    let gets = 0;
+    stubFetch((url, init) => {
+      if (url === '/api/centros-custo' && metodo(init) === 'GET') {
+        gets += 1;
+        return gets === 1
+          ? jsonOk({ centrosCusto: [CENTROS[0]] })
+          : Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
+      }
+      if (url === '/api/centros-custo' && init?.method === 'POST') {
+        return Promise.resolve({ ok: true, status: 201, json: async () => ({ centroCusto: CENTROS[1] }) });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    const user = userEvent.setup();
+    render(<CentrosCustoSection />);
+    await screen.findByText('Estoque do Cabo');
+    await user.type(screen.getByLabelText('Nome do centro de custo'), 'Obra Norte');
+    await user.click(screen.getByRole('button', { name: 'Adicionar centro de custo' }));
+
+    const alerta = await screen.findByRole('alert');
+    expect(alerta).toHaveTextContent(/Centro de custo criado, mas não foi possível atualizar a lista/);
+    expect(alerta).toHaveTextContent(/não cadastre de novo/);
+  });
+
   it('cadastro 409: mostra a mensagem do servidor e não limpa o input', async () => {
     stubFetch((url, init) => {
       if (url === '/api/centros-custo' && metodo(init) === 'GET') return jsonOk({ centrosCusto: CENTROS });

@@ -185,7 +185,7 @@ func TestTemplatesNomenclaturaHandler_ExcluirEmUso409(t *testing.T) {
 		t.Fatalf("status = %d, want 409 (body=%s)", w.Code, w.Body.String())
 	}
 	env := decodeErro(t, w.Body.Bytes())
-	if env.Error.Code != "CONFLICT" || !strings.Contains(env.Error.Message, "1 produto") {
+	if env.Error.Code != "CONFLICT" || !strings.HasSuffix(env.Error.Message, "em uso por 1 produto") {
 		t.Errorf("envelope = %+v", env)
 	}
 	var n int

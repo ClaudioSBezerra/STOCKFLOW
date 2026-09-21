@@ -72,9 +72,22 @@ func (e *ErroEstoqueNaoMigravel) Error() string {
 	return msg
 }
 
+// ErroFilialPadraoSemNome indica Empresa sem Filial cujo Nome Fantasia — que
+// vira o nome da Filial padrão — está vazio ou passa de 255 caracteres. Sem
+// esta checagem o dry-run diria "problemas: nenhum" e só o `--executar` falharia
+// (com rollback, mas depois de a janela ter sido agendada).
+type ErroFilialPadraoSemNome struct {
+	Empresas int
+}
+
+func (e *ErroFilialPadraoSemNome) Error() string {
+	return fmt.Sprintf("%d empresa(s) sem Filial têm Nome Fantasia vazio ou acima de 255 caracteres, e ele seria o nome da Filial padrão — corrija `empresas.nome_fantasia`; nada foi escrito", e.Empresas)
+}
+
 // DiagnosticoEstoquesFilial é o relatório do dry-run (e da pré-checagem).
 type DiagnosticoEstoquesFilial struct {
 	EmpresasSemFilial    int  // Empresas sem nenhuma Filial (Filial padrão a criar)
+	EmpresasNomeInvalido int  // dessas, as com Nome Fantasia vazio/>255 (Filial padrão inviável)
 	EstoquesAVincular    int  // Estoques com `filial_id IS NULL`
 	EstoquesJaVinculados int  // Estoques com `filial_id` preenchido
 	FilialIDNotNull      bool // `estoques.filial_id` já é NOT NULL
@@ -122,6 +135,12 @@ func diagnosticarEstoquesFilial(q consultaEstoquesFilial) (DiagnosticoEstoquesFi
 	var d DiagnosticoEstoquesFilial
 	if err := q.QueryRow(`SELECT count(*) FROM empresas e WHERE NOT EXISTS (SELECT 1 FROM filiais f WHERE f.empresa_id = e.id)`).Scan(&d.EmpresasSemFilial); err != nil {
 		return d, fmt.Errorf("falha ao contar empresas sem filial: %w", err)
+	}
+	if err := q.QueryRow(`
+		SELECT count(*) FROM empresas e
+		WHERE NOT EXISTS (SELECT 1 FROM filiais f WHERE f.empresa_id = e.id)
+		  AND (btrim(e.nome_fantasia) = '' OR char_length(e.nome_fantasia) > 255)`).Scan(&d.EmpresasNomeInvalido); err != nil {
+		return d, fmt.Errorf("falha ao checar nome fantasia das empresas sem filial: %w", err)
 	}
 	if err := q.QueryRow(`
 		SELECT count(*) FILTER (WHERE filial_id IS NULL), count(*) FILTER (WHERE filial_id IS NOT NULL)
@@ -189,6 +208,9 @@ func MigrarEstoquesParaFilial(db *sql.DB) (ResultadoMigracaoEstoquesFilial, erro
 	}
 	if len(diag.Problemas) > 0 {
 		return res, &ErroEstoqueNaoMigravel{Estoques: diag.Problemas}
+	}
+	if diag.EmpresasNomeInvalido > 0 {
+		return res, &ErroFilialPadraoSemNome{Empresas: diag.EmpresasNomeInvalido}
 	}
 
 	criadas, err := tx.Exec(`

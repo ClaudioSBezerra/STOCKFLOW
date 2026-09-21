@@ -37,11 +37,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"strings"
 
 	"github.com/joho/godotenv"
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 
 	"stockflow/backend/services"
 )
@@ -79,6 +80,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Ecoa QUAL banco será alterado (sem a senha): `--executar` é irreversível
+	// (SET NOT NULL) e um DATABASE_URL errado apontaria para o banco errado.
+	fmt.Fprintf(os.Stdout, "banco: %s\n", descricaoBanco(databaseURL))
+
 	if err := executarMigracao(db, os.Stdout, *executar); err != nil {
 		fmt.Fprintf(os.Stderr, "erro: %s\n", mensagemDeErro(err))
 		os.Exit(1)
@@ -106,6 +111,10 @@ func executarMigracao(db *sql.DB, out io.Writer, executar bool) error {
 		fmt.Fprintln(out, "estoques.filial_id: ainda é NULLABLE (NOT NULL será aplicado)")
 	}
 
+	if diag.EmpresasNomeInvalido > 0 {
+		fmt.Fprintf(out, "problemas: %d empresa(s) sem Filial com Nome Fantasia vazio ou acima de 255 caracteres\n", diag.EmpresasNomeInvalido)
+		return &services.ErroFilialPadraoSemNome{Empresas: diag.EmpresasNomeInvalido}
+	}
 	if len(diag.Problemas) > 0 {
 		fmt.Fprintf(out, "problemas: %d estoque(s) não migrável(is)\n", len(diag.Problemas))
 		for _, p := range diag.Problemas {
@@ -131,8 +140,26 @@ func executarMigracao(db *sql.DB, out io.Writer, executar bool) error {
 	return nil
 }
 
+// descricaoBanco devolve "host:porta/nome" de uma DATABASE_URL, sem usuário
+// nem senha; URL ilegível vira um aviso em vez de vazar o conteúdo.
+func descricaoBanco(databaseURL string) string {
+	u, err := url.Parse(databaseURL)
+	if err != nil || u.Host == "" {
+		return "(DATABASE_URL não pôde ser interpretada)"
+	}
+	return u.Host + u.Path
+}
+
 // mensagemDeErro traduz os erros conhecidos para o operador.
 func mensagemDeErro(err error) string {
+	var semNome *services.ErroFilialPadraoSemNome
+	if errors.As(err, &semNome) {
+		return semNome.Error()
+	}
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) && pqErr.Code == "55P03" {
+		return "não foi possível travar a tabela estoques em 30s (há transações abertas usando-a) — nada foi escrito; rode de novo numa janela de menos uso"
+	}
 	var naoMigravel *services.ErroEstoqueNaoMigravel
 	if errors.As(err, &naoMigravel) {
 		return fmt.Sprintf("%d estoque(s) legado(s) não podem ser vinculados à Filial padrão — confira a migração multi-Empresa (9.4) e corrija `empresa_id`/nomes duplicados; nada foi escrito", len(naoMigravel.Estoques))

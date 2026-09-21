@@ -1922,3 +1922,68 @@ func TestCriarProduto_CodigoConcorrenteNuncaRepete(t *testing.T) {
 		}
 	}
 }
+
+// TestValidarEAN13_DigitoVerificadorZero cobre a fronteira soma%10 == 0: o
+// dígito esperado é 0 (não 10). Trocar `(10 - soma%10) % 10` por
+// `10 - soma%10` rejeitaria todo EAN-13 real terminado em 0 (~1 em 10).
+func TestValidarEAN13_DigitoVerificadorZero(t *testing.T) {
+	// 789123456700 -> soma ponderada 100 (múltiplo de 10) -> dígito 0.
+	got, err := validarEAN13("7891234567000")
+	if err != nil {
+		t.Fatalf("EAN válido terminado em 0 rejeitado: %v", err)
+	}
+	if !got.Valid || got.String != "7891234567000" {
+		t.Errorf("EAN = %+v, want 7891234567000", got)
+	}
+	if _, err := validarEAN13("7891234567001"); err == nil {
+		t.Errorf("dígito verificador 1 (esperado 0) foi aceito")
+	}
+}
+
+// TestCriarProduto_CodigoNaoSofreInfluenciaDeOutraEmpresaNemDeCodigoLongo:
+// (1) o MAX é escopado por Empresa — um código alto de outra Empresa não
+// empurra a sequência; (2) código puramente numérico com 10+ dígitos (ex. um
+// código de barras importado) é ignorado pelo limite de 9 dígitos, sem erro de
+// "integer out of range".
+func TestCriarProduto_CodigoNaoSofreInfluenciaDeOutraEmpresaNemDeCodigoLongo(t *testing.T) {
+	db := testDB(t)
+	removerEmpresaComProdutos(t, db, "codigo-escopo-a")
+	removerEmpresaComProdutos(t, db, "codigo-escopo-b")
+	a := criarEmpresaDeTeste(t, db, "codigo-escopo-a", "998887770096", "Codigo Escopo A")
+	b := criarEmpresaDeTeste(t, db, "codigo-escopo-b", "998887770097", "Codigo Escopo B")
+
+	categoriaDe := func(empresaID string) string {
+		var id string
+		if err := db.QueryRow(
+			`SELECT id FROM categorias WHERE codigo = $1 AND empresa_id = $2`, "04.001", empresaID,
+		).Scan(&id); err != nil {
+			t.Fatalf("categoria da empresa: %v", err)
+		}
+		return id
+	}
+	catA, catB := categoriaDe(a.ID), categoriaDe(b.ID)
+	for _, seed := range []struct{ empresa, categoria, codigo string }{
+		{b.ID, catB, "000500"},        // outra Empresa: não pode afetar a A
+		{a.ID, catA, "7891234567895"}, // 13 dígitos numéricos: fora do limite de 9
+	} {
+		if _, err := db.Exec(
+			`INSERT INTO produtos (nome, codigo, categoria_id, empresa_id) VALUES ($1, $2, $3, $4)`,
+			"Produto semente para o teste "+seed.codigo, seed.codigo, seed.categoria, seed.empresa,
+		); err != nil {
+			t.Fatalf("seed %s: %v", seed.codigo, err)
+		}
+	}
+
+	p, err := CriarProduto(db, a.ID, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Produto novo da Empresa A",
+		CategoriaID:   catA,
+		TemplateID:    templateGenericoID(t, db, a.ID),
+	})
+	if err != nil {
+		t.Fatalf("CriarProduto: %v", err)
+	}
+	if p.Codigo != "000001" {
+		t.Errorf("código = %q, want %q (nem o 000500 da outra Empresa nem o código de 13 dígitos podem influenciar)", p.Codigo, "000001")
+	}
+}

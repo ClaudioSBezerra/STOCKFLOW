@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -13,7 +14,7 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 
 	"stockflow/backend/services"
 )
@@ -274,5 +275,33 @@ func TestExecutarMigracao_SemEstoqueLegado(t *testing.T) {
 	}
 	if !filialNotNull(t, db) {
 		t.Error("NOT NULL deveria ter sido aplicado")
+	}
+}
+
+// descricaoBanco ecoa host:porta/nome sem usuário nem senha — o operador vê QUAL
+// banco será alterado por um `--executar` irreversível.
+func TestDescricaoBanco_NaoVazaCredenciais(t *testing.T) {
+	got := descricaoBanco("postgres://stockflow:segredo@db.interno:5432/stockflow?sslmode=disable")
+	if got != "db.interno:5432/stockflow" {
+		t.Errorf("descricaoBanco = %q, want db.interno:5432/stockflow", got)
+	}
+	if strings.Contains(got, "segredo") || strings.Contains(got, "stockflow:") {
+		t.Errorf("vazou credencial: %q", got)
+	}
+	if got := descricaoBanco("://quebrada"); !strings.Contains(got, "não pôde ser interpretada") {
+		t.Errorf("URL ilegível = %q", got)
+	}
+}
+
+// lock_timeout (SQLSTATE 55P03) chega ao operador em português, não como o erro
+// cru do Postgres.
+func TestMensagemDeErro_LockTimeoutETraducao(t *testing.T) {
+	err := fmt.Errorf("falha ao travar estoques para a migração: %w", &pq.Error{Code: "55P03", Message: "canceling statement due to lock timeout"})
+	got := mensagemDeErro(err)
+	if !strings.Contains(got, "não foi possível travar a tabela estoques") || !strings.Contains(got, "nada foi escrito") {
+		t.Errorf("mensagem = %q", got)
+	}
+	if got := mensagemDeErro(&services.ErroFilialPadraoSemNome{Empresas: 2}); !strings.Contains(got, "2 empresa(s)") {
+		t.Errorf("mensagem ErroFilialPadraoSemNome = %q", got)
 	}
 }

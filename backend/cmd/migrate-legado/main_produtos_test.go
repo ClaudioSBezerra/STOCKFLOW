@@ -833,6 +833,11 @@ func TestMigrarProdutos_SeedAusente(t *testing.T) {
 
 	const slugPelada = "empresa-sem-listas-94"
 	t.Cleanup(func() {
+		// InserirEmpresa semeia o contador de código (AD-26); a FK exige
+		// apagá-lo antes da Empresa.
+		if _, err := alvo.Exec(`DELETE FROM contadores_produto WHERE empresa_id IN (SELECT id FROM empresas WHERE slug = $1)`, slugPelada); err != nil {
+			t.Errorf("falha ao remover o contador da Empresa pelada: %v", err)
+		}
 		if _, err := alvo.Exec(`DELETE FROM empresas WHERE slug = $1`, slugPelada); err != nil {
 			t.Errorf("falha ao remover a Empresa pelada: %v", err)
 		}
