@@ -109,3 +109,11 @@ rodou sobre este diff. Recuperação manual (Claude, 2026-09-20):
 - `npm run build` (`tsc -b && vite build`): sem erros de tipo, build de produção completo.
 - Spot-check manual do diff contra o `intent-contract`: `CriarProduto`/`AtualizarNomeProduto` (min 10/max 255 runas), `template_id` obrigatório em `CriarProduto`, branch `[NOME LIVRE]` em `nomeValidoParaTemplate` isolado antes da lógica de regex, migration 000036 com backfill idempotente (`WHERE NOT EXISTS`, mesma chave do índice único de 000032) e `down.sql` preservando linhas Genérico já referenciadas por Produto — todos conferem com a spec.
 - **Honestidade:** isto substitui a fase de review do `bmad-loop`, mas não é equivalente a ela — não houve um segundo agente adversarial sobre este código. Recomendo `bmad-code-review` nesta story antes ou depois do deploy, sem bloquear o commit local.
+
+### Review Findings
+
+Code review independente (2026-09-21, 4 revisores: Blind Hunter, Edge Case Hunter, Verification Gap, Acceptance Auditor; achados verificados no código antes de classificar).
+
+- [ ] [Review][Patch] Cliente conta o nome em unidades UTF-16 e o servidor em runas: emoji/caracteres astrais liberam o botão com menos de 10 runas [frontend/src/components/produtos/CadastroProdutoSection.tsx: desabilitado] — usar `[...nome.trim()].length`
+- [x] [Review][Defer] Importação de planilha continua sem template obrigatório nem nome mínimo [backend/services/importacoes.go] — deferred, escopo explícito da story (FR8: regras valem para cadastro novo/próxima edição)
+- [x] [Review][Defer] down.sql/backfill de 000036 casam por `subtipo` e não pelo texto `[NOME LIVRE]`; após a 10.6 um Genérico renomeado escapa do rollback [backend/migrations/000036_*] — deferred, baixo

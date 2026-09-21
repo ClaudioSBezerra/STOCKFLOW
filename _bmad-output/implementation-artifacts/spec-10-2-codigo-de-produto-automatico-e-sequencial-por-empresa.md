@@ -124,3 +124,14 @@ rodado sobre o diff. Recuperação manual (Claude, 2026-09-20):
 - `npm run build`: sem erros de tipo, build de produção completo.
 - Spot-check manual contra o `intent-contract`: `proximoCodigoProduto` roda `UPDATE ... RETURNING` dentro da mesma `tx` do INSERT em `produtos`, zero-padding de 6 dígitos, `sql.ErrNoRows` vira erro interno (nunca lazy-init); `ProvisionarEmpresa` insere a linha do contador na mesma transação, depois de `CopiarListasPadrao`; migration 000037 faz backfill simples (`INSERT ... SELECT`) para toda Empresa já existente; `codigo` removido de `CriarProdutoInput`/`criarProdutoRequest`, campo do frontend virou somente-leitura pós-criação — todos conferem com a spec.
 - **Honestidade:** substitui, mas não equivale a, a fase de review do `bmad-loop` — nenhum segundo agente adversarial rodou sobre este diff. Recomendo `bmad-code-review` nesta e na Story 10.1 antes do deploy.
+
+### Review Findings
+
+Code review independente (2026-09-21, 4 revisores: Blind Hunter, Edge Case Hunter, Verification Gap, Acceptance Auditor; achados verificados no código antes de classificar).
+
+- [ ] [Review][Patch] Empresa fundadora adotada por `AdotarEmpresaFundadora` nasce SEM linha em `contadores_produto` (só `ProvisionarEmpresa` a cria) — `CriarProduto` falharia com 500 "contador ausente" em instalação nova/nova adoção [backend/services/migracao_multi_empresa.go:235, backend/services/empresas.go:417-425] — semear o contador dentro de `InserirEmpresa` (ou no caminho de adoção) e cobrir com teste. Produção NÃO é afetada: a Ferreira Costa foi adotada antes da 000037, que faz backfill.
+- [ ] [Review][Patch] Colisão de código com importação concorrente (a importação não trava o contador e o MAX não enxerga INSERT em voo) vira 400 "código já cadastrado" num campo que o usuário não controla [backend/services/produtos.go: CriarProduto, ramo 23505] — repetir a transação algumas vezes ou responder erro reexecutável
+- [ ] [Review][Patch] Campo Código somente-leitura continua mostrando o código do Produto anterior enquanto o usuário preenche o próximo (`produtoCriado` nunca é zerado ao editar) [frontend/src/components/produtos/CadastroProdutoSection.tsx:534]
+- [ ] [Review][Patch] Testes ausentes do gerador de código: escopo por Empresa (Empresa B com 000500 não pode empurrar a A) e código legado numérico com 10+ dígitos [backend/services/produtos_test.go]
+- [ ] [Review][Patch] Spec/comentários desatualizados após o refinamento `ff82e0e` (Design Notes ainda dizem que não se varre o maior código legado; comentário do ramo 23505 e doc de `proximoCodigoProduto`) e comentário de 000037 diz "idempotente" para INSERT sem ON CONFLICT [spec-10-2, backend/services/produtos.go, backend/migrations/000037_*]
+- [x] [Review][Defer] O MAX() por INSERT varre os Produtos da Empresa (sem índice de expressão) segurando o lock do contador — ~milhares de linhas, custo desprezível hoje — deferred

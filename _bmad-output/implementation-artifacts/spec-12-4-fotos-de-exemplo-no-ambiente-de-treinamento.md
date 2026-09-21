@@ -123,3 +123,11 @@ Blocking condition: nenhuma — todo o código está entregue e verificado contr
 **Verificação:** `go build ./... && go vet ./... && gofmt -l .` limpos; `go test -count=1 -p 1 ./services/ -run FotosTreinamento` (7 testes) e `./cmd/seed-fotos-treinamento/` (4 testes) passam contra o Postgres local. Não rodei a suíte completa `./...` nem o build Docker.
 
 **Riscos residuais:** as fotos são ilustrações geradas (conteúdo definido com o Adm é decisão de UX pendente); execuções simultâneas do CLI podem gerar 2 fotos para o mesmo Produto (improvável, execução manual).
+
+### Review Findings
+
+Code review independente (2026-09-21, 4 revisores: Blind Hunter, Edge Case Hunter, Verification Gap, Acceptance Auditor; achados verificados no código antes de classificar).
+
+- [ ] [Review][Patch] Dry-run não detecta `FOTOS_DIR` inexistente/sem permissão de escrita; a falha só aparece no `--executar`, com fotos parciais [backend/services/fotos_treinamento.go, backend/cmd/seed-fotos-treinamento/main.go] — sondar o diretório também no dry-run
+- [ ] [Review][Patch] Lista-depois-grava não é atômica: duas execuções simultâneas duplicam fotos do mesmo Produto [backend/services/fotos_treinamento.go] — advisory lock por Empresa
+- [x] [Review][Defer] `//go:embed` das 5 JPEGs no pacote `services` engorda todos os binários (~45 KB) — deferred, desprezível hoje

@@ -115,3 +115,14 @@ de produzir spec). Recuperação manual (Claude, 2026-09-20):
 - `npx vitest run CadastroProdutoSection`: 30/30 passam. `npm run build`: sem erros de tipo.
 - Spot-check contra o `intent-contract`: migration 000038 (enum de 12 valores, 4 colunas NULLable, backfill `unidade_medida='un'`, `.down.sql` reversível); `validarEAN13` (13 dígitos ASCII, dígito verificador 1/3 alternado, vazio = NULL); `unidade_medida` continua NULLable no banco para não quebrar o INSERT da importação em massa.
 - **Honestidade:** não houve review adversarial independente. Recomendo `bmad-code-review` nas Stories 10.1-10.3 antes do deploy.
+
+### Review Findings
+
+Code review independente (2026-09-21, 4 revisores: Blind Hunter, Edge Case Hunter, Verification Gap, Acceptance Auditor; achados verificados no código antes de classificar).
+
+- [ ] [Review][Patch] (decisão do usuário 2026-09-21: expor no detalhe do Produto; edição e busca por EAN ficam como próxima story) Código do Fornecedor e EAN-13 ficam gravados mas SEM leitura (nem no detalhe nem na busca) e sem edição; um erro de digitação não tem correção — spec 10-3 restringiu o corte contra o texto de AD-32 ("ambos os pares aparecem no Catálogo e no detalhe"). Expor no detalhe/busca?
+- [x] [Review][Defer] (decisão do usuário 2026-09-21: manter 'un') Backfill `unidade_medida='un'` rotula TODO Produto legado (cabos, granel) como "un" e deixa importados como NULL: três estados para o mesmo campo, sem distinguir "un" real de preenchido pela migração (AD-32 [ASSUMPTION], já aplicado em produção)
+- [ ] [Review][Patch] Teste ausente: EAN-13 com dígito verificador 0 (soma%10==0) — `10 - soma%10` no lugar de `(10 - soma%10) % 10` passaria toda a suíte [backend/services/produtos_test.go]
+- [ ] [Review][Patch] Nenhum teste HTTP prova o mapeamento de `codigo_fornecedor`/`ean13`/`embalagem` do handler para o service (renomear a tag json passaria tudo) [backend/handlers/produtos_test.go]
+- [ ] [Review][Patch] `UNIDADES_MEDIDA` do frontend é cópia manual do enum; nenhum teste compara as 12 opções (e só `un` é selecionado nos testes) [frontend/src/components/produtos/CadastroProdutoSection.test.tsx]
+- [x] [Review][Defer] Backfills das migrations 000036/000037/000038 nunca são exercitados contra dados pré-existentes (o banco de teste migra do zero e cria Empresas via ProvisionarEmpresa) — deferred; em produção as três rodaram sem erro

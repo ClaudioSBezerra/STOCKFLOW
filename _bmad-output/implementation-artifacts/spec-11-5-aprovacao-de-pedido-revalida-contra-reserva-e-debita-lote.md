@@ -110,3 +110,10 @@ Status: done
 - **Recomendação de nova revisão:** `false` (patches: high 0, medium 0, low 0; pontuação 0 < 5).
 - **Verificação:** `go build ./... && go vet ./... && gofmt -l .` sem erros e sem arquivos listados; `go test -count=1 -p 1 ./...` todos os pacotes `ok`; testes de `DecidirPedido` também passaram com `-race`.
 - **Riscos residuais:** bug de reserva (reserva ausente/menor ou saldo físico abaixo da reserva) é absorvido como `parcialmente_aprovado`, sem log/alerta distinto (comportamento do Epic 7 preservado); em cenário anômalo com reservas acima do saldo, um Pedido pode consumir saldo reservado por outro (limitado pelo físico).
+
+### Review Findings
+
+Code review independente (2026-09-21, 4 revisores: Blind Hunter, Edge Case Hunter, Verification Gap, Acceptance Auditor; achados verificados no código antes de classificar).
+
+- [ ] [Review][Patch] Quantidade aprovada reduzida por reserva ausente/saldo físico menor acontece em silêncio — só ocorre por bug de reserva e nada registra que ocorreu [backend/services/pedidos.go: DecidirPedido] — `slog.Warn` com pedido/produto/estoque/motivo
+- [x] [Review][Defer] Importação de planilha e seed de treinamento ainda gravam `produto_estoque` (saldo legado sem Lote); o FEFO consome o legado, então convivem — deferred na spec 11.6

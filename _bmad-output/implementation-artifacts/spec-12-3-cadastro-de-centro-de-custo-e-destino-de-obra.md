@@ -103,3 +103,14 @@ revalida `centro_custo_id` contra a Empresa do contexto antes de ler o
 carrinho ou gravar; o texto livre `obra_centro_custo` segue obrigatório;
 migration 000045 só cria `centros_custo` e a coluna nullable em `pedidos`.
 **Sem review adversarial independente** — recomendo `bmad-code-review`.
+
+### Review Findings
+
+Code review independente (2026-09-21, 4 revisores: Blind Hunter, Edge Case Hunter, Verification Gap, Acceptance Auditor; achados verificados no código antes de classificar).
+
+- [ ] [Review][Patch] (decisão do usuário 2026-09-21: mostrar no detalhe do Pedido, na Fila do almoxarife e no recibo PDF; sem filtro por ora) O Centro de Custo escolhido no Pedido é gravado mas NÃO aparece em Meus Pedidos, Fila, detalhe nem recibo — nenhuma tela ou consulta o usa. FR-52 só pede "referenciável no envio"; exibir/filtrar por ele?
+- [ ] [Review][Patch] Carrinho: resposta antiga de `GET /api/centros-custo` pode sobrescrever a lista após fechar/reabrir o diálogo; falha de carga some com o seletor sem aviso [frontend/src/pages/CarrinhoPage.tsx:112-131]
+- [ ] [Review][Patch] Tela de Centros de Custo: falha no recarregamento depois de um POST bem-sucedido mostra "falha ao carregar" e induz a recadastrar (409) [frontend/src/components/centroscusto/CentrosCustoSection.tsx]
+- [ ] [Review][Patch] Índice `idx_centros_custo_empresa_id` é prefixo do índice único `(empresa_id, nome_normalizado)` — redundante [backend/migrations/000045_*]
+- [x] [Review][Defer] FK simples `pedidos.centro_custo_id` não impede, no banco, referenciar Centro de outra Empresa (a validação está no service, fora da transação); FK composta seria defesa em profundidade — deferred
+- [x] [Review][Defer] Sem editar/desativar Centro de Custo e unicidade sensível a acento ("São" x "Sao") — deferred, escopo da story ("sem editar/excluir")

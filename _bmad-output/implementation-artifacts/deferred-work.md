@@ -701,3 +701,11 @@ source_spec: `spec-12-2-migracao-dos-estoques-legados-para-filial-padrao.md`
 severity: low
 reason: `grep -n "DATABASE_URL\|services:" .github/workflows/*.yml` não retorna nada; `testDB` faz `t.Skip` sem `DATABASE_URL`. Pré-existente (já registrado na spec-11-2).
 status: open
+
+## Deferred from: code review dos Épicos 10-12 (2026-09-21)
+
+- O gate de CI que protege o deploy (`.github/workflows/deploy-cliente-aws.yml`, job `test`) roda `go test ./...` sem Postgres nem `DATABASE_URL`: todos os testes de integração (DecidirPedido, reservas, migrações, isolamento por Empresa, centros de custo, fotos de treinamento) dão `t.Skip` e reportam verde. Verificação local (com banco) é a única que roda hoje. Decisão do usuário (2026-09-21): adicionar um serviço Postgres ao job `test` do workflow.
+- Importação de planilha ainda grava `produto_estoque` sem Lote e não aplica template obrigatório, nome mínimo nem unidade de medida (pré-existente/deferido nas specs 10.1, 10.3, 11.6).
+- Templates de Nomenclatura só com tokens adjacentes degeneram em regex ambígua (spec 10.6).
+- FK composta `(empresa_id, centro_custo_id)` em `pedidos` como defesa em profundidade (spec 12.3).
+- Backfills de 000036/000037/000038 sem teste contra dado pré-existente.

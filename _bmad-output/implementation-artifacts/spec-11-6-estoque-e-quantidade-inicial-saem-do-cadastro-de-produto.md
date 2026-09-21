@@ -111,3 +111,10 @@ Status: done
 - **Recomendação de nova revisão:** `false` (patches: high 0, medium 0, low 0; pontuação 0 < 5).
 - **Verificação:** `go build ./... && go vet ./... && gofmt -l .` sem erros e sem arquivos listados; `go test -count=1 -p 1 ./...` todos os pacotes `ok`; `tsc --noEmit` limpo; `vitest run src/components/produtos` 43/43. Na suíte completa do vitest o subagente relatou 3 timeouts em `CadastroProdutoSection.test.tsx` sob carga, que também ocorrem no baseline.
 - **Riscos residuais:** cliente antigo que ainda envia saldo recebe `201` sem saldo, silenciosamente (decisão do contrato); a importação em massa continua criando saldo legado sem Lote (item adiado).
+
+### Review Findings
+
+Code review independente (2026-09-21, 4 revisores: Blind Hunter, Edge Case Hunter, Verification Gap, Acceptance Auditor; achados verificados no código antes de classificar).
+
+- [ ] [Review][Patch] (decisão do usuário 2026-09-21: orientar na tela com atalho para o Lançamento de Saldo; API continua ignorando os campos antigos) Cliente antigo que ainda envia `estoque_id`/`quantidade_inicial` recebe 201 e Produto com saldo zero, sem aviso; e o formulário não leva o Almoxarife à tela de Lançamento de Saldo depois de cadastrar — aceitar (por spec) ou rejeitar/avisar?
+- [x] [Review][Defer] AC3 ("Lançamento é o único caminho de entrada de saldo") não é literalmente verdadeira enquanto a importação em massa grava `produto_estoque` [backend/services/importacoes.go:611,720] — deferred, já registrado na spec
