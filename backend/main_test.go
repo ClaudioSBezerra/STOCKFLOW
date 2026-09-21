@@ -1146,6 +1146,89 @@ func TestNewMux_CategoriasEscritaCarregaRequireRoleAdm(t *testing.T) {
 	})
 }
 
+// TestNewMux_TemplatesNomenclaturaEscritaCarregaRequireRoleAdm prova, despachando pela
+// mesma instância de newMux usada por main() (Story 10.6), que POST/PUT/DELETE
+// de /api/nomenclatura-templates estão atrás de RequireRole(adm): tokens `usuario`,
+// `almoxarife` e `gestor` -> 403 FORBIDDEN nas três; token `adm` passa do gate
+// (400/404 do próprio handler, nunca 403) sem gravar linha alguma. Sem isto,
+// remover o RequireRole de uma das rotas (ou a rota inteira) deixaria a suíte
+// verde — os testes de handlers/nomenclatura_test.go montam o próprio mux.
+func TestNewMux_TemplatesNomenclaturaEscritaCarregaRequireRoleAdm(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate usuarios: %v", err)
+	}
+
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, t.TempDir())
+
+	const senha = "senha-123456"
+	segredos := map[string]string{}
+	const idAusente = "00000000-0000-4000-8000-000000000000"
+
+	despachar := func(metodo, caminho, token, corpo string) *httptest.ResponseRecorder {
+		var req *http.Request
+		if corpo != "" {
+			req = httptest.NewRequest(metodo, caminho, strings.NewReader(corpo))
+			req.Header.Set("Content-Type", "application/json")
+		} else {
+			req = httptest.NewRequest(metodo, caminho, nil)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	// Um único tokenDeMux por conta (gestor/adm exigem MFA e o TOTP não pode
+	// ser reapresentado na mesma janela de 30s): as três rotas compartilham o
+	// token de cada papel.
+	casos := []struct {
+		email, papel string
+		status       [3]int // POST, PUT, DELETE
+	}{
+		{"tpl-mux-usuario@empresa.com", "usuario", [3]int{403, 403, 403}},
+		{"tpl-mux-almox@empresa.com", "almoxarife", [3]int{403, 403, 403}},
+		{"tpl-mux-gestor@empresa.com", "gestor", [3]int{403, 403, 403}},
+		// adm: POST com corpo vazio de campos -> 400; PUT/DELETE de id ausente -> 404.
+		{"tpl-mux-adm@empresa.com", "adm", [3]int{400, 404, 404}},
+	}
+	for _, c := range casos {
+		seedContaMux(t, db, c.email, c.papel, senha, segredos)
+	}
+	for _, c := range casos {
+		t.Run(c.papel, func(t *testing.T) {
+			token := tokenDeMux(t, mux, c.email, senha, segredos)
+			reqs := []struct{ metodo, caminho, corpo string }{
+				{http.MethodPost, prefixoEmpresaTeste + "/api/nomenclatura-templates", `{"subtipo":"  ","template":"  "}`},
+				{http.MethodPut, prefixoEmpresaTeste + "/api/nomenclatura-templates/" + idAusente, `{"subtipo":"T10.6 mux","template":"MUX [X]"}`},
+				{http.MethodDelete, prefixoEmpresaTeste + "/api/nomenclatura-templates/" + idAusente, ""},
+			}
+			for i, r := range reqs {
+				w := despachar(r.metodo, r.caminho, token, r.corpo)
+				if w.Code != c.status[i] {
+					t.Errorf("%s %s: status = %d, want %d (body=%s)", r.metodo, r.caminho, w.Code, c.status[i], w.Body.String())
+				}
+			}
+		})
+	}
+
+	t.Run("sem token -> 401 nas três", func(t *testing.T) {
+		for _, r := range []struct{ metodo, caminho string }{
+			{http.MethodPost, prefixoEmpresaTeste + "/api/nomenclatura-templates"},
+			{http.MethodPut, prefixoEmpresaTeste + "/api/nomenclatura-templates/" + idAusente},
+			{http.MethodDelete, prefixoEmpresaTeste + "/api/nomenclatura-templates/" + idAusente},
+		} {
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, httptest.NewRequest(r.metodo, r.caminho, nil))
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("%s %s sem token: status = %d, want 401", r.metodo, r.caminho, w.Code)
+			}
+		}
+	})
+}
+
 // TestNewMux_ProdutosRotaCarregaRequireRole prova, despachando pela mesma
 // instância de newMux usada por main() (Story 3.1; GET nomenclatura-templates
 // acrescentado pela Story 3.2), que:

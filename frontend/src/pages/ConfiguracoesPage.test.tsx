@@ -633,6 +633,7 @@ describe('ConfiguracoesPage — Log de Acesso (Story 1.12)', () => {
       if (url === '/api/convites') return jsonOk({ convites: [] });
       if (url.startsWith('/api/logs-acesso')) return jsonOk({ logs: [] });
       if (url === '/api/categorias') return jsonOk({ categorias: [] });
+      if (url === '/api/nomenclatura-templates') return jsonOk({ templates: [] });
       if (url === '/api/solicitacoes-exclusao') return jsonOk({ solicitacoes: [] });
       throw new Error(`URL inesperada: ${url}`);
     });
@@ -688,6 +689,7 @@ describe('ConfiguracoesPage — Categorias (Story 10.5)', () => {
       if (url === '/api/convites') return jsonOk({ convites: [] });
       if (url.startsWith('/api/logs-acesso')) return jsonOk({ logs: [] });
       if (url === '/api/categorias') return jsonOk({ categorias: [] });
+      if (url === '/api/nomenclatura-templates') return jsonOk({ templates: [] });
       if (url === '/api/solicitacoes-exclusao') return jsonOk({ solicitacoes: [] });
       throw new Error(`URL inesperada: ${url}`);
     });
@@ -722,6 +724,55 @@ describe('ConfiguracoesPage — Categorias (Story 10.5)', () => {
   );
 });
 
+describe('ConfiguracoesPage — Templates de Nomenclatura (Story 10.6)', () => {
+  it('adm vê a seção "Templates de Nomenclatura" e carrega GET /api/nomenclatura-templates', async () => {
+    authState.papel = 'adm';
+    const fetchMock = stubFetch((url) => {
+      if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
+      if (url === '/api/promocoes') return jsonOk({ solicitacoes: [] });
+      if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+      if (url === '/api/convites') return jsonOk({ convites: [] });
+      if (url.startsWith('/api/logs-acesso')) return jsonOk({ logs: [] });
+      if (url === '/api/categorias') return jsonOk({ categorias: [] });
+      if (url === '/api/nomenclatura-templates') return jsonOk({ templates: [] });
+      if (url === '/api/solicitacoes-exclusao') return jsonOk({ solicitacoes: [] });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    render(<ConfiguracoesPage />);
+
+    expect(
+      await screen.findByRole('heading', { name: 'Templates de Nomenclatura' }),
+    ).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith('/api/nomenclatura-templates', expect.anything());
+  });
+
+  it.each(['usuario', 'almoxarife', 'gestor'])(
+    'papel %s NÃO vê a seção "Templates de Nomenclatura" e nunca chama GET /api/nomenclatura-templates',
+    async (papel) => {
+      authState.papel = papel;
+      const fetchMock = stubFetch((url) => {
+        if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
+        if (url === '/api/promocoes') return jsonOk({ solicitacoes: [] });
+        if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+        if (url === '/api/convites') return jsonOk({ convites: [] });
+        throw new Error(`URL inesperada: ${url}`);
+      });
+
+      render(<ConfiguracoesPage />);
+
+      await screen.findByRole('heading', { name: 'Privacidade' });
+      expect(
+        screen.queryByRole('heading', { name: 'Templates de Nomenclatura' }),
+      ).not.toBeInTheDocument();
+      expect(fetchMock).not.toHaveBeenCalledWith(
+        expect.stringContaining('/api/nomenclatura-templates'),
+        expect.anything(),
+      );
+    },
+  );
+});
+
 describe('ConfiguracoesPage — Privacidade (Story 8.1)', () => {
   it.each(['usuario', 'almoxarife', 'gestor', 'adm'])(
     'papel %s vê a seção "Privacidade" com o botão "Baixar meus dados", sem gate de papel',
@@ -734,6 +785,7 @@ describe('ConfiguracoesPage — Privacidade (Story 8.1)', () => {
         if (url === '/api/convites') return jsonOk({ convites: [] });
         if (url.startsWith('/api/logs-acesso')) return jsonOk({ logs: [] });
         if (url === '/api/categorias') return jsonOk({ categorias: [] });
+        if (url === '/api/nomenclatura-templates') return jsonOk({ templates: [] });
         if (url === '/api/solicitacoes-exclusao') return jsonOk({ solicitacoes: [] });
         throw new Error(`URL inesperada: ${url}`);
       });
@@ -772,6 +824,7 @@ describe('ConfiguracoesPage — Solicitações de exclusão (Story 8.2)', () => 
       if (url === '/api/convites') return jsonOk({ convites: [] });
       if (url.startsWith('/api/logs-acesso')) return jsonOk({ logs: [] });
       if (url === '/api/categorias') return jsonOk({ categorias: [] });
+      if (url === '/api/nomenclatura-templates') return jsonOk({ templates: [] });
       if (url === '/api/solicitacoes-exclusao') return jsonOk({ solicitacoes: [] });
       throw new Error(`URL inesperada: ${url}`);
     });

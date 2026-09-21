@@ -460,6 +460,19 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// mesmo mínimo de papel do cadastro.
 	registrar("GET /e/{slug}/api/nomenclatura-templates", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarNomenclaturaTemplatesHandler(db)))
+
+	// CRUD de Templates de Nomenclatura — Story 10.6 (AD-33). Escrita só
+	// `adm`+ (403 abaixo, decidido por RequireRole); o GET acima segue só
+	// RequireAuth.
+	registrar("POST /e/{slug}/api/nomenclatura-templates", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAdm)(
+			handlers.CriarTemplateNomenclaturaHandler(db))))
+	registrar("PUT /e/{slug}/api/nomenclatura-templates/{id}", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAdm)(
+			handlers.AtualizarTemplateNomenclaturaHandler(db))))
+	registrar("DELETE /e/{slug}/api/nomenclatura-templates/{id}", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAdm)(
+			handlers.ExcluirTemplateNomenclaturaHandler(db))))
 	registrar("POST /e/{slug}/api/produtos/{id}/renomear", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.AtualizarNomeProdutoHandler(db, registro))))

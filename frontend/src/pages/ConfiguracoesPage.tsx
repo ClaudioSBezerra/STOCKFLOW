@@ -13,6 +13,7 @@ import { ConvitesSection } from '@/components/usuarios/ConvitesSection';
 import { SolicitacoesExclusaoSection } from '@/components/usuarios/SolicitacoesExclusaoSection';
 import { LogAcessoSection } from '@/components/logs/LogAcessoSection';
 import { CategoriasSection } from '@/components/categorias/CategoriasSection';
+import { TemplatesNomenclaturaSection } from '@/components/nomenclatura/TemplatesNomenclaturaSection';
 import { PrivacidadeSection } from '@/components/privacidade/PrivacidadeSection';
 import { apiUrl, authHeaders } from '@/lib/api';
 
@@ -48,6 +49,11 @@ import { apiUrl, authHeaders } from '@/lib/api';
  *    CRUD das categorias de produto da Empresa (`GET/POST /api/categorias`,
  *    `PUT/DELETE /api/categorias/{id}`); exclusão bloqueada (409) enquanto
  *    algum Produto usa a categoria.
+ *  - "Templates de Nomenclatura" (`TemplatesNomenclaturaSection`, Story
+ *    10.6): só montada para `adm`+. CRUD dos templates de nome da Empresa
+ *    (`GET/POST /api/nomenclatura-templates`, `PUT/DELETE
+ *    /api/nomenclatura-templates/{id}`); exclusão bloqueada (409) enquanto
+ *    algum Produto usa o template ou se for o único fallback `[NOME LIVRE]`.
  *  - "Privacidade" (`PrivacidadeSection`, Story 8.1): montada para QUALQUER
  *    papel autenticado, sem gate de `rankPapel` — a LGPD exige que todo
  *    Usuário consiga baixar os próprios dados. Botão "Baixar meus dados" ->
@@ -546,6 +552,8 @@ export function ConfiguracoesPage() {
       {rankPapel(papel) >= rankPapel('adm') && <LogAcessoSection />}
 
       {rankPapel(papel) >= rankPapel('adm') && <CategoriasSection />}
+
+      {rankPapel(papel) >= rankPapel('adm') && <TemplatesNomenclaturaSection />}
 
       {/* SolicitacoesExclusaoSection já se auto-gateia por rankPapel('adm')
           internamente (molde de PrivacidadeSection) — montada incondicionalmente
