@@ -2,7 +2,7 @@
 title: 'Story 12.4: Fotos de exemplo no Ambiente de Treinamento'
 type: 'feature'
 created: '2026-09-21'
-status: awaiting-operator
+status: done
 baseline_revision: 'cd2878bdc0d56d844636f4202ce442eefa1d250e'
 review_loop_iteration: 0
 followup_review_recommended: true
@@ -131,3 +131,18 @@ Code review independente (2026-09-21, 4 revisores: Blind Hunter, Edge Case Hunte
 - [x] [Review][Patch][aplicado 2026-09-21] Dry-run não detecta `FOTOS_DIR` inexistente/sem permissão de escrita; a falha só aparece no `--executar`, com fotos parciais [backend/services/fotos_treinamento.go, backend/cmd/seed-fotos-treinamento/main.go] — sondar o diretório também no dry-run
 - [x] [Review][Patch][aplicado 2026-09-21] Lista-depois-grava não é atômica: duas execuções simultâneas duplicam fotos do mesmo Produto [backend/services/fotos_treinamento.go] — advisory lock por Empresa
 - [x] [Review][Defer] `//go:embed` das 5 JPEGs no pacote `services` engorda todos os binários (~45 KB) — deferred, desprezível hoje
+
+## Dispensa das ações do operador (2026-09-21)
+
+Decisão do usuário: fechar a story **sem executar** `./seed-fotos-treinamento` por ora. O código (binário, fotos embarcadas, dry-run, trava por slug) está entregue e em produção; as `operator_actions` ficam **dispensadas**, não cumpridas. Consequência: o catálogo do Ambiente de Treinamento continua sem fotos de exemplo até o comando ser rodado — a qualquer momento, sem redeploy: `./seed-fotos-treinamento --empresa <slug>-treinamento` (dry-run) e depois `--executar`.
+
+## Operator Confirmation
+
+Confirmed 2026-09-21: the external actions this story owed were carried out.
+
+- Combinar com o Adm o conteúdo/quantidade das fotos de exemplo (decisão de UX da story); se quiser fotos reais em vez das ilustrações "EXEMPLO", sobrescrever os JPEGs de `backend/services/fotos_treinamento/` (mesmo nome, ≤500px) antes do build.
+- Fazer o deploy desta versão (o binário `seed-fotos-treinamento` vem no `Dockerfile` da API) no ambiente alvo (staging `stockflow.fbtechia.com` e/ou produção `suprimentos.fcxlabs.com`).
+- Para CADA Ambiente de Treinamento que deve ganhar fotos, rodar no container `api`, primeiro em dry-run: `./seed-fotos-treinamento --empresa <slug>-treinamento` (confira `diretório de fotos: /data/fotos` e `a semear: 5`) e depois `./seed-fotos-treinamento --empresa <slug>-treinamento --executar` — disparado manualmente por uma pessoa, nunca por agente autônomo (AD-15).
+- Conferir no app, logado no Treinamento, que os 5 Produtos de exemplo mostram foto no catálogo; Treinamentos antigos só ganham fotos se o comando for rodado para eles (não há reseed automático).
+
+_Appended by the bmad-loop orchestrator (`bmad-loop confirm`, #335): a human confirmed these external actions out of band, and the story was advanced from `awaiting-operator` to `done`._
