@@ -629,3 +629,11 @@ source_spec: `spec-11-1-lancamento-de-saldo-inicial-com-lote-e-data-de-validade.
 severity: low
 reason: Com o banco em UTC, um Lote que vence "hoje" aparece como vencido a partir de ~21h no Brasil. O intent-contract fixa `CURRENT_DATE`; revisar quando houver fuso por Empresa.
 status: open
+
+### DW-80: O workflow de CI (`.github/workflows/deploy-cliente-aws.yml`) roda `go test ./...` sem serviço Postgres nem `DATABASE_URL`, então todos os testes de integração (inclusive os do corte de saldo) são pul
+origin: spec-deferred d3ba769a4ceb
+location: .github/workflows/deploy-cliente-aws.yml:27
+source_spec: `spec-11-2-migracao-do-saldo-existente-para-lote-legado.md`
+severity: low
+reason: `grep -n "DATABASE_URL\|services:" .github/workflows/*.yml` não retorna nada; o `testDB` de `services` e dos `cmd/*` faz `t.Skip` sem `DATABASE_URL`. Pré-existente, vale para toda a suíte de integração do repositório.
+status: open
