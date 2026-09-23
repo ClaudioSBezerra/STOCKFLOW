@@ -1580,3 +1580,38 @@ func TestListarCatalogoAgrupado_GrupoSemEmbalagemNemUnidade(t *testing.T) {
 		t.Errorf("embalagem/unidade = %s/%s (multiplos %v), want nil/nil/false", strVal(g.Embalagem), strVal(g.UnidadeMedida), g.Multiplos.EmbalagemUnidade)
 	}
 }
+
+// O detalhe devolve templateId/observacoes (pré-preenchimento da edição, Story
+// 13.1): valores quando existem, nil quando não.
+func TestObterProdutoDetalhe_TemplateEObservacoes(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	in := criarProdutoInputValido(t, db, "Produto Detalhe Template", "04.001")
+	in.Observacoes = "obs do detalhe"
+	p, err := CriarProduto(db, empresaTeste, in)
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	det, err := ObterProdutoDetalhe(db, empresaTeste, p.ID)
+	if err != nil {
+		t.Fatalf("ObterProdutoDetalhe: %v", err)
+	}
+	if det.TemplateID == nil || *det.TemplateID != in.TemplateID {
+		t.Errorf("templateId = %v, want %q", det.TemplateID, in.TemplateID)
+	}
+	if det.Observacoes == nil || *det.Observacoes != "obs do detalhe" {
+		t.Errorf("observacoes = %v, want %q", det.Observacoes, "obs do detalhe")
+	}
+
+	if _, err := db.Exec(`UPDATE produtos SET template_id = NULL, observacoes = NULL WHERE id = $1`, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	det, err = ObterProdutoDetalhe(db, empresaTeste, p.ID)
+	if err != nil {
+		t.Fatalf("ObterProdutoDetalhe: %v", err)
+	}
+	if det.TemplateID != nil || det.Observacoes != nil {
+		t.Errorf("templateId = %v, observacoes = %v, want nil/nil", det.TemplateID, det.Observacoes)
+	}
+}

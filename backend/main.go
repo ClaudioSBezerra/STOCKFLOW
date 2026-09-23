@@ -494,6 +494,11 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	registrar("POST /e/{slug}/api/produtos/{id}/renomear", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.AtualizarNomeProdutoHandler(db, registro))))
+	// PUT /api/produtos/{id} (spec-13-1): edição completa do Produto, mesmo
+	// mínimo de papel do cadastro.
+	registrar("PUT /e/{slug}/api/produtos/{id}", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAlmoxarife)(
+			handlers.AtualizarProdutoHandler(db, registro))))
 
 	// Importação em massa via planilha padronizada — Story 3.3 (FR-10). Os 3
 	// endpoints ficam atrás de RequireRole(almoxarife), mesmo mínimo de papel

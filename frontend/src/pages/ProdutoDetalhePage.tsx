@@ -21,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { EditarProdutoDialog } from '@/components/produtos/EditarProdutoDialog';
 import { useAuth } from '@/lib/auth';
 import { useCarrinho } from '@/lib/carrinho';
 import { rankPapel } from '@/components/shell/nav-items';
@@ -213,6 +214,8 @@ interface ProdutoDetalhe {
   embalagem?: string | null;
   codigoFornecedor?: string | null;
   ean13?: string | null;
+  templateId?: string | null;
+  observacoes?: string | null;
   quantidadeTotal: number;
   quantidadeReservada: number;
   quantidadeDisponivel: number;
@@ -265,6 +268,7 @@ export function ProdutoDetalhePage() {
 function ProdutoDetalheConteudo({ id }: { id: string }) {
   const { usuario } = useAuth();
   const podeRegistrarMovimentacao = rankPapel(usuario?.papel ?? '') >= rankPapel('almoxarife');
+  const [editando, setEditando] = useState(false);
 
   const [produto, setProduto] = useState<ProdutoDetalhe | null>(null);
   const [carregando, setCarregando] = useState(true);
@@ -704,8 +708,13 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
 
       {produto && (
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-row items-start justify-between gap-4">
             <h1 className="text-heading-lg">{produto.nome}</h1>
+            {podeRegistrarMovimentacao && (
+              <Button type="button" variant="outline" onClick={() => setEditando(true)}>
+                Editar
+              </Button>
+            )}
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             <div className="flex flex-col gap-1">
@@ -865,6 +874,15 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
           )}
         </DialogContent>
       </Dialog>
+
+      {produto && podeRegistrarMovimentacao && (
+        <EditarProdutoDialog
+          produto={produto}
+          open={editando}
+          onOpenChange={setEditando}
+          onSalvo={carregarDetalhe}
+        />
+      )}
 
       {/* Adicionar ao Carrinho (Story 7.1): controlado por `carrinhoEstoque`
           — `null` fecha o diálogo. Fechar enquanto o envio está em voo é

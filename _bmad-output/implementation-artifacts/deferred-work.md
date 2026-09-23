@@ -709,3 +709,11 @@ status: open
 - Templates de Nomenclatura só com tokens adjacentes degeneram em regex ambígua (spec 10.6).
 - FK composta `(empresa_id, centro_custo_id)` em `pedidos` como defesa em profundidade (spec 12.3).
 - Backfills de 000036/000037/000038 sem teste contra dado pré-existente.
+
+### DW-89: Follow-up review still recommended for 13-1-editar-um-produto-já-cadastrado after the damping cap was spent
+origin: review-budget-followup
+location: n/a
+source_spec: `spec-13-1-editar-um-produto-ja-cadastrado.md`
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260923-163711-78c6; this entry preserves the lingering recommendation for a deliberate later review.
+status: open

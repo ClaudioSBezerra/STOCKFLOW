@@ -781,6 +781,9 @@ type ProdutoDetalhe struct {
 	Embalagem        *string `json:"embalagem"`
 	CodigoFornecedor *string `json:"codigoFornecedor"`
 	EAN13            *string `json:"ean13"`
+	// TemplateID/Observacoes (spec-13-1): pré-preenchem o diálogo de edição.
+	TemplateID  *string `json:"templateId"`
+	Observacoes *string `json:"observacoes"`
 }
 
 // produtoDetalheQuery devolve um único Produto por `id` — mesmas colunas de
@@ -797,7 +800,8 @@ const produtoDetalheQuery = `
 		p.altura_valor, p.altura_unidade,
 		p.espessura_valor, p.espessura_unidade,
 		COALESCE(pe.total, 0) AS quantidade_total,
-		p.unidade_medida, p.embalagem, p.codigo_fornecedor, p.ean13
+		p.unidade_medida, p.embalagem, p.codigo_fornecedor, p.ean13,
+		p.template_id, p.observacoes
 	FROM produtos p
 	JOIN categorias c ON c.id = p.categoria_id
 	LEFT JOIN (
@@ -827,6 +831,7 @@ func ObterProdutoDetalhe(db *sql.DB, empresaID string, id string) (ProdutoDetalh
 		quantidade                 float64
 		unidadeMedida, embalagem   sql.NullString
 		codigoFornecedor, ean13    sql.NullString
+		templateID, observacoes    sql.NullString
 	)
 	err := db.QueryRow(produtoDetalheQuery, id, empresaID).Scan(
 		&det.ID, &det.Nome, &codigo,
@@ -838,6 +843,7 @@ func ObterProdutoDetalhe(db *sql.DB, empresaID string, id string) (ProdutoDetalh
 		&esp.valor, &esp.unidade,
 		&quantidade,
 		&unidadeMedida, &embalagem, &codigoFornecedor, &ean13,
+		&templateID, &observacoes,
 	)
 	if err != nil {
 		var pqErr *pq.Error
@@ -845,6 +851,14 @@ func ObterProdutoDetalhe(db *sql.DB, empresaID string, id string) (ProdutoDetalh
 			return ProdutoDetalhe{}, ErrProdutoNaoEncontrado
 		}
 		return ProdutoDetalhe{}, fmt.Errorf("falha ao buscar detalhe do produto: %w", err)
+	}
+	if templateID.Valid {
+		t := templateID.String
+		det.TemplateID = &t
+	}
+	if observacoes.Valid {
+		o := observacoes.String
+		det.Observacoes = &o
 	}
 	if codigo.Valid {
 		c := codigo.String

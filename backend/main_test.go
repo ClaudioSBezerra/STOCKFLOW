@@ -1441,6 +1441,82 @@ func TestNewMux_ProdutosRenomearRotaCarregaRequireRole(t *testing.T) {
 	})
 }
 
+// TestNewMux_ProdutosPutRotaCarregaRequireRole prova, despachando pela mesma
+// instância de newMux usada por main() (Story 13.1), que
+// PUT /api/produtos/{id} está atrás de RequireRole(almoxarife): token
+// `usuario` -> 403 FORBIDDEN; token `almoxarife` passa do gate (200).
+//
+// Sem este caso, remover `middleware.RequireRole(services.PapelAlmoxarife)`
+// de PUT /api/produtos/{id} em main.go deixaria a suíte verde (o teste de
+// handler monta o próprio mux).
+func TestNewMux_ProdutosPutRotaCarregaRequireRole(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate usuarios: %v", err)
+	}
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, reservas_pedido_item, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
+		t.Fatalf("truncate produtos: %v", err)
+	}
+
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, t.TempDir())
+
+	const senha = "senha-123456"
+	segredos := map[string]string{}
+	seedContaMux(t, db, "prod-put-usuario@empresa.com", "usuario", senha, segredos)
+	seedContaMux(t, db, "prod-put-almox@empresa.com", "almoxarife", senha, segredos)
+
+	var categoriaID string
+	if err := db.QueryRow(`SELECT id FROM categorias WHERE codigo = '04.001' AND empresa_id = $1`, empresaTeste).Scan(&categoriaID); err != nil {
+		t.Fatalf("buscar categoria de seed: %v", err)
+	}
+	produto, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
+		UnidadeMedida: "un",
+		TemplateID:    templateGenericoIDMux(t, db),
+		Nome:          "Produto Mux Put",
+		CategoriaID:   categoriaID,
+	})
+	if err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+
+	despachar := func(token string) *httptest.ResponseRecorder {
+		corpo := `{"nome":"Produto Mux Put Editado","categoria_id":"` + categoriaID + `","unidade_medida":"un"}`
+		req := httptest.NewRequest(http.MethodPut, prefixoEmpresaTeste+"/api/produtos/"+produto.ID, strings.NewReader(corpo))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	t.Run("papel usuario -> 403 FORBIDDEN", func(t *testing.T) {
+		w := despachar(tokenDeMux(t, mux, "prod-put-usuario@empresa.com", senha, segredos))
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusForbidden, w.Body.String())
+		}
+		var env struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+			t.Fatalf("decode envelope: %v", err)
+		}
+		if env.Error.Code != "FORBIDDEN" {
+			t.Errorf("code = %q, want FORBIDDEN", env.Error.Code)
+		}
+	})
+
+	t.Run("almoxarife passa do gate (200)", func(t *testing.T) {
+		w := despachar(tokenDeMux(t, mux, "prod-put-almox@empresa.com", senha, segredos))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+		}
+	})
+}
+
 // TestNewMux_ProdutosBaixaRotaCarregaRequireRole prova, despachando pela
 // mesma instância de newMux usada por main() (Story 5.1), que
 // POST /api/produtos/{id}/estoques/{estoqueId}/baixa está atrás de

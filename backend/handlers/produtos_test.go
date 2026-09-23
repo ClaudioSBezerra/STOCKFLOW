@@ -2188,3 +2188,203 @@ func TestBuscarProdutoPorCodigoHandler_200ParaUsuario(t *testing.T) {
 		t.Fatalf("status = %d, want %d (body=%s) — rota não deveria exigir RequireRole", w.Code, http.StatusOK, w.Body.String())
 	}
 }
+
+// --- spec-13-1: PUT /api/produtos/{id} -------------------------------------
+
+func putProduto(db *sql.DB, authHeader, id, body string) *httptest.ResponseRecorder {
+	return putProdutoComRegistro(db, realtime.NewRegistry(), authHeader, id, body)
+}
+
+// putProdutoComRegistro é putProduto com o Registry injetado, para os testes
+// que assinam o canal SSE e conferem o evento publicado.
+func putProdutoComRegistro(db *sql.DB, registro *realtime.Registry, authHeader, id, body string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /e/{slug}/api/produtos/{id}",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					AtualizarProdutoHandler(db, registro)))))
+	r := httptest.NewRequest(http.MethodPut, prefixoEmpresaTeste+"/api/produtos/"+id, strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+func TestAtualizarProdutoHandler_200_400_403_404(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.002")
+	genericoID := templateIDPorSubtipoHandler(t, db, "Genérico")
+	criarContaComPapel(t, db, "Almox", "put-almox@empresa.com", "senha-123456", "almoxarife")
+	criarContaComPapel(t, db, "Usu", "put-usuario@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "put-almox@empresa.com", "senha-123456")
+	tokenUsuario := tokenDeLogin(t, db, "put-usuario@empresa.com", "senha-123456")
+
+	p, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
+		Nome: "Produto Original Put", CategoriaID: categoriaID, TemplateID: genericoID, UnidadeMedida: "un",
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	corpo := `{"nome":"Produto Editado Put","categoria_id":"` + categoriaID + `","unidade_medida":"cx","observacoes":"x"}`
+
+	w := putProduto(db, "Bearer "+token, p.ID, corpo)
+	if w.Code != http.StatusOK {
+		t.Fatalf("200: status = %d (%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Produto map[string]any `json:"produto"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Produto["nome"] != "Produto Editado Put" || resp.Produto["codigo"] != p.Codigo {
+		t.Errorf("produto = %v", resp.Produto)
+	}
+
+	w = putProduto(db, "Bearer "+token, p.ID, `{"nome":"Produto Editado Put","categoria_id":"`+categoriaID+`","ean13":"7891000100104","unidade_medida":"cx"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("400: status = %d (%s)", w.Code, w.Body.String())
+	}
+	var un string
+	_ = db.QueryRow(`SELECT unidade_medida FROM produtos WHERE id = $1`, p.ID).Scan(&un)
+	if un != "cx" {
+		t.Errorf("unidade = %q", un)
+	}
+
+	if w = putProduto(db, "Bearer "+tokenUsuario, p.ID, corpo); w.Code != http.StatusForbidden {
+		t.Errorf("403: status = %d", w.Code)
+	}
+	if w = putProduto(db, "Bearer "+token, "00000000-0000-4000-8000-000000000000", corpo); w.Code != http.StatusNotFound {
+		t.Errorf("404: status = %d", w.Code)
+	}
+}
+
+// TestAtualizarProdutoHandler_PublicaEventoUpdated prova que o PUT bem-sucedido
+// publica `produtos`/`updated` com o id do Produto (AC da Story 13.1), e que
+// 400/404 não publicam nada.
+func TestAtualizarProdutoHandler_PublicaEventoUpdated(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.002")
+	criarContaComPapel(t, db, "Evento Put", "evento-put@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "evento-put@empresa.com", "senha-123456")
+
+	p, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
+		Nome: "Produto Evento Put", CategoriaID: categoriaID,
+		TemplateID: templateIDPorSubtipoHandler(t, db, "Genérico"), UnidadeMedida: "un",
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	registro := realtime.NewRegistry()
+	eventos, cancelar := registro.Subscribe(empresaTeste)
+	defer cancelar()
+
+	// 400 (EAN-13 com dígito verificador errado) e 404 não publicam.
+	invalido := `{"nome":"Produto Evento Put","categoria_id":"` + categoriaID + `","ean13":"7891000100104","unidade_medida":"un"}`
+	if w := putProdutoComRegistro(db, registro, "Bearer "+token, p.ID, invalido); w.Code != http.StatusBadRequest {
+		t.Fatalf("400: status = %d (%s)", w.Code, w.Body.String())
+	}
+	valido := `{"nome":"Produto Evento Put Editado","categoria_id":"` + categoriaID + `","unidade_medida":"un"}`
+	if w := putProdutoComRegistro(db, registro, "Bearer "+token, "00000000-0000-4000-8000-000000000000", valido); w.Code != http.StatusNotFound {
+		t.Fatalf("404: status = %d (%s)", w.Code, w.Body.String())
+	}
+	select {
+	case ev := <-eventos:
+		t.Fatalf("evento inesperado após 400/404: %+v", ev)
+	default:
+	}
+
+	if w := putProdutoComRegistro(db, registro, "Bearer "+token, p.ID, valido); w.Code != http.StatusOK {
+		t.Fatalf("200: status = %d (%s)", w.Code, w.Body.String())
+	}
+	select {
+	case ev := <-eventos:
+		if ev.Resource != "produtos" || ev.ID != p.ID || ev.Change != "updated" {
+			t.Fatalf("evento = %+v, want {produtos %s updated}", ev, p.ID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("nenhum evento publicado em 1s após AtualizarProdutoHandler bem-sucedido")
+	}
+}
+
+// TestAtualizarProdutoHandler_MapeiaCamposELimpaOpcionais prova a ponte
+// corpo JSON -> services.CriarProdutoInput do PUT para todos os campos
+// editáveis (template, dimensões, código do fornecedor, EAN-13, embalagem,
+// observações) e que um segundo PUT sem os opcionais grava NULL neles
+// (PUT substitui; só `template_id` omitido mantém o atual).
+func TestAtualizarProdutoHandler_MapeiaCamposELimpaOpcionais(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.002")
+	genericoID := templateIDPorSubtipoHandler(t, db, "Genérico")
+	criarContaComPapel(t, db, "Mapa Put", "mapa-put@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "mapa-put@empresa.com", "senha-123456")
+
+	p, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
+		Nome: "Produto Mapa Put", CategoriaID: categoriaID, TemplateID: genericoID, UnidadeMedida: "un",
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	completo := `{"nome":"Produto Mapa Put Editado","categoria_id":"` + categoriaID + `","template_id":"` + genericoID + `",` +
+		`"unidade_medida":"cx","observacoes":"obs put","codigo_fornecedor":"FORN-13","ean13":"7891234567000","embalagem":"CX 12",` +
+		`"comprimento":{"valor":2.5,"unidade":"m"},"largura":{"valor":10,"unidade":"cm"},"diametro":{"valor":3,"unidade":"mm"},` +
+		`"altura":{"valor":1,"unidade":"m"},"espessura":{"valor":4,"unidade":"mm"}}`
+	if w := putProduto(db, "Bearer "+token, p.ID, completo); w.Code != http.StatusOK {
+		t.Fatalf("PUT completo: status = %d (%s)", w.Code, w.Body.String())
+	}
+
+	type linha struct {
+		template, obs, fornecedor, ean, embalagem, unidade sql.NullString
+		compV, largV, diamV, altV, espV                    sql.NullFloat64
+		compU, largU, diamU, altU, espU                    sql.NullString
+	}
+	ler := func() linha {
+		t.Helper()
+		var l linha
+		if err := db.QueryRow(`SELECT template_id, observacoes, codigo_fornecedor, ean13, embalagem, unidade_medida,
+			comprimento_valor, largura_valor, diametro_valor, altura_valor, espessura_valor,
+			comprimento_unidade, largura_unidade, diametro_unidade, altura_unidade, espessura_unidade
+			FROM produtos WHERE id = $1`, p.ID).Scan(
+			&l.template, &l.obs, &l.fornecedor, &l.ean, &l.embalagem, &l.unidade,
+			&l.compV, &l.largV, &l.diamV, &l.altV, &l.espV,
+			&l.compU, &l.largU, &l.diamU, &l.altU, &l.espU,
+		); err != nil {
+			t.Fatalf("ler produto: %v", err)
+		}
+		return l
+	}
+
+	l := ler()
+	if l.template.String != genericoID || l.obs.String != "obs put" || l.fornecedor.String != "FORN-13" ||
+		l.ean.String != "7891234567000" || l.embalagem.String != "CX 12" || l.unidade.String != "cx" {
+		t.Errorf("textos gravados = %+v", l)
+	}
+	if l.compV.Float64 != 2.5 || l.compU.String != "m" || l.largV.Float64 != 10 || l.largU.String != "cm" ||
+		l.diamV.Float64 != 3 || l.diamU.String != "mm" || l.altV.Float64 != 1 || l.altU.String != "m" ||
+		l.espV.Float64 != 4 || l.espU.String != "mm" {
+		t.Errorf("dimensões gravadas = %+v", l)
+	}
+
+	minimo := `{"nome":"Produto Mapa Put Editado","categoria_id":"` + categoriaID + `","unidade_medida":"cx"}`
+	if w := putProduto(db, "Bearer "+token, p.ID, minimo); w.Code != http.StatusOK {
+		t.Fatalf("PUT mínimo: status = %d (%s)", w.Code, w.Body.String())
+	}
+	l = ler()
+	if l.template.String != genericoID {
+		t.Errorf("template_id omitido deveria manter o atual; got %v", l.template)
+	}
+	if l.obs.Valid || l.fornecedor.Valid || l.ean.Valid || l.embalagem.Valid ||
+		l.compV.Valid || l.largV.Valid || l.diamV.Valid || l.altV.Valid || l.espV.Valid ||
+		l.compU.Valid || l.largU.Valid || l.diamU.Valid || l.altU.Valid || l.espU.Valid {
+		t.Errorf("opcionais omitidos deveriam virar NULL; got %+v", l)
+	}
+}

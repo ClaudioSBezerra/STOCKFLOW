@@ -579,6 +579,171 @@ func AtualizarNomeProduto(db *sql.DB, empresaID string, id string, novoNome stri
 	return p, nil
 }
 
+// AtualizarProduto (spec-13-1) regrava todos os campos editáveis de um
+// Produto (nome, categoria, template, observações, dimensões, código do
+// fornecedor, EAN-13, unidade, embalagem) com as MESMAS validações do
+// cadastro. Nunca toca Código, saldo/Lotes, reservas, Movimentações ou fotos.
+//
+// Toda validação estática acontece antes de abrir a transação; as que
+// dependem do estado atual (template mantido, unidade legada NULL) rodam na
+// transação, sob `SELECT ... FOR UPDATE`, ainda antes do UPDATE — falha
+// nunca grava nada. `TemplateID` vazio mantém o template atual (e o
+// revalida contra o nome); Produto legado sem template segue sem template.
+// `UnidadeMedida` vazia só é aceita para Produto cuja unidade atual é NULL.
+// Produto inexistente/malformado/excluído/de outra Empresa ->
+// ErrProdutoNaoEncontrado.
+func AtualizarProduto(db *sql.DB, empresaID string, id string, input CriarProdutoInput) (Produto, error) {
+	nomeTrimado := strings.TrimSpace(input.Nome)
+	if n := utf8.RuneCountInString(nomeTrimado); n < 10 || n > 255 {
+		return Produto{}, &ErroProdutoValidacao{
+			Mensagem: "nome é obrigatório e deve ter entre 10 e 255 caracteres",
+		}
+	}
+	categoriaID := strings.TrimSpace(input.CategoriaID)
+	if categoriaID == "" {
+		return Produto{}, &ErroProdutoValidacao{Mensagem: "categoria é obrigatória"}
+	}
+
+	comprimentoValor, comprimentoUnidade, err := validarDimensao("comprimento", input.Comprimento)
+	if err != nil {
+		return Produto{}, err
+	}
+	larguraValor, larguraUnidade, err := validarDimensao("largura", input.Largura)
+	if err != nil {
+		return Produto{}, err
+	}
+	diametroValor, diametroUnidade, err := validarDimensao("diâmetro", input.Diametro)
+	if err != nil {
+		return Produto{}, err
+	}
+	alturaValor, alturaUnidade, err := validarDimensao("altura", input.Altura)
+	if err != nil {
+		return Produto{}, err
+	}
+	espessuraValor, espessuraUnidade, err := validarDimensao("espessura", input.Espessura)
+	if err != nil {
+		return Produto{}, err
+	}
+
+	var observacoes sql.NullString
+	if o := strings.TrimSpace(input.Observacoes); o != "" {
+		observacoes = sql.NullString{String: o, Valid: true}
+	}
+	codigoFornecedor, err := validarTextoLivreOpcional("código do fornecedor", input.CodigoFornecedor)
+	if err != nil {
+		return Produto{}, err
+	}
+	ean13, err := validarEAN13(input.EAN13)
+	if err != nil {
+		return Produto{}, err
+	}
+	embalagem, err := validarTextoLivreOpcional("embalagem", input.Embalagem)
+	if err != nil {
+		return Produto{}, err
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return Produto{}, fmt.Errorf("falha ao iniciar transação: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var templateAtual, unidadeAtual sql.NullString
+	err = tx.QueryRow(
+		`SELECT template_id, unidade_medida FROM produtos
+		 WHERE id = $1 AND empresa_id = $2 AND deleted_at IS NULL FOR UPDATE`,
+		id, empresaID,
+	).Scan(&templateAtual, &unidadeAtual)
+	if err != nil {
+		var pqErr *pq.Error
+		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
+			return Produto{}, ErrProdutoNaoEncontrado
+		}
+		return Produto{}, fmt.Errorf("falha ao buscar produto para edição: %w", err)
+	}
+
+	var templateID sql.NullString
+	if t := strings.TrimSpace(input.TemplateID); t != "" {
+		var templateTexto string
+		err := tx.QueryRow(
+			`SELECT template FROM nomenclatura_templates WHERE id = $1 AND empresa_id = $2`,
+			t, empresaID,
+		).Scan(&templateTexto)
+		if err != nil {
+			var pqErr *pq.Error
+			if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
+				return Produto{}, &ErroProdutoValidacao{Mensagem: "template selecionado não existe"}
+			}
+			return Produto{}, fmt.Errorf("falha ao buscar template de nomenclatura: %w", err)
+		}
+		if !nomeValidoParaTemplate(templateTexto, nomeTrimado) {
+			return Produto{}, &ErroProdutoValidacao{Mensagem: mensagemNomeForaDoTemplate("selecionado", templateTexto)}
+		}
+		templateID = sql.NullString{String: t, Valid: true}
+	} else if templateAtual.Valid {
+		var templateTexto string
+		if err := tx.QueryRow(
+			`SELECT template FROM nomenclatura_templates WHERE id = $1`, templateAtual.String,
+		).Scan(&templateTexto); err != nil {
+			return Produto{}, fmt.Errorf("falha ao buscar template aplicado ao produto: %w", err)
+		}
+		if !nomeValidoParaTemplate(templateTexto, nomeTrimado) {
+			return Produto{}, &ErroProdutoValidacao{Mensagem: mensagemNomeForaDoTemplate("aplicado a este produto", templateTexto)}
+		}
+		templateID = templateAtual
+	}
+
+	var unidadeMedida sql.NullString
+	if strings.TrimSpace(input.UnidadeMedida) == "" && !unidadeAtual.Valid {
+		// legado sem unidade: segue NULL
+	} else {
+		u, err := validarUnidadeMedida(input.UnidadeMedida)
+		if err != nil {
+			return Produto{}, err
+		}
+		unidadeMedida = sql.NullString{String: u, Valid: true}
+	}
+
+	const update = `
+		UPDATE produtos p SET
+			nome = $1, categoria_id = c.id, observacoes = $4, template_id = $5,
+			comprimento_valor = $6, comprimento_unidade = $7,
+			largura_valor = $8, largura_unidade = $9,
+			diametro_valor = $10, diametro_unidade = $11,
+			altura_valor = $12, altura_unidade = $13,
+			espessura_valor = $14, espessura_unidade = $15,
+			codigo_fornecedor = $16, ean13 = $17, unidade_medida = $18, embalagem = $19
+		FROM categorias c
+		WHERE p.id = $2 AND p.empresa_id = $20 AND p.deleted_at IS NULL
+		  AND c.id = $3 AND c.empresa_id = $20
+		RETURNING p.id, p.nome, p.codigo`
+	var p Produto
+	var codigo sql.NullString
+	err = tx.QueryRow(update,
+		nomeTrimado, id, categoriaID, observacoes, templateID,
+		comprimentoValor, comprimentoUnidade,
+		larguraValor, larguraUnidade,
+		diametroValor, diametroUnidade,
+		alturaValor, alturaUnidade,
+		espessuraValor, espessuraUnidade,
+		codigoFornecedor, ean13, unidadeMedida, embalagem,
+		empresaID,
+	).Scan(&p.ID, &p.Nome, &codigo)
+	if err != nil {
+		var pqErr *pq.Error
+		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && (pqErr.Code == pqForeignKeyViolation || pqErr.Code == pqInvalidTextRepresentation)) {
+			// O produto já foi provado existente pelo FOR UPDATE: só a categoria falha.
+			return Produto{}, &ErroProdutoValidacao{Mensagem: "categoria informada não existe"}
+		}
+		return Produto{}, fmt.Errorf("falha ao atualizar produto: %w", err)
+	}
+	p.Codigo = codigo.String
+	if err := tx.Commit(); err != nil {
+		return Produto{}, fmt.Errorf("falha ao commitar edição de produto: %w", err)
+	}
+	return p, nil
+}
+
 // ProdutoBusca é a projeção devolvida por BuscarProdutos (Story 4.1,
 // spec-4-1) para GET /api/produtos/busca: `id`/`nome` do Produto, `codigo`
 // (ponteiro — `nil`/`null` quando o Produto não tem código cadastrado,

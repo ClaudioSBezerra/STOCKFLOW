@@ -241,6 +241,63 @@ func AtualizarNomeProdutoHandler(db *sql.DB, registro *realtime.Registry) http.H
 	}
 }
 
+// AtualizarProdutoHandler expõe PUT /api/produtos/{id} (spec-13-1): edição
+// completa dos campos editáveis, corpo igual ao de criarProdutoRequest
+// (`template_id` omitido mantém o template atual). 200
+// `{"produto":{id,nome,codigo}}`; 400 VALIDATION_ERROR; 404 NOT_FOUND.
+// Sucesso publica `produtos`/`updated`.
+func AtualizarProdutoHandler(db *sql.DB, registro *realtime.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := middleware.UsuarioDaSessao(r.Context()); !ok {
+			slog.Error("AtualizarProdutoHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
+		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
+		var req criarProdutoRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "payload inválido")
+			return
+		}
+
+		input := services.CriarProdutoInput{
+			Nome:             req.Nome,
+			Observacoes:      req.Observacoes,
+			CategoriaID:      req.CategoriaID,
+			TemplateID:       req.TemplateID,
+			Comprimento:      req.Comprimento.paraInput(),
+			Largura:          req.Largura.paraInput(),
+			Diametro:         req.Diametro.paraInput(),
+			Altura:           req.Altura.paraInput(),
+			Espessura:        req.Espessura.paraInput(),
+			CodigoFornecedor: req.CodigoFornecedor,
+			EAN13:            req.EAN13,
+			UnidadeMedida:    req.UnidadeMedida,
+			Embalagem:        req.Embalagem,
+		}
+
+		produto, err := services.AtualizarProduto(db, empresa.ID, r.PathValue("id"), input)
+		var erroValidacao *services.ErroProdutoValidacao
+		switch {
+		case err == nil:
+			registro.Publish(empresa.ID, "produtos", realtime.Evento{ID: produto.ID, Change: "updated"})
+			escreverJSON(w, http.StatusOK, map[string]any{"produto": produto})
+		case errors.As(err, &erroValidacao):
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
+		case errors.Is(err, services.ErrProdutoNaoEncontrado):
+			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "produto não encontrado")
+		default:
+			slog.Error("falha ao atualizar produto", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao atualizar produto")
+		}
+	}
+}
+
 // BuscarProdutosHandler expõe GET /api/produtos/busca?q=<termo> (Story 4.1,
 // spec-4-1, FR-4): só RequireAuth, qualquer papel (`usuario`+) — sem
 // RequireRole, mesmo padrão de GET /api/categorias/GET /api/estoques. `q`

@@ -15,6 +15,8 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { apiUrl, authHeaders } from '@/lib/api';
+import { DIMENSAO_VAZIA, UNIDADES_MEDIDA, montarDimensao, type DimensaoEstado } from '@/lib/produtos';
+import { DimensaoField } from './DimensaoField';
 
 /**
  * Seção "Cadastrar Produto" da `CatalogoPage` (Story 3.1, spec-3-1; Story 3.2,
@@ -104,33 +106,6 @@ interface NomenclaturaTemplate {
   template: string;
 }
 
-interface DimensaoEstado {
-  valor: string;
-  unidade: string;
-}
-
-const DIMENSAO_VAZIA: DimensaoEstado = { valor: '', unidade: '' };
-const UNIDADES = ['mm', 'cm', 'm'] as const;
-
-// UNIDADES_MEDIDA (Story 10.3, spec-10-3, addendum.md §F): os 12 valores do
-// enum fechado `unidade_medida_produto` (migration 000038), mesma grafia e
-// ordem do backend (`unidadesMedidaValidas`, backend/services/produtos.go) —
-// inclusive os 3 com caracteres não-ASCII ("m²", "m³", "kg/m²").
-const UNIDADES_MEDIDA = [
-  'un',
-  'm',
-  'm²',
-  'm³',
-  'kg',
-  'L',
-  'cx',
-  'rolo',
-  'barra',
-  'mm',
-  'cm',
-  'kg/m²',
-] as const;
-
 const MENSAGEM_ERRO_CARREGAR =
   'Não foi possível carregar categorias/templates. Recarregue a página.';
 const MENSAGEM_ERRO_CADASTRO =
@@ -160,70 +135,6 @@ interface FotoGaleria {
   nome: string;
   url: string;
   objectUrl: string;
-}
-
-/**
- * Converte o estado local de uma dimensão para o par aceito por
- * `POST /api/produtos`: os dois campos em branco -> `undefined` (chave
- * omitida do JSON, dimensão não informada); só um preenchido -> objeto
- * parcial, deixando o servidor rejeitar citando o campo (AD-9) — o cliente
- * não duplica essa validação.
- */
-function montarDimensao(d: DimensaoEstado): { valor?: number; unidade?: string } | undefined {
-  if (d.valor.trim() === '' && d.unidade === '') {
-    return undefined;
-  }
-  const payload: { valor?: number; unidade?: string } = {};
-  if (d.valor.trim() !== '') {
-    payload.valor = Number(d.valor);
-  }
-  if (d.unidade !== '') {
-    payload.unidade = d.unidade;
-  }
-  return payload;
-}
-
-function DimensaoField({
-  label,
-  idPrefix,
-  dimensao,
-  onChange,
-}: {
-  label: string;
-  idPrefix: string;
-  dimensao: DimensaoEstado;
-  onChange: (d: DimensaoEstado) => void;
-}) {
-  return (
-    <div className="flex flex-col gap-2">
-      <Label htmlFor={`${idPrefix}-valor`}>{label}</Label>
-      <div className="flex gap-2">
-        <Input
-          id={`${idPrefix}-valor`}
-          type="number"
-          inputMode="decimal"
-          value={dimensao.valor}
-          onChange={(event) => onChange({ ...dimensao, valor: event.target.value })}
-          className="flex-1"
-        />
-        <Select
-          value={dimensao.unidade}
-          onValueChange={(unidade) => onChange({ ...dimensao, unidade })}
-        >
-          <SelectTrigger id={`${idPrefix}-unidade`} aria-label={`Unidade de ${label}`} className="w-20">
-            <SelectValue placeholder="Un." />
-          </SelectTrigger>
-          <SelectContent>
-            {UNIDADES.map((unidade) => (
-              <SelectItem key={unidade} value={unidade}>
-                {unidade}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-    </div>
-  );
 }
 
 export function CadastroProdutoSection() {

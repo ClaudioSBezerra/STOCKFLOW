@@ -2032,3 +2032,221 @@ func TestCriarProduto_NomeForaDoTemplateDevolveOFormato(t *testing.T) {
 		t.Fatalf("nome válido pelo template foi recusado: %v", err)
 	}
 }
+
+// --- spec-13-1: AtualizarProduto -------------------------------------------
+
+func TestAtualizarProduto_SucessoPreservaCodigo(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	in := criarProdutoInputValido(t, db, "Produto Original Um", "04.001")
+	p, err := CriarProduto(db, empresaTeste, in)
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	novo := criarProdutoInputValido(t, db, "Produto Editado Dois", "04.002")
+	novo.Observacoes = "obs nova"
+	novo.Comprimento = &DimensaoInput{Valor: ptrFloat(2.5), Unidade: ptrStr("m")}
+	novo.UnidadeMedida = "kg"
+	got, err := AtualizarProduto(db, empresaTeste, p.ID, novo)
+	if err != nil {
+		t.Fatalf("AtualizarProduto: %v", err)
+	}
+	if got.Codigo != p.Codigo || got.Nome != "Produto Editado Dois" {
+		t.Errorf("got %+v, seed %+v", got, p)
+	}
+	var nome, un, obs string
+	var comp float64
+	if err := db.QueryRow(`SELECT nome, unidade_medida, observacoes, comprimento_valor FROM produtos WHERE id = $1`, p.ID).
+		Scan(&nome, &un, &obs, &comp); err != nil {
+		t.Fatal(err)
+	}
+	if nome != "Produto Editado Dois" || un != "kg" || obs != "obs nova" || comp != 2.5 {
+		t.Errorf("gravado: %s %s %s %v", nome, un, obs, comp)
+	}
+}
+
+func TestAtualizarProduto_InvalidosNaoGravam(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	p, err := CriarProduto(db, empresaTeste, criarProdutoInputValido(t, db, "Produto Original Um", "04.001"))
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	casos := map[string]func(in *CriarProdutoInput){
+		"ean":                             func(in *CriarProdutoInput) { in.EAN13 = "7891000100104" },
+		"dimensao":                        func(in *CriarProdutoInput) { in.Largura = &DimensaoInput{Valor: ptrFloat(3)} },
+		"unidade":                         func(in *CriarProdutoInput) { in.UnidadeMedida = "xx" },
+		"unidade vazia com unidade atual": func(in *CriarProdutoInput) { in.UnidadeMedida = "" },
+	}
+	for nome, mut := range casos {
+		in := criarProdutoInputValido(t, db, "Nome Que Nao Deve Gravar", "04.001")
+		mut(&in)
+		_, err := AtualizarProduto(db, empresaTeste, p.ID, in)
+		var ev *ErroProdutoValidacao
+		if !errors.As(err, &ev) {
+			t.Errorf("%s: err = %v, want ErroProdutoValidacao", nome, err)
+		}
+	}
+	var n string
+	_ = db.QueryRow(`SELECT nome FROM produtos WHERE id = $1`, p.ID).Scan(&n)
+	if n != "Produto Original Um" {
+		t.Errorf("nome = %q, nada deveria ter sido gravado", n)
+	}
+}
+
+func TestAtualizarProduto_NomeForaDoTemplateMostraFormato(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	tplID, tplTexto := templatePorSubtipo(t, db, "Tubo — PEAD/PPR")
+	in := criarProdutoInputValido(t, db, "TUBO PEAD PN80 DN50", "04.003")
+	in.TemplateID = tplID
+	p, err := CriarProduto(db, empresaTeste, in)
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// template omitido: mantém o atual e revalida
+	in.TemplateID = ""
+	in.Nome = "TUBO PEAD PN80"
+	_, err = AtualizarProduto(db, empresaTeste, p.ID, in)
+	var ev *ErroProdutoValidacao
+	if !errors.As(err, &ev) || !strings.Contains(ev.Mensagem, tplTexto) {
+		t.Fatalf("err = %v, want formato %q", err, tplTexto)
+	}
+}
+
+func TestAtualizarProduto_LegadoSemTemplateEUnidade(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	p, err := CriarProduto(db, empresaTeste, criarProdutoInputValido(t, db, "Produto Legado Um", "04.001"))
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE produtos SET template_id = NULL, unidade_medida = NULL WHERE id = $1`, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	in := criarProdutoInputValido(t, db, "Produto Legado Editado", "04.001")
+	in.TemplateID, in.UnidadeMedida = "", ""
+	if _, err := AtualizarProduto(db, empresaTeste, p.ID, in); err != nil {
+		t.Fatalf("AtualizarProduto: %v", err)
+	}
+	var tpl, un sql.NullString
+	_ = db.QueryRow(`SELECT template_id, unidade_medida FROM produtos WHERE id = $1`, p.ID).Scan(&tpl, &un)
+	if tpl.Valid || un.Valid {
+		t.Errorf("template=%v unidade=%v, want ambos NULL", tpl, un)
+	}
+}
+
+func TestAtualizarProduto_NaoEncontrado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	in := criarProdutoInputValido(t, db, "Produto Qualquer Um", "04.001")
+	for _, id := range []string{"00000000-0000-4000-8000-000000000000", "nao-uuid"} {
+		if _, err := AtualizarProduto(db, empresaTeste, id, in); !errors.Is(err, ErrProdutoNaoEncontrado) {
+			t.Errorf("id %s: err = %v", id, err)
+		}
+	}
+	// outra Empresa
+	p, err := CriarProduto(db, empresaTeste, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AtualizarProduto(db, "00000000-0000-4000-8000-000000000001", p.ID, in); !errors.Is(err, ErrProdutoNaoEncontrado) {
+		t.Errorf("outra empresa: err = %v", err)
+	}
+}
+
+// Troca explícita de template, template/categoria inexistentes e nome fora do
+// template escolhido: 400 sem gravar nada; troca válida persiste o template.
+func TestAtualizarProduto_TemplateECategoriaExplicitos(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	p, err := CriarProduto(db, empresaTeste, criarProdutoInputValido(t, db, "Produto Original Dois", "04.001"))
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	tplID, tplTexto := templatePorSubtipo(t, db, "Tubo — PEAD/PPR")
+
+	casos := map[string]func(in *CriarProdutoInput){
+		"template inexistente":  func(in *CriarProdutoInput) { in.TemplateID = "00000000-0000-0000-0000-000000000000" },
+		"categoria inexistente": func(in *CriarProdutoInput) { in.CategoriaID = "00000000-0000-0000-0000-000000000000" },
+		"nome fora do template escolhido": func(in *CriarProdutoInput) {
+			in.TemplateID = tplID
+			in.Nome = "TUBO PEAD PN80"
+		},
+	}
+	for nome, mut := range casos {
+		in := criarProdutoInputValido(t, db, "Nome Que Nao Deve Gravar", "04.001")
+		mut(&in)
+		_, err := AtualizarProduto(db, empresaTeste, p.ID, in)
+		var ev *ErroProdutoValidacao
+		if !errors.As(err, &ev) {
+			t.Errorf("%s: err = %v, want ErroProdutoValidacao", nome, err)
+			continue
+		}
+		if nome == "nome fora do template escolhido" && !strings.Contains(ev.Mensagem, tplTexto) {
+			t.Errorf("%s: mensagem %q não mostra o formato %q", nome, ev.Mensagem, tplTexto)
+		}
+	}
+	var n string
+	_ = db.QueryRow(`SELECT nome FROM produtos WHERE id = $1`, p.ID).Scan(&n)
+	if n != "Produto Original Dois" {
+		t.Errorf("nome = %q, nada deveria ter sido gravado", n)
+	}
+
+	in := criarProdutoInputValido(t, db, "TUBO PEAD PN80 DN50", "04.003")
+	in.TemplateID = tplID
+	if _, err := AtualizarProduto(db, empresaTeste, p.ID, in); err != nil {
+		t.Fatalf("troca válida: %v", err)
+	}
+	var tpl string
+	_ = db.QueryRow(`SELECT template_id FROM produtos WHERE id = $1`, p.ID).Scan(&tpl)
+	if tpl != tplID {
+		t.Errorf("template_id = %q, want %q", tpl, tplID)
+	}
+}
+
+// Categoria e template EXISTENTES, mas de outra Empresa: o filtro por
+// `empresa_id` (UPDATE ... c.empresa_id / lookup do template) tem de recusar
+// — um id que não existe em lugar nenhum não prova esse filtro. Produto
+// excluído (soft delete) é 404.
+func TestAtualizarProduto_CategoriaTemplateDeOutraEmpresaEExcluido(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	p, err := CriarProduto(db, empresaTeste, criarProdutoInputValido(t, db, "Produto Original Tres", "04.001"))
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	outra := empresaDeTemplates(t, db, "atualizar-produto-outra", "131300000001")
+	var catOutra, tplOutra string
+	if err := db.QueryRow(`SELECT id FROM categorias WHERE codigo = '04.002' AND empresa_id = $1`, outra.ID).Scan(&catOutra); err != nil {
+		t.Fatalf("categoria da outra Empresa: %v", err)
+	}
+	tplOutra = templateGenericoID(t, db, outra.ID)
+
+	casos := map[string]func(in *CriarProdutoInput){
+		"categoria de outra Empresa": func(in *CriarProdutoInput) { in.CategoriaID = catOutra },
+		"template de outra Empresa":  func(in *CriarProdutoInput) { in.TemplateID = tplOutra },
+	}
+	for nome, mut := range casos {
+		in := criarProdutoInputValido(t, db, "Nome Que Nao Deve Gravar", "04.002")
+		mut(&in)
+		_, err := AtualizarProduto(db, empresaTeste, p.ID, in)
+		var ev *ErroProdutoValidacao
+		if !errors.As(err, &ev) {
+			t.Errorf("%s: err = %v, want ErroProdutoValidacao", nome, err)
+		}
+	}
+	var n, cat string
+	_ = db.QueryRow(`SELECT nome, categoria_id FROM produtos WHERE id = $1`, p.ID).Scan(&n, &cat)
+	if n != "Produto Original Tres" || cat != categoriaIDPorCodigo(t, db, "04.001") {
+		t.Errorf("nome=%q categoria=%q, nada deveria ter sido gravado", n, cat)
+	}
+
+	if _, err := db.Exec(`UPDATE produtos SET deleted_at = now() WHERE id = $1`, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	in := criarProdutoInputValido(t, db, "Produto Editado Tres", "04.001")
+	if _, err := AtualizarProduto(db, empresaTeste, p.ID, in); !errors.Is(err, ErrProdutoNaoEncontrado) {
+		t.Errorf("excluído: err = %v, want ErrProdutoNaoEncontrado", err)
+	}
+}

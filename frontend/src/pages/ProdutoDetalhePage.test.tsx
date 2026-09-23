@@ -1346,3 +1346,28 @@ describe('ProdutoDetalhePage — Reservas (Story 11.3)', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 });
+
+describe('ProdutoDetalhePage — Editar (spec-13-1)', () => {
+  it('almoxarife vê o botão "Editar" e o diálogo abre pré-preenchido', async () => {
+    stubPadrao();
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByRole('heading', { name: 'Cabo Flexível 4mm' });
+    await userEvent.click(screen.getByRole('button', { name: 'Editar' }));
+    expect(await screen.findByRole('heading', { name: 'Editar produto' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Código')).toHaveValue('CAB-004');
+  });
+
+  it('papel usuario NÃO vê o botão "Editar"', async () => {
+    authState.papel = 'usuario';
+    stubPadrao();
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByRole('heading', { name: 'Cabo Flexível 4mm' });
+    expect(screen.queryByRole('button', { name: 'Editar' })).not.toBeInTheDocument();
+  });
+});
