@@ -396,7 +396,7 @@ func CriarProduto(db *sql.DB, empresaID string, input CriarProdutoInput) (Produt
 		}
 		if !nomeValidoParaTemplate(templateTexto, nomeTrimado) {
 			return Produto{}, &ErroProdutoValidacao{
-				Mensagem: "nome não corresponde ao formato do template selecionado",
+				Mensagem: mensagemNomeForaDoTemplate("selecionado", templateTexto),
 			}
 		}
 		templateID = sql.NullString{String: templateIDTrimado, Valid: true}
@@ -558,7 +558,7 @@ func AtualizarNomeProduto(db *sql.DB, empresaID string, id string, novoNome stri
 		}
 		if !nomeValidoParaTemplate(templateTexto, nomeTrimado) {
 			return Produto{}, &ErroProdutoValidacao{
-				Mensagem: "nome não corresponde ao formato do template aplicado a este produto",
+				Mensagem: mensagemNomeForaDoTemplate("aplicado a este produto", templateTexto),
 			}
 		}
 	}
@@ -745,4 +745,14 @@ func ListarCategorias(db *sql.DB, empresaID string) ([]Categoria, error) {
 		return nil, fmt.Errorf("falha ao iterar categorias: %w", err)
 	}
 	return categorias, nil
+}
+
+// mensagemNomeForaDoTemplate monta o erro de um nome que não casa com o
+// template: além de dizer que não casa, mostra o formato esperado e como
+// preenchê-lo — "não corresponde ao formato" sozinho não diz ao Almoxarife o
+// que corrigir (achado dos testes reais de treinamento, 2026-09-23).
+func mensagemNomeForaDoTemplate(qual, templateTexto string) string {
+	return fmt.Sprintf(
+		"nome não corresponde ao formato do template %s (%s): mantenha o texto fixo exatamente como está e troque cada [CAMPO] por um valor, sem os colchetes",
+		qual, templateTexto)
 }

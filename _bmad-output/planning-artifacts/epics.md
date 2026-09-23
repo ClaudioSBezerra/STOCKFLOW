@@ -237,6 +237,7 @@ FR12 (revisado): Epic 12 - Nome de Estoque único dentro da mesma Filial
 FR43 (revisado): Epic 12 - Ambiente de Treinamento ganha fotos de exemplo
 FR51: Epic 12 - Cadastro de Filiais
 FR52: Epic 12 - Cadastro de Centro de Custo e Destino de Obra
+FR8 (edição): Epic 13 - Editar um Produto já cadastrado (o PRD prevê edição em FR8/FR9; nenhuma tela existia)
 
 ## Epic List
 
@@ -287,6 +288,10 @@ Almoxarife lança e consome saldo por Lote com Data de Validade (FEFO automátic
 ### Epic 12: Estrutura Organizacional — Filiais e Centro de Custo
 Adm estrutura a organização em Filiais (com Depósitos/Estoques vinculados) e cadastra Centro de Custo/Destino de Obra, referenciável no envio de Pedido; Ambiente de Treinamento ganha fotos de exemplo nos Produtos.
 **FRs covered:** FR12, FR43, FR51, FR52
+
+### Epic 13: Edição de Produto
+Almoxarife corrige um Produto já cadastrado sem precisar cadastrar outro. Surgiu dos testes reais de treinamento (2026-09-23): a única rota de edição (`/renomear`) nunca teve tela, e nenhum épico anterior previu uma.
+**FRs covered:** FR8 (edição), FR9 (revalidação do nome na edição)
 
 ## Epic 1: Autenticação e Gestão de Acesso
 
@@ -1915,3 +1920,45 @@ So that o catálogo de treinamento passe a sensação de um catálogo real, não
 **Given** a quantidade/conteúdo exato de Produtos e fotos semeadas
 **When** esta story é implementada
 **Then** usa um conjunto pequeno definido em conjunto com o Adm — decisão de conteúdo/UX, não parte fixa desta story
+
+## Epic 13: Edição de Produto
+
+Almoxarife corrige um Produto já cadastrado sem precisar cadastrar outro. Surgiu dos testes reais de treinamento (2026-09-23): a única rota de edição (`/renomear`, só nome) nunca teve tela, e o PRD (FR8/FR9) prevê edição com revalidação do nome contra o template.
+
+### Story 13.1: Editar um Produto já cadastrado
+
+As a Almoxarife,
+I want editar os dados de um Produto que já cadastrei,
+So that eu corrija erros de digitação e informações incompletas sem criar um Produto duplicado.
+
+**Acceptance Criteria:**
+
+**Given** o detalhe de um Produto
+**When** um `almoxarife`+ aciona "Editar"
+**Then** abre um formulário pré-preenchido com nome, template de Nomenclatura, categoria, unidade de medida, embalagem, código do fornecedor, EAN-13, dimensões e observações; o Código (gerado pelo sistema, Story 10.2) aparece somente-leitura
+
+**Given** o nome alterado
+**When** o Almoxarife salva
+**Then** ele é revalidado contra o template escolhido (mínimo 10 caracteres, formato do template, "Genérico" aceita qualquer nome) e a mensagem de erro mostra o formato esperado
+
+**Given** campos inválidos (EAN-13 com dígito verificador errado, dimensão com valor sem unidade, unidade fora da lista)
+**When** o Almoxarife salva
+**Then** o servidor rejeita apontando o campo e nada é gravado
+
+**Given** um Produto legado sem template (cadastrado antes da Story 10.1)
+**When** ele é editado
+**Then** a edição não exige escolher template (regra já existente do renomear), mas passa a revalidar o nome quando um template é escolhido
+
+**Given** um Usuário com papel `usuario`
+**When** ele tenta editar pela API ou pela tela
+**Then** a API responde 403 e o botão "Editar" nem aparece
+
+**Given** um Produto de outra Empresa, ou inexistente
+**When** a edição é tentada
+**Then** a resposta é 404, nunca revelando a existência (AD-20)
+
+**Given** uma edição bem-sucedida
+**When** o servidor grava
+**Then** o Código, o saldo (Lotes), as reservas e o histórico de Movimentações permanecem intactos, e um evento `produtos` (`updated`) é publicado para as outras sessões abertas
+
+**Nota:** esta story não edita saldo (isso é Lançamento de Saldo, Story 11.1) nem o Código do Produto.

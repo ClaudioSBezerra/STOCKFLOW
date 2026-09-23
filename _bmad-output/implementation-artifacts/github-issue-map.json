@@ -47,6 +47,10 @@
     "epic-12": {
       "issue_number": 74,
       "project_item_id": "PVTI_lAHOBon9h84Bh1SUzg78cdk"
+    },
+    "epic-13": {
+      "issue_number": 79,
+      "project_item_id": "PVTI_lAHOBon9h84Bh1SUzg8ZiJc"
     }
   },
   "stories": {
@@ -309,6 +313,10 @@
     "12.4": {
       "issue_number": 78,
       "project_item_id": "PVTI_lAHOBon9h84Bh1SUzg78c6w"
+    },
+    "13.1": {
+      "issue_number": 80,
+      "project_item_id": "PVTI_lAHOBon9h84Bh1SUzg8ZiNs"
     }
   }
 }

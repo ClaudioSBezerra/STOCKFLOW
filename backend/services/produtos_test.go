@@ -1987,3 +1987,48 @@ func TestCriarProduto_CodigoNaoSofreInfluenciaDeOutraEmpresaNemDeCodigoLongo(t *
 		t.Errorf("código = %q, want %q (nem o 000500 da outra Empresa nem o código de 13 dígitos podem influenciar)", p.Codigo, "000001")
 	}
 }
+
+// TestMensagemNomeForaDoTemplate_MostraOFormatoEsperado: o erro diz qual é o
+// formato e como preenchê-lo (antes só "não corresponde ao formato", que não
+// ajudava o Almoxarife a achar o que corrigir).
+func TestMensagemNomeForaDoTemplate_MostraOFormatoEsperado(t *testing.T) {
+	msg := mensagemNomeForaDoTemplate("selecionado", "CABO REDE [BLINDA] [CAT] [NORMA] [COR]")
+	for _, want := range []string{
+		"template selecionado",
+		"CABO REDE [BLINDA] [CAT] [NORMA] [COR]",
+		"texto fixo exatamente como está",
+		"sem os colchetes",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("mensagem %q não contém %q", msg, want)
+		}
+	}
+}
+
+// O caso real da Karla: "DE" a mais e faltando campos -> rejeita, e a mensagem
+// devolvida por CriarProduto traz o formato do template.
+func TestCriarProduto_NomeForaDoTemplateDevolveOFormato(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	templateID, _ := templatePorSubtipo(t, db, "Cabos — Rede")
+	_, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
+		Nome:          "CABO DE REDE CAT 5 VERMELHO",
+		CategoriaID:   categoriaIDPorCodigo(t, db, "04.002"),
+		TemplateID:    templateID,
+		UnidadeMedida: "cx",
+	})
+	var ev *ErroProdutoValidacao
+	if !errors.As(err, &ev) || !strings.Contains(ev.Mensagem, "CABO REDE [BLINDA] [CAT] [NORMA] [COR]") {
+		t.Fatalf("erro = %v, want ErroProdutoValidacao com o formato do template", err)
+	}
+
+	p, err := CriarProduto(db, empresaTeste, CriarProdutoInput{
+		Nome:          "CABO REDE BLINDADO CAT5E ABNT VERMELHO",
+		CategoriaID:   categoriaIDPorCodigo(t, db, "04.002"),
+		TemplateID:    templateID,
+		UnidadeMedida: "cx",
+	})
+	if err != nil || p.ID == "" {
+		t.Fatalf("nome válido pelo template foi recusado: %v", err)
+	}
+}
