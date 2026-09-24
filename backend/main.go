@@ -317,9 +317,11 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// qualquer validação de token, e a Empresa chega ao handler pelo
 	// contexto, uma única vez por requisição.
 	//
-	// `GET /api/health` é a ÚNICA exceção: continua SEM prefixo e SEM
-	// RequireEmpresa — é o liveness do compose/CI (AD-16), que não conhece
-	// nenhum slug e precisa responder mesmo com a tabela `empresas` vazia.
+	// Exceções (SEM prefixo e SEM RequireEmpresa): `GET /api/health` — o
+	// liveness do compose/CI (AD-16), que não conhece nenhum slug e precisa
+	// responder mesmo com a tabela `empresas` vazia —, a área do Dono da
+	// Plataforma (`/api/plataforma/*`) e o login pela conta na raiz
+	// (`/api/auth/entrar*`, Story 15.2), registrados abaixo.
 	requireEmpresa := middleware.RequireEmpresa(db)
 	registrar := func(padrao string, h http.HandlerFunc) {
 		mux.HandleFunc(padrao, requireEmpresa(h))
@@ -328,7 +330,7 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	mux.HandleFunc("GET /api/health", healthHandler(db))
 
 	// Área do Dono da Plataforma — Story 9.2 (Epic 9, AD-21), spec-9-2. A
-	// segunda (e última) exceção ao prefixo de Empresa: o Dono não pertence a
+	// segunda exceção ao prefixo de Empresa: o Dono não pertence a
 	// Empresa nenhuma, então estas rotas vão direto no mux, SEM o wrapper de
 	// Empresa. Login/refresh/logout são públicos (o login exige e-mail + senha
 	// + código TOTP numa única chamada); o resto fica atrás de
@@ -344,6 +346,13 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	mux.HandleFunc("POST /api/plataforma/empresas", requireDono(handlers.CriarEmpresaHandler(db, emailCfg)))
 	mux.HandleFunc("POST /api/plataforma/empresas/{id}/desativacao", requireDono(handlers.DesativarEmpresaHandler(db)))
 	mux.HandleFunc("POST /api/plataforma/empresas/{id}/reativacao", requireDono(handlers.ReativarEmpresaHandler(db)))
+
+	// Login na raiz do domínio pela conta — Story 15.2 (AD-36). Terceira
+	// exceção ao prefixo de Empresa: sem `/e/{slug}` e SEM RequireEmpresa,
+	// porque a Empresa é descoberta pela conta do e-mail (nunca de body/query).
+	// A sessão emitida continua por Empresa (cookie `Path=/e/{slug}/api/auth`).
+	mux.HandleFunc("POST /api/auth/entrar", handlers.EntrarHandler(db, jwtSecret))
+	mux.HandleFunc("POST /api/auth/entrar/escolha", handlers.EntrarEscolhaHandler(db, jwtSecret))
 
 	registrar("POST /e/{slug}/api/auth/cadastro", handlers.CadastroHandler(db, emailCfg))
 	registrar("GET /e/{slug}/api/auth/verificar-email", handlers.VerificarEmailHandler(db))

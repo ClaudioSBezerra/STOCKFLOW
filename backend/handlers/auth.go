@@ -195,7 +195,14 @@ const (
 // O slug vem de `r.PathValue("slug")` (o mesmo que RequireEmpresa resolveu),
 // nunca do corpo ou de um header.
 func refreshTokenCookiePath(r *http.Request) string {
-	slug := r.PathValue("slug")
+	return refreshTokenCookiePathDoSlug(r.PathValue("slug"))
+}
+
+// refreshTokenCookiePathDoSlug é o Path do cookie de refresh da Empresa
+// `slug` — o mesmo de refreshTokenCookiePath, mas para quem conhece o slug
+// sem tê-lo na rota: o login pela raiz do domínio (Story 15.2) emite a
+// sessão fora de `/e/{slug}` e precisa do cookie escopado à Empresa da conta.
+func refreshTokenCookiePathDoSlug(slug string) string {
 	if slug == "" {
 		return refreshTokenCookiePathBase
 	}
@@ -266,6 +273,12 @@ func cookieEhSeguro(r *http.Request) bool {
 // (AD-6): Path restrito a /api/auth, SameSite=Lax, Secure condicional, e
 // Max-Age igual ao TTL restante da sessão em segundos.
 func setRefreshCookie(w http.ResponseWriter, r *http.Request, token string, expiraEm time.Time) {
+	setRefreshCookieNoPath(w, r, refreshTokenCookiePath(r), token, expiraEm)
+}
+
+// setRefreshCookieNoPath é setRefreshCookie com o Path explícito (Story
+// 15.2: login pela raiz, cookie com `Path=/e/{slug}/api/auth`).
+func setRefreshCookieNoPath(w http.ResponseWriter, r *http.Request, path, token string, expiraEm time.Time) {
 	maxAge := int(time.Until(expiraEm).Seconds())
 	if maxAge < 0 {
 		maxAge = 0
@@ -273,7 +286,7 @@ func setRefreshCookie(w http.ResponseWriter, r *http.Request, token string, expi
 	http.SetCookie(w, &http.Cookie{
 		Name:     refreshTokenCookieName,
 		Value:    token,
-		Path:     refreshTokenCookiePath(r),
+		Path:     path,
 		HttpOnly: true,
 		Secure:   cookieEhSeguro(r),
 		SameSite: http.SameSiteLaxMode,
@@ -380,7 +393,7 @@ func LoginHandler(db *sql.DB, jwtSecret []byte) http.HandlerFunc {
 			return
 		case errors.Is(err, services.ErrContaBloqueada):
 			registrarTentativaLogin(r, db, empresa.ID, "senha", req.Email, nil, false)
-			escreverErro(w, http.StatusTooManyRequests, "ACCOUNT_LOCKED", "Muitas tentativas de login sem sucesso. Por segurança, novas tentativas ficam bloqueadas temporariamente. Tente novamente mais tarde.")
+			escreverErro(w, http.StatusTooManyRequests, "ACCOUNT_LOCKED", mensagemContaBloqueada)
 			return
 		default:
 			slog.Error("falha ao processar login", "error", err)

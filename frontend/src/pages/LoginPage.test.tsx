@@ -405,6 +405,71 @@ describe('LoginPage', () => {
     });
   });
 
+  describe('repasse do MFA vindo do login pela raiz (Story 15.2)', () => {
+    beforeEach(() => {
+      window.sessionStorage.clear();
+      window.history.pushState({}, '', '/e/acme/login');
+      fetchMock.mockImplementation((url: string) => {
+        if (url === '/e/acme/api/auth/sso/config') {
+          return Promise.resolve({ ok: true, json: async () => ({ enabled: false }) });
+        }
+        if (url === '/e/acme/api/auth/mfa/verificar') {
+          return mfaVerificarResp();
+        }
+        return Promise.reject(new Error(`fetch não stubado para ${url}`));
+      });
+    });
+
+    afterEach(() => {
+      window.sessionStorage.clear();
+      window.history.pushState({}, '', '/');
+    });
+
+    it('abre na etapa de código com o repasse da mesma Empresa e o consome', async () => {
+      const user = userEvent.setup();
+      window.sessionStorage.setItem(
+        'entrada_mfa_pendente',
+        JSON.stringify({ slug: 'acme', mfaToken: 'mfa-da-raiz' }),
+      );
+      renderPage();
+
+      expect(screen.getByLabelText('Código de verificação')).toBeInTheDocument();
+      expect(screen.queryByLabelText('E-mail')).not.toBeInTheDocument();
+      expect(window.sessionStorage.getItem('entrada_mfa_pendente')).toBeNull();
+
+      const usuario = { id: '1', nome: 'Fulano', email: 'fulano@empresa.com', papel: 'usuario' };
+      mfaVerificarResp = () =>
+        Promise.resolve({ ok: true, json: async () => ({ token: 'access-token-raiz', usuario }) });
+      await user.type(screen.getByLabelText('Código de verificação'), '123456');
+      await user.click(screen.getByRole('button', { name: 'Verificar' }));
+
+      await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/'));
+      const verificarCall = fetchMock.mock.calls.find(([u]) => u === '/e/acme/api/auth/mfa/verificar');
+      expect(JSON.parse(verificarCall?.[1]?.body as string)).toEqual({
+        mfaToken: 'mfa-da-raiz',
+        codigo: '123456',
+      });
+      expect(definirSessaoMock).toHaveBeenCalledWith(usuario, 'access-token-raiz');
+    });
+
+    it('ignora repasse de outra Empresa', () => {
+      window.sessionStorage.setItem(
+        'entrada_mfa_pendente',
+        JSON.stringify({ slug: 'outra', mfaToken: 'mfa-de-outra' }),
+      );
+      renderPage();
+
+      expect(screen.getByLabelText('E-mail')).toBeInTheDocument();
+      expect(screen.queryByLabelText('Código de verificação')).not.toBeInTheDocument();
+    });
+
+    it('sem repasse abre na etapa de senha', () => {
+      renderPage();
+
+      expect(screen.getByLabelText('E-mail')).toBeInTheDocument();
+    });
+  });
+
   describe('botão "Entrar com Ferreira Costa" (SSO, Story 1.9)', () => {
     it('não aparece quando /api/auth/sso/config responde enabled:false', async () => {
       renderPage();

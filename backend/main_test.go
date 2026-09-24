@@ -3665,3 +3665,201 @@ func TestMigration000049_FalhaComDuplicataOuContaOrfa(t *testing.T) {
 		t.Errorf("restrição após os ROLLBACKs: n = %d, err = %v, want 1", n, err)
 	}
 }
+
+// --- Story 15.2 (AD-36): login na raiz do domínio pela conta ---
+
+const slugEntradaMux = "entrada-mux-s152"
+
+// TestNewMux_EntrarPelaRaiz prova, pela composição real de newMux, que as
+// rotas da raiz estão registradas fora de RequireEmpresa e que o que elas
+// devolvem funciona sob `/e/{slug}`: o cookie de refresh renova a sessão em
+// `POST /e/{slug}/api/auth/refresh` e o `mfaToken` completa o login em
+// `POST /e/{slug}/api/auth/mfa/verificar`.
+func TestNewMux_EntrarPelaRaiz(t *testing.T) {
+	db := testDB(t)
+	mux := newMux(db, services.CarregarEmailConfig(), []byte("segredo-de-teste-nao-usar-em-producao"), iam.Config{}, t.TempDir())
+
+	removerEmpresaPlataformaMux(t, db, slugEntradaMux)
+	t.Cleanup(func() { removerEmpresaPlataformaMux(t, db, slugEntradaMux) })
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	empresa := provisionarEmpresaM49(t, tx, slugEntradaMux, "15235235000130", "Entrada Mux", nil)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte("senha-certa-1"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	segredo, err := services.GerarSegredoTOTP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, mfa_habilitado, mfa_secret, empresa_id)
+		VALUES ('Sem MFA', 'semmfa@entrada-mux.test', $1, 'usuario', true, true, false, NULL, $2),
+		       ('Com MFA', 'commfa@entrada-mux.test', $1, 'usuario', true, true, true, $3, $2)`,
+		string(hash), empresa.ID, segredo); err != nil {
+		t.Fatal(err)
+	}
+
+	post := func(caminho, corpo string, cookie *http.Cookie) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, caminho, strings.NewReader(corpo))
+		req.Header.Set("Content-Type", "application/json")
+		if cookie != nil {
+			req.AddCookie(cookie)
+		}
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	t.Run("sem MFA: cookie renova a sessão sob /e/{slug}", func(t *testing.T) {
+		w := post("/api/auth/entrar", `{"email":"semmfa@entrada-mux.test","senha":"senha-certa-1"}`, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("entrar: status = %d (body=%s)", w.Code, w.Body.String())
+		}
+		var cookie *http.Cookie
+		for _, c := range w.Result().Cookies() {
+			if c.Name == "refresh_token" {
+				cookie = c
+			}
+		}
+		if cookie == nil || cookie.Path != "/e/"+slugEntradaMux+"/api/auth" {
+			t.Fatalf("cookie = %+v", cookie)
+		}
+		w2 := post("/e/"+slugEntradaMux+"/api/auth/refresh", "", cookie)
+		if w2.Code != http.StatusOK {
+			t.Fatalf("refresh: status = %d (body=%s)", w2.Code, w2.Body.String())
+		}
+		// Sob outra Empresa o mesmo cookie não vale.
+		if w3 := post(prefixoEmpresaTeste+"/api/auth/refresh", "", cookie); w3.Code != http.StatusUnauthorized {
+			t.Errorf("refresh em outra Empresa: status = %d", w3.Code)
+		}
+	})
+
+	t.Run("com MFA: mfaToken conclui em /e/{slug}/api/auth/mfa/verificar", func(t *testing.T) {
+		w := post("/api/auth/entrar", `{"email":"commfa@entrada-mux.test","senha":"senha-certa-1"}`, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("entrar: status = %d (body=%s)", w.Code, w.Body.String())
+		}
+		var r struct {
+			Slug         string `json:"slug"`
+			MfaRequerido bool   `json:"mfaRequerido"`
+			MfaToken     string `json:"mfaToken"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &r); err != nil {
+			t.Fatal(err)
+		}
+		if r.Slug != slugEntradaMux || !r.MfaRequerido || r.MfaToken == "" {
+			t.Fatalf("resposta = %+v", r)
+		}
+		w2 := post("/e/"+slugEntradaMux+"/api/auth/mfa/verificar",
+			`{"mfaToken":"`+r.MfaToken+`","codigo":"`+totpCodigoTesteAtual(t, segredo)+`"}`, nil)
+		if w2.Code != http.StatusOK {
+			t.Fatalf("mfa/verificar: status = %d (body=%s)", w2.Code, w2.Body.String())
+		}
+	})
+
+	t.Run("escolha registrada fora de RequireEmpresa", func(t *testing.T) {
+		w := post("/api/auth/entrar/escolha", `{"escolhaToken":"nao-existe","slug":"`+slugEntradaMux+`"}`, nil)
+		if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), "ESCOLHA_INVALIDA") {
+			t.Fatalf("status = %d (body=%s)", w.Code, w.Body.String())
+		}
+	})
+}
+
+// TestMigration000050_Down executa o `down` e o `up` da 000050 dentro de uma
+// transação (DDL do Postgres é transacional): com um token `escolha_empresa`
+// gravado, o `down` apaga a linha, remove `contas_escolha` e restaura o CHECK
+// sem `escolha_empresa`; o `up` volta a forma vigente. ROLLBACK no fim.
+func TestMigration000050_Down(t *testing.T) {
+	db := testDB(t)
+
+	up, err := migrationsFS.ReadFile("migrations/000050_add_escolha_empresa_to_tokens_acao.up.sql")
+	if err != nil {
+		t.Fatalf("ler up: %v", err)
+	}
+	down, err := migrationsFS.ReadFile("migrations/000050_add_escolha_empresa_to_tokens_acao.down.sql")
+	if err != nil {
+		t.Fatalf("ler down: %v", err)
+	}
+
+	colunaExiste := func(q interface {
+		QueryRow(string, ...any) *sql.Row
+	}) bool {
+		t.Helper()
+		var n int
+		if err := q.QueryRow(`SELECT count(*) FROM information_schema.columns
+			WHERE table_name = 'tokens_acao' AND column_name = 'contas_escolha'`).Scan(&n); err != nil {
+			t.Fatalf("consultar coluna: %v", err)
+		}
+		return n == 1
+	}
+	definicaoCheck := func(tx *sql.Tx) string {
+		t.Helper()
+		var def string
+		if err := tx.QueryRow(`SELECT pg_get_constraintdef(oid) FROM pg_constraint
+			WHERE conname = 'tokens_acao_tipo_check'`).Scan(&def); err != nil {
+			t.Fatalf("consultar CHECK: %v", err)
+		}
+		return def
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var usuarioID string
+	if err := tx.QueryRow(`INSERT INTO usuarios (nome, email, papel, empresa_id)
+		VALUES ('M50', 'm50@x.com', 'usuario', $1) RETURNING id`, empresaTeste).Scan(&usuarioID); err != nil {
+		t.Fatalf("inserir conta: %v", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO tokens_acao (usuario_id, token, tipo, expira_em, contas_escolha)
+		VALUES ($1, 'm50-token', 'escolha_empresa', now() + interval '5 minutes', ARRAY[$1]::uuid[])`, usuarioID); err != nil {
+		t.Fatalf("inserir token escolha_empresa: %v", err)
+	}
+
+	if _, err := tx.Exec(string(down)); err != nil {
+		t.Fatalf("down: %v", err)
+	}
+	var restantes int
+	if err := tx.QueryRow(`SELECT count(*) FROM tokens_acao WHERE token = 'm50-token'`).Scan(&restantes); err != nil || restantes != 0 {
+		t.Errorf("token escolha_empresa após o down: n = %d, err = %v, want 0", restantes, err)
+	}
+	if colunaExiste(tx) {
+		t.Error("coluna contas_escolha continua existindo após o down")
+	}
+	if def := definicaoCheck(tx); strings.Contains(def, "escolha_empresa") || !strings.Contains(def, "realtime_ticket") {
+		t.Errorf("CHECK após o down = %q, want a lista anterior (sem escolha_empresa)", def)
+	}
+	if _, err := tx.Exec(`SAVEPOINT m50`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`INSERT INTO tokens_acao (usuario_id, token, tipo, expira_em)
+		VALUES ($1, 'm50-token-2', 'escolha_empresa', now() + interval '5 minutes')`, usuarioID); err == nil {
+		t.Error("CHECK restaurado deveria recusar tipo escolha_empresa")
+	}
+	if _, err := tx.Exec(`ROLLBACK TO SAVEPOINT m50`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := tx.Exec(string(up)); err != nil {
+		t.Fatalf("up de novo: %v", err)
+	}
+	if !colunaExiste(tx) || !strings.Contains(definicaoCheck(tx), "escolha_empresa") {
+		t.Error("up não devolveu a forma vigente")
+	}
+
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if !colunaExiste(db) {
+		t.Error("coluna contas_escolha ausente após o ROLLBACK")
+	}
+}

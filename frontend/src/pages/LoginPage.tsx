@@ -7,55 +7,16 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { useAuth, type UsuarioSessao } from '@/lib/auth';
 import { fetchSSOConfig, type SSOConfig } from '@/lib/keycloak/config';
 import { buildLoginUrl } from '@/lib/keycloak/pkce';
-import { apiUrl } from '@/lib/api';
+import { apiUrl, slugDaURL } from '@/lib/api';
+import { lerMfaPendente, mensagemDeErroLogin, removerMfaPendente } from '@/lib/entrada';
 
-/**
- * Envelope de erro fixo (AD-14): {"error":{"code","message"}}. Só o código é
- * usado para decidir o texto exibido — a mensagem do backend nunca é
- * confiável para exibição direta ao usuário final (mesmo padrão de
- * CadastroPage.tsx).
- */
+/** Envelope de erro fixo (AD-14): {"error":{"code","message"}}. */
 interface ErroEnvelope {
   error?: { code?: string; message?: string };
 }
 
-function mensagemDeErro(codigo: string | undefined): string {
-  // INVALID_CREDENTIALS é deliberadamente a MESMA mensagem para todo cenário
-  // de credencial inválida (senha errada, e-mail inexistente, e-mail não
-  // verificado, conta desativada, conta só-SSO) — o backend nunca revela qual
-  // condição falhou nem se o e-mail existe (regra explícita do contexto do
-  // épico), e esta tela não pode reintroduzir essa distinção no texto.
-  if (codigo === 'INVALID_CREDENTIALS') {
-    return 'E-mail ou senha inválidos.';
-  }
-  if (codigo === 'VALIDATION_ERROR') {
-    return 'Preencha e-mail e senha para continuar.';
-  }
-  // ACCOUNT_LOCKED (Story 1.10): conta bloqueada após 5 tentativas falhas. A
-  // mensagem NUNCA revela o tempo restante e NÃO promete que redefinir a senha
-  // destrava a conta — só a expiração do prazo faz isso (RedefinirSenha não
-  // toca nas colunas de bloqueio). O link "Esqueci minha senha" segue visível
-  // no formulário para quem de fato esqueceu a senha.
-  if (codigo === 'ACCOUNT_LOCKED') {
-    return 'Muitas tentativas de login sem sucesso. Por segurança, novas tentativas ficam bloqueadas temporariamente. Tente novamente mais tarde.';
-  }
-  // MFA_CODIGO_INVALIDO/MFA_TOKEN_INVALIDO (Story 1.11): segunda etapa do
-  // login, POST /api/auth/mfa/verificar.
-  if (codigo === 'MFA_CODIGO_INVALIDO') {
-    return 'Código de autenticação inválido.';
-  }
-  if (codigo === 'MFA_TOKEN_INVALIDO') {
-    return 'Código de login expirado. Faça login novamente.';
-  }
-  // NOT_FOUND (Story 9.2): o slug da URL não resolve — Empresa inexistente
-  // ou desativada pelo Dono da Plataforma (RequireEmpresa responde 404 antes
-  // de olhar qualquer credencial). Uma mensagem honesta, não "tente em
-  // instantes": repetir não vai adiantar.
-  if (codigo === 'NOT_FOUND') {
-    return 'Este endereço de acesso não está disponível. Confira o endereço com o administrador da sua empresa.';
-  }
-  return 'Não foi possível entrar. Tente novamente em instantes.';
-}
+/** Texto por código de erro — compartilhado com o login pela raiz (Story 15.2). */
+const mensagemDeErro = mensagemDeErroLogin;
 
 interface LoginSucesso {
   token: string;
@@ -105,9 +66,21 @@ export function LoginPage() {
   // `codigo` — é o token opaco de uso único devolvido por
   // POST /api/auth/login quando a conta tem MFA habilitado, trocado por
   // sessão em POST /api/auth/mfa/verificar.
-  const [etapa, setEtapa] = useState<'senha' | 'codigo'>('senha');
-  const [mfaToken, setMfaToken] = useState('');
+  //
+  // Story 15.2: o login pela raiz do domínio repassa o `mfaToken` em
+  // `sessionStorage` (lib/entrada.ts) e redireciona para cá — com repasse da
+  // MESMA Empresa do slug, a tela já abre na etapa `codigo`. Lido no
+  // inicializador (síncrono, sem piscar a etapa de senha) e removido num
+  // useEffect: o StrictMode chama o inicializador duas vezes, e removê-lo ali
+  // faria a segunda chamada não achar nada.
+  const [mfaTokenRepassado] = useState(() => lerMfaPendente(slugDaURL()));
+  const [etapa, setEtapa] = useState<'senha' | 'codigo'>(mfaTokenRepassado ? 'codigo' : 'senha');
+  const [mfaToken, setMfaToken] = useState(mfaTokenRepassado);
   const [codigo, setCodigo] = useState('');
+
+  useEffect(() => {
+    removerMfaPendente();
+  }, []);
 
   useEffect(() => {
     void fetchSSOConfig().then(setSSOConfig);
