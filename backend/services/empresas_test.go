@@ -114,6 +114,41 @@ func TestBuscarEmpresaPorSlug_Achada(t *testing.T) {
 	}
 }
 
+// TestEmpresa_MFAObrigatorio prova a coluna da Story 14.1 (migração 000047):
+// uma Empresa provisionada nasce com MFAObrigatorio=false, e
+// BuscarEmpresaPorSlug (a leitura do middleware, sem cache) reflete um UPDATE
+// para true já na chamada seguinte.
+func TestEmpresa_MFAObrigatorio(t *testing.T) {
+	db := testDB(t)
+	removerEmpresaDeTeste(t, db, "empresa-mfa-flag")
+	criada := criarEmpresaDeTeste(t, db, "empresa-mfa-flag", "556667780001", "Empresa MFA Flag")
+	if criada.MFAObrigatorio {
+		t.Error("MFAObrigatorio da Empresa provisionada = true, want false (default)")
+	}
+
+	e, err := BuscarEmpresaPorSlug(db, "empresa-mfa-flag")
+	if err != nil {
+		t.Fatalf("BuscarEmpresaPorSlug: %v", err)
+	}
+	if e.MFAObrigatorio {
+		t.Error("BuscarEmpresaPorSlug: MFAObrigatorio = true, want false (default)")
+	}
+
+	if _, err := db.Exec(`UPDATE empresas SET mfa_obrigatorio = true WHERE id = $1`, criada.ID); err != nil {
+		t.Fatalf("UPDATE mfa_obrigatorio: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(`UPDATE empresas SET mfa_obrigatorio = false WHERE id = $1`, criada.ID)
+	})
+	e, err = BuscarEmpresaPorSlug(db, "empresa-mfa-flag")
+	if err != nil {
+		t.Fatalf("BuscarEmpresaPorSlug após UPDATE: %v", err)
+	}
+	if !e.MFAObrigatorio {
+		t.Error("BuscarEmpresaPorSlug após UPDATE: MFAObrigatorio = false, want true")
+	}
+}
+
 // TestBuscarEmpresaPorSlug_ColapsaTodasAsFalhas prova o Always da spec: slug
 // inexistente, fora da forma canônica e de Empresa `inativa` devolvem
 // EXATAMENTE o mesmo erro — é o que o middleware traduz em 404 NOT_FOUND,

@@ -717,3 +717,11 @@ source_spec: `spec-13-1-editar-um-produto-ja-cadastrado.md`
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260923-163711-78c6; this entry preserves the lingering recommendation for a deliberate later review.
 status: open
+
+### DW-90: O frontend só lê `empresa.mfaObrigatorio` (e `mfaHabilitado`) quando a sessão começa; uma mudança do flag no meio da sessão não atualiza o bloqueio de navegação nem o rótulo até recarregar.
+origin: spec-deferred c970c72954cb
+location: frontend/src/lib/auth.tsx
+source_spec: `spec-14-1-a-empresa-passa-a-definir-se-exige-mfa-gate-condicional.md`
+severity: medium
+reason: `/api/auth/me` só é consultado no bootstrap do AuthProvider e nada trata o 403 MFA_SETUP_REQUIRED globalmente. O servidor continua sendo a autoridade (o gate vale na próxima requisição). A falta de refresh do /me é anterior a esta story (papel e MFA também ficam defasados), mas pesa na 14.3, quando o adm passa a alterar o flag.
+status: open

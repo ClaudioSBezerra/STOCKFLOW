@@ -11,6 +11,7 @@ import {
 import { clearAccessToken, setAccessToken } from '@/lib/session';
 import { fetchSSOConfig } from '@/lib/keycloak/config';
 import { apiUrl } from '@/lib/api';
+import { rankPapel } from '@/components/shell/nav-items';
 
 // Marca gravada pelo callback de SSO (Story 1.9): decide se "Sair" dispara o
 // RP-initiated logout do Keycloak ou só volta para /login local.
@@ -42,10 +43,9 @@ export interface UsuarioSessao {
   mfaHabilitado: boolean;
   /**
    * Proveniência da SESSÃO atual ('senha' | 'sso'), não da conta — vem do
-   * claim `origem` do JWT (Story 1.11). `RotaProtegida` (App.tsx) usa
-   * `origem==='senha' && rankPapel(papel)>=rankPapel('gestor') && !mfaHabilitado`
-   * para redirecionar para Configurações → Segurança, espelhando o gate do
-   * servidor em middleware.RequireRole.
+   * claim `origem` do JWT (Story 1.11). Entra em `mfaSetupPendente`, que
+   * `RotaProtegida` (App.tsx) usa para redirecionar para Configurações →
+   * Segurança, espelhando o gate do servidor em middleware.RequireRole.
    */
   origem: string;
   /**
@@ -59,6 +59,32 @@ export interface UsuarioSessao {
    * regra de acesso depende dele.
    */
   ambienteTreinamento?: boolean;
+  /**
+   * Metadados da Empresa da sessão (Story 14.1). `mfaObrigatorio` espelha
+   * `empresas.mfa_obrigatorio`: a Empresa exige MFA de `gestor`/`adm`
+   * autenticados por senha. Ausente (resposta antiga ou mock de teste) =
+   * "não exige".
+   */
+  empresa?: { mfaObrigatorio: boolean };
+}
+
+/**
+ * `true` quando a sessão precisa configurar o MFA antes de seguir (Story
+ * 14.1) — espelho ÚNICO do gate de middleware.RequireRole no frontend, usado
+ * pelo bloqueio de navegação (`RotaProtegida`, App.tsx) e pelo rótulo
+ * "obrigatório"/"opcional" de Configurações → Segurança:
+ * `origem==='senha' && rank>=gestor && !mfaHabilitado && empresa.mfaObrigatorio`.
+ * `empresa` ausente equivale a "não exige". O servidor continua sendo a
+ * autoridade (403 MFA_SETUP_REQUIRED).
+ */
+export function mfaSetupPendente(usuario: UsuarioSessao | null | undefined): boolean {
+  return (
+    usuario != null &&
+    usuario.origem === 'senha' &&
+    rankPapel(usuario.papel) >= rankPapel('gestor') &&
+    !usuario.mfaHabilitado &&
+    usuario.empresa?.mfaObrigatorio === true
+  );
 }
 
 export type EstadoAuth = 'carregando' | 'autenticado' | 'anonimo';

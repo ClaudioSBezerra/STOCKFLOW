@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { StrictMode } from 'react';
 import { render, screen, waitFor, act } from '@testing-library/react';
-import { AuthProvider, useAuth } from './auth';
+import { AuthProvider, mfaSetupPendente, useAuth, type UsuarioSessao } from './auth';
 import { clearAccessToken, getAccessToken } from './session';
 import { resetSSOConfigCache } from '@/lib/keycloak/config';
 
@@ -345,5 +345,37 @@ describe('AuthProvider — logout (Story 1.9)', () => {
     });
 
     await waitFor(() => expect(assignMock).toHaveBeenCalledWith('/login'));
+  });
+});
+
+describe('mfaSetupPendente (Story 14.1)', () => {
+  const base: UsuarioSessao = {
+    id: '1',
+    nome: 'Gestora',
+    email: 'gestora@empresa.com',
+    papel: 'gestor',
+    mfaHabilitado: false,
+    origem: 'senha',
+    empresa: { mfaObrigatorio: true },
+  };
+
+  it('true só com senha + gestor+ + sem MFA + Empresa que exige', () => {
+    expect(mfaSetupPendente(base)).toBe(true);
+    expect(mfaSetupPendente({ ...base, papel: 'adm' })).toBe(true);
+  });
+
+  it.each([
+    ['Empresa não exige', { empresa: { mfaObrigatorio: false } }],
+    ['campo empresa ausente', { empresa: undefined }],
+    ['origem sso', { origem: 'sso' }],
+    ['MFA já habilitado', { mfaHabilitado: true }],
+    ['papel almoxarife', { papel: 'almoxarife' }],
+    ['papel usuario', { papel: 'usuario' }],
+  ])('false quando %s', (_nome, override) => {
+    expect(mfaSetupPendente({ ...base, ...override })).toBe(false);
+  });
+
+  it('false sem usuário', () => {
+    expect(mfaSetupPendente(null)).toBe(false);
   });
 });

@@ -83,6 +83,10 @@ type Empresa struct {
 	Slug            string          `json:"slug"`
 	Status          string          `json:"status"`
 	EmpresaOrigemID *string         `json:"empresaOrigemId"`
+	// MFAObrigatorio (Story 14.1, AD-35): se a Empresa exige MFA de
+	// `gestor`/`adm` autenticados por senha. Lido só por
+	// middleware.RequireRole (gate único) e espelhado em /api/auth/me.
+	MFAObrigatorio bool `json:"mfaObrigatorio"`
 }
 
 // DadosEmpresa é o insumo de ProvisionarEmpresa. `CNPJ` e `Slug` podem chegar
@@ -191,7 +195,7 @@ func slugCanonico(s string) bool {
 // ProvisionarEmpresa (RETURNING), na ordem de scanEmpresa.
 const colunasEmpresa = `id, nome_fantasia, razao_social, cnpj,
 	logradouro, numero, complemento, bairro, cidade, cep, uf,
-	slug, status, empresa_origem_id`
+	slug, status, empresa_origem_id, mfa_obrigatorio`
 
 // linhaEmpresa abstrai *sql.Row para scanEmpresa.
 type linhaEmpresa interface {
@@ -205,7 +209,7 @@ func scanEmpresa(l linhaEmpresa) (Empresa, error) {
 		&e.ID, &e.NomeFantasia, &e.RazaoSocial, &e.CNPJ,
 		&e.Endereco.Logradouro, &e.Endereco.Numero, &complemento, &e.Endereco.Bairro,
 		&e.Endereco.Cidade, &e.Endereco.CEP, &e.Endereco.UF,
-		&e.Slug, &e.Status, &origem,
+		&e.Slug, &e.Status, &origem, &e.MFAObrigatorio,
 	); err != nil {
 		return Empresa{}, err
 	}

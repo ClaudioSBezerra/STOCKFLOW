@@ -129,7 +129,7 @@ describe('RotaProtegida (unidade)', () => {
     expect(screen.queryByText('tela de login')).not.toBeInTheDocument();
   });
 
-  it('gestor por senha sem MFA em /: redireciona para /configuracoes (Story 1.11, AC1)', () => {
+  it('gestor por senha sem MFA em / numa Empresa que exige: redireciona para /configuracoes (Story 1.11, AC1; Story 14.1)', () => {
     useAuthMock.mockReturnValue({
       estado: 'autenticado',
       usuario: {
@@ -139,6 +139,7 @@ describe('RotaProtegida (unidade)', () => {
         papel: 'gestor',
         mfaHabilitado: false,
         origem: 'senha',
+        empresa: { mfaObrigatorio: true },
       },
       definirSessao: vi.fn(),
       atualizarUsuario: vi.fn(),
@@ -148,6 +149,58 @@ describe('RotaProtegida (unidade)', () => {
 
     expect(screen.getByTestId('pathname')).toHaveTextContent('/configuracoes');
     expect(screen.queryByText('árvore protegida')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['Empresa não exige (mfaObrigatorio=false)', { mfaObrigatorio: false }],
+    ['resposta sem o campo empresa (equivale a "não exige")', undefined],
+  ])('gestor por senha sem MFA em /, %s: NÃO redireciona (Story 14.1)', (_nome, empresa) => {
+    useAuthMock.mockReturnValue({
+      estado: 'autenticado',
+      usuario: {
+        id: '1',
+        nome: 'Gestora',
+        email: 'gestora@empresa.com',
+        papel: 'gestor',
+        mfaHabilitado: false,
+        origem: 'senha',
+        empresa,
+      },
+      definirSessao: vi.fn(),
+      atualizarUsuario: vi.fn(),
+      logout: vi.fn(),
+    });
+    renderRota();
+
+    expect(screen.getByText('árvore protegida')).toBeInTheDocument();
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/');
+  });
+
+  it.each([
+    ['usuario', 'senha', false],
+    ['almoxarife', 'senha', false],
+    ['gestor', 'sso', false],
+    ['adm', 'senha', true],
+  ])('papel %s, origem %s, mfaHabilitado=%s numa Empresa que exige: NÃO redireciona (Story 14.1)', (papel, origem, mfaHabilitado) => {
+    useAuthMock.mockReturnValue({
+      estado: 'autenticado',
+      usuario: {
+        id: '1',
+        nome: 'Pessoa',
+        email: 'pessoa@empresa.com',
+        papel,
+        mfaHabilitado,
+        origem,
+        empresa: { mfaObrigatorio: true },
+      },
+      definirSessao: vi.fn(),
+      atualizarUsuario: vi.fn(),
+      logout: vi.fn(),
+    });
+    renderRota();
+
+    expect(screen.getByText('árvore protegida')).toBeInTheDocument();
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/');
   });
 
   it('gestor por senha sem MFA já em /configuracoes: NÃO redireciona (evita loop)', () => {
@@ -160,6 +213,7 @@ describe('RotaProtegida (unidade)', () => {
         papel: 'gestor',
         mfaHabilitado: false,
         origem: 'senha',
+        empresa: { mfaObrigatorio: true },
       },
       definirSessao: vi.fn(),
       atualizarUsuario: vi.fn(),

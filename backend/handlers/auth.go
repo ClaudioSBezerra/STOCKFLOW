@@ -222,6 +222,18 @@ type usuarioResposta struct {
 	Origem              string `json:"origem"`
 	EmpresaNome         string `json:"empresaNome"`
 	AmbienteTreinamento bool   `json:"ambienteTreinamento"`
+	// Empresa (Story 14.1) é aninhado para que stories seguintes pendurem
+	// mais metadados da Empresa aqui sem mover os campos planos acima.
+	// Ausente (omitempty) quando a requisição não tem Empresa no contexto.
+	Empresa *empresaResposta `json:"empresa,omitempty"`
+}
+
+// empresaResposta é o recorte da Empresa da requisição exposto em
+// usuarioResposta. MfaObrigatorio espelha services.Empresa.MFAObrigatorio: o
+// frontend o usa (mfaSetupPendente) para espelhar o gate de
+// middleware.RequireRole — o servidor continua sendo a autoridade.
+type empresaResposta struct {
+	MfaObrigatorio bool `json:"mfaObrigatorio"`
 }
 
 func usuarioRespostaDe(r *http.Request, usuario services.UsuarioSessao) usuarioResposta {
@@ -236,6 +248,7 @@ func usuarioRespostaDe(r *http.Request, usuario services.UsuarioSessao) usuarioR
 	if empresa, ok := middleware.EmpresaDaRequisicao(r.Context()); ok {
 		resposta.EmpresaNome = empresa.NomeFantasia
 		resposta.AmbienteTreinamento = empresa.EmpresaOrigemID != nil
+		resposta.Empresa = &empresaResposta{MfaObrigatorio: empresa.MFAObrigatorio}
 	}
 	return resposta
 }

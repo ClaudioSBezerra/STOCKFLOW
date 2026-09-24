@@ -10,11 +10,18 @@ const authState = vi.hoisted(() => ({
   email: 'ana@empresa.com',
   mfaHabilitado: false,
   origem: 'senha' as string,
+  // Story 14.1: `empresa.mfaObrigatorio` da sessão. Padrão `true` (Empresa
+  // exige) para os casos do gate herdados da Story 1.11; os casos "Empresa
+  // não exige" sobrescrevem.
+  empresaMfaObrigatorio: true,
 }));
 
 const atualizarUsuarioMock = vi.hoisted(() => vi.fn());
 
-vi.mock('@/lib/auth', () => ({
+// Só `useAuth` é substituído: `mfaSetupPendente` (Story 14.1) roda a
+// implementação REAL, a mesma usada por RotaProtegida.
+vi.mock('@/lib/auth', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/auth')>()),
   useAuth: () => ({
     estado: 'autenticado',
     usuario: {
@@ -24,6 +31,7 @@ vi.mock('@/lib/auth', () => ({
       papel: authState.papel,
       mfaHabilitado: authState.mfaHabilitado,
       origem: authState.origem,
+      empresa: { mfaObrigatorio: authState.empresaMfaObrigatorio },
     },
     definirSessao: vi.fn(),
     atualizarUsuario: atualizarUsuarioMock,
@@ -49,6 +57,7 @@ beforeEach(() => {
   authState.email = 'ana@empresa.com';
   authState.mfaHabilitado = false;
   authState.origem = 'senha';
+  authState.empresaMfaObrigatorio = true;
   atualizarUsuarioMock.mockReset();
 });
 
@@ -464,6 +473,37 @@ describe('ConfiguracoesPage — Segurança (MFA, Story 1.11)', () => {
     expect(await screen.findByRole('heading', { name: 'Segurança' })).toBeInTheDocument();
     expect(
       screen.getByText('Obrigatório para o seu papel. Configure para continuar acessando ações restritas.'),
+    ).toBeInTheDocument();
+  });
+
+  it('gestor sem MFA (origem=senha) numa Empresa que NÃO exige: mensagem "opcional" (Story 14.1)', async () => {
+    authState.papel = 'gestor';
+    authState.origem = 'senha';
+    authState.mfaHabilitado = false;
+    authState.empresaMfaObrigatorio = false;
+    stubFetchBase(() => {
+      throw new Error('URL inesperada');
+    });
+
+    render(<ConfiguracoesPage />);
+
+    expect(await screen.findByText('Opcional para o seu papel.')).toBeInTheDocument();
+    expect(
+      screen.queryByText('Obrigatório para o seu papel. Configure para continuar acessando ações restritas.'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('adm sem MFA (origem=senha) numa Empresa que exige: mensagem "obrigatório" (Story 14.1)', async () => {
+    authState.papel = 'adm';
+    authState.origem = 'senha';
+    authState.mfaHabilitado = false;
+    authState.empresaMfaObrigatorio = true;
+    stubFetchBase(() => jsonOk([]));
+
+    render(<ConfiguracoesPage />);
+
+    expect(
+      await screen.findByText('Obrigatório para o seu papel. Configure para continuar acessando ações restritas.'),
     ).toBeInTheDocument();
   });
 

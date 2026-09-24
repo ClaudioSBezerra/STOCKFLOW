@@ -1,9 +1,8 @@
 import { createBrowserRouter, Navigate, RouterProvider, useLocation } from 'react-router-dom';
 import { AppShell } from '@/components/shell/AppShell';
 import { prefixoEmpresa } from '@/lib/api';
-import { AuthProvider, useAuth } from '@/lib/auth';
+import { AuthProvider, mfaSetupPendente, useAuth } from '@/lib/auth';
 import { CarrinhoProvider } from '@/lib/carrinho';
-import { rankPapel } from '@/components/shell/nav-items';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
 import { CatalogoPage } from '@/pages/CatalogoPage';
 import { ProdutoDetalhePage } from '@/pages/ProdutoDetalhePage';
@@ -75,6 +74,10 @@ import { AuthCallbackPage } from '@/pages/AuthCallbackPage';
  * `middleware.RequireRole`. Itens do rail continuam visíveis (UX-DR22:
  * "bloqueando a navegação normal", não "escondendo") — só a navegação em si
  * é interceptada aqui, uma camada acima do shell.
+ *
+ * Story 14.1: o bloqueio passa a valer só quando a Empresa da sessão exige
+ * MFA (`usuario.empresa.mfaObrigatorio`). A condição inteira vive em
+ * `mfaSetupPendente` (lib/auth), compartilhada com Configurações → Segurança.
  */
 export function RotaProtegida() {
   const { estado, usuario } = useAuth();
@@ -89,11 +92,9 @@ export function RotaProtegida() {
   }
 
   if (estado === 'autenticado') {
-    const mfaPendente =
-      usuario !== null &&
-      usuario.origem === 'senha' &&
-      rankPapel(usuario.papel) >= rankPapel('gestor') &&
-      !usuario.mfaHabilitado;
+    // Story 14.1: a condição (incluindo a exigência da Empresa) vive só em
+    // mfaSetupPendente — o mesmo helper do rótulo de Configurações → Segurança.
+    const mfaPendente = mfaSetupPendente(usuario);
 
     if (mfaPendente && location.pathname !== '/configuracoes') {
       return <Navigate to="/configuracoes" replace />;

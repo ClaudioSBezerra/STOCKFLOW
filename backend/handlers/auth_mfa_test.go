@@ -546,3 +546,105 @@ func tokenDeLoginComMFA(t *testing.T, db *sql.DB, email, senha, segredo string) 
 	}
 	return body.Token
 }
+
+// ===== Story 14.1: exigência de MFA por Empresa =====
+
+// definirMFAObrigatorioEmpresaTeste grava `mfa_obrigatorio` na Empresa padrão
+// da suíte e registra a restauração para false ao fim do teste — a Empresa é
+// compartilhada por toda a suíte (e pela de services), então nunca pode
+// ficar exigindo MFA.
+func definirMFAObrigatorioEmpresaTeste(t *testing.T, db *sql.DB, valor bool) {
+	t.Helper()
+	if _, err := db.Exec(`UPDATE empresas SET mfa_obrigatorio = $1 WHERE id = $2`, valor, empresaTeste); err != nil {
+		t.Fatalf("falha ao definir mfa_obrigatorio=%v: %v", valor, err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(`UPDATE empresas SET mfa_obrigatorio = false WHERE id = $1`, empresaTeste)
+	})
+}
+
+// TestMeHandler_ExpoeEmpresaMfaObrigatorio prova que GET /api/auth/me devolve
+// `empresa.mfaObrigatorio` refletindo a Empresa da requisição — relida a
+// cada requisição, sem novo login.
+func TestMeHandler_ExpoeEmpresaMfaObrigatorio(t *testing.T) {
+	db := testDB(t)
+	criarUsuarioLogin(t, db, "me-empresa-mfa@empresa.com", "senha-123456")
+	token := tokenDeLogin(t, db, "me-empresa-mfa@empresa.com", "senha-123456")
+
+	lerFlag := func() *bool {
+		t.Helper()
+		w := getMe(db, "Bearer "+token)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+		}
+		var body struct {
+			Empresa *struct {
+				MfaObrigatorio *bool `json:"mfaObrigatorio"`
+			} `json:"empresa"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("falha ao decodificar /me: %v", err)
+		}
+		if body.Empresa == nil || body.Empresa.MfaObrigatorio == nil {
+			t.Fatalf("/me sem empresa.mfaObrigatorio (body=%s)", w.Body.String())
+		}
+		return body.Empresa.MfaObrigatorio
+	}
+
+	// Parte de false explícito: uma execução abortada antes do t.Cleanup
+	// pode ter deixado a Empresa compartilhada exigindo MFA.
+	definirMFAObrigatorioEmpresaTeste(t, db, false)
+	if v := lerFlag(); *v {
+		t.Error("empresa.mfaObrigatorio = true, want false")
+	}
+	definirMFAObrigatorioEmpresaTeste(t, db, true)
+	if v := lerFlag(); !*v {
+		t.Error("empresa.mfaObrigatorio = false após UPDATE para true, want true")
+	}
+}
+
+// TestRequireRole_GateCondicionalAEmpresa prova, na composição real de newMux
+// (RequireEmpresa -> RequireAuth -> RequireRole(gestor)), que um gestor
+// autenticado por senha e SEM MFA recebe 200 enquanto a Empresa não exige MFA
+// e 403 MFA_SETUP_REQUIRED com o MESMO token depois que a Empresa passa a
+// exigir.
+func TestRequireRole_GateCondicionalAEmpresa(t *testing.T) {
+	db := testDB(t)
+	id := criarUsuarioLogin(t, db, "gate-empresa-gestor@empresa.com", "senha-123456")
+	if _, err := db.Exec(`UPDATE usuarios SET papel = 'gestor' WHERE id = $1`, id); err != nil {
+		t.Fatalf("falha ao promover conta de teste a gestor: %v", err)
+	}
+	token := tokenDeLogin(t, db, "gate-empresa-gestor@empresa.com", "senha-123456")
+	definirMFAObrigatorioEmpresaTeste(t, db, false)
+
+	var executou bool
+	rota := comEmpresa(db, middleware.RequireAuth(db, testJWTSecret)(middleware.RequireRole(services.PapelGestor)(
+		func(w http.ResponseWriter, r *http.Request) {
+			executou = true
+			w.WriteHeader(http.StatusOK)
+		})))
+	chamar := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/usuarios", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		rota(w, req)
+		return w
+	}
+
+	if w := chamar(); w.Code != http.StatusOK || !executou {
+		t.Fatalf("Empresa não exige: status = %d, executou = %v, want 200 (body=%s)", w.Code, executou, w.Body.String())
+	}
+
+	executou = false
+	definirMFAObrigatorioEmpresaTeste(t, db, true)
+	w := chamar()
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("Empresa exige: status = %d, want %d (body=%s)", w.Code, http.StatusForbidden, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "MFA_SETUP_REQUIRED" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "MFA_SETUP_REQUIRED")
+	}
+	if executou {
+		t.Error("handler executou apesar do 403 MFA_SETUP_REQUIRED")
+	}
+}

@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { useAuth } from '@/lib/auth';
+import { mfaSetupPendente, useAuth } from '@/lib/auth';
 import { rankPapel } from '@/components/shell/nav-items';
 import { proximoPapel, rotuloPapel } from '@/lib/promocao';
 import { GestaoUsuariosSection } from '@/components/usuarios/GestaoUsuariosSection';
@@ -69,8 +69,9 @@ import { apiUrl, authHeaders } from '@/lib/api';
  *    (identidade + log de acesso + Movimentações + Pedidos do próprio
  *    usuário).
  *  - "Segurança" (`SegurancaCard`, Story 1.11): visível a TODOS os papéis —
- *    "obrigatório para o seu papel" quando `origem==='senha'` e o papel
- *    alcança `gestor` sem MFA habilitado; "opcional" para os demais casos
+ *    "obrigatório para o seu papel" quando `origem==='senha'`, o papel
+ *    alcança `gestor` sem MFA habilitado e a Empresa exige MFA (Story 14.1,
+ *    `mfaSetupPendente`); "opcional" para os demais casos
  *    sem MFA; "ativo" quando já habilitado. Fluxo de configuração: botão ->
  *    `POST /mfa/iniciar` (QR Code + segredo em texto) -> código TOTP ->
  *    `POST /mfa/confirmar` -> `atualizarUsuario` reflete `mfaHabilitado:true`
@@ -110,11 +111,12 @@ const MENSAGEM_ERRO_CARREGAR_MINHA =
  * Três estados de mensagem, todos derivados de `usuario` (nunca reconsultado
  * aqui — o backend já é a autoridade em `/me`/login):
  *   - "ativo": `mfaHabilitado === true`.
- *   - "obrigatório para o seu papel": `origem==='senha' && rankPapel(papel)
- *     >= rankPapel('gestor') && !mfaHabilitado` — mesma condição do gate de
- *     navegação em App.tsx e do 403 MFA_SETUP_REQUIRED no servidor.
- *   - "opcional": qualquer outro caso sem MFA (papel abaixo de gestor, ou
- *     sessão SSO — nunca forçado).
+ *   - "obrigatório para o seu papel": `mfaSetupPendente(usuario)` (lib/auth)
+ *     — `origem==='senha' && rank>=gestor && !mfaHabilitado &&
+ *     empresa.mfaObrigatorio` (Story 14.1), o MESMO helper do gate de
+ *     navegação em App.tsx e espelho do 403 MFA_SETUP_REQUIRED no servidor.
+ *   - "opcional": qualquer outro caso sem MFA (papel abaixo de gestor, sessão
+ *     SSO, ou Empresa que não exige MFA — nunca forçado).
  *
  * Fluxo de configuração (`etapa`): 'inicial' -> botão dispara
  * `POST /mfa/iniciar` -> 'configurando' (QR Code + segredo em `font-mono` +
@@ -124,10 +126,8 @@ const MENSAGEM_ERRO_CARREGAR_MINHA =
  */
 function SegurancaCard() {
   const { usuario, atualizarUsuario } = useAuth();
-  const papel = usuario?.papel ?? '';
-  const origem = usuario?.origem ?? '';
   const mfaHabilitado = usuario?.mfaHabilitado ?? false;
-  const mfaObrigatorio = origem === 'senha' && rankPapel(papel) >= rankPapel('gestor');
+  const mfaObrigatorio = mfaSetupPendente(usuario);
 
   const [etapa, setEtapa] = useState<'inicial' | 'configurando'>('inicial');
   const [segredo, setSegredo] = useState('');
