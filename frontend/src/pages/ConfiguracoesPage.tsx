@@ -12,6 +12,7 @@ import { GestaoUsuariosSection } from '@/components/usuarios/GestaoUsuariosSecti
 import { ConvitesSection } from '@/components/usuarios/ConvitesSection';
 import { SolicitacoesExclusaoSection } from '@/components/usuarios/SolicitacoesExclusaoSection';
 import { LogAcessoSection } from '@/components/logs/LogAcessoSection';
+import { MfaEmpresaSection } from '@/components/seguranca/MfaEmpresaSection';
 import { CategoriasSection } from '@/components/categorias/CategoriasSection';
 import { CentrosCustoSection } from '@/components/centroscusto/CentrosCustoSection';
 import { FiliaisSection } from '@/components/filiais/FiliaisSection';
@@ -76,6 +77,11 @@ import { apiUrl, authHeaders } from '@/lib/api';
  *    `POST /mfa/iniciar` (QR Code + segredo em texto) -> código TOTP ->
  *    `POST /mfa/confirmar` -> `atualizarUsuario` reflete `mfaHabilitado:true`
  *    sem round-trip extra a `/me`.
+ *  - "Dupla autenticação da Empresa" (`MfaEmpresaSection`, Story 14.3): só
+ *    montada para `adm`, logo depois de "Segurança". Mostra se a Empresa
+ *    exige MFA (`GET/PUT /api/seguranca/mfa-empresa`); ligar pede confirmação
+ *    com a contagem de contas `gestor`/`adm` sem MFA. Traz o histórico
+ *    somente-leitura de `GET /api/seguranca/auditoria`.
  *
  * O backend é sempre a autoridade: o papel-alvo é derivado no servidor a
  * partir do papel atual do solicitante, nunca enviado pelo cliente. Falha de
@@ -552,6 +558,8 @@ export function ConfiguracoesPage() {
       )}
 
       <SegurancaCard />
+
+      {rankPapel(papel) >= rankPapel('adm') && <MfaEmpresaSection />}
 
       {podeDecidir && <GestaoUsuariosSection />}
 

@@ -812,6 +812,63 @@ describe('ConfiguracoesPage — Centros de custo (Story 12.3)', () => {
   );
 });
 
+describe('ConfiguracoesPage — Dupla autenticação da Empresa (Story 14.3)', () => {
+  it('adm vê a seção e carrega a exigência e o histórico', async () => {
+    authState.papel = 'adm';
+    authState.mfaHabilitado = true;
+    const fetchMock = stubFetch((url) => {
+      if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
+      if (url === '/api/promocoes') return jsonOk({ solicitacoes: [] });
+      if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+      if (url === '/api/convites') return jsonOk({ convites: [] });
+      if (url.startsWith('/api/logs-acesso')) return jsonOk({ logs: [] });
+      if (url === '/api/seguranca/mfa-empresa') return jsonOk({ mfaObrigatorio: false, contasSemMfa: 0 });
+      if (url === '/api/seguranca/auditoria') return jsonOk({ eventos: [] });
+      if (url === '/api/centros-custo') return jsonOk({ centrosCusto: [] });
+      if (url === '/api/filiais') return jsonOk({ filiais: [] });
+      if (url === '/api/categorias') return jsonOk({ categorias: [] });
+      if (url === '/api/nomenclatura-templates') return jsonOk({ templates: [] });
+      if (url === '/api/solicitacoes-exclusao') return jsonOk({ solicitacoes: [] });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    render(<ConfiguracoesPage />);
+
+    expect(
+      await screen.findByRole('heading', { name: 'Dupla autenticação da Empresa' }),
+    ).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Passar a exigir' })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith('/api/seguranca/mfa-empresa', expect.anything());
+    expect(fetchMock).toHaveBeenCalledWith('/api/seguranca/auditoria', expect.anything());
+  });
+
+  it.each(['usuario', 'almoxarife', 'gestor'])(
+    'papel %s NÃO vê a seção e nunca chama /api/seguranca',
+    async (papel) => {
+      authState.papel = papel;
+      authState.mfaHabilitado = true;
+      const fetchMock = stubFetch((url) => {
+        if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
+        if (url === '/api/promocoes') return jsonOk({ solicitacoes: [] });
+        if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+        if (url === '/api/convites') return jsonOk({ convites: [] });
+        throw new Error(`URL inesperada: ${url}`);
+      });
+
+      render(<ConfiguracoesPage />);
+
+      await screen.findByRole('heading', { name: 'Privacidade' });
+      expect(
+        screen.queryByRole('heading', { name: 'Dupla autenticação da Empresa' }),
+      ).not.toBeInTheDocument();
+      expect(fetchMock).not.toHaveBeenCalledWith(
+        expect.stringContaining('/api/seguranca'),
+        expect.anything(),
+      );
+    },
+  );
+});
+
 describe('ConfiguracoesPage — Categorias (Story 10.5)', () => {
   it('adm vê a seção "Categorias" e carrega GET /api/categorias', async () => {
     authState.papel = 'adm';

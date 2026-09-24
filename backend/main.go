@@ -405,6 +405,20 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 		middleware.RequireRole(services.PapelAdm)(
 			handlers.ListarLogsAcessoHandler(db))))
 
+	// Exigência de MFA da Empresa e auditoria de segurança — Story 14.3
+	// (FR-53, AD-35). Só o `adm` lê/altera o flag e consulta a trilha
+	// append-only `auditoria_seguranca`; RequireRole(adm) já sujeita o próprio
+	// adm ao gate de MFA. Não há PUT/PATCH/DELETE sobre a auditoria.
+	registrar("GET /e/{slug}/api/seguranca/mfa-empresa", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAdm)(
+			handlers.ObterExigenciaMFAHandler(db))))
+	registrar("PUT /e/{slug}/api/seguranca/mfa-empresa", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAdm)(
+			handlers.AlterarExigenciaMFAHandler(db))))
+	registrar("GET /e/{slug}/api/seguranca/auditoria", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAdm)(
+			handlers.ListarAuditoriaSegurancaHandler(db))))
+
 	// Gestão de Estoques — criar e listar locais — Story 2.1 (FR12);
 	// excluir — Story 2.2 (FR12). POST e DELETE ficam atrás de
 	// RequireRole(almoxarife): criar e excluir Estoque são restritos a

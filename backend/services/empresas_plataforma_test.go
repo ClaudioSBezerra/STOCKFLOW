@@ -57,6 +57,8 @@ func removerEmpresaComDados(t *testing.T, db *sql.DB, slug string) {
 		`DELETE FROM produtos WHERE empresa_id = $1`,
 		`DELETE FROM estoques WHERE empresa_id = $1`,
 		`DELETE FROM logs_acesso WHERE empresa_id = $1`,
+		// Story 14.3: `auditoria_seguranca` tem FK para `usuarios` e `empresas`.
+		`DELETE FROM auditoria_seguranca WHERE empresa_id = $1`,
 		`DELETE FROM usuarios WHERE empresa_id = $1`,
 		`DELETE FROM categorias WHERE empresa_id = $1`,
 		`DELETE FROM nomenclatura_templates WHERE empresa_id = $1`,

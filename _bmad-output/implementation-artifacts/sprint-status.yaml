@@ -143,6 +143,6 @@ development_status:
   epic-14: backlog
   14-1-a-empresa-passa-a-definir-se-exige-mfa-gate-condicional: done
   14-2-cadastro-da-empresa-pergunta-se-exige-mfa-treinamento-herda: done
-  14-3-o-adm-altera-a-exigência-de-mfa-com-aviso-e-auditoria: backlog
+  14-3-o-adm-altera-a-exigência-de-mfa-com-aviso-e-auditoria: done
   14-4-recuperação-reset-de-mfa-por-adm-e-desligamento-pela-própria: backlog
   epic-14-retrospective: optional

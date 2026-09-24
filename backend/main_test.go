@@ -474,6 +474,25 @@ func TestNewMux_RegistraRotasDeAutenticacao(t *testing.T) {
 			statusQuerAo: http.StatusUnauthorized,
 		},
 		{
+			nome:         "seguranca/mfa-empresa GET sem token chega no RequireAuth antes de RequireRole(adm)",
+			metodo:       http.MethodGet,
+			caminho:      prefixoEmpresaTeste + "/api/seguranca/mfa-empresa",
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
+			nome:         "seguranca/mfa-empresa PUT sem token chega no RequireAuth antes de RequireRole(adm)",
+			metodo:       http.MethodPut,
+			caminho:      prefixoEmpresaTeste + "/api/seguranca/mfa-empresa",
+			corpo:        `{"mfaObrigatorio":true}`,
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
+			nome:         "seguranca/auditoria sem token chega no RequireAuth antes de RequireRole(adm)",
+			metodo:       http.MethodGet,
+			caminho:      prefixoEmpresaTeste + "/api/seguranca/auditoria",
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
 			nome:         "movimentacoes sem token chega no RequireAuth antes de RequireRole(almoxarife)",
 			metodo:       http.MethodGet,
 			caminho:      prefixoEmpresaTeste + "/api/movimentacoes",
