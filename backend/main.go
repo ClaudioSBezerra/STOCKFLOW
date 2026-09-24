@@ -108,6 +108,7 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -300,10 +301,41 @@ func runMigrations(db *sql.DB) error {
 		return err
 	}
 
+	if err := recuperarDirty49(db, m); err != nil {
+		return err
+	}
+
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return err
 	}
 	return nil
+}
+
+// recuperarDirty49 desfaz a marca `dirty` deixada pela PRIMEIRA versão da
+// migration 000049, que abortava num banco com a conta sintética sem Empresa
+// da 000022 (instalação nova, CI) e deixava `schema_migrations` em 49 dirty —
+// a API não subia mais (stockflow.fbtechia.com, 2026-09-24). O arquivo da
+// 000049 roda numa única transação implícita, então um aborto não deixa nada
+// aplicado; mesmo assim só força a 48 se a coluna `usuarios.empresa_raiz_id`
+// NÃO existir (prova de que o schema está mesmo na 48). Qualquer outro estado
+// dirty continua exigindo intervenção manual, como sempre.
+func recuperarDirty49(db *sql.DB, m *migrate.Migrate) error {
+	versao, dirty, err := m.Version()
+	if err != nil || !dirty || versao != 49 {
+		return nil // ErrNilVersion (banco novo) e demais casos: segue o fluxo normal
+	}
+	var existe bool
+	if err := db.QueryRow(`
+		SELECT EXISTS (SELECT 1 FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'usuarios' AND column_name = 'empresa_raiz_id')`,
+	).Scan(&existe); err != nil {
+		return fmt.Errorf("falha ao conferir o estado da migration 000049: %w", err)
+	}
+	if existe {
+		return nil // estado inesperado: não mexe; m.Up() devolve o erro de dirty
+	}
+	slog.Warn("migration 000049 marcada dirty sem nada aplicado; voltando para a versão 48 e reaplicando")
+	return m.Force(48)
 }
 
 // newMux monta o roteador HTTP do servidor — extraído de main() para que os

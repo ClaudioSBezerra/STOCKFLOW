@@ -35,10 +35,10 @@ func main() {
 	nome := flag.String("nome", "", "Nome completo do primeiro administrador")
 	email := flag.String("email", "", "E-mail do primeiro administrador")
 	senha := flag.String("senha", "", "Senha do primeiro administrador")
-	// --empresa-slug é OBRIGATÓRIO desde a Story 15.1: a migration 000049
-	// (`usuarios.empresa_raiz_id NOT NULL`, preenchida por trigger a partir de
-	// `empresa_id`) faz o banco recusar conta sem Empresa. O slug resolve a
-	// Empresa e o `adm` nasce DENTRO dela. O deploy em CI
+	// --empresa-slug é OBRIGATÓRIO desde a Story 15.1: uma conta sem Empresa
+	// fica com `usuarios.empresa_raiz_id` NULL (migration 000049) e FORA da
+	// regra de e-mail único entre Empresas reais — um `adm` assim furaria a
+	// regra. O slug resolve a Empresa e o `adm` nasce DENTRO dela. O deploy em CI
 	// (.github/workflows/deploy-cliente-aws.yml) só roda o seed-admin quando
 	// ADMIN_EMPRESA_SLUG está definido no .env.
 	empresaSlug := flag.String("empresa-slug", "", "Slug da Empresa em que criar o administrador (obrigatório)")

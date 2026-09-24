@@ -98,8 +98,9 @@ func criarUsuario(t *testing.T, db *sql.DB, email string, ativo bool) string {
 }
 
 // empresaContasMiddleware devolve a Empresa das contas criadas direto no
-// banco por estes testes: desde a Story 15.1 (migration 000049) toda conta
-// tem Empresa (`usuarios.empresa_raiz_id NOT NULL`, preenchida por trigger).
+// banco por estes testes: desde a Story 15.1 (migration 000049) conta de
+// domínio nasce dentro de uma Empresa (a regra de e-mail único entre Empresas
+// reais só vale para contas com Empresa).
 func empresaContasMiddleware(t *testing.T, db *sql.DB) string {
 	t.Helper()
 	return criarEmpresaMiddleware(t, db, "mw-empresa-ativa", "22333444000181", "MW Ativa").ID

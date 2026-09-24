@@ -5,6 +5,7 @@
 -- passar a ser usada por outro objeto, e removê-la exigiria DROP ... CASCADE
 -- sobre objetos que não são desta migration.
 ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS usuarios_email_unico_entre_empresas_reais;
+ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS usuarios_empresa_raiz_coerente;
 DROP TRIGGER IF EXISTS usuarios_preencher_empresa_raiz ON usuarios;
 DROP FUNCTION IF EXISTS usuarios_preencher_empresa_raiz();
 DROP INDEX IF EXISTS idx_usuarios_empresa_raiz_id;

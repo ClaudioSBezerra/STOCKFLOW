@@ -197,10 +197,7 @@ func TestBackfillEmpresa_LotesResumiveis(t *testing.T) {
 		t.Fatalf("categoria da empresa: %v", err)
 	}
 
-	// Órfãs: 3 Estoques e 1 Produto, com empresa_id IS NULL. Conta órfã deixou
-	// de ser possível na Story 15.1 (migration 000049: `empresa_raiz_id NOT
-	// NULL`, preenchida pelo trigger a partir de `empresa_id`) — o banco a
-	// recusa, e o backfill de `usuarios` passa a encontrar sempre 0 linhas.
+	// Órfãs: 3 Estoques, 1 Produto e 1 conta, todos com empresa_id IS NULL.
 	var orfaos []string
 	for i := 1; i <= 3; i++ {
 		var id string
@@ -217,11 +214,12 @@ func TestBackfillEmpresa_LotesResumiveis(t *testing.T) {
 	).Scan(&produtoOrfao); err != nil {
 		t.Fatalf("criar produto órfão: %v", err)
 	}
-	if _, err := db.Exec(
+	var usuarioOrfao string
+	if err := db.QueryRow(
 		`INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
-		 VALUES ('Orfao 94', 'orfao-94@teste.local', NULL, 'usuario', false, true)`,
-	); err == nil {
-		t.Fatal("conta sem empresa_id foi aceita; want recusa pelo NOT NULL de empresa_raiz_id")
+		 VALUES ('Orfao 94', 'orfao-94@teste.local', NULL, 'usuario', false, true) RETURNING id`,
+	).Scan(&usuarioOrfao); err != nil {
+		t.Fatalf("criar usuário órfão: %v", err)
 	}
 
 	// Lote 1 força várias transações por tabela — é o caminho resumível.
@@ -233,12 +231,16 @@ func TestBackfillEmpresa_LotesResumiveis(t *testing.T) {
 	if len(visitadas) != len(TabelasComEmpresaID) {
 		t.Errorf("tabelas visitadas = %d, want %d", len(visitadas), len(TabelasComEmpresaID))
 	}
-	if atualizadas["estoques"] < 3 || atualizadas["produtos"] < 1 || atualizadas["usuarios"] != 0 {
-		t.Errorf("atualizadas = %v, want >= 3 estoques, 1 produto e 0 usuário", atualizadas)
+	if atualizadas["estoques"] < 3 || atualizadas["produtos"] < 1 || atualizadas["usuarios"] < 1 {
+		t.Errorf("atualizadas = %v, want >= 3 estoques, 1 produto e 1 usuário", atualizadas)
+	}
+
+	for _, id := range append(orfaos, produtoOrfao, usuarioOrfao) {
+		_ = id
 	}
 	for _, c := range []struct{ tabela, id string }{
 		{"estoques", orfaos[0]}, {"estoques", orfaos[1]}, {"estoques", orfaos[2]},
-		{"produtos", produtoOrfao},
+		{"produtos", produtoOrfao}, {"usuarios", usuarioOrfao},
 	} {
 		var dono sql.NullString
 		if err := db.QueryRow(`SELECT empresa_id FROM `+c.tabela+` WHERE id = $1`, c.id).Scan(&dono); err != nil {
@@ -377,8 +379,6 @@ func TestContarLinhasSemEmpresa_CobreAsTreze(t *testing.T) {
 }
 
 // TestBuscarAdmSemEmpresa lê a conta `adm` global — a que o backfill adota.
-// Desde a Story 15.1 (migration 000049) conta sem Empresa é recusada pelo
-// banco, então o caminho de hoje é sempre sql.ErrNoRows.
 func TestBuscarAdmSemEmpresa(t *testing.T) {
 	db := testDB(t)
 
@@ -389,13 +389,17 @@ func TestBuscarAdmSemEmpresa(t *testing.T) {
 	if _, err := db.Exec(
 		`INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
 		 VALUES ('Adm Global 94', 'adm-global-94@teste.local', NULL, 'adm', true, true)`,
-	); err == nil {
-		_, _ = db.Exec(`DELETE FROM usuarios WHERE email = 'adm-global-94@teste.local'`)
-		t.Fatal("adm sem empresa_id foi aceito; want recusa pelo NOT NULL de empresa_raiz_id")
+	); err != nil {
+		t.Fatalf("criar adm órfão: %v", err)
 	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM usuarios WHERE email = 'adm-global-94@teste.local'`) })
 
-	if _, _, err := BuscarAdmSemEmpresa(db); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("após a recusa: err = %v, want sql.ErrNoRows", err)
+	nome, email, err := BuscarAdmSemEmpresa(db)
+	if err != nil {
+		t.Fatalf("BuscarAdmSemEmpresa: %v", err)
+	}
+	if nome != "Adm Global 94" || email != "adm-global-94@teste.local" {
+		t.Errorf("adm = %q <%s>, want a conta órfã", nome, email)
 	}
 }
 

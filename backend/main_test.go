@@ -3496,7 +3496,7 @@ func inserirContaM49(t *testing.T, tx *sql.Tx, empresaID any, email string, raiz
 	if _, err := tx.Exec(`SAVEPOINT conta_m49`); err != nil {
 		t.Fatalf("savepoint: %v", err)
 	}
-	var raiz string
+	var raiz sql.NullString
 	var err error
 	if raizInformada == nil {
 		err = tx.QueryRow(
@@ -3518,28 +3518,18 @@ func inserirContaM49(t *testing.T, tx *sql.Tx, empresaID any, email string, raiz
 	if _, err := tx.Exec(`RELEASE SAVEPOINT conta_m49`); err != nil {
 		t.Fatalf("release savepoint: %v", err)
 	}
-	return raiz, nil
+	return raiz.String, nil
 }
 
 // TestRunMigrations_EmpresaRaizIdEEmailUnicoEntreEmpresasReais prova a
-// migration 000049: `empresa_raiz_id` NOT NULL, preenchida (e sobrescrita)
+// migration 000049: `empresa_raiz_id` preenchida (e sobrescrita)
 // pelo trigger para conta real e de Treinamento; o mesmo e-mail (caixa
 // diferente) é recusado em duas Empresas reais (23P01, restrição
 // `usuarios_email_unico_entre_empresas_reais`) e aceito na real + Treinamento
-// dela; conta sem Empresa é recusada.
+// dela; conta sem Empresa fica com raiz NULL, fora da regra de e-mail, e o
+// CHECK usuarios_empresa_raiz_coerente impede raiz sem Empresa.
 func TestRunMigrations_EmpresaRaizIdEEmailUnicoEntreEmpresasReais(t *testing.T) {
 	db := testDB(t)
-
-	var nullable string
-	if err := db.QueryRow(
-		`SELECT is_nullable FROM information_schema.columns
-		 WHERE table_schema = current_schema() AND table_name = 'usuarios' AND column_name = 'empresa_raiz_id'`,
-	).Scan(&nullable); err != nil {
-		t.Fatalf("coluna empresa_raiz_id não encontrada: %v", err)
-	}
-	if nullable != "NO" {
-		t.Errorf("empresa_raiz_id is_nullable = %q, want NO", nullable)
-	}
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -3582,16 +3572,32 @@ func TestRunMigrations_EmpresaRaizIdEEmailUnicoEntreEmpresasReais(t *testing.T) 
 		t.Errorf("mesmo e-mail em outra Empresa real: err = %v, want 23P01 em usuarios_email_unico_entre_empresas_reais", err)
 	}
 
-	_, err = inserirContaM49(t, tx, nil, "m49.orfa@x.com", nil)
-	if !errors.As(err, &pqErr) || pqErr.Code != "23502" {
-		t.Errorf("conta sem Empresa: err = %v, want 23502 (NOT NULL)", err)
+	// Conta sem Empresa (caso da conta sintética da 000022): raiz NULL e
+	// fora da regra — o mesmo e-mail pode existir numa Empresa real.
+	raiz, err = inserirContaM49(t, tx, nil, "m49.pessoa@x.com", nil)
+	if err != nil {
+		t.Fatalf("conta sem Empresa: %v (want aceita, raiz NULL)", err)
+	}
+	if raiz != "" {
+		t.Errorf("conta sem Empresa: empresa_raiz_id = %q, want NULL", raiz)
+	}
+
+	if _, err := tx.Exec(`SAVEPOINT raiz_sem_empresa`); err != nil {
+		t.Fatalf("savepoint: %v", err)
+	}
+	_, err = tx.Exec(`UPDATE usuarios SET empresa_raiz_id = $1 WHERE lower(email) = 'm49.pessoa@x.com' AND empresa_id IS NULL`, realA.ID)
+	if !errors.As(err, &pqErr) || pqErr.Code != "23514" || pqErr.Constraint != "usuarios_empresa_raiz_coerente" {
+		t.Errorf("raiz sem Empresa: err = %v, want 23514 em usuarios_empresa_raiz_coerente", err)
+	}
+	if _, err := tx.Exec(`ROLLBACK TO SAVEPOINT raiz_sem_empresa`); err != nil {
+		t.Fatalf("rollback to savepoint: %v", err)
 	}
 }
 
 // TestMigration000049_FalhaComDuplicataOuContaOrfa executa o `down` e o `up`
 // da 000049 dentro de uma transação (DDL do Postgres é transacional): sobre um
 // estado com o mesmo e-mail em duas Empresas reais o `up` falha com o e-mail
-// na mensagem; sobre uma conta sem Empresa, falha com mensagem própria.
+// na mensagem; uma conta sem Empresa não impede o `up`.
 // ROLLBACK no fim devolve o schema vigente.
 func TestMigration000049_FalhaComDuplicataOuContaOrfa(t *testing.T) {
 	db := testDB(t)
@@ -3625,15 +3631,6 @@ func TestMigration000049_FalhaComDuplicataOuContaOrfa(t *testing.T) {
 			},
 			want: "m49.dup@x.com",
 		},
-		{
-			nome: "conta sem Empresa",
-			preparo: func(t *testing.T, tx *sql.Tx) {
-				if _, err := tx.Exec(`INSERT INTO usuarios (nome, email, papel) VALUES ('Orfa', 'm49.orfa@x.com', 'usuario')`); err != nil {
-					t.Fatalf("inserir conta órfã: %v", err)
-				}
-			},
-			want: "sem empresa_id",
-		},
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
@@ -3656,6 +3653,25 @@ func TestMigration000049_FalhaComDuplicataOuContaOrfa(t *testing.T) {
 			}
 		})
 	}
+
+	// Conta sem Empresa (a sintética da 000022 num banco novo) não impede o
+	// `up` — foi o que derrubou o boot de um ambiente limpo na 1ª versão.
+	t.Run("conta sem Empresa aplica", func(t *testing.T) {
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(string(down)); err != nil {
+			t.Fatalf("down: %v", err)
+		}
+		if _, err := tx.Exec(`INSERT INTO usuarios (nome, email, papel) VALUES ('Orfa', 'm49.orfa@x.com', 'usuario')`); err != nil {
+			t.Fatalf("inserir conta sem Empresa: %v", err)
+		}
+		if _, err := tx.Exec(string(up)); err != nil {
+			t.Fatalf("up com conta sem Empresa: %v (want aplicada)", err)
+		}
+	})
 
 	// Depois do ROLLBACK o schema vigente segue intacto.
 	var n int
@@ -3949,4 +3965,60 @@ func TestNewMux_EntradaPadrao(t *testing.T) {
 			t.Errorf("status=%d corpo=%v", code, corpo)
 		}
 	})
+}
+
+// TestRunMigrations_RecuperaDirty49SemNadaAplicado reproduz o estado em que a
+// primeira versão da 000049 deixou o banco de stockflow.fbtechia.com: schema
+// na 48 e `schema_migrations` = 49 dirty. runMigrations tem de sair disso
+// sozinho e chegar à última versão, limpa. Restaura a forma vigente mesmo se
+// falhar no meio.
+func TestRunMigrations_RecuperaDirty49SemNadaAplicado(t *testing.T) {
+	db := testDB(t)
+
+	ler := func(nome string) string {
+		b, err := migrationsFS.ReadFile("migrations/" + nome)
+		if err != nil {
+			t.Fatalf("ler %s: %v", nome, err)
+		}
+		return string(b)
+	}
+	var versaoFinal int
+	if err := db.QueryRow(`SELECT version FROM schema_migrations`).Scan(&versaoFinal); err != nil {
+		t.Fatalf("versão vigente: %v", err)
+	}
+	t.Cleanup(func() {
+		// Se o teste falhou antes de runMigrations reaplicar, volta à forma vigente.
+		_ = runMigrations(db)
+	})
+
+	for _, arq := range []string{
+		"000050_add_escolha_empresa_to_tokens_acao.down.sql",
+		"000049_add_empresa_raiz_id_to_usuarios.down.sql",
+	} {
+		if _, err := db.Exec(ler(arq)); err != nil {
+			t.Fatalf("aplicar %s: %v", arq, err)
+		}
+	}
+	if _, err := db.Exec(`UPDATE schema_migrations SET version = 49, dirty = true`); err != nil {
+		t.Fatalf("marcar dirty: %v", err)
+	}
+
+	if err := runMigrations(db); err != nil {
+		t.Fatalf("runMigrations com 49 dirty sem nada aplicado: %v (want recuperado)", err)
+	}
+
+	var versao int
+	var dirty bool
+	if err := db.QueryRow(`SELECT version, dirty FROM schema_migrations`).Scan(&versao, &dirty); err != nil {
+		t.Fatalf("ler schema_migrations: %v", err)
+	}
+	if versao != versaoFinal || dirty {
+		t.Errorf("schema_migrations = (%d, dirty=%v), want (%d, false)", versao, dirty, versaoFinal)
+	}
+	var n int
+	if err := db.QueryRow(
+		`SELECT count(*) FROM pg_constraint WHERE conname = 'usuarios_email_unico_entre_empresas_reais'`,
+	).Scan(&n); err != nil || n != 1 {
+		t.Errorf("restrição da 000049 após a recuperação: n = %d, err = %v, want 1", n, err)
+	}
 }

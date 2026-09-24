@@ -8,14 +8,24 @@
 -- SUA Empresa real (mesma raiz). O índice único (empresa_id, lower(email)) de
 -- 000032 continua valendo dentro de cada Empresa.
 --
--- A coluna é preenchida SEMPRE pelo trigger `BEFORE INSERT` (sobrescreve o que
--- vier no INSERT); nenhum código de inserção a informa. Sem trigger de UPDATE:
--- conta nunca troca de Empresa.
+-- A coluna é preenchida SEMPRE pelo trigger `BEFORE INSERT OR UPDATE OF
+-- empresa_id` (sobrescreve o que vier no INSERT); nenhum código de inserção a
+-- informa. Conta de domínio nunca troca de Empresa, mas o backfill da
+-- Multi-Empresa (`cmd/migrar-multi-empresa`) dá Empresa a uma conta que não
+-- tinha — o UPDATE também recalcula a raiz.
 --
 -- A migration é transacional e falha ANTES de criar a restrição, listando os
 -- e-mails repetidos, se já houver duplicata entre Empresas reais.
 --
--- Se uma das pré-checagens abortar, o schema fica na versão 48, mas o
+-- Conta sem Empresa (`empresa_id IS NULL`) fica com `empresa_raiz_id` NULL e
+-- fora da regra de e-mail (NULL nunca conflita na restrição de exclusão). O
+-- único caso real é a conta sintética "Migração do sistema legado" da 000022,
+-- que num banco novo (CI, instalação limpa) nunca ganha Empresa — a primeira
+-- versão desta migration abortava nesse caso e derrubou o boot de um ambiente
+-- novo. Ela nunca faz login (ativo=false, sem senha). O CHECK
+-- `usuarios_empresa_raiz_coerente` garante NULL só quando não há Empresa.
+--
+-- Se a pré-checagem de duplicata abortar, o schema fica na versão 48, mas o
 -- golang-migrate grava `schema_migrations` como versão 49 `dirty` e a API
 -- não sobe mais. Recuperação: corrigir os dados apontados na mensagem e rodar
 -- `migrate force 48` (ou `UPDATE schema_migrations SET version = 48,
@@ -24,16 +34,6 @@
 CREATE EXTENSION IF NOT EXISTS btree_gist;
 
 ALTER TABLE usuarios ADD COLUMN empresa_raiz_id UUID NULL REFERENCES empresas(id);
-
-DO $$
-DECLARE
-  orfas INTEGER;
-BEGIN
-  SELECT count(*) INTO orfas FROM usuarios WHERE empresa_id IS NULL;
-  IF orfas > 0 THEN
-    RAISE EXCEPTION 'migration 000049: % conta(s) em usuarios sem empresa_id; vincule-as a uma Empresa (cmd/migrar-multi-empresa) antes de aplicar', orfas;
-  END IF;
-END $$;
 
 UPDATE usuarios u
    SET empresa_raiz_id = COALESCE(e.empresa_origem_id, e.id)
@@ -56,7 +56,9 @@ BEGIN
   END IF;
 END $$;
 
-ALTER TABLE usuarios ALTER COLUMN empresa_raiz_id SET NOT NULL;
+ALTER TABLE usuarios
+  ADD CONSTRAINT usuarios_empresa_raiz_coerente
+  CHECK ((empresa_id IS NULL) = (empresa_raiz_id IS NULL));
 
 CREATE FUNCTION usuarios_preencher_empresa_raiz() RETURNS trigger AS $$
 BEGIN
@@ -67,7 +69,7 @@ BEGIN
 END $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER usuarios_preencher_empresa_raiz
-  BEFORE INSERT ON usuarios
+  BEFORE INSERT OR UPDATE OF empresa_id ON usuarios
   FOR EACH ROW EXECUTE FUNCTION usuarios_preencher_empresa_raiz();
 
 -- O índice GiST da restrição começa por lower(email) e não serve às buscas da
