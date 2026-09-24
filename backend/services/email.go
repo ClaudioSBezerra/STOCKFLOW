@@ -126,18 +126,24 @@ func renderizarTemplate(tipo string, variaveis map[string]any) (templateRenderiz
 	case "redefinicao_senha":
 		nome, _ := variaveis["nome"].(string)
 		link, _ := variaveis["link"].(string)
+		// Story 15.3: `empresa` distingue o e-mail da Empresa real do e-mail do
+		// Treinamento. Linha antiga do outbox sem `empresa` renderiza sem a frase.
+		naEmpresa := ""
+		if empresa, _ := variaveis["empresa"].(string); empresa != "" {
+			naEmpresa = fmt.Sprintf(" na empresa <strong>%s</strong>", html.EscapeString(empresa))
+		}
 		corpo := fmt.Sprintf(`<!DOCTYPE html>
 <html>
 <head><meta charset="UTF-8"></head>
 <body style="font-family: Arial, sans-serif; color: #333333;">
 	<p>Olá, %s.</p>
-	<p>Recebemos um pedido para redefinir a sua senha no stockflow. Clique no link abaixo para escolher uma nova senha:</p>
+	<p>Recebemos um pedido para redefinir a sua senha no stockflow%s. Clique no link abaixo para escolher uma nova senha:</p>
 	<p><a href="%s">Redefinir minha senha</a></p>
 	<p>Ou copie e cole no navegador: %s</p>
 	<p>Se você não fez esse pedido, ignore este e-mail — sua senha continua a mesma.</p>
 	<p style="font-size: 12px; color: #999999;">Este link expira em 30 minutos.</p>
 </body>
-</html>`, html.EscapeString(nome), link, link)
+</html>`, html.EscapeString(nome), naEmpresa, link, link)
 		return templateRenderizado{
 			Assunto:   "Redefinição de senha — stockflow",
 			CorpoHTML: corpo,

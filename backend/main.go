@@ -320,8 +320,9 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// Exceções (SEM prefixo e SEM RequireEmpresa): `GET /api/health` — o
 	// liveness do compose/CI (AD-16), que não conhece nenhum slug e precisa
 	// responder mesmo com a tabela `empresas` vazia —, a área do Dono da
-	// Plataforma (`/api/plataforma/*`) e o login pela conta na raiz
-	// (`/api/auth/entrar*`, Story 15.2), registrados abaixo.
+	// Plataforma (`/api/plataforma/*`), o login pela conta na raiz
+	// (`/api/auth/entrar*`, Story 15.2) e o "Esqueci a senha" na raiz
+	// (`POST /api/auth/esqueci-senha`, Story 15.3), registrados abaixo.
 	requireEmpresa := middleware.RequireEmpresa(db)
 	registrar := func(padrao string, h http.HandlerFunc) {
 		mux.HandleFunc(padrao, requireEmpresa(h))
@@ -353,6 +354,10 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// A sessão emitida continua por Empresa (cookie `Path=/e/{slug}/api/auth`).
 	mux.HandleFunc("POST /api/auth/entrar", handlers.EntrarHandler(db, jwtSecret))
 	mux.HandleFunc("POST /api/auth/entrar/escolha", handlers.EntrarEscolhaHandler(db, jwtSecret))
+	// "Esqueci a senha" na raiz — Story 15.3 (AD-36), mesma exceção: um
+	// e-mail de redefinição por conta ativa do e-mail, cada um com o link
+	// `/e/{slug}/redefinir-senha` da sua Empresa. Sempre 202.
+	mux.HandleFunc("POST /api/auth/esqueci-senha", handlers.EsqueciSenhaPelaContaHandler(db, emailCfg))
 
 	registrar("POST /e/{slug}/api/auth/cadastro", handlers.CadastroHandler(db, emailCfg))
 	registrar("GET /e/{slug}/api/auth/verificar-email", handlers.VerificarEmailHandler(db))

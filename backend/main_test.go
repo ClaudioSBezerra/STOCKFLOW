@@ -3770,6 +3770,27 @@ func TestNewMux_EntrarPelaRaiz(t *testing.T) {
 			t.Fatalf("status = %d (body=%s)", w.Code, w.Body.String())
 		}
 	})
+
+	// Story 15.3: "Esqueci a senha" na raiz, também fora de RequireEmpresa;
+	// o pedido pelo endereço da Empresa continua 200.
+	t.Run("esqueci-senha registrado na raiz (202) sem mudar o de /e/{slug} (200)", func(t *testing.T) {
+		w := post("/api/auth/esqueci-senha", `{"email":"semmfa@entrada-mux.test"}`, nil)
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("raiz: status = %d (body=%s)", w.Code, w.Body.String())
+		}
+		var n int
+		if err := db.QueryRow(`SELECT count(*) FROM emails_pendentes ep JOIN usuarios u ON u.id = ep.usuario_id
+			WHERE u.email = 'semmfa@entrada-mux.test' AND ep.tipo = 'redefinicao_senha'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 1 {
+			t.Errorf("e-mails de redefinição = %d, want 1", n)
+		}
+		w2 := post("/e/"+slugEntradaMux+"/api/auth/esqueci-senha", `{"email":"semmfa@entrada-mux.test"}`, nil)
+		if w2.Code != http.StatusOK {
+			t.Fatalf("/e/{slug}: status = %d (body=%s)", w2.Code, w2.Body.String())
+		}
+	})
 }
 
 // TestMigration000050_Down executa o `down` e o `up` da 000050 dentro de uma

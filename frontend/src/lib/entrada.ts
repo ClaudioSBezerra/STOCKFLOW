@@ -101,6 +101,26 @@ export function concluirEscolha(escolhaToken: string, slug: string): Promise<Res
 }
 
 /**
+ * POST /api/auth/esqueci-senha na raiz (Story 15.3) — um e-mail de
+ * redefinição por conta do e-mail, cada um com o link da sua Empresa. O
+ * backend responde sempre `202` com a mesma mensagem genérica: qualquer `2xx`
+ * é sucesso (`true`); rede ou não-`2xx` é `false`. Nunca `apiUrl`: a rota
+ * vive fora do prefixo de Empresa.
+ */
+export async function pedirRedefinicaoPelaConta(email: string): Promise<boolean> {
+  try {
+    const res = await fetch('/api/auth/esqueci-senha', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Repasse do MFA da raiz para `/e/{slug}/login`: as duas são apps
  * diferentes, então o `mfaToken` atravessa o redirect em `sessionStorage`
  * (mesma origem, some ao fechar a aba). Sozinho ele não dá acesso — exige o

@@ -1,10 +1,11 @@
 package handlers
 
-// Login na raiz do domínio pela conta — Story 15.2 (AD-36). As duas rotas
-// daqui vivem FORA do prefixo `/e/{slug}` e SEM RequireEmpresa: a Empresa é
-// descoberta pela conta (services.EntrarPelaConta), nunca pedida ao cliente.
-// Por isso estes handlers nunca chamam empresaDaRequisicao — o slug da
-// resposta e o Path do cookie vêm da conta cuja senha conferiu.
+// Login na raiz do domínio pela conta — Story 15.2 (AD-36) — e o "Esqueci a
+// senha" na raiz (Story 15.3). As rotas daqui vivem FORA do prefixo
+// `/e/{slug}` e SEM RequireEmpresa: a Empresa é descoberta pela conta
+// (services.EntrarPelaConta), nunca pedida ao cliente. Por isso estes
+// handlers nunca chamam empresaDaRequisicao — o slug da resposta e o Path do
+// cookie vêm da conta cuja senha conferiu.
 
 import (
 	"database/sql"
@@ -177,4 +178,31 @@ func entrarNaConta(w http.ResponseWriter, r *http.Request, db *sql.DB, jwtSecret
 	}
 	setRefreshCookieNoPath(w, r, refreshTokenCookiePathDoSlug(conta.Slug), refreshToken, expiraRefresh)
 	escreverJSON(w, http.StatusOK, map[string]any{"slug": conta.Slug})
+}
+
+// EsqueciSenhaPelaContaHandler expõe POST /api/auth/esqueci-senha na raiz do
+// domínio (Story 15.3, AD-36): sem Empresa na URL, um e-mail de redefinição
+// por conta ativa do e-mail (services.SolicitarRedefinicaoSenhaPelaConta).
+// Responde SEMPRE `202` com a mesma mensagem genérica de EsqueciSenhaHandler
+// — nunca revela por status ou corpo se o e-mail tem conta, nem quantas. Só
+// JSON malformado/grande demais -> 400; erro de infraestrutura -> 500. Sem
+// limite de taxa, como o pedido pelo endereço da Empresa.
+func EsqueciSenhaPelaContaHandler(db *sql.DB, emailCfg services.EmailConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
+
+		var req esqueciSenhaRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "payload inválido")
+			return
+		}
+
+		if err := services.SolicitarRedefinicaoSenhaPelaConta(db, emailCfg, req.Email); err != nil {
+			slog.Error("falha ao processar solicitação de redefinição de senha pela conta", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao processar solicitação")
+			return
+		}
+
+		escreverJSON(w, http.StatusAccepted, map[string]string{"mensagem": mensagemEsqueciSenha})
+	}
 }

@@ -44,16 +44,58 @@ describe('SemEmpresaPage — login pela conta (Story 15.2)', () => {
     expect(document.body.textContent ?? '').not.toMatch(/plataforma/i);
   });
 
-  it('"Esqueci a senha" mostra a orientação inline', async () => {
+  it('"Esqueci a senha" abre o pedido com o e-mail já digitado e mostra o sucesso (Story 15.3)', async () => {
     const user = userEvent.setup();
+    fetchMock.mockImplementation(() => resposta(202, { mensagem: 'Se o e-mail existir, você receberá um link.' }));
+    render(<SemEmpresaPage />);
+
+    await user.type(screen.getByLabelText('E-mail'), 'fulano@empresa.com');
+    await user.click(screen.getByRole('button', { name: 'Esqueci a senha' }));
+
+    expect(screen.getByText('Esqueci minha senha')).toBeInTheDocument();
+    expect(screen.getByLabelText('E-mail')).toHaveValue('fulano@empresa.com');
+    expect(screen.queryByLabelText('Senha')).not.toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Enviar link de redefinição' }));
+
+    expect(await screen.findByText('Se o e-mail existir, você receberá um link.')).toBeInTheDocument();
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/auth/esqueci-senha');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({ email: 'fulano@empresa.com' });
+    expect(assignMock).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Voltar para o login' }));
+    expect(screen.getByRole('button', { name: 'Entrar' })).toBeInTheDocument();
+    expect(screen.getByLabelText('E-mail')).toHaveValue('fulano@empresa.com');
+  });
+
+  it('"Esqueci a senha": erro do servidor ou de rede mostra a mensagem de nova tentativa', async () => {
+    const user = userEvent.setup();
+    fetchMock.mockImplementationOnce(() => resposta(500, { error: { code: 'INTERNAL_ERROR', message: 'x' } }));
+    fetchMock.mockImplementationOnce(() => Promise.reject(new Error('rede')));
     render(<SemEmpresaPage />);
 
     await user.click(screen.getByRole('button', { name: 'Esqueci a senha' }));
+    await user.type(screen.getByLabelText('E-mail'), 'ana@empresa.com');
+    await user.click(screen.getByRole('button', { name: 'Enviar link de redefinição' }));
 
-    expect(
-      screen.getByText("Para redefinir a senha, use 'Esqueci minha senha' no endereço de acesso da sua empresa."),
-    ).toBeInTheDocument();
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Não foi possível enviar o link agora. Tente novamente em instantes.',
+    );
+    expect(screen.queryByText('Se o e-mail existir, você receberá um link.')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Enviar link de redefinição' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Não foi possível enviar o link agora.');
+    expect(screen.getByRole('button', { name: 'Enviar link de redefinição' })).toBeEnabled();
+
+    await user.click(screen.getByRole('button', { name: 'Voltar para o login' }));
+    expect(screen.getByLabelText('Senha')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    // o e-mail digitado na etapa "Esqueci" volta para o login
+    expect(screen.getByLabelText('E-mail')).toHaveValue('ana@empresa.com');
   });
 
   it('uma conta sem MFA: chama /api/auth/entrar (sem prefixo) e vai para /e/{slug}/', async () => {

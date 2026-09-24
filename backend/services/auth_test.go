@@ -978,6 +978,14 @@ func TestSolicitarRedefinicaoSenha_ContaExiste(t *testing.T) {
 	if got, _ := variaveis["link"].(string); got != wantLink {
 		t.Errorf("link = %q, want %q", got, wantLink)
 	}
+	// Story 15.3: o nome da Empresa também vai no pedido por `/e/{slug}`.
+	var nomeEmpresa string
+	if err := db.QueryRow(`SELECT nome_fantasia FROM empresas WHERE id = $1`, empresaTeste).Scan(&nomeEmpresa); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := variaveis["empresa"].(string); got == "" || got != nomeEmpresa {
+		t.Errorf("empresa = %q, want %q", got, nomeEmpresa)
+	}
 }
 
 // TestSolicitarRedefinicaoSenha_ContaNaoExiste prova o cenário "Solicitação,

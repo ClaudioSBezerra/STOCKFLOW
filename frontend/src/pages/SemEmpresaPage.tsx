@@ -8,6 +8,7 @@ import {
   entrarPelaConta,
   gravarMfaPendente,
   mensagemDeErroLogin,
+  pedirRedefinicaoPelaConta,
   type OpcaoEscolha,
   type ResultadoEntrada,
 } from '@/lib/entrada';
@@ -19,7 +20,8 @@ import {
  * `AuthProvider` restaura a sessão pelo refresh silencioso (o cookie já veio
  * com `Path=/e/{slug}/api/auth`). Com MFA, o código é digitado em
  * `/e/{slug}/login`. Quando a senha confere na Empresa real e no Treinamento
- * dela, pergunta "Ambiente real ou Treinamento?".
+ * dela, pergunta "Ambiente real ou Treinamento?". "Esqueci a senha" (Story
+ * 15.3) abre o pedido de redefinição pela conta, sem Empresa na URL.
  *
  * Esta app NÃO monta `AuthProvider` nem router: só chama as rotas da raiz
  * e navega com `window.location.assign`.
@@ -29,7 +31,9 @@ export function SemEmpresaPage() {
   const [senha, setSenha] = useState('');
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
-  const [avisoEsqueci, setAvisoEsqueci] = useState(false);
+  const [esqueci, setEsqueci] = useState<{ email: string; enviado: boolean; erro: string | null } | null>(
+    null,
+  );
   const [escolha, setEscolha] = useState<{ opcoes: OpcaoEscolha[]; token: string } | null>(null);
 
   function seguir(resultado: ResultadoEntrada) {
@@ -76,6 +80,96 @@ export function SemEmpresaPage() {
     setErro(null);
     setEnviando(true);
     seguir(await concluirEscolha(escolha.token, slug));
+  }
+
+  async function pedirRedefinicao(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (enviando || !esqueci) {
+      return;
+    }
+    setEsqueci({ ...esqueci, erro: null });
+    setEnviando(true);
+    // O backend responde sempre a mesma mensagem (exista ou não a conta):
+    // qualquer 2xx vira o mesmo estado de sucesso.
+    const ok = await pedirRedefinicaoPelaConta(esqueci.email);
+    setEnviando(false);
+    setEsqueci((atual) =>
+      atual && {
+        ...atual,
+        enviado: ok,
+        erro: ok ? null : 'Não foi possível enviar o link agora. Tente novamente em instantes.',
+      },
+    );
+  }
+
+  function voltarDoEsqueci() {
+    // Leva de volta ao login o e-mail corrigido nesta etapa.
+    if (esqueci) {
+      setEmail(esqueci.email);
+    }
+    setEsqueci(null);
+    setErro(null);
+  }
+
+  if (esqueci) {
+    return (
+      <div className="flex min-h-screen items-center justify-center p-6">
+        <Card className="w-full max-w-sm">
+          <CardHeader>
+            <CardTitle>Esqueci minha senha</CardTitle>
+            <CardDescription>
+              Informe seu e-mail e enviaremos um link para redefinir a senha.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {esqueci.enviado ? (
+              <div className="flex flex-col gap-4">
+                {/* Byte-idêntico à constante `mensagemEsqueciSenha` do backend. */}
+                <output className="text-body">Se o e-mail existir, você receberá um link.</output>
+                <Button type="button" variant="outline" className="w-full" onClick={voltarDoEsqueci}>
+                  Voltar para o login
+                </Button>
+              </div>
+            ) : (
+              <form onSubmit={pedirRedefinicao} className="flex flex-col gap-4" noValidate>
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="email-esqueci">E-mail</Label>
+                  <Input
+                    id="email-esqueci"
+                    type="email"
+                    autoComplete="email"
+                    required
+                    disabled={enviando}
+                    value={esqueci.email}
+                    onChange={(event) => setEsqueci({ ...esqueci, email: event.target.value })}
+                  />
+                </div>
+
+                {esqueci.erro && (
+                  <p role="alert" className="text-body text-destructive">
+                    {esqueci.erro}
+                  </p>
+                )}
+
+                <Button type="submit" className="w-full" disabled={enviando}>
+                  {enviando ? 'Enviando...' : 'Enviar link de redefinição'}
+                </Button>
+
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="w-full"
+                  disabled={enviando}
+                  onClick={voltarDoEsqueci}
+                >
+                  Voltar para o login
+                </Button>
+              </form>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    );
   }
 
   if (escolha) {
@@ -174,16 +268,14 @@ export function SemEmpresaPage() {
               type="button"
               variant="link"
               className="w-full"
-              aria-expanded={avisoEsqueci}
-              onClick={() => setAvisoEsqueci(true)}
+              disabled={enviando}
+              onClick={() => {
+                setErro(null);
+                setEsqueci({ email, enviado: false, erro: null });
+              }}
             >
               Esqueci a senha
             </Button>
-            {avisoEsqueci && (
-              <p className="text-body text-center text-muted-foreground">
-                Para redefinir a senha, use 'Esqueci minha senha' no endereço de acesso da sua empresa.
-              </p>
-            )}
           </form>
         </CardContent>
       </Card>

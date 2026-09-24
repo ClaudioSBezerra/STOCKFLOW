@@ -77,6 +77,39 @@ func TestRenderizarTemplate_RedefinicaoSenha(t *testing.T) {
 	}
 }
 
+// Story 15.3: `empresa` entra no e-mail (escapado); sem ela, o corpo não tem
+// a frase — linha antiga do outbox renderiza como antes.
+func TestRenderizarTemplate_RedefinicaoSenhaComEmpresa(t *testing.T) {
+	com, err := renderizarTemplate("redefinicao_senha", map[string]any{
+		"nome":    "Fulano",
+		"link":    "http://test.local/e/acme/redefinir-senha?token=abc123",
+		"empresa": "Acme <b>&</b>",
+	})
+	if err != nil {
+		t.Fatalf("renderizarTemplate retornou erro: %v", err)
+	}
+	if !strings.Contains(com.CorpoHTML, "na empresa <strong>Acme &lt;b&gt;&amp;&lt;/b&gt;</strong>") {
+		t.Errorf("corpo não cita a Empresa escapada: %s", com.CorpoHTML)
+	}
+	if strings.Contains(com.CorpoHTML, "<b>") {
+		t.Error("nome da Empresa não foi escapado")
+	}
+
+	sem, err := renderizarTemplate("redefinicao_senha", map[string]any{
+		"nome": "Fulano",
+		"link": "http://test.local/e/acme/redefinir-senha?token=abc123",
+	})
+	if err != nil {
+		t.Fatalf("renderizarTemplate retornou erro: %v", err)
+	}
+	if strings.Contains(sem.CorpoHTML, "na empresa") {
+		t.Error("sem `empresa`, o corpo não deveria citar Empresa")
+	}
+	if !strings.Contains(sem.CorpoHTML, "redefinir a sua senha no stockflow. Clique") {
+		t.Error("sem `empresa`, o corpo deveria ficar como antes")
+	}
+}
+
 func TestRenderizarTemplate_TipoDesconhecidoRetornaErro(t *testing.T) {
 	_, err := renderizarTemplate("tipo-nao-implementado", map[string]any{})
 	if err == nil {

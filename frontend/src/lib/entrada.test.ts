@@ -6,6 +6,7 @@ import {
   escolherApp,
   gravarMfaPendente,
   lerMfaPendente,
+  pedirRedefinicaoPelaConta,
   removerMfaPendente,
   type AppDeEntrada,
 } from './entrada';
@@ -81,6 +82,25 @@ describe('login pela conta (Story 15.2)', () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('/api/auth/entrar/escolha');
     expect(JSON.parse(init.body as string)).toEqual({ escolhaToken: 'tok', slug: 'acme' });
+  });
+
+  it('pedirRedefinicaoPelaConta chama POST /api/auth/esqueci-senha sem prefixo (Story 15.3)', async () => {
+    window.history.pushState({}, '', '/e/outra/login');
+    fetchMock.mockImplementationOnce(() =>
+      resposta(202, { mensagem: 'Se o e-mail existir, você receberá um link.' }),
+    );
+    expect(await pedirRedefinicaoPelaConta('a@b.c')).toBe(true);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/auth/esqueci-senha');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({ email: 'a@b.c' });
+    window.history.pushState({}, '', '/');
+
+    fetchMock.mockImplementationOnce(() => resposta(500, { error: { code: 'INTERNAL_ERROR' } }));
+    expect(await pedirRedefinicaoPelaConta('a@b.c')).toBe(false);
+
+    fetchMock.mockImplementationOnce(() => Promise.reject(new Error('rede')));
+    expect(await pedirRedefinicaoPelaConta('a@b.c')).toBe(false);
   });
 
   it('repasse do MFA só vale para o mesmo slug', () => {

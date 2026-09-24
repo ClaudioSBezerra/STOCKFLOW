@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -94,6 +95,7 @@ func muxEntrada(db *sql.DB) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/auth/entrar", EntrarHandler(db, testJWTSecret))
 	mux.HandleFunc("POST /api/auth/entrar/escolha", EntrarEscolhaHandler(db, testJWTSecret))
+	mux.HandleFunc("POST /api/auth/esqueci-senha", EsqueciSenhaPelaContaHandler(db, testEmailCfg))
 	return mux
 }
 
@@ -465,5 +467,163 @@ func TestEntrar_Bloqueio(t *testing.T) {
 		if wl.Code != http.StatusTooManyRequests {
 			t.Errorf("login por Empresa %s: status = %d", slug, wl.Code)
 		}
+	}
+}
+
+// --- Story 15.3: POST /api/auth/esqueci-senha na raiz (sempre 202).
+
+// emailsRedefinicaoH devolve as variáveis dos e-mails `redefinicao_senha` da
+// conta, e o token `redefinicao_senha` válido dela ("" se nenhum).
+func emailsRedefinicaoH(t *testing.T, db *sql.DB, usuarioID string) (tokenValido string, emails []map[string]any) {
+	t.Helper()
+	err := db.QueryRow(`SELECT token FROM tokens_acao
+		WHERE usuario_id = $1 AND tipo = 'redefinicao_senha' AND usado_em IS NULL`, usuarioID).Scan(&tokenValido)
+	if err != nil && err != sql.ErrNoRows {
+		t.Fatal(err)
+	}
+	rows, err := db.Query(`SELECT variaveis_json::text FROM emails_pendentes
+		WHERE usuario_id = $1 AND tipo = 'redefinicao_senha' ORDER BY criado_em`, usuarioID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		var v map[string]any
+		if err := json.Unmarshal([]byte(raw), &v); err != nil {
+			t.Fatal(err)
+		}
+		emails = append(emails, v)
+	}
+	return tokenValido, emails
+}
+
+func TestEsqueciSenhaRaiz_RealETreinamento(t *testing.T) {
+	db := testDB(t)
+	real, trein := prepararEntradaH(t, db)
+	if _, err := db.Exec(`UPDATE empresas SET nome_fantasia = 'Entrada H Treinamento' WHERE id = $1`, trein.ID); err != nil {
+		t.Fatal(err)
+	}
+	idReal := criarContaEntradaH(t, db, real.ID, "fe@entrada-h.test", "senha-certa-1", true, true, false)
+	idTrein := criarContaEntradaH(t, db, trein.ID, "fe@entrada-h.test", "senha-certa-1", true, true, false)
+
+	w := postEntrada(t, db, "/api/auth/esqueci-senha", `{"email":" FE@Entrada-H.test "}`)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (body=%s)", w.Code, w.Body.String())
+	}
+	for _, c := range []struct{ id, slug, nome string }{
+		{idReal, slugEntradaH, "Entrada H"},
+		{idTrein, slugEntradaHTrein, "Entrada H Treinamento"},
+	} {
+		token, emails := emailsRedefinicaoH(t, db, c.id)
+		if token == "" || len(emails) != 1 {
+			t.Fatalf("%s: token=%q emails=%d, want token + 1 e-mail", c.slug, token, len(emails))
+		}
+		wantLink := testEmailCfg.AppURL + "/e/" + c.slug + "/redefinir-senha?token=" + token
+		if got, _ := emails[0]["link"].(string); got != wantLink {
+			t.Errorf("%s: link = %q, want %q", c.slug, got, wantLink)
+		}
+		if got, _ := emails[0]["empresa"].(string); got != c.nome {
+			t.Errorf("%s: empresa = %q, want %q", c.slug, got, c.nome)
+		}
+	}
+}
+
+// Resposta byte-idêntica com conta, sem conta, conta desativada, Empresa
+// inativa e e-mail em branco; nada gravado nos casos sem conta elegível.
+func TestEsqueciSenhaRaiz_CorpoIdentico(t *testing.T) {
+	db := testDB(t)
+	real, trein := prepararEntradaH(t, db)
+	criarContaEntradaH(t, db, real.ID, "gil@entrada-h.test", "senha-certa-1", true, true, false)
+	desativada := criarContaEntradaH(t, db, real.ID, "hugo@entrada-h.test", "senha-certa-1", false, true, false)
+	emInativa := criarContaEntradaH(t, db, trein.ID, "ivo@entrada-h.test", "senha-certa-1", true, true, false)
+	if _, err := db.Exec(`UPDATE empresas SET status = 'inativa' WHERE id = $1`, trein.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	comConta := postEntrada(t, db, "/api/auth/esqueci-senha", `{"email":"gil@entrada-h.test"}`)
+	if comConta.Code != http.StatusAccepted {
+		t.Fatalf("com conta: status = %d (body=%s)", comConta.Code, comConta.Body.String())
+	}
+	var r struct {
+		Mensagem string `json:"mensagem"`
+	}
+	if err := json.Unmarshal(comConta.Body.Bytes(), &r); err != nil || r.Mensagem != mensagemEsqueciSenha {
+		t.Fatalf("corpo = %s (err=%v)", comConta.Body.String(), err)
+	}
+	for _, corpo := range []string{
+		`{"email":"ninguem@entrada-h.test"}`,
+		`{"email":"hugo@entrada-h.test"}`,
+		`{"email":"ivo@entrada-h.test"}`,
+		`{"email":"   "}`,
+		`{}`,
+	} {
+		w := postEntrada(t, db, "/api/auth/esqueci-senha", corpo)
+		if w.Code != http.StatusAccepted || w.Body.String() != comConta.Body.String() {
+			t.Errorf("%s: status=%d body=%q, want 202 %q", corpo, w.Code, w.Body.String(), comConta.Body.String())
+		}
+	}
+	for _, id := range []string{desativada, emInativa} {
+		if token, emails := emailsRedefinicaoH(t, db, id); token != "" || len(emails) != 0 {
+			t.Errorf("conta %s: token=%q emails=%d, want nada gravado", id, token, len(emails))
+		}
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM emails_pendentes WHERE tipo = 'redefinicao_senha'`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("e-mails de redefinição = %d (err=%v), want 1 (só o da conta ativa)", n, err)
+	}
+}
+
+func TestEsqueciSenhaRaiz_PedidoRepetido(t *testing.T) {
+	db := testDB(t)
+	real, _ := prepararEntradaH(t, db)
+	id := criarContaEntradaH(t, db, real.ID, "jo@entrada-h.test", "senha-certa-1", true, true, false)
+
+	for i := 0; i < 2; i++ {
+		if w := postEntrada(t, db, "/api/auth/esqueci-senha", `{"email":"jo@entrada-h.test"}`); w.Code != http.StatusAccepted {
+			t.Fatalf("pedido %d: status = %d", i+1, w.Code)
+		}
+	}
+	token, emails := emailsRedefinicaoH(t, db, id)
+	var validos int
+	if err := db.QueryRow(`SELECT count(*) FROM tokens_acao
+		WHERE usuario_id = $1 AND tipo = 'redefinicao_senha' AND usado_em IS NULL`, id).Scan(&validos); err != nil {
+		t.Fatal(err)
+	}
+	if validos != 1 || len(emails) != 2 {
+		t.Fatalf("tokens válidos=%d emails=%d, want 1/2", validos, len(emails))
+	}
+	if link, _ := emails[1]["link"].(string); !strings.HasSuffix(link, "token="+token) {
+		t.Errorf("o token válido não é o do último e-mail (%q)", link)
+	}
+}
+
+func TestEsqueciSenhaRaiz_Validacao(t *testing.T) {
+	db := testDB(t)
+	if w := postEntrada(t, db, "/api/auth/esqueci-senha", `{`); w.Code != http.StatusBadRequest || decodeErro(t, w.Body.Bytes()).Error.Code != "VALIDATION_ERROR" {
+		t.Errorf("JSON malformado: status=%d body=%s", w.Code, w.Body.String())
+	}
+	grande := `{"email":"` + strings.Repeat("x", authRequestMaxBytes) + `"}`
+	if w := postEntrada(t, db, "/api/auth/esqueci-senha", grande); w.Code != http.StatusBadRequest || decodeErro(t, w.Body.Bytes()).Error.Code != "VALIDATION_ERROR" {
+		t.Errorf("payload grande: status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// Erro de infraestrutura (banco fechado) vira 500 INTERNAL_ERROR, nunca o 202
+// de sucesso — senão a tela diria "você receberá um link" sem nada gravado.
+func TestEsqueciSenhaRaiz_ErroDeInfraestrutura(t *testing.T) {
+	testDB(t) // pula sem DATABASE_URL
+	fechado, err := sql.Open("postgres", os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fechado.Close()
+
+	w := postEntrada(t, fechado, "/api/auth/esqueci-senha", `{"email":"ze@entrada-h.test"}`)
+	if w.Code != http.StatusInternalServerError || decodeErro(t, w.Body.Bytes()).Error.Code != "INTERNAL_ERROR" {
+		t.Fatalf("status=%d body=%s, want 500 INTERNAL_ERROR", w.Code, w.Body.String())
 	}
 }

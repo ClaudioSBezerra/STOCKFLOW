@@ -1019,12 +1019,16 @@ func SolicitarRedefinicaoSenha(db *sql.DB, emailCfg EmailConfig, empresaID, empr
 		return nil
 	}
 
-	var usuarioID, nome string
+	// Story 15.3: o nome da Empresa entra no e-mail para a pessoa distinguir
+	// o e-mail da Empresa real do e-mail do Treinamento (mesmo texto, só o
+	// link mudaria).
+	var usuarioID, nome, nomeEmpresa string
 	const selectUsuario = `
-		SELECT id, nome
-		FROM usuarios
-		WHERE lower(email) = $1 AND empresa_id = $2`
-	if err := db.QueryRow(selectUsuario, normalizedEmail, empresaID).Scan(&usuarioID, &nome); err != nil {
+		SELECT u.id, u.nome, e.nome_fantasia
+		FROM usuarios u
+		JOIN empresas e ON e.id = u.empresa_id
+		WHERE lower(u.email) = $1 AND u.empresa_id = $2`
+	if err := db.QueryRow(selectUsuario, normalizedEmail, empresaID).Scan(&usuarioID, &nome, &nomeEmpresa); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
@@ -1064,8 +1068,9 @@ func SolicitarRedefinicaoSenha(db *sql.DB, emailCfg EmailConfig, empresaID, empr
 
 	link := LinkDaEmpresa(emailCfg.AppURL, empresaSlug, "/redefinir-senha", token)
 	variaveis := map[string]any{
-		"nome": nome,
-		"link": link,
+		"nome":    nome,
+		"link":    link,
+		"empresa": nomeEmpresa,
 	}
 	if err := EnfileirarEmail(tx, normalizedEmail, usuarioID, "redefinicao_senha", variaveis); err != nil {
 		return err

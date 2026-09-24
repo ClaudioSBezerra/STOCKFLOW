@@ -2,7 +2,9 @@ package services
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"golang.org/x/crypto/bcrypt"
@@ -320,5 +322,147 @@ func TestEntrarPelaConta_BloqueioEmCadaConta(t *testing.T) {
 	}
 	if _, err := Login(db, real.ID, "edu@entrada.test", "senha-certa-1"); !errors.Is(err, ErrContaBloqueada) {
 		t.Fatalf("Login por Empresa depois do bloqueio: err = %v", err)
+	}
+}
+
+// --- Story 15.3: "Esqueci a senha" na raiz — SolicitarRedefinicaoSenhaPelaConta.
+
+// redefinicaoDaConta devolve os tokens `redefinicao_senha` válidos e as
+// variáveis dos e-mails `redefinicao_senha` da conta.
+func redefinicaoDaConta(t *testing.T, db *sql.DB, usuarioID string) (tokensValidos []string, emails []map[string]any) {
+	t.Helper()
+	rows, err := db.Query(`SELECT token FROM tokens_acao
+		WHERE usuario_id = $1 AND tipo = 'redefinicao_senha' AND usado_em IS NULL AND expira_em > now()`, usuarioID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var tk string
+		if err := rows.Scan(&tk); err != nil {
+			t.Fatal(err)
+		}
+		tokensValidos = append(tokensValidos, tk)
+	}
+	rows.Close()
+
+	rows, err = db.Query(`SELECT variaveis_json::text FROM emails_pendentes
+		WHERE usuario_id = $1 AND tipo = 'redefinicao_senha' ORDER BY criado_em`, usuarioID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		var v map[string]any
+		if err := json.Unmarshal([]byte(raw), &v); err != nil {
+			t.Fatal(err)
+		}
+		emails = append(emails, v)
+	}
+	return tokensValidos, emails
+}
+
+func conferirEmailRedefinicao(t *testing.T, v map[string]any, slug, empresa, token string) {
+	t.Helper()
+	wantLink := "http://test.local/e/" + slug + "/redefinir-senha?token=" + token
+	if got, _ := v["link"].(string); got != wantLink {
+		t.Errorf("link = %q, want %q", got, wantLink)
+	}
+	if got, _ := v["empresa"].(string); got != empresa {
+		t.Errorf("empresa = %q, want %q", got, empresa)
+	}
+}
+
+func TestSolicitarRedefinicaoSenhaPelaConta_UmaConta(t *testing.T) {
+	db := testDB(t)
+	real, _ := prepararEmpresasEntrada(t, db)
+	id := criarContaEntrada(t, db, real.ID, "ana@entrada.test", "senha-certa-1", true, true)
+
+	if err := SolicitarRedefinicaoSenhaPelaConta(db, testEmailCfg, " ANA@Entrada.test "); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	tokens, emails := redefinicaoDaConta(t, db, id)
+	if len(tokens) != 1 || len(emails) != 1 {
+		t.Fatalf("tokens=%d emails=%d, want 1/1", len(tokens), len(emails))
+	}
+	conferirEmailRedefinicao(t, emails[0], slugEntradaReal, "Entrada Real", tokens[0])
+}
+
+func TestSolicitarRedefinicaoSenhaPelaConta_RealETreinamento(t *testing.T) {
+	db := testDB(t)
+	real, trein := prepararEmpresasEntrada(t, db)
+	if _, err := db.Exec(`UPDATE empresas SET nome_fantasia = 'Entrada Real (Treinamento)' WHERE id = $1`, trein.ID); err != nil {
+		t.Fatal(err)
+	}
+	idReal := criarContaEntrada(t, db, real.ID, "bia@entrada.test", "senha-real-1", true, true)
+	idTrein := criarContaEntrada(t, db, trein.ID, "bia@entrada.test", "senha-trein-1", true, true)
+
+	if err := SolicitarRedefinicaoSenhaPelaConta(db, testEmailCfg, "bia@entrada.test"); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	tokens, emails := redefinicaoDaConta(t, db, idReal)
+	if len(tokens) != 1 || len(emails) != 1 {
+		t.Fatalf("real: tokens=%d emails=%d, want 1/1", len(tokens), len(emails))
+	}
+	conferirEmailRedefinicao(t, emails[0], slugEntradaReal, "Entrada Real", tokens[0])
+
+	tokens, emails = redefinicaoDaConta(t, db, idTrein)
+	if len(tokens) != 1 || len(emails) != 1 {
+		t.Fatalf("treinamento: tokens=%d emails=%d, want 1/1", len(tokens), len(emails))
+	}
+	conferirEmailRedefinicao(t, emails[0], slugEntradaTreinamento, "Entrada Real (Treinamento)", tokens[0])
+}
+
+func TestSolicitarRedefinicaoSenhaPelaConta_NadaGravado(t *testing.T) {
+	db := testDB(t)
+	real, trein := prepararEmpresasEntrada(t, db)
+	desativada := criarContaEntrada(t, db, real.ID, "desativada@entrada.test", "senha-certa-1", false, true)
+	emInativa := criarContaEntrada(t, db, trein.ID, "inativa@entrada.test", "senha-certa-1", true, true)
+	if _, err := db.Exec(`UPDATE empresas SET status = 'inativa' WHERE id = $1`, trein.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, email := range []string{"ninguem@entrada.test", "desativada@entrada.test", "inativa@entrada.test", "", "   "} {
+		if err := SolicitarRedefinicaoSenhaPelaConta(db, testEmailCfg, email); err != nil {
+			t.Fatalf("%q: err = %v", email, err)
+		}
+	}
+	for _, id := range []string{desativada, emInativa} {
+		if tokens, emails := redefinicaoDaConta(t, db, id); len(tokens) != 0 || len(emails) != 0 {
+			t.Errorf("conta %s: tokens=%d emails=%d, want 0/0", id, len(tokens), len(emails))
+		}
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM emails_pendentes WHERE tipo = 'redefinicao_senha'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("e-mails de redefinição = %d, want 0", n)
+	}
+}
+
+func TestSolicitarRedefinicaoSenhaPelaConta_PedidoRepetido(t *testing.T) {
+	db := testDB(t)
+	real, trein := prepararEmpresasEntrada(t, db)
+	idReal := criarContaEntrada(t, db, real.ID, "caio@entrada.test", "senha-certa-1", true, true)
+	idTrein := criarContaEntrada(t, db, trein.ID, "caio@entrada.test", "senha-certa-1", true, true)
+
+	for i := 0; i < 2; i++ {
+		if err := SolicitarRedefinicaoSenhaPelaConta(db, testEmailCfg, "caio@entrada.test"); err != nil {
+			t.Fatalf("pedido %d: err = %v", i+1, err)
+		}
+	}
+	for _, c := range []struct{ id, slug string }{{idReal, slugEntradaReal}, {idTrein, slugEntradaTreinamento}} {
+		tokens, emails := redefinicaoDaConta(t, db, c.id)
+		if len(tokens) != 1 || len(emails) != 2 {
+			t.Fatalf("%s: tokens válidos=%d emails=%d, want 1/2", c.slug, len(tokens), len(emails))
+		}
+		// o token válido é o do último e-mail
+		if link, _ := emails[1]["link"].(string); !strings.HasSuffix(link, "token="+tokens[0]) {
+			t.Errorf("%s: último link %q não leva o token válido", c.slug, link)
+		}
 	}
 }

@@ -228,3 +228,66 @@ func ConcluirEscolhaEmpresa(db *sql.DB, token, slug string) (ContaEntrada, error
 	}
 	return c, nil
 }
+
+// selectContasRedefinicao: as contas ATIVAS do e-mail em Empresas ATIVAS, na
+// mesma ordem de selectContasEntrada (real antes do Treinamento, depois por
+// slug). Conta desativada não recebe e-mail: mesmo com senha nova, Login a
+// recusaria.
+const selectContasRedefinicao = `
+	SELECT u.empresa_id, e.slug
+	FROM usuarios u
+	JOIN empresas e ON e.id = u.empresa_id
+	WHERE lower(u.email) = $1 AND e.status = 'ativa' AND u.ativo
+	ORDER BY (e.empresa_origem_id IS NOT NULL), e.slug`
+
+// SolicitarRedefinicaoSenhaPelaConta trata POST /api/auth/esqueci-senha na
+// raiz do domínio (Story 15.3, AD-36): acha as contas elegíveis do e-mail e
+// chama SolicitarRedefinicaoSenha uma vez por conta, com a Empresa e o slug
+// dela — a regra de token/e-mail (invalidar anteriores, 30 min, link sob
+// `/e/{slug}`, outbox) continua num lugar só. Como SolicitarRedefinicaoSenha,
+// devolve nil exista ou não a conta; só erro de infraestrutura sobe (depois
+// de tentar todas as contas).
+func SolicitarRedefinicaoSenhaPelaConta(db *sql.DB, emailCfg EmailConfig, email string) error {
+	normalizedEmail := normalizeEmail(email)
+	if normalizedEmail == "" {
+		return nil
+	}
+
+	contas, err := contasRedefinicao(db, normalizedEmail)
+	if err != nil {
+		return err
+	}
+
+	// Um erro numa conta não impede o pedido das outras: cada chamada tem a
+	// sua transação, e parar no meio deixaria a real com link e o Treinamento
+	// sem (ou vice-versa). Os erros sobem juntos no fim.
+	var errs []error
+	for _, c := range contas {
+		if err := SolicitarRedefinicaoSenha(db, emailCfg, c.empresaID, c.slug, normalizedEmail); err != nil {
+			errs = append(errs, fmt.Errorf("redefinição na Empresa %s: %w", c.slug, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+type contaRedefinicao struct{ empresaID, slug string }
+
+func contasRedefinicao(db *sql.DB, normalizedEmail string) ([]contaRedefinicao, error) {
+	rows, err := db.Query(selectContasRedefinicao, normalizedEmail)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao buscar contas do e-mail para redefinição: %w", err)
+	}
+	defer rows.Close()
+	var contas []contaRedefinicao
+	for rows.Next() {
+		var c contaRedefinicao
+		if err := rows.Scan(&c.empresaID, &c.slug); err != nil {
+			return nil, fmt.Errorf("falha ao ler contas do e-mail para redefinição: %w", err)
+		}
+		contas = append(contas, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("falha ao ler contas do e-mail para redefinição: %w", err)
+	}
+	return contas, nil
+}
