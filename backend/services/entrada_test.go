@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -464,5 +465,59 @@ func TestSolicitarRedefinicaoSenhaPelaConta_PedidoRepetido(t *testing.T) {
 		if link, _ := emails[1]["link"].(string); !strings.HasSuffix(link, "token="+tokens[0]) {
 			t.Errorf("%s: último link %q não leva o token válido", c.slug, link)
 		}
+	}
+}
+
+// --- Story 15.4 (AD-36): Empresa padrão de um servidor de um cliente só ---
+
+func TestEmpresaPadrao(t *testing.T) {
+	db := testDB(t)
+	real, _ := prepararEmpresasEntrada(t, db)
+
+	casos := []struct {
+		nome, entrada, want string
+	}{
+		{"válida", slugEntradaReal, slugEntradaReal},
+		{"com espaços", "  " + slugEntradaReal + "\t", slugEntradaReal},
+		{"vazia", "", ""},
+		{"só espaços", "   ", ""},
+		{"inexistente", "nao-existe-s154", ""},
+		{"fora da forma", "ACME/../x", ""},
+		{"maiúsculas", strings.ToUpper(slugEntradaReal), ""},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			got, err := EmpresaPadrao(db, c.entrada)
+			if err != nil || got != c.want {
+				t.Errorf("EmpresaPadrao(%q) = %q, %v; want %q, nil", c.entrada, got, err, c.want)
+			}
+		})
+	}
+
+	t.Run("desativada", func(t *testing.T) {
+		if _, err := db.Exec(`UPDATE empresas SET status = 'inativa' WHERE id = $1`, real.ID); err != nil {
+			t.Fatal(err)
+		}
+		got, err := EmpresaPadrao(db, slugEntradaReal)
+		if err != nil || got != "" {
+			t.Errorf("EmpresaPadrao(inativa) = %q, %v; want \"\", nil", got, err)
+		}
+	})
+}
+
+func TestEmpresaPadrao_ErroDeBanco(t *testing.T) {
+	testDB(t) // pula sem DATABASE_URL
+	fechado, err := sql.Open("postgres", os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fechado.Close()
+
+	if got, err := EmpresaPadrao(fechado, "qualquer-s154"); err == nil || got != "" {
+		t.Errorf("EmpresaPadrao(banco fechado) = %q, %v; want erro", got, err)
+	}
+	// Vazia nem consulta o banco.
+	if got, err := EmpresaPadrao(fechado, ""); err != nil || got != "" {
+		t.Errorf("EmpresaPadrao(vazia, banco fechado) = %q, %v; want \"\", nil", got, err)
 	}
 }

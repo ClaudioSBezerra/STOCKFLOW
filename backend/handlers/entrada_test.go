@@ -627,3 +627,72 @@ func TestEsqueciSenhaRaiz_ErroDeInfraestrutura(t *testing.T) {
 		t.Fatalf("status=%d body=%s, want 500 INTERNAL_ERROR", w.Code, w.Body.String())
 	}
 }
+
+// --- Story 15.4 (AD-36): GET /api/entrada ---
+
+func getEntradaPadrao(t *testing.T, db *sql.DB, empresaPadrao string) *httptest.ResponseRecorder {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/entrada", EntradaHandler(db, empresaPadrao))
+	req := httptest.NewRequest(http.MethodGet, "/api/entrada", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	return w
+}
+
+func TestEntradaHandler(t *testing.T) {
+	db := testDB(t)
+	real, _ := prepararEntradaH(t, db)
+
+	const corpoNull = `{"empresaPadrao":null}` + "\n"
+	casos := []struct {
+		nome, variavel, corpo string
+	}{
+		{"válida", slugEntradaH, `{"empresaPadrao":"` + slugEntradaH + `"}` + "\n"},
+		{"com espaços", " " + slugEntradaH + " ", `{"empresaPadrao":"` + slugEntradaH + `"}` + "\n"},
+		{"ausente", "", corpoNull},
+		{"inexistente", "nao-existe-h154", corpoNull},
+		{"fora da forma", "ACME/../x", corpoNull},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			w := getEntradaPadrao(t, db, c.variavel)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d (body=%s)", w.Code, w.Body.String())
+			}
+			if got := w.Body.String(); got != c.corpo {
+				t.Errorf("corpo = %q, want %q", got, c.corpo)
+			}
+			if cc := w.Header().Get("Cache-Control"); cc != "no-store" {
+				t.Errorf("Cache-Control = %q, want no-store", cc)
+			}
+		})
+	}
+
+	t.Run("desativada", func(t *testing.T) {
+		if _, err := db.Exec(`UPDATE empresas SET status = 'inativa' WHERE id = $1`, real.ID); err != nil {
+			t.Fatal(err)
+		}
+		w := getEntradaPadrao(t, db, slugEntradaH)
+		if w.Code != http.StatusOK || w.Body.String() != corpoNull {
+			t.Errorf("status=%d corpo=%q, want 200 %q", w.Code, w.Body.String(), corpoNull)
+		}
+	})
+}
+
+func TestEntradaHandler_ErroDeBanco(t *testing.T) {
+	testDB(t) // pula sem DATABASE_URL
+	fechado, err := sql.Open("postgres", os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fechado.Close()
+
+	w := getEntradaPadrao(t, fechado, slugEntradaH)
+	if w.Code != http.StatusInternalServerError || decodeErro(t, w.Body.Bytes()).Error.Code != "INTERNAL_ERROR" {
+		t.Fatalf("status=%d body=%s, want 500 INTERNAL_ERROR", w.Code, w.Body.String())
+	}
+	if cc := w.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", cc)
+	}
+}

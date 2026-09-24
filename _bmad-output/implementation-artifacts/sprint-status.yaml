@@ -151,5 +151,5 @@ development_status:
   15-1-e-mail-único-entre-as-empresas-reais: done
   15-2-login-na-raiz-do-domínio-pela-conta: done
   15-3-esqueci-a-senha-na-raiz-do-domínio: done
-  15-4-domínio-de-um-cliente-só-abre-direto-a-empresa: backlog
+  15-4-domínio-de-um-cliente-só-abre-direto-a-empresa: awaiting-operator
   epic-15-retrospective: optional

@@ -11,7 +11,9 @@ import { slugDaURL } from '@/lib/api';
  *   Empresa do slug;
  * - `sem-empresa`: qualquer outro caminho — o login pela conta (Story 15.2):
  *   e-mail e senha descobrem a Empresa e a pessoa é levada para
- *   `/e/{slug}/` (a app da Empresa nunca sobe sem slug).
+ *   `/e/{slug}/` (a app da Empresa nunca sobe sem slug). Antes de montá-la,
+ *   `main.tsx` chama `abrirEmpresaPadrao` (Story 15.4): num servidor de um
+ *   cliente só (`EMPRESA_PADRAO`) a pessoa vai direto para `/e/{slug}/`.
  */
 export type AppDeEntrada = 'plataforma' | 'empresa' | 'sem-empresa';
 
@@ -23,6 +25,72 @@ export function escolherApp(pathname: string): AppDeEntrada {
     return 'empresa';
   }
   return 'sem-empresa';
+}
+
+// --- Empresa padrão de um servidor de um cliente só (Story 15.4, AD-36) ---
+
+/** Prazo de `GET /api/entrada`: passou disso, a raiz mostra o login pela conta. */
+export const TIMEOUT_EMPRESA_PADRAO_MS = 3000;
+
+/**
+ * GET /api/entrada — o slug da Empresa padrão do servidor, ou `null`. Nunca
+ * `apiUrl`: a rota vive fora do prefixo de Empresa. Rede, timeout, não-`2xx`,
+ * JSON inválido, `null` ou slug fora da forma canônica -> `null` (o slug é
+ * validado de novo aqui para um corpo inesperado nunca virar redirecionamento
+ * para caminho arbitrário).
+ */
+export async function buscarEmpresaPadrao(): Promise<string | null> {
+  const controle = new AbortController();
+  const timer = setTimeout(() => controle.abort(), TIMEOUT_EMPRESA_PADRAO_MS);
+  try {
+    const res = await fetch('/api/entrada', {
+      credentials: 'same-origin',
+      cache: 'no-store',
+      signal: controle.signal,
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { empresaPadrao?: unknown } | null;
+    const slug = body?.empresaPadrao;
+    if (typeof slug !== 'string' || slug === '' || slugDaURL(`/e/${slug}/`) !== slug) return null;
+    return slug;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Com Empresa padrão, troca a página por `/e/{slug}/` (`location.replace`:
+ * a raiz não fica no histórico) e devolve `true` — quem chamou não monta
+ * nada. Sem ela, `false`: a raiz mostra o login pela conta, nunca um erro.
+ *
+ * Fora da raiz, o resto do caminho, a query e o hash vão junto: `/login`
+ * vira `/e/{slug}/login`, e o retorno do SSO registrado na raiz
+ * (`/auth/callback?code=...&state=...`, como no exemplo de
+ * `IAM_REDIRECT_URI` do `.env.template`) chega à tela de callback da Empresa
+ * sem perder o `code`.
+ */
+export async function abrirEmpresaPadrao(): Promise<boolean> {
+  const slug = await buscarEmpresaPadrao();
+  if (!slug) return false;
+  const { pathname, search, hash } = window.location;
+  window.location.replace(`/e/${slug}${pathname.startsWith('/') ? pathname : '/'}${search}${hash}`);
+  return true;
+}
+
+/**
+ * Decisão completa do `main.tsx` para o caminho atual: a app de
+ * `escolherApp` ou, na `sem-empresa` de um servidor com Empresa padrão,
+ * `'redirecionado'` (a página já foi trocada; não montar nada). Só a
+ * `sem-empresa` consulta `GET /api/entrada`.
+ */
+export async function decidirEntrada(pathname: string): Promise<AppDeEntrada | 'redirecionado'> {
+  const app = escolherApp(pathname);
+  if (app === 'sem-empresa' && (await abrirEmpresaPadrao())) {
+    return 'redirecionado';
+  }
+  return app;
 }
 
 // --- Login pela conta na raiz do domínio (Story 15.2, AD-36) ---

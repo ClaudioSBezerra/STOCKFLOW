@@ -291,3 +291,25 @@ func contasRedefinicao(db *sql.DB, normalizedEmail string) ([]contaRedefinicao, 
 	}
 	return contas, nil
 }
+
+// EmpresaPadrao resolve a variável `EMPRESA_PADRAO` (Story 15.4, AD-36) de
+// um servidor de um cliente só: devolve o slug da Empresa encontrada no
+// banco se `slug` (trimado) é canônico, existe e está `ativa`; `""` em
+// qualquer outro caso — vazia, fora da forma, inexistente ou desativada
+// (BuscarEmpresaPorSlug colapsa todos em ErrEmpresaNaoEncontrada). Só erro de
+// banco é propagado. Consultada a cada requisição, para refletir uma
+// desativação sem reiniciar o servidor.
+func EmpresaPadrao(db *sql.DB, slug string) (string, error) {
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return "", nil
+	}
+	e, err := BuscarEmpresaPorSlug(db, slug)
+	if errors.Is(err, ErrEmpresaNaoEncontrada) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return e.Slug, nil
+}

@@ -112,6 +112,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -206,6 +207,17 @@ func main() {
 	// fechar.
 	pararWorkerEmail := services.IniciarWorkerEmail(db, emailCfg, services.IntervaloPollingEmail)
 	defer pararWorkerEmail()
+
+	// EMPRESA_PADRAO (Story 15.4) é opcional. Definida mas sem resolver para
+	// uma Empresa ativa, a raiz cai calada no login pela conta; o aviso aqui
+	// é o único sinal que o operador tem de que o valor está errado.
+	if v := strings.TrimSpace(os.Getenv("EMPRESA_PADRAO")); v != "" {
+		if slug, err := services.EmpresaPadrao(db, v); err != nil {
+			slog.Warn("falha ao conferir EMPRESA_PADRAO", "empresa_padrao", v, "error", err)
+		} else if slug == "" {
+			slog.Warn("EMPRESA_PADRAO não corresponde a uma Empresa ativa; a raiz mostra o login pela conta", "empresa_padrao", v)
+		}
+	}
 
 	mux := newMux(db, emailCfg, []byte(jwtSecret), iamCfg, fotosDir)
 
@@ -321,8 +333,10 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// liveness do compose/CI (AD-16), que não conhece nenhum slug e precisa
 	// responder mesmo com a tabela `empresas` vazia —, a área do Dono da
 	// Plataforma (`/api/plataforma/*`), o login pela conta na raiz
-	// (`/api/auth/entrar*`, Story 15.2) e o "Esqueci a senha" na raiz
-	// (`POST /api/auth/esqueci-senha`, Story 15.3), registrados abaixo.
+	// (`/api/auth/entrar*`, Story 15.2), o "Esqueci a senha" na raiz
+	// (`POST /api/auth/esqueci-senha`, Story 15.3) e a Empresa padrão de um
+	// servidor de um cliente só (`GET /api/entrada`, Story 15.4), registrados
+	// abaixo.
 	requireEmpresa := middleware.RequireEmpresa(db)
 	registrar := func(padrao string, h http.HandlerFunc) {
 		mux.HandleFunc(padrao, requireEmpresa(h))
@@ -358,6 +372,13 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// e-mail de redefinição por conta ativa do e-mail, cada um com o link
 	// `/e/{slug}/redefinir-senha` da sua Empresa. Sempre 202.
 	mux.HandleFunc("POST /api/auth/esqueci-senha", handlers.EsqueciSenhaPelaContaHandler(db, emailCfg))
+	// Empresa padrão — Story 15.4 (AD-36), mesma exceção: num servidor de um
+	// cliente só (`EMPRESA_PADRAO`, opcional, nunca definida em
+	// stockflow.fbtechia.com) a raiz redireciona para `/e/{slug}/`. Lida uma
+	// vez aqui; a Empresa é consultada a cada requisição. Público: devolve só
+	// `{empresaPadrao: slug | null}`.
+	empresaPadrao := os.Getenv("EMPRESA_PADRAO")
+	mux.HandleFunc("GET /api/entrada", handlers.EntradaHandler(db, empresaPadrao))
 
 	registrar("POST /e/{slug}/api/auth/cadastro", handlers.CadastroHandler(db, emailCfg))
 	registrar("GET /e/{slug}/api/auth/verificar-email", handlers.VerificarEmailHandler(db))

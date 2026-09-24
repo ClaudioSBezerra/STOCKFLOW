@@ -45,6 +45,14 @@ services:
       - IAM_REDIRECT_URI=${IAM_REDIRECT_URI}
       - IAM_ALLOWED_CLIENT_IDS=${IAM_ALLOWED_CLIENT_IDS}
       - IAM_SCOPES=${IAM_SCOPES}
+      # Empresa padrão (Story 15.4, AD-36) -- OPCIONAL. Slug da única Empresa
+      # deste servidor de um cliente só (ex.: ferreira-costa em
+      # suprimentos.fcxlabs.com): com ela definida e a Empresa ativa, a raiz
+      # do domínio abre direto /e/{slug}/ (login da Empresa, com SSO). Vazia,
+      # inexistente ou Empresa desativada -> a raiz mostra o login pela conta.
+      # Nunca definir em stockflow.fbtechia.com (vários clientes). Depois de
+      # alterar no .env: `docker compose up -d api` (restart não relê o .env).
+      - EMPRESA_PADRAO=${EMPRESA_PADRAO}
     depends_on:
       db:
         condition: service_healthy

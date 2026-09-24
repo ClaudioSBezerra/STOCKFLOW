@@ -3884,3 +3884,69 @@ func TestMigration000050_Down(t *testing.T) {
 		t.Error("coluna contas_escolha ausente após o ROLLBACK")
 	}
 }
+
+// --- Story 15.4 (AD-36): GET /api/entrada pelo mux real ---
+
+const slugEntradaPadraoMux = "entrada-padrao-mux-s154"
+
+// TestNewMux_EntradaPadrao prova, pela composição real de newMux, que
+// `GET /api/entrada` está registrada sem prefixo de Empresa e sem sessão, que
+// `EMPRESA_PADRAO` é lida ao montar o mux e que o corpo tem só a chave
+// `empresaPadrao`.
+func TestNewMux_EntradaPadrao(t *testing.T) {
+	db := testDB(t)
+	removerEmpresaPlataformaMux(t, db, slugEntradaPadraoMux)
+	t.Cleanup(func() { removerEmpresaPlataformaMux(t, db, slugEntradaPadraoMux) })
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	empresa := provisionarEmpresaM49(t, tx, slugEntradaPadraoMux, "15245245000156", "Entrada Padrão Mux", nil)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	get := func(mux *http.ServeMux) (int, map[string]any, string) {
+		req := httptest.NewRequest(http.MethodGet, "/api/entrada", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		var corpo map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &corpo); err != nil {
+			t.Fatalf("corpo não é JSON: %q", w.Body.String())
+		}
+		return w.Code, corpo, w.Header().Get("Cache-Control")
+	}
+	montar := func() *http.ServeMux {
+		return newMux(db, services.CarregarEmailConfig(), []byte("segredo-de-teste-nao-usar-em-producao"), iam.Config{}, t.TempDir())
+	}
+
+	t.Run("com EMPRESA_PADRAO válida", func(t *testing.T) {
+		t.Setenv("EMPRESA_PADRAO", " "+slugEntradaPadraoMux+" ")
+		mux := montar()
+		code, corpo, cc := get(mux)
+		if code != http.StatusOK || len(corpo) != 1 || corpo["empresaPadrao"] != slugEntradaPadraoMux {
+			t.Fatalf("status=%d corpo=%v", code, corpo)
+		}
+		if cc != "no-store" {
+			t.Errorf("Cache-Control = %q", cc)
+		}
+
+		// Desativar reflete sem remontar o mux.
+		if _, err := db.Exec(`UPDATE empresas SET status = 'inativa' WHERE id = $1`, empresa.ID); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _, _ = db.Exec(`UPDATE empresas SET status = 'ativa' WHERE id = $1`, empresa.ID) })
+		code, corpo, _ = get(mux)
+		if v, ok := corpo["empresaPadrao"]; code != http.StatusOK || len(corpo) != 1 || !ok || v != nil {
+			t.Errorf("desativada: status=%d corpo=%v", code, corpo)
+		}
+	})
+
+	t.Run("sem EMPRESA_PADRAO", func(t *testing.T) {
+		t.Setenv("EMPRESA_PADRAO", "")
+		code, corpo, _ := get(montar())
+		if v, ok := corpo["empresaPadrao"]; code != http.StatusOK || len(corpo) != 1 || !ok || v != nil {
+			t.Errorf("status=%d corpo=%v", code, corpo)
+		}
+	})
+}

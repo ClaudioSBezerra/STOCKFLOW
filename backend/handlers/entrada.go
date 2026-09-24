@@ -1,11 +1,13 @@
 package handlers
 
-// Login na raiz do domínio pela conta — Story 15.2 (AD-36) — e o "Esqueci a
-// senha" na raiz (Story 15.3). As rotas daqui vivem FORA do prefixo
-// `/e/{slug}` e SEM RequireEmpresa: a Empresa é descoberta pela conta
-// (services.EntrarPelaConta), nunca pedida ao cliente. Por isso estes
-// handlers nunca chamam empresaDaRequisicao — o slug da resposta e o Path do
-// cookie vêm da conta cuja senha conferiu.
+// Login na raiz do domínio pela conta — Story 15.2 (AD-36) —, o "Esqueci a
+// senha" na raiz (Story 15.3) e a Empresa padrão de um servidor de um
+// cliente só (`GET /api/entrada`, Story 15.4). As rotas daqui vivem FORA do
+// prefixo `/e/{slug}` e SEM RequireEmpresa: a Empresa é descoberta pela conta
+// (services.EntrarPelaConta) ou pela variável `EMPRESA_PADRAO`, nunca pedida
+// ao cliente. Por isso estes handlers nunca chamam empresaDaRequisicao — o
+// slug da resposta e o Path do cookie vêm da conta cuja senha conferiu (ou da
+// Empresa padrão encontrada no banco).
 
 import (
 	"database/sql"
@@ -204,5 +206,37 @@ func EsqueciSenhaPelaContaHandler(db *sql.DB, emailCfg services.EmailConfig) htt
 		}
 
 		escreverJSON(w, http.StatusAccepted, map[string]string{"mensagem": mensagemEsqueciSenha})
+	}
+}
+
+// entradaResposta é o corpo de GET /api/entrada: SÓ `empresaPadrao` (slug ou
+// `null`), nenhum outro dado da Empresa.
+type entradaResposta struct {
+	EmpresaPadrao *string `json:"empresaPadrao"`
+}
+
+// EntradaHandler expõe GET /api/entrada (Story 15.4, AD-36): público, sem
+// sessão e sem Empresa na URL. `empresaPadrao` é o valor de `EMPRESA_PADRAO`
+// lido uma vez ao montar o mux; a Empresa é consultada a cada requisição
+// (services.EmpresaPadrao). Variável ausente, vazia, slug fora da forma,
+// inexistente ou Empresa desativada -> 200 `{"empresaPadrao":null}`, sempre o
+// mesmo corpo; só erro de banco -> 500 INTERNAL_ERROR. `Cache-Control:
+// no-store` para uma desativação valer na hora.
+func EntradaHandler(db *sql.DB, empresaPadrao string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+
+		slug, err := services.EmpresaPadrao(db, empresaPadrao)
+		if err != nil {
+			slog.Error("falha ao resolver a Empresa padrão", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao processar requisição")
+			return
+		}
+
+		var resp entradaResposta
+		if slug != "" {
+			resp.EmpresaPadrao = &slug
+		}
+		escreverJSON(w, http.StatusOK, resp)
 	}
 }
