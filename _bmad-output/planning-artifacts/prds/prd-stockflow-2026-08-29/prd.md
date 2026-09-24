@@ -2,7 +2,7 @@
 title: stockflow
 status: final
 created: 2026-08-29
-updated: 2026-09-19
+updated: 2026-09-24
 ---
 
 # PRD: stockflow
@@ -20,6 +20,8 @@ Toda a numeração de FRs (FR-1 a FR-33) é herdada do PRD original para preserv
 **Atualização de 2026-09-10 ("V1 Multi-Empresa"):** o stockflow deixa de ser uma instalação única (Ferreira Costa) para ser uma plataforma multi-cliente com isolamento total de dados entre Empresas — ativando parte da visão de longo prazo já documentada em `addendum.md` §D (mercado de US$2,4bi globais, sem líder local claro no segmento). Capacidades novas desta rodada começam em FR-40; métricas novas seguem a mesma lógica de numeração histórica do PRD original e começam em SM-7. Rigor calibrado como *launch* (máximo), por decisão explícita do usuário — a base multi-tenant pode ser oferecida a clientes além da Ferreira Costa.
 
 **Atualização de 2026-09-19 ("Feedback de Treinamento pós Multi-Empresa"):** com a Empresa "Ferreira Costa" migrada e o Ambiente de Treinamento em uso (FR-40 a FR-44), o primeiro ciclo real de testes por usuários finais (Karla, Ricardo) devolveu um lote de ajustes e capacidades novas, principalmente em Cadastro de Produto, Estoques (rastreamento de Lote/Validade), Pedidos (reserva de saldo) e estrutura organizacional (Filiais, Centro de Custo). Capacidades novas desta rodada começam em FR-45; métrica nova começa em SM-9. Toda tabela de domínio nova criada nesta rodada (Filial, Centro de Custo/Destino de Obra, Lote) herda a mesma obrigação de isolamento por Empresa já estabelecida em FR-40/NFR §8 — não é um requisito novo, é a mesma regra se aplicando ao que ainda não existia quando ela foi escrita.
+
+**Atualização de 2026-09-24 ("Dupla autenticação por Empresa"):** a pedido dos sócios e de clientes, a exigência de MFA deixa de ser fixa para todo `gestor`/`adm` e passa a ser uma escolha de cada Empresa (FR-37 revisado, FR-53 novo; FR-41 e FR-43 ganham uma linha cada). Empresas novas e as já existentes nascem SEM exigir.
 
 *Nota de organização:* os FRs em §4 estão agrupados por área funcional, não em ordem numérica estrita — por isso FR-31 a FR-39 (Autenticação/Acesso) aparecem antes de FR-4 (Catálogo) no corpo do documento. A numeração reflete a ordem histórica de introdução de cada capacidade (preservada do PRD original), não a ordem de leitura.
 
@@ -175,12 +177,28 @@ Login por senha (FR-1) tem proteção contra tentativa de força bruta e exige s
 - `[ASSUMPTION]` Senha exige no mínimo 8 caracteres, com letra e número.
 - Login via SSO (FR-34) não é afetado pelo bloqueio de senha — são caminhos independentes.
 
-#### FR-37: MFA obrigatório para papéis administrativos *(novo)*
-Contas com papel `gestor` ou `adm` autenticadas por senha (FR-1) devem configurar um segundo fator (TOTP) antes de acessar funcionalidades restritas a esses papéis.
+#### FR-37: MFA exigido pela Empresa para papéis administrativos *(revisado em 2026-09-24 — antes era obrigatório para toda Empresa)*
+Quando a Empresa **exige** dupla autenticação (FR-53), contas `gestor` ou `adm` autenticadas por senha (FR-1) devem configurar um segundo fator (TOTP) antes de acessar o sistema. Quando a Empresa **não exige**, nenhum papel é obrigado a configurá-lo.
 **Consequences:**
-- Conta `gestor`/`adm` sem MFA configurado é bloqueada de ações restritas até configurar, mesmo já autenticada.
-- Login via SSO (FR-34) herda o MFA já imposto pelo realm Keycloak corporativo `ferreiracosta` a contas `gestor`/`adm` — **confirmado com o usuário nesta rodada**: o realm já impõe MFA para essas contas, então não é necessário um segundo MFA próprio no caminho SSO.
-**Out of Scope:** MFA para papéis `usuario`/`almoxarife` (não exigido em v1).
+- Empresa que exige: conta `gestor`/`adm` sem MFA configurado fica sem acesso — o servidor recusa as ações restritas a esses papéis e a interface só libera a tela de configuração de segurança e o logout — até configurar, mesmo já autenticada. É o comportamento de antes, agora condicionado à escolha da Empresa.
+- Empresa que não exige: `gestor`/`adm` entram e operam normalmente sem MFA; configurar continua disponível como opção em Configurações → Segurança, para qualquer papel.
+- Quem já tem MFA configurado continua digitando o código no login **independente da escolha da Empresa** — o segundo fator ligado pela conta nunca é ignorado.
+- Login via SSO (FR-34) herda o MFA já imposto pelo realm Keycloak corporativo `ferreiracosta` a contas `gestor`/`adm` — **confirmado com o usuário**: o realm já impõe MFA para essas contas, então não é necessário um segundo MFA próprio no caminho SSO, com ou sem a exigência da Empresa.
+- Promoção de papel (FR-33): o promovido a `gestor`/`adm` só é obrigado a configurar MFA se a Empresa exigir; o fluxo de promoção em si não muda.
+- Redefinição de senha (FR-32): não altera o MFA — quem tem MFA continua precisando do código depois de redefinir. Numa Empresa que não exige, o e-mail passa a ser a única proteção de uma conta `adm` (risco aceito pela Empresa ao optar por não exigir).
+**Out of Scope:** exigir MFA de `usuario`/`almoxarife` (a exigência da Empresa vale só para `gestor`/`adm`, decisão de 2026-09-24).
+
+#### FR-53: A Empresa decide se exige dupla autenticação *(novo — 2026-09-24)*
+Cada Empresa tem uma configuração "exige dupla autenticação" (sim/não) que governa o FR-37.
+**Consequences:**
+- **No cadastro** (FR-41), o Dono da Plataforma responde à pergunta "Esta Empresa exige dupla autenticação?"; o padrão nasce em **Não** e a resposta é confirmada explicitamente na tela.
+- **Empresas já existentes** (Ferreira Costa e seu Ambiente de Treinamento) passam a **Não exige** ao entrar esta mudança — ninguém é bloqueado no deploy.
+- **Ambiente de Treinamento** (FR-43) herda a escolha da Empresa real, para reproduzir as condições reais.
+- **Alterar depois:** o `adm` da Empresa muda a escolha em Configurações → Segurança; toda alteração registra quem mudou e quando (trilha de auditoria, mesmo espírito de FR-38). O Dono da Plataforma define só na criação.
+- **Ligar depois:** ao passar de "não" para "sim", `gestor`/`adm` sem MFA são obrigados a cadastrar no próximo acesso e ficam sem acesso ao sistema até concluírem (FR-37). A tela avisa, antes de confirmar, quantos `gestor`/`adm` da Empresa ainda não têm MFA.
+- **Desligar:** passar de "sim" para "não" não desliga o MFA de ninguém — só remove a obrigação.
+- **Recuperação de acesso:** como o MFA passa a ser opcional e escolhido por contas, precisa haver saída para celular perdido — (a) o `adm` reseta o MFA de um membro da própria Empresa (Gestão de Contas; o membro reconfigura no próximo acesso se a Empresa exigir) e (b) qualquer conta desliga o próprio MFA confirmando senha e código atual. Ambos registram auditoria.
+**Out of Scope:** MFA do Dono da Plataforma (continua obrigatório, sem exceção — FR-41); método de segundo fator diferente de TOTP; códigos de recuperação impressos.
 
 #### FR-38: Log de acesso e auditoria *(novo)*
 Todo login (sucesso ou falha) é registrado com usuário (quando identificável), timestamp, IP e método (senha ou SSO), consultável por `adm`.
@@ -212,13 +230,13 @@ Toda conta de Usuário, todo Produto, Estoque, Movimentação, Pedido, Categoria
 #### FR-41: Papel "Dono da Plataforma" cria e gerencia Empresas
 Papel novo, ortogonal à hierarquia `usuario`/`almoxarife`/`gestor`/`adm` (que continua existindo dentro de cada Empresa). Realiza UJ-6.
 **Consequences:**
-- Só o Dono da Plataforma cria uma Empresa nova, através de uma tela própria (área "Empresas", visível só a esse papel) — sem cadastro self-service em v1 (decisão confirmada com o usuário).
+- Só o Dono da Plataforma cria uma Empresa nova, através de uma tela própria (área "Empresas", visível só a esse papel) — sem cadastro self-service em v1 (decisão confirmada com o usuário). O cadastro pergunta também se a Empresa exige dupla autenticação (FR-53, padrão "Não").
 - `[ASSUMPTION]` Cadastro da Empresa inclui dados de pessoa jurídica, além do nome usado no dia a dia: CNPJ, Razão Social, Nome Fantasia, e endereço completo (logradouro/número/complemento, Bairro, Cidade, CEP, UF). CNPJ é validado no formato correto (14 dígitos + dígitos verificadores) e é único entre Empresas (409 em duplicata) — não é possível cadastrar a mesma pessoa jurídica duas vezes. Nome Fantasia é o nome exibido no dia a dia do produto (Glossário §3); Razão Social/CNPJ/endereço ficam nos metadados administrativos, não aparecem na navegação normal do Usuário.
 - **Reconciliado com a restrição já registrada em §4.1 FR-3/§12** (primeiro Adm provisionado fora do app, nunca por endpoint HTTP — AD-12 em `addendum.md`: self-promotion HTTP é vetor de escalação de privilégio). Essa restrição é sobre **auto-promoção** (alguém conceder privilégio à própria conta), não sobre gerenciar contas de terceiros — o mesmo tipo de ação que `gestor`/`adm` já fazem hoje com segurança via HTTP (FR-31 Gestão de Contas, FR-33 Decidir Promoção).
 - Criar uma Empresa + provisionar seu primeiro `adm` pela tela do Dono da Plataforma segue esse mesmo padrão seguro: endpoint autenticado, atrás de `RequireRole(Dono da Plataforma)` + MFA (ver abaixo), nunca alterando a própria conta de quem chama.
 - **Só o primeiro Dono da Plataforma** continua sendo bootstrap por linha de comando — mesma lógica do primeiro Adm hoje: não existe ainda nenhuma autoridade no sistema para aprovar essa conta via tela.
 - A identidade "Dono da Plataforma" **nunca é a mesma conta/credencial** que um `adm` de qualquer Empresa, inclusive a Ferreira Costa — mesmo quando a mesma pessoa opera as duas, são credenciais estruturalmente separadas (contas distintas, autenticações distintas). Comprometer a credencial de um `adm` comum de uma Empresa nunca deve dar acesso ao papel Dono da Plataforma.
-- `[ASSUMPTION]` Dono da Plataforma exige MFA obrigatório (mesma exigência de FR-37 para `gestor`/`adm`, aplicada aqui por ser o papel mais privilegiado do sistema — sem exceção, mesmo sendo uma única conta).
+- `[ASSUMPTION]` Dono da Plataforma exige MFA obrigatório (a exigência que FR-37 fazia para `gestor`/`adm`, aplicada aqui por ser o papel mais privilegiado do sistema — sem exceção, mesmo sendo uma única conta). **Não é afetado por FR-53**: a escolha de exigir MFA é da Empresa, e o Dono da Plataforma não pertence a nenhuma.
 - `[ASSUMPTION]` Dono da Plataforma enxerga e gerencia apenas METADADOS de cada Empresa (Nome Fantasia, Razão Social, CNPJ, endereço, status ativo/inativo, `adm` responsável, data de criação) — sem acesso ao conteúdo operacional (Catálogo, Estoques, Pedidos, Log de Acesso, Duplicatas) de nenhuma Empresa, preservando o isolamento total mesmo para esse papel. Necessidade de suporte/depuração cross-Empresa é decisão de Arquitetura/operação, fora deste PRD.
 - Desativar uma Empresa (mesmo princípio de FR-31 aplicado a Empresas) impede login de qualquer conta vinculada a ela, sem apagar dados.
 **Out of Scope:** planos comerciais/billing (Starter/Business/Enterprise, cotados em `addendum.md` §D) — nenhuma cobrança ou limite de uso por plano nesta versão.
@@ -238,7 +256,7 @@ Toda conta de Usuário (FR-3) pertence a exatamente uma Empresa desde a criaçã
 Toda Empresa criada (FR-41) ganha automaticamente uma Empresa-irmã marcada como Ambiente de Treinamento, isolada até da Empresa real que a originou. Realiza UJ-7.
 **Consequences:**
 - Nome sugerido automaticamente como "{Nome da Empresa} - Treinamento" (ex. "Ferreira Costa - Treinamento"), editável pelo `adm` da Empresa real.
-- Provisionada com um `adm` de treinamento próprio (mesmo bootstrap de FR-41, incluindo MFA obrigatório se aplicável ao papel) e `[ASSUMPTION]` um conjunto pequeno de Produtos/Estoques de exemplo (não vazio), **incluindo fotos de exemplo nos Produtos** *(novo nesta versão — feedback de treinamento pós Epic 9: sem foto, o catálogo de treinamento não passa a sensação de um catálogo real)* — nunca copia dados reais da Empresa de origem.
+- Provisionada com um `adm` de treinamento próprio (mesmo bootstrap de FR-41, com MFA exigido se a Empresa real exigir — FR-53: o Treinamento herda a escolha) e `[ASSUMPTION]` um conjunto pequeno de Produtos/Estoques de exemplo (não vazio), **incluindo fotos de exemplo nos Produtos** *(novo nesta versão — feedback de treinamento pós Epic 9: sem foto, o catálogo de treinamento não passa a sensação de um catálogo real)* — nunca copia dados reais da Empresa de origem.
 - Nenhuma ação dentro do Ambiente de Treinamento (Movimentação, Pedido, exclusão, mesclagem de duplicatas) afeta a Empresa real correspondente — isolamento idêntico ao de duas Empresas de clientes distintos (FR-40), incluindo a barreira de Duplicatas (nunca agrupa/mescla através do par real↔treinamento).
 - Contas do Ambiente de Treinamento têm a mesma hierarquia de papéis da Empresa real, para validar exatamente as restrições de cada papel (ex. um usuário de treinamento com papel `almoxarife` testa Movimentação/Pedidos sem tocar dado real).
 **Out of Scope:** reset automático periódico do Ambiente de Treinamento ao estado inicial (versão futura, se a experimentação sujar demais os dados de exemplo).
@@ -504,7 +522,7 @@ Produto com múltiplas fotos exibe uma galeria navegável; qualquer foto pode se
 - Estrutura multi-Empresa com isolamento total de dados, papel Dono da Plataforma, Ambiente de Treinamento automático e migração da Ferreira Costa para o novo modelo (FR-40 a FR-44).
 - Autenticação/autorização/ciclo de vida de conta/recuperação de senha (FR-1, FR-2, FR-3, FR-31, FR-32).
 - Login federado via Keycloak (FR-34).
-- Bloqueio de conta/política de senha (FR-36), MFA para papéis administrativos (FR-37), log de acesso (FR-38), exportação/exclusão de dados pessoais LGPD (FR-39).
+- Bloqueio de conta/política de senha (FR-36), MFA para papéis administrativos, exigido por escolha da Empresa (FR-37, FR-53), log de acesso (FR-38), exportação/exclusão de dados pessoais LGPD (FR-39).
 - Todas as features de Catálogo, Cadastro/Importação, Estoques, Movimentação, Normalização, Pedidos e Fotos (FR-4 a FR-29), incluindo geração de PDF no servidor para o recibo do Pedido (FR-26) e identificação por QR Code/código de barras (FR-35).
 - **Feedback de treinamento pós Multi-Empresa** *(novo)*: código do Fornecedor e EAN-13 (FR-45), unidade de medida e embalagem (FR-46), lançamento de saldo com Lote/Validade pelo Almoxarife (FR-47), CRUD de Categorias (FR-48) e de Templates de Nomenclatura (FR-49), reserva de saldo ao enviar Pedido (FR-50), cadastro de Filiais (FR-51) e de Centro de Custo/Destino de Obra (FR-52), template de Nomenclatura obrigatório (FR-9 revisado), nome mínimo de 10 caracteres e código automático (FR-8 revisado).
 - Solicitação de Promoção de papel (FR-33).
@@ -546,7 +564,7 @@ Produto com múltiplas fotos exibe uma galeria navegável; qualquer foto pode se
 
 ## 8. NFRs Transversais
 
-- **Segurança:** toda autorização por papel é validada no servidor; nenhuma credencial (Keycloak ou própria) é exposta no cliente/repositório; toda entrada é validada no limite da API; proteção contra força bruta e MFA para papéis administrativos (FR-36, FR-37); log de acesso auditável (FR-38).
+- **Segurança:** toda autorização por papel é validada no servidor; nenhuma credencial (Keycloak ou própria) é exposta no cliente/repositório; toda entrada é validada no limite da API; proteção contra força bruta e MFA para papéis administrativos quando a Empresa exige (FR-36, FR-37, FR-53); log de acesso auditável (FR-38).
 - **Isolamento multi-Empresa** *(novo)*: toda consulta a dado operacional (Catálogo, Estoques, Movimentações, Pedidos, Log de Acesso) é automaticamente restrita à Empresa do ator autenticado, em toda camada onde o dado é lido ou escrito — nenhum papel, incluindo Dono da Plataforma, cruza Empresas para conteúdo operacional (FR-40, FR-41). Mecanismo concreto de imposição (ex. coluna `empresa_id` obrigatória + filtro centralizado, isolamento por schema, row-level security) é decisão de Arquitetura, não fechada neste PRD — mas o requisito de nunca vazar entre Empresas é NFR, testável (SM-7), não uma preferência de implementação.
 - **Privacidade:** conformidade com LGPD para dados pessoais de contas de Usuário — exportação e exclusão/anonimização sob solicitação (FR-39).
 - **Observabilidade:** ações hoje silenciosas no protótipo (skip de item sem estoque, erros de fundo) passam a ser logadas estruturadamente e comunicadas na interface.

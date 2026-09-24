@@ -7,8 +7,8 @@ paradigm: 'Layered Go (pragmático, sem framework/ORM) — ratificado do FB_APU0
 scope: 'Backend Go + PostgreSQL e frontend React do stockflow (migração do Catálogo de Materiais), incluindo Keycloak SSO'
 status: final
 created: '2026-08-29'
-updated: '2026-09-19'
-binds: ['FR-1..FR-52', 'NFR (§8 do PRD)']
+updated: '2026-09-24'
+binds: ['FR-1..FR-53', 'NFR (§8 do PRD)']
 sources: ['_bmad-output/planning-artifacts/prds/prd-stockflow-2026-08-29/prd.md', '_bmad-output/planning-artifacts/prds/prd-stockflow-2026-08-29/addendum.md', '/home/claudio/projetos/FB_APU02 (código real, referência de stack e Keycloak)']
 companions: []
 ---
@@ -260,7 +260,7 @@ erDiagram
 | Autorização por papel (FR-2, FR-24, FR-31, FR-33) | `middleware/`, `services/` | AD-8, AD-5 |
 | Autocadastro (FR-3) | `handlers/auth.go`, `services/` | AD-6, AD-4 (e-mail de verificação), AD-14 (e-mail normalizado) |
 | Bloqueio/senha (FR-36) | `middleware/`, `services/` | Ver Deferred — nenhuma AD dedicada de contador/lockout ainda |
-| MFA administrativo (FR-37) | `services/`, biblioteca TOTP | Ver Deferred (biblioteca não vinculada) |
+| MFA administrativo, exigido por escolha da Empresa (FR-37, FR-53) | `middleware/roles.go`, `services/auth.go`, `handlers/auth_mfa.go`, `empresas.mfa_obrigatorio`, `auditoria_seguranca` | AD-35, AD-19, AD-8 (biblioteca TOTP: ver Deferred) |
 | Log de acesso (FR-38) | `services/`, tabela `logs_acesso` | AD-14 (formato) |
 | LGPD (FR-39) | `services/` | AD-14 (formato de exportação) |
 | SSO Keycloak (FR-34) | `iam/`, `handlers/auth_sso.go` | AD-7, AD-14 (e-mail normalizado) |
@@ -407,8 +407,24 @@ erDiagram
 - **Prevents:** um builder implementando a obrigatoriedade de template (FR-9) sem perceber que o próprio fallback "Genérico" precisa ser aceito pelo motor de validação apesar de não ter estrutura de tokens nenhuma — rejeitaria o próprio mecanismo criado para cobrir as ~16/25 categorias sem template real (achado do reconhecimento adversarial do PRD, addendum §G/§H).
 - **Rule:** seed de `nomenclatura_templates` inclui uma linha `Genérico` com marcador `[NOME LIVRE]` em vez de uma sequência de tokens estruturados. Motor de validação trata esse marcador como caso especial: aceita qualquer texto não vazio, sem checagem de ordem/presença de token — todo outro template continua validado estruturalmente como hoje. Seleção de template continua obrigatória (FR-9); "Genérico" é sempre uma opção disponível: a Empresa **nunca fica sem template-marcador `[NOME LIVRE]`** — o CRUD (Story 10.6, AD-33) bloqueia excluir ou trocar o texto do ÚLTIMO marcador (contagem sob `SELECT ... FOR UPDATE` ordenado, para duas exclusões simultâneas não apagarem os dois). Havendo mais de um marcador, qualquer um pode ser excluído/alterado. *(Texto ajustado pelo code review dos Épicos 10-12, 2026-09-21: a versão original dizia "nunca removível", mais forte que o código e que o AC do epics.)*
 
+### AD-35 — A exigência de MFA é uma propriedade da Empresa, lida na requisição e nunca cacheada
+
+- **Binds:** FR-37, FR-53, FR-33 (promoção), FR-32 (redefinição de senha), FR-41/FR-43 (cadastro e Treinamento).
+- **Prevents:** dois lugares decidindo "esta conta precisa de MFA" (papel fixo num ponto, escolha da Empresa em outro); flag da Empresa cacheado na sessão, de modo que ligar/desligar a exigência só valesse depois de novo login; desligar a exigência bloquear quem já tem MFA (ou ignorar o segundo fator já ligado); a recuperação de celular perdido virar um caminho sem auditoria.
+- **Rule:**
+  - **Dado:** `empresas.mfa_obrigatorio BOOLEAN NOT NULL DEFAULT false` — migração aditiva; toda Empresa existente e toda nova nasce `false` (decisão do usuário, 2026-09-24). `services.Empresa` ganha `MFAObrigatorio` e `colunasEmpresa` passa a lê-lo.
+  - **Gate único, em `RequireRole` (AD-8 forma 1):** a recusa `403 MFA_SETUP_REQUIRED` exige, somadas, `rank(papel mínimo da rota) >= gestor`, `usuario.Origem == "senha"`, `!usuario.MFAHabilitado` **e** `empresa.MFAObrigatorio`. A Empresa vem de `EmpresaDaRequisicao(ctx)` (AD-19, resolvida por slug **a cada requisição**, sem cache) — alterar o flag vale já na próxima requisição de todos. O gate nunca é reimplementado em handler ou service. Sessão SSO nunca dispara o gate (o realm Keycloak já impõe).
+  - **O segundo fator ligado pela conta é independente do flag:** o login pede o código sempre que `usuarios.mfa_habilitado` (AD-6/Story 1.11); desligar a exigência da Empresa **nunca** desliga MFA de ninguém.
+  - **O frontend só espelha:** `/api/auth/me` devolve `empresa.mfaObrigatorio`; `App.tsx` (bloqueio de navegação) e `ConfiguracoesPage` (rótulo obrigatório/opcional) usam `origem==='senha' && rank>=gestor && !mfaHabilitado && empresa.mfaObrigatorio`. O servidor continua sendo a autoridade.
+  - **Quem altera:** `adm` da Empresa, por rota própria atrás de `RequireRole(adm)` (que já sujeita o adm ao gate de MFA quando a Empresa exige); o Dono da Plataforma define só no cadastro (`NovaEmpresaInput`), e `CriarEmpresaComTreinamento` copia a escolha para a Empresa de Treinamento **na criação** (as duas passam a ser independentes depois). Toda alteração grava uma linha em `auditoria_seguranca`.
+  - **Recuperação, sempre auditada:** (a) reset de MFA de um membro por `adm` — só sobre conta de rank menor que o do ator (AD-8 forma 2), zera `mfa_habilitado`/`mfa_secret`/`mfa_ultimo_passo_usado` e revoga as sessões da conta-alvo; (b) desligar o próprio MFA exige senha atual + código TOTP vigente e é recusado (409) quando `gestor`/`adm` numa Empresa que exige — nesse caso o gate só o obrigaria a reconfigurar.
+  - **`auditoria_seguranca`:** tabela append-only (`id`, `empresa_id`, `ator_id`, `alvo_id` nulável, `acao` enum `exigencia_alterada | mfa_resetado | mfa_desligado`, `detalhe` jsonb, `criado_em`), escopada por `empresa_id` (AD-20), sem rota de edição/exclusão; consultável pelo `adm` da Empresa.
+  - **Fora desta AD:** MFA do Dono da Plataforma (tabela `donos_plataforma`, AD-21) continua obrigatório e não lê este flag.
+- **Rationale:** manter o gate onde ele já vive (AD-8) e trocar só a condição custa uma linha e evita divergência entre servidor e interface; ler a Empresa por requisição casa com AD-5 (papel nunca cacheado) e com AD-19. A exigência continua por papel (gestor/adm) — estendê-la a `usuario`/`almoxarife` foi considerado e recusado pelo usuário em 2026-09-24.
+
 ## Deferred
 
+- **Códigos de recuperação de MFA impressos, exigência de MFA para `usuario`/`almoxarife` e propagação de mudanças do flag da Empresa real para o Treinamento (AD-35):** fora desta versão; o Treinamento herda só na criação.
 - **Contador/bloqueio de força bruta (FR-36) e biblioteca TOTP (FR-37):** mecanismo de contagem de tentativas/duração de bloqueio e a biblioteca TOTP não foram fixados nesta spine — `pquerna/otp` é candidata, mas não teve manutenção ativa confirmada nesta pesquisa; escolher e verificar no momento da story.
 - **Endereço/DNS e provisionamento real do servidor Ferreira Costa; client id definitivo no realm Keycloak `ferreiracosta`:** infraestrutura real, requer aprovação humana explícita (PRD §11, perguntas 5 e 6).
 - **Escala horizontal (múltiplas instâncias da aplicação):** fora de escopo agora (AD-13 assume single-host); se necessário no futuro, revisitar AD-3 (Redis Pub/Sub) e AD-5 (cache de papel).

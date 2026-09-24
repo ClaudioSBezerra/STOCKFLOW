@@ -54,7 +54,7 @@ FR33: Solicitação de promoção de papel para o nível imediatamente acima; de
 FR34: Login federado via Keycloak (SSO Ferreira Costa) como alternativa ao login por senha; nunca cria conta nova (busca por e-mail, case-insensitive); exige `email_verified=true`; papel do Usuário continua definido dentro do stockflow, não pelo Keycloak; login por senha continua sendo o caminho padrão visível, sem redirecionamento automático; RP-initiated logout ao encerrar sessão SSO.
 FR35: Identificação de Produto via leitura de QR Code/código de barras (câmera do celular), reaproveitando o Código de Identificação já cadastrado (FR8); leitura abre o detalhe do Produto ou adiciona ao Carrinho conforme o contexto.
 FR36: Bloqueio temporário de conta após tentativas de login malsucedidas consecutivas; política de senha mínima no cadastro/redefinição; não afeta o caminho de login via SSO.
-FR37: MFA (segundo fator TOTP) obrigatório para contas `gestor`/`adm` autenticadas por senha antes de liberar ações restritas a esses papéis; login via SSO herda o MFA já imposto pelo realm Keycloak corporativo.
+FR37 *(revisado 2026-09-24)*: MFA (segundo fator TOTP) exigido de contas `gestor`/`adm` autenticadas por senha **somente quando a Empresa exige** (FR53); sem MFA a conta fica sem acesso ao sistema (servidor recusa as rotas restritas, interface só libera a configuração de segurança e o logout) até configurar; quem já tem MFA ligado sempre digita o código; login via SSO herda o MFA do realm Keycloak corporativo.
 FR38: Log de acesso e auditoria (todo login, sucesso ou falha, com usuário quando identificável, timestamp, IP, método), append-only, consultável por `adm`.
 FR39: Exportação dos próprios dados pessoais por qualquer Usuário; `adm` pode processar exclusão/anonimização de dados pessoais de uma conta, preservando o vínculo de Histórico/Pedidos já registrado.
 FR40: Empresa como unidade de isolamento total de dados — todo Produto, Estoque, Movimentação, Pedido, Categoria, Log de Acesso e conta de Usuário pertence a exatamente uma Empresa; nenhuma consulta, filtro ou exportação de nenhuma área (Catálogo, Estoques, Movimentações, Pedidos, Log de Acesso, Normalização/Duplicatas, Gestão de Contas/Promoção) cruza Empresas, para nenhum papel. `adm` passa a ser único por Empresa, não mais global.
@@ -87,6 +87,7 @@ FR49: CRUD de Templates de Nomenclatura pelo `adm`+ — mesma cópia editável p
 FR50: Reserva de saldo ao enviar Pedido — saldo dos itens fica reservado (indisponível para qualquer outro Pedido/Carrinho) até a decisão (FR25); Catálogo/Estoque passam a mostrar saldo disponível separado do reservado, com detalhe de para qual Pedido/solicitante; reserva liberada automaticamente na rejeição, parcialmente na aprovação parcial; sem expiração automática nesta versão.
 FR51: Cadastro de Filiais pelo `adm`+ — toda Filial pertence a exatamente uma Empresa; todo Estoque passa a pertencer a exatamente uma Filial (Depósito = Estoque existente + Filial como pai, não um terceiro nível); toda Empresa nova ganha uma Filial padrão automática; migração vincula todo Estoque legado a essa Filial padrão.
 FR52: Cadastro de Centro de Custo e Destino de Obra pelo `adm`+ — entidades próprias referenciáveis no envio de Pedido (FR22), coexistindo com o campo texto livre já existente (não o substituem nesta versão); mesma cópia por Empresa de FR40/FR48/FR49.
+FR53: A Empresa decide se exige dupla autenticação — pergunta no cadastro pelo Dono da Plataforma (padrão "Não", confirmação explícita), Empresas existentes iniciam "Não", Treinamento herda na criação; o `adm` altera depois em Configurações → Segurança com auditoria e aviso de quantos `gestor`/`adm` ainda não têm MFA; ligar obriga gestor/adm sem MFA a cadastrar no próximo acesso; desligar não desliga MFA de ninguém; recuperação: `adm` reseta o MFA de um membro e cada conta desliga o próprio (senha + código), ambos auditados. Dono da Plataforma continua com MFA obrigatório.
 
 ### NonFunctional Requirements
 
@@ -144,6 +145,7 @@ NFR10: Isolamento multi-Empresa — toda consulta a dado operacional (Catálogo,
 - Template "Genérico" (`[NOME LIVRE]`) é caso especial no motor de validação — aceita qualquer texto sem checagem de tokens, distinto da validação estrutural dos demais 27 templates; sempre disponível, nunca removível via CRUD (Architecture AD-34).
 - Mesclagem de duplicatas (FR20/AD-11) estendida para reescrever `produto_id` também em `LOTES` e `RESERVAS_PEDIDO_ITEM` do produto removido, além de `MOVIMENTACOES`/`PEDIDO_ITENS` já cobertos — sem isso, saldo físico e reserva ativa do produto removido ficariam órfãos.
 - Canais SSE (AD-3) seguem fixos em 4 (`produtos`, `estoques`, `movimentacoes`, `pedidos`); Categorias/Templates/Filiais/Centros de Custo são config administrativa de baixa frequência, explicitamente exemptas do gerador "todo domínio com handler tem canal" — sem canal SSE dedicado, cliente rebusca via GET normal após CRUD.
+- Exigência de MFA é propriedade da Empresa: `empresas.mfa_obrigatorio` (default `false`, novas e existentes); gate único em `RequireRole` (rank >= gestor, origem senha, sem MFA **e** Empresa exige), Empresa lida por requisição (AD-19/AD-5, sem cache); `mfa_habilitado` da conta independe do flag; `/api/auth/me` devolve `empresa.mfaObrigatorio` para o frontend espelhar; alteração pelo `adm` e reset/desligamento de MFA gravam `auditoria_seguranca` (append-only); Treinamento herda só na criação; Dono da Plataforma não é afetado (Architecture AD-35).
 - `filial_id`/`centro_custo_id` recebidos do cliente são sempre revalidados contra a Empresa do contexto antes de aceitar — FK do banco sozinha não impede um id de outra Empresa (extensão de AD-20).
 
 ### UX Design Requirements
@@ -238,6 +240,10 @@ FR43 (revisado): Epic 12 - Ambiente de Treinamento ganha fotos de exemplo
 FR51: Epic 12 - Cadastro de Filiais
 FR52: Epic 12 - Cadastro de Centro de Custo e Destino de Obra
 FR8 (edição): Epic 13 - Editar um Produto já cadastrado (o PRD prevê edição em FR8/FR9; nenhuma tela existia)
+FR37 (revisado): Epic 14 - MFA exigido só quando a Empresa exige
+FR53: Epic 14 - A Empresa decide se exige dupla autenticação
+FR41 (linha nova): Epic 14 - Cadastro da Empresa pergunta se exige MFA
+FR43 (linha nova): Epic 14 - Treinamento herda a escolha
 
 ## Epic List
 
@@ -292,6 +298,10 @@ Adm estrutura a organização em Filiais (com Depósitos/Estoques vinculados) e 
 ### Epic 13: Edição de Produto
 Almoxarife corrige um Produto já cadastrado sem precisar cadastrar outro. Surgiu dos testes reais de treinamento (2026-09-23): a única rota de edição (`/renomear`) nunca teve tela, e nenhum épico anterior previu uma.
 **FRs covered:** FR8 (edição), FR9 (revalidação do nome na edição)
+
+### Epic 14: Dupla autenticação por Empresa
+Cada Empresa decide se exige dupla autenticação (MFA) de seus `gestor`/`adm`, em vez de a exigência ser fixa para todos; o Dono da Plataforma responde à pergunta no cadastro, o `adm` altera depois, e existe saída para quem perde o celular. Pedido dos sócios e de clientes (2026-09-24).
+**FRs covered:** FR37 (revisado), FR53, FR41 e FR43 (uma linha cada)
 
 ## Epic 1: Autenticação e Gestão de Acesso
 
@@ -1962,3 +1972,139 @@ So that eu corrija erros de digitação e informações incompletas sem criar um
 **Then** o Código, o saldo (Lotes), as reservas e o histórico de Movimentações permanecem intactos, e um evento `produtos` (`updated`) é publicado para as outras sessões abertas
 
 **Nota:** esta story não edita saldo (isso é Lançamento de Saldo, Story 11.1) nem o Código do Produto.
+
+## Epic 14: Dupla autenticação por Empresa
+
+Cada Empresa decide se exige dupla autenticação (MFA) de seus `gestor`/`adm`. Hoje a exigência é fixa e vale para toda Empresa; a pedido dos sócios e de clientes ela passa a ser uma escolha da Empresa (padrão "Não", inclusive para as já existentes), com a pergunta no cadastro, alteração posterior pelo `adm` e recuperação para celular perdido. A exigência continua valendo só para `gestor`/`adm` (decisão de 2026-09-24).
+
+### Story 14.1: A Empresa passa a definir se exige MFA (gate condicional)
+
+As a `adm` de uma Empresa,
+I want que a obrigatoriedade de MFA para gestor e adm dependa de uma configuração da Empresa,
+So that a minha Empresa só exija a dupla autenticação se quiser.
+
+**Acceptance Criteria:**
+
+**Given** a migration desta story
+**When** ela roda contra o banco com Empresas já existentes (Ferreira Costa e o Treinamento)
+**Then** `empresas.mfa_obrigatorio` nasce `NOT NULL DEFAULT false` e todas as Empresas existentes ficam `false` — ninguém é bloqueado no deploy (Architecture AD-35)
+
+**Given** uma Empresa com `mfa_obrigatorio = false`
+**When** um `gestor` ou `adm`, autenticado por senha e sem MFA, acessa uma rota restrita a esses papéis
+**Then** a requisição é atendida normalmente — o `403 MFA_SETUP_REQUIRED` não é emitido
+
+**Given** uma Empresa com `mfa_obrigatorio = true`
+**When** um `gestor` ou `adm`, autenticado por senha e sem MFA, acessa uma rota restrita a esses papéis
+**Then** a resposta é `403 MFA_SETUP_REQUIRED` (comportamento de hoje), e `usuario`/`almoxarife` nunca são bloqueados por esta regra
+
+**Given** o flag da Empresa alterado no banco
+**When** o mesmo usuário faz a próxima requisição
+**Then** o novo valor já vale, sem novo login (a Empresa é lida por requisição, sem cache — AD-19/AD-5)
+
+**Given** uma conta com `mfa_habilitado = true`
+**When** ela faz login por senha, em Empresa que exige ou não
+**Then** o código TOTP continua sendo pedido — o segundo fator ligado pela conta nunca é ignorado
+
+**Given** uma sessão originada por SSO
+**When** ela acessa rotas restritas
+**Then** o gate de MFA nunca dispara, com ou sem a exigência da Empresa
+
+**Given** `GET /api/auth/me`
+**When** o frontend o consulta
+**Then** a resposta traz `empresa.mfaObrigatorio`; `App.tsx` só bloqueia a navegação (liberando apenas Configurações → Segurança e o logout) quando papel >= `gestor`, origem senha, sem MFA **e** a Empresa exige; e Configurações → Segurança mostra "obrigatório" nesse caso e "opcional" nos demais
+
+**Given** o Dono da Plataforma
+**When** ele faz login
+**Then** o MFA dele continua obrigatório, sem depender de nenhum flag de Empresa
+
+### Story 14.2: Cadastro da Empresa pergunta se exige MFA; Treinamento herda
+
+As a Dono da Plataforma,
+I want responder, ao cadastrar uma Empresa, se ela exige dupla autenticação,
+So that a Empresa já nasça com a política que o cliente escolheu.
+
+**Acceptance Criteria:**
+
+**Given** a tela de cadastro de Empresa (`EmpresasPage`)
+**When** ela abre
+**Then** exibe a pergunta "Esta Empresa exige dupla autenticação?" com o padrão **Não** pré-selecionado, e a escolha vai no corpo de `POST /api/plataforma/empresas` (`mfa_obrigatorio`)
+
+**Given** o cadastro enviado sem o campo
+**When** o servidor processa
+**Then** assume `false` (mesmo padrão), nunca falha nem exige o campo
+
+**Given** uma Empresa criada com "Sim"
+**When** o provisionamento termina
+**Then** `empresas.mfa_obrigatorio = true` na Empresa real **e** na Empresa de Treinamento criada junto (herda a escolha na criação; depois as duas são independentes, Architecture AD-35)
+
+**Given** a listagem de Empresas do Dono da Plataforma
+**When** ela é exibida
+**Then** mostra a escolha de cada Empresa (só metadado administrativo, sem acesso a conteúdo operacional — FR-41)
+
+**Given** um usuário que não é Dono da Plataforma
+**When** tenta criar Empresa ou enviar `mfa_obrigatorio`
+**Then** a resposta é 403, como já é hoje
+
+### Story 14.3: O adm altera a exigência de MFA, com aviso e auditoria
+
+As a `adm` de uma Empresa,
+I want ligar ou desligar a exigência de MFA da minha Empresa,
+So that a política acompanhe a decisão da empresa sem depender do Dono da Plataforma.
+
+**Acceptance Criteria:**
+
+**Given** Configurações → Segurança, aberta por um `adm`
+**When** ele vê a seção "Dupla autenticação da Empresa"
+**Then** encontra a escolha atual e o controle para alterá-la; papéis abaixo de `adm` não veem o controle e a API responde 403
+
+**Given** o `adm` prestes a passar de "não" para "sim"
+**When** ele aciona a mudança
+**Then** a tela avisa quantos `gestor`/`adm` da Empresa ainda não têm MFA e que eles ficarão sem acesso até cadastrar, e só aplica depois da confirmação
+
+**Given** a exigência ligada
+**When** um `gestor`/`adm` sem MFA faz o próximo acesso
+**Then** é obrigado a cadastrar o MFA e fica sem acesso ao sistema até concluir (comportamento da Story 14.1)
+
+**Given** o `adm` passando de "sim" para "não"
+**When** a mudança é aplicada
+**Then** nenhum MFA já configurado é desligado — só a obrigação é removida
+
+**Given** qualquer alteração da escolha
+**When** ela é gravada
+**Then** uma linha é inserida em `auditoria_seguranca` (`acao=exigencia_alterada`, ator, valor anterior e novo, momento), tabela append-only escopada por `empresa_id` (Architecture AD-35), sem rota de edição ou exclusão; o `adm` consulta o histórico na própria seção
+
+**Given** a escolha já está no valor pedido (ex. reenvio da mesma requisição)
+**When** o `adm` grava o mesmo valor de novo
+**Then** nada muda e nenhuma linha de auditoria é criada — a operação é idempotente
+
+### Story 14.4: Recuperação — reset de MFA por adm e desligamento pela própria conta
+
+As a membro de uma Empresa que perdeu o celular,
+I want recuperar o acesso sem depender de suporte da plataforma,
+So that o MFA opcional não vire um bloqueio permanente.
+
+**Acceptance Criteria:**
+
+**Given** a Gestão de Contas, aberta por um `adm`
+**When** ele aciona "Resetar MFA" numa conta de rank menor que o dele (AD-8)
+**Then** `mfa_habilitado`, `mfa_secret` e `mfa_ultimo_passo_usado` são zerados, as sessões da conta são revogadas e uma linha `acao=mfa_resetado` (ator e alvo) é gravada em `auditoria_seguranca`
+
+**Given** a conta resetada, em Empresa que exige e de papel `gestor`
+**When** ela entra de novo
+**Then** é obrigada a cadastrar um MFA novo (Story 14.1); em Empresa que não exige, entra normalmente
+
+**Given** um `gestor` ou `usuario`
+**When** tenta resetar o MFA de alguém, ou um `adm` tenta resetar o de outro `adm` ou de conta de outra Empresa
+**Then** a resposta é 403 (ou 404 para outra Empresa, sem revelar existência — AD-20)
+
+**Given** qualquer conta com MFA ligado
+**When** ela aciona "Desligar meu MFA" informando a senha atual e o código TOTP vigente
+**Then** o MFA é desligado e `acao=mfa_desligado` é gravada; senha ou código errado não desliga nada e conta para o bloqueio por tentativas (FR-36)
+
+**Given** um `gestor`/`adm` numa Empresa que exige MFA
+**When** ele tenta desligar o próprio MFA
+**Then** a resposta é 409 explicando que a Empresa exige MFA para o papel dele — nada é alterado
+
+**Given** o fluxo de redefinição de senha (FR-32)
+**When** uma conta com MFA redefine a senha por e-mail
+**Then** o MFA continua ligado e o código continua sendo pedido no login seguinte — a redefinição não desliga nem contorna o segundo fator
