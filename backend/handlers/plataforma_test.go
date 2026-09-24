@@ -426,6 +426,138 @@ func TestEmpresasPlataforma_CriarListarDesativarReativar(t *testing.T) {
 	}
 }
 
+// comCampoExtra acrescenta `extra` (ex.: `"mfa_obrigatorio":true`) ao objeto
+// JSON de corpoNovaEmpresa.
+func comCampoExtra(corpo, extra string) string {
+	return strings.TrimSuffix(corpo, "}") + "," + extra + "}"
+}
+
+// mfaGravadoHandlers lê `empresas.mfa_obrigatorio` pelo slug.
+func mfaGravadoHandlers(t *testing.T, db *sql.DB, slug string) bool {
+	t.Helper()
+	var v bool
+	if err := db.QueryRow(`SELECT mfa_obrigatorio FROM empresas WHERE slug = $1`, slug).Scan(&v); err != nil {
+		t.Fatalf("ler mfa_obrigatorio de %s: %v", slug, err)
+	}
+	return v
+}
+
+// TestEmpresasPlataforma_MFAObrigatorio cobre a matriz da Story 14.2 na
+// fronteira HTTP: Sim, Não, null, Ausente, Sinônimo, Conflito, Não booleano e a
+// listagem com a escolha da real e do Treinamento.
+func TestEmpresasPlataforma_MFAObrigatorio(t *testing.T) {
+	db := testDB(t)
+	limparParesPlataforma(t, db, "plat-mfa-sim", "plat-mfa-ausente", "plat-mfa-camel", "plat-mfa-conflito", "plat-mfa-str", "plat-mfa-nao", "plat-mfa-null")
+	id, _ := criarDonoHandlers(t, db)
+	mux := muxPlataformaTeste(db)
+	token, _, _, err := services.EmitirSessaoPlataforma(db, segredoJWTPlataformaHandlers, id)
+	if err != nil {
+		t.Fatalf("EmitirSessaoPlataforma: %v", err)
+	}
+	post := func(corpo string) *httptest.ResponseRecorder {
+		return despacharPlataforma(mux, reqPlataforma{metodo: http.MethodPost, caminho: "/api/plataforma/empresas", token: token, corpo: corpo})
+	}
+	type criada struct {
+		Empresa     services.Empresa `json:"empresa"`
+		Treinamento services.Empresa `json:"treinamento"`
+	}
+	criar := func(slug, corpo string, want bool) criada {
+		t.Helper()
+		w := post(corpo)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("%s: status = %d, want 201 (body=%s)", slug, w.Code, w.Body.String())
+		}
+		var c criada
+		if err := json.Unmarshal(w.Body.Bytes(), &c); err != nil {
+			t.Fatalf("%s: decode: %v", slug, err)
+		}
+		if c.Empresa.MFAObrigatorio != want || c.Treinamento.MFAObrigatorio != want {
+			t.Errorf("%s: resposta real=%v treino=%v, want %v", slug, c.Empresa.MFAObrigatorio, c.Treinamento.MFAObrigatorio, want)
+		}
+		if mfaGravadoHandlers(t, db, slug) != want || mfaGravadoHandlers(t, db, slug+"-treinamento") != want {
+			t.Errorf("%s: banco diverge de %v", slug, want)
+		}
+		return c
+	}
+
+	sim := criar("plat-mfa-sim", comCampoExtra(corpoNovaEmpresa("plat-mfa-sim", "96111222000150", "PE"), `"mfa_obrigatorio":true`), true)
+	criar("plat-mfa-nao", comCampoExtra(corpoNovaEmpresa("plat-mfa-nao", "96111222000584", "PE"), `"mfa_obrigatorio":false`), false)
+	criar("plat-mfa-null", comCampoExtra(corpoNovaEmpresa("plat-mfa-null", "96111222000665", "PE"), `"mfa_obrigatorio":null`), false)
+	criar("plat-mfa-ausente", corpoNovaEmpresa("plat-mfa-ausente", "96111222000231", "PE"), false)
+	criar("plat-mfa-camel", comCampoExtra(corpoNovaEmpresa("plat-mfa-camel", "96111222000312", "PE"), `"mfaObrigatorio":true`), true)
+
+	// Conflito entre os dois nomes: 400 e nada gravado.
+	w := post(comCampoExtra(corpoNovaEmpresa("plat-mfa-conflito", "96111222000401", "PE"), `"mfa_obrigatorio":true,"mfaObrigatorio":false`))
+	if w.Code != http.StatusBadRequest || codigoDeErro(t, w) != "VALIDATION_ERROR" {
+		t.Errorf("conflito: status = %d body=%s, want 400/VALIDATION_ERROR", w.Code, w.Body.String())
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM empresas WHERE slug LIKE 'plat-mfa-conflito%'`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("conflito: empresas gravadas = %d (%v), want 0", n, err)
+	}
+
+	// Não booleano: falha no decode -> 400 payload inválido.
+	w = post(comCampoExtra(corpoNovaEmpresa("plat-mfa-str", "96111222000401", "PE"), `"mfa_obrigatorio":"sim"`))
+	if w.Code != http.StatusBadRequest || codigoDeErro(t, w) != "VALIDATION_ERROR" || !strings.Contains(w.Body.String(), "payload inválido") {
+		t.Errorf("não booleano: status = %d body=%s, want 400 payload inválido", w.Code, w.Body.String())
+	}
+
+	// Listagem: a escolha da real e a do Treinamento, cada uma a gravada.
+	w = despacharPlataforma(mux, reqPlataforma{metodo: http.MethodGet, caminho: "/api/plataforma/empresas", token: token})
+	if w.Code != http.StatusOK {
+		t.Fatalf("listar: status = %d", w.Code)
+	}
+	var lista struct {
+		Empresas []map[string]json.RawMessage `json:"empresas"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &lista); err != nil {
+		t.Fatalf("decode lista: %v", err)
+	}
+	var achou bool
+	for _, e := range lista.Empresas {
+		if string(e["id"]) != `"`+sim.Empresa.ID+`"` {
+			continue
+		}
+		achou = true
+		var treino map[string]json.RawMessage
+		_ = json.Unmarshal(e["treinamento"], &treino)
+		if string(e["mfaObrigatorio"]) != "true" || string(treino["mfaObrigatorio"]) != "true" {
+			t.Errorf("listagem: mfaObrigatorio real=%s treino=%s, want true/true", e["mfaObrigatorio"], treino["mfaObrigatorio"])
+		}
+	}
+	if !achou {
+		t.Errorf("empresa plat-mfa-sim ausente da listagem")
+	}
+}
+
+// TestEmpresasPlataforma_MFAObrigatorioNaoDono prova que o campo novo não
+// abre caminho: token de usuário `adm` continua 401 TOKEN_EXPIRED e nada é
+// gravado.
+func TestEmpresasPlataforma_MFAObrigatorioNaoDono(t *testing.T) {
+	db := testDB(t)
+	limparParesPlataforma(t, db, "plat-mfa-naodono")
+	mux := muxPlataformaTeste(db)
+
+	var usuarioID string
+	if err := db.QueryRow(`INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, empresa_id)
+		VALUES ('Adm', 'adm-mfa-naodono@empresa.com', 'h', 'adm', true, $1) RETURNING id`, empresaTeste).Scan(&usuarioID); err != nil {
+		t.Fatalf("criar usuario: %v", err)
+	}
+	tokenUsuario, _, _, err := services.EmitirSessao(db, segredoJWTPlataformaHandlers, usuarioID, "senha")
+	if err != nil {
+		t.Fatalf("EmitirSessao: %v", err)
+	}
+	corpo := comCampoExtra(corpoNovaEmpresa("plat-mfa-naodono", "96111222000150", "PE"), `"mfa_obrigatorio":true`)
+	w := despacharPlataforma(mux, reqPlataforma{metodo: http.MethodPost, caminho: "/api/plataforma/empresas", token: tokenUsuario, corpo: corpo})
+	if w.Code != http.StatusUnauthorized || codigoDeErro(t, w) != "TOKEN_EXPIRED" {
+		t.Errorf("status/code = %d/%s, want 401/TOKEN_EXPIRED", w.Code, codigoDeErro(t, w))
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM empresas WHERE slug LIKE 'plat-mfa-naodono%'`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("empresas gravadas = %d (%v), want 0", n, err)
+	}
+}
+
 // TestMeHandler_AmbienteTreinamento prova o flag de exibição da resposta de
 // sessão pela composição real (RequireEmpresa -> RequireAuth -> MeHandler):
 // false numa Empresa comum, true (com o nome do Treinamento) num Treinamento.

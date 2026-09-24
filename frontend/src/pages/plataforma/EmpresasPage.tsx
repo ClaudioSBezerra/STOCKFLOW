@@ -36,6 +36,8 @@ interface FormEmpresa {
   uf: string;
   admNome: string;
   admEmail: string;
+  /** Story 14.2: "Esta Empresa exige dupla autenticação?" — padrão Não. */
+  mfaObrigatorio: boolean;
 }
 
 const FORM_VAZIO: FormEmpresa = {
@@ -52,6 +54,7 @@ const FORM_VAZIO: FormEmpresa = {
   uf: '',
   admNome: '',
   admEmail: '',
+  mfaObrigatorio: false,
 };
 
 const MENSAGEM_SUCESSO = 'Empresa criada. O administrador receberá um e-mail para definir a senha.';
@@ -106,6 +109,10 @@ function Campo({ id, label, value, onChange, dica, className, ...rest }: CampoPr
       ) : null}
     </div>
   );
+}
+
+function textoMFA(exigida: boolean): string {
+  return exigida ? 'Exigida' : 'Não exigida';
 }
 
 function BadgeStatus({ status }: { status: string }) {
@@ -192,7 +199,7 @@ export function EmpresasPage() {
     };
   }, [aplicarFalhaLista]);
 
-  function atualizar(campo: keyof FormEmpresa, valor: string) {
+  function atualizar(campo: Exclude<keyof FormEmpresa, 'mfaObrigatorio'>, valor: string) {
     setForm((atual) => {
       const novo = { ...atual, [campo]: valor };
       // O endereço de acesso acompanha o Nome Fantasia até ser editado à mão.
@@ -232,6 +239,7 @@ export function EmpresasPage() {
         },
         admNome: form.admNome,
         admEmail: form.admEmail,
+        mfa_obrigatorio: form.mfaObrigatorio,
       });
       toast.success(MENSAGEM_SUCESSO);
       setForm(FORM_VAZIO);
@@ -407,6 +415,40 @@ export function EmpresasPage() {
                 required
               />
 
+              <fieldset className="flex flex-col gap-2 md:col-span-2" aria-describedby="mfa-dica">
+                <legend className="text-body font-medium">
+                  Esta Empresa exige dupla autenticação?
+                </legend>
+                <div className="flex gap-6">
+                  <label className="flex min-h-touch-target-min items-center gap-2 text-body">
+                    <input
+                      type="radio"
+                      name="mfaObrigatorio"
+                      value="sim"
+                      checked={form.mfaObrigatorio}
+                      onChange={() => setForm((atual) => ({ ...atual, mfaObrigatorio: true }))}
+                      className="h-4 w-4"
+                    />
+                    Sim
+                  </label>
+                  <label className="flex min-h-touch-target-min items-center gap-2 text-body">
+                    <input
+                      type="radio"
+                      name="mfaObrigatorio"
+                      value="nao"
+                      checked={!form.mfaObrigatorio}
+                      onChange={() => setForm((atual) => ({ ...atual, mfaObrigatorio: false }))}
+                      className="h-4 w-4"
+                    />
+                    Não
+                  </label>
+                </div>
+                <p id="mfa-dica" className="text-label text-muted-foreground">
+                  Se sim, gestores e administradores precisam configurar o código do celular para
+                  entrar. O Ambiente de Treinamento nasce com a mesma escolha.
+                </p>
+              </fieldset>
+
               {erroForm && (
                 <p role="alert" className="text-body text-destructive md:col-span-2">
                   {erroForm}
@@ -462,6 +504,12 @@ export function EmpresasPage() {
                               <code className="font-mono text-code">/e/{empresa.treinamento.slug}</code>
                             </>
                           ) : null}
+                        </span>
+                        <span>
+                          Dupla autenticação: {textoMFA(empresa.mfaObrigatorio)}
+                          {empresa.treinamento
+                            ? ` · Treinamento: ${textoMFA(empresa.treinamento.mfaObrigatorio)}`
+                            : null}
                         </span>
                         <span className="text-muted-foreground">
                           Criada em {formatarData(empresa.criadoEm)}

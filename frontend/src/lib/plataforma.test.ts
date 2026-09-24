@@ -131,6 +131,7 @@ describe('chamadas autenticadas', () => {
       },
       admNome: 'Ana',
       admEmail: 'ana@acme.com',
+      mfa_obrigatorio: false,
     });
 
     expect(criada.treinamento.id).toBe('t');

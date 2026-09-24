@@ -99,6 +99,10 @@ type DadosEmpresa struct {
 	Endereco        EnderecoEmpresa
 	Slug            string
 	EmpresaOrigemID *string
+	// MFAObrigatorio (Story 14.2): a escolha "Esta Empresa exige dupla
+	// autenticação?" do cadastro. Zero value `false` = não exige — o padrão
+	// de todo chamador que não pergunta (ex.: cmd/migrar-multi-empresa).
+	MFAObrigatorio bool
 }
 
 // NormalizarCNPJ remove tudo que não é dígito ("12.345.678/0001-95" ->
@@ -258,6 +262,7 @@ type dadosEmpresaValidados struct {
 	logradouro, numero, bairro, cidade, cep, uf string
 	complemento                                 sql.NullString
 	empresaOrigemID                             sql.NullString
+	mfaObrigatorio                              bool
 }
 
 // validarDadosEmpresa normaliza e valida todos os campos de DadosEmpresa
@@ -307,6 +312,7 @@ func validarDadosEmpresa(d DadosEmpresa) (dadosEmpresaValidados, error) {
 	if d.EmpresaOrigemID != nil {
 		v.empresaOrigemID = sql.NullString{String: *d.EmpresaOrigemID, Valid: true}
 	}
+	v.mfaObrigatorio = d.MFAObrigatorio
 	return v, nil
 }
 
@@ -337,13 +343,13 @@ func InserirEmpresa(tx *sql.Tx, dados DadosEmpresa) (Empresa, error) {
 		INSERT INTO empresas (
 			nome_fantasia, razao_social, cnpj,
 			logradouro, numero, complemento, bairro, cidade, cep, uf,
-			slug, empresa_origem_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			slug, empresa_origem_id, mfa_obrigatorio
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING ` + colunasEmpresa
 	e, err := scanEmpresa(tx.QueryRow(insertEmpresa,
 		v.nomeFantasia, v.razaoSocial, v.cnpj,
 		v.logradouro, v.numero, v.complemento, v.bairro, v.cidade, v.cep, v.uf,
-		v.slug, v.empresaOrigemID,
+		v.slug, v.empresaOrigemID, v.mfaObrigatorio,
 	))
 	if err != nil {
 		var pqErr *pq.Error

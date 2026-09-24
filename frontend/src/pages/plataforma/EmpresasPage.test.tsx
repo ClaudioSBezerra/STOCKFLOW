@@ -36,7 +36,8 @@ const EMPRESA: EmpresaResumo = {
   status: 'ativa',
   criadoEm: '2026-09-10T12:00:00Z',
   adm: { nome: 'Ana Adm', email: 'ana@acme.com' },
-  treinamento: { id: 'emp-1-t', slug: 'acme-obras-treinamento', status: 'ativa' },
+  mfaObrigatorio: true,
+  treinamento: { id: 'emp-1-t', slug: 'acme-obras-treinamento', status: 'ativa', mfaObrigatorio: false },
 };
 
 let empresas: EmpresaResumo[];
@@ -186,9 +187,45 @@ describe('EmpresasPage (Story 9.2)', () => {
       },
       admNome: 'Bia Adm',
       admEmail: 'bia@nova.com',
+      mfa_obrigatorio: false,
     });
     await waitFor(() => expect(chamadas('GET', '/api/plataforma/empresas')).toHaveLength(2));
     expect(screen.getByLabelText('Nome Fantasia')).toHaveValue('');
+  });
+
+  it('Story 14.2: a pergunta de dupla autenticação começa em "Não"', async () => {
+    renderPage();
+    await screen.findByText('Acme Obras');
+
+    const grupo = screen.getByRole('group', { name: 'Esta Empresa exige dupla autenticação?' });
+    expect(within(grupo).getByRole('radio', { name: 'Não' })).toBeChecked();
+    expect(within(grupo).getByRole('radio', { name: 'Sim' })).not.toBeChecked();
+    expect(grupo).toHaveTextContent('O Ambiente de Treinamento nasce com a mesma escolha.');
+  });
+
+  it('Story 14.2: marcar "Sim" envia mfa_obrigatorio true e o formulário volta a "Não" depois de criar', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('Acme Obras');
+
+    await preencherFormulario(user);
+    await user.click(screen.getByRole('radio', { name: 'Sim' }));
+    await user.click(screen.getByRole('button', { name: 'Criar empresa' }));
+
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
+    const [, init] = chamadas('POST', '/api/plataforma/empresas')[0];
+    expect(JSON.parse(init.body as string).mfa_obrigatorio).toBe(true);
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Não' })).toBeChecked());
+    expect(screen.getByRole('radio', { name: 'Sim' })).not.toBeChecked();
+  });
+
+  it('Story 14.2: a lista mostra a escolha de MFA da Empresa e a do Treinamento', async () => {
+    renderPage();
+    await screen.findByText('Acme Obras');
+
+    expect(
+      screen.getByText('Dupla autenticação: Exigida · Treinamento: Não exigida'),
+    ).toBeInTheDocument();
   });
 
   it('409 mostra a mensagem do servidor num alerta, sem toast de sucesso', async () => {

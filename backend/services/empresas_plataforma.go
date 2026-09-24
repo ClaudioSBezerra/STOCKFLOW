@@ -53,7 +53,9 @@ var ErrSlugTreinamentoDuplicado = fmt.Errorf("o endereço do ambiente de treinam
 // NovaEmpresaInput é o insumo de CriarEmpresaComTreinamento: os dados
 // cadastrais da Empresa real (`Slug` opcional — vazio usa
 // NormalizarSlug(NomeFantasia)) e o nome/e-mail do primeiro `adm`. O Dono
-// nunca informa a senha do `adm`.
+// nunca informa a senha do `adm`. `DadosEmpresa.MFAObrigatorio` (Story 14.2)
+// é a resposta do Dono a "Esta Empresa exige dupla autenticação?" — o
+// Treinamento nasce com o mesmo valor (ProvisionarTreinamento).
 type NovaEmpresaInput struct {
 	DadosEmpresa
 	AdmNome  string
@@ -72,6 +74,9 @@ type TreinamentoResumo struct {
 	ID     string `json:"id"`
 	Slug   string `json:"slug"`
 	Status string `json:"status"`
+	// MFAObrigatorio (Story 14.2) é o valor GRAVADO no Treinamento — nunca
+	// derivado do da Empresa real (as duas são independentes após a criação).
+	MFAObrigatorio bool `json:"mfaObrigatorio"`
 }
 
 // EmpresaResumo é uma linha da área "Empresas" do Dono: SÓ metadado
@@ -87,6 +92,9 @@ type EmpresaResumo struct {
 	CriadoEm     time.Time          `json:"criadoEm"`
 	Adm          *AdmResponsavel    `json:"adm"`
 	Treinamento  *TreinamentoResumo `json:"treinamento"`
+	// MFAObrigatorio (Story 14.2): se a Empresa exige MFA — metadado
+	// administrativo, não dado operacional.
+	MFAObrigatorio bool `json:"mfaObrigatorio"`
 }
 
 // produtoExemplo é um Produto dos dados de exemplo do Treinamento.
@@ -172,6 +180,10 @@ func ValidarDadosNovaEmpresa(input NovaEmpresaInput) (DadosEmpresa, string, stri
 // de definição de senha sob o slug da própria Empresa. Qualquer falha desfaz
 // tudo.
 //
+// `input.MFAObrigatorio` (Story 14.2) é gravado na Empresa real e herdado
+// pelo Treinamento SÓ aqui, na criação, dentro desta transação. Depois disso
+// as duas são independentes: nada propaga uma alteração posterior.
+//
 // Validação -> *ErroEmpresaValidacao, antes de abrir a transação. CNPJ de
 // outra Empresa real -> ErrCNPJDuplicado; slug em uso -> ErrSlugDuplicado;
 // `{slug}-treinamento` em uso -> ErrSlugTreinamentoDuplicado.
@@ -220,8 +232,13 @@ func CriarEmpresaComTreinamento(db *sql.DB, emailCfg EmailConfig, input NovaEmpr
 //
 // `{slug}-treinamento` já em uso -> ErrSlugTreinamentoDuplicado (que embrulha
 // ErrSlugDuplicado: errors.Is casa com qualquer um dos dois).
+//
+// O Treinamento herda `MFAObrigatorio` do valor GRAVADO na Empresa real
+// (`real`, Story 14.2), não de `dadosReal` — só na criação; não há
+// propagação posterior.
 func ProvisionarTreinamento(tx *sql.Tx, emailCfg EmailConfig, real Empresa, dadosReal DadosEmpresa, admNome, admEmail string) (Empresa, error) {
 	dadosTreino := dadosReal
+	dadosTreino.MFAObrigatorio = real.MFAObrigatorio
 	dadosTreino.NomeFantasia = dadosReal.NomeFantasia + sufixoNomeTreinamento
 	dadosTreino.Slug = dadosReal.Slug + sufixoSlugTreinamento
 	dadosTreino.EmpresaOrigemID = &real.ID
@@ -321,13 +338,13 @@ func semearDadosTreinamento(tx *sql.Tx, empresaID string) error {
 
 // ListarEmpresasPlataforma devolve as Empresas REAIS, mais recentes
 // primeiro, cada uma com o `adm` mais antigo e o seu Treinamento aninhado —
-// só metadado.
+// só metadado (inclusive a escolha de MFA de cada uma, Story 14.2).
 func ListarEmpresasPlataforma(db *sql.DB) ([]EmpresaResumo, error) {
 	const q = `
 		SELECT e.id, e.nome_fantasia, e.razao_social, e.cnpj,
 		       e.logradouro, e.numero, e.complemento, e.bairro, e.cidade, e.cep, e.uf,
-		       e.slug, e.status, e.criado_em,
-		       t.id, t.slug, t.status,
+		       e.slug, e.status, e.criado_em, e.mfa_obrigatorio,
+		       t.id, t.slug, t.status, t.mfa_obrigatorio,
 		       a.nome, a.email
 		FROM empresas e
 		LEFT JOIN empresas t ON t.empresa_origem_id = e.id
@@ -350,19 +367,23 @@ func ListarEmpresasPlataforma(db *sql.DB) ([]EmpresaResumo, error) {
 	for rows.Next() {
 		var e EmpresaResumo
 		var complemento, treinoID, treinoSlug, treinoStatus, admNome, admEmail sql.NullString
+		var treinoMFA sql.NullBool // LEFT JOIN: nulo quando não há Treinamento
 		if err := rows.Scan(
 			&e.ID, &e.NomeFantasia, &e.RazaoSocial, &e.CNPJ,
 			&e.Endereco.Logradouro, &e.Endereco.Numero, &complemento, &e.Endereco.Bairro,
 			&e.Endereco.Cidade, &e.Endereco.CEP, &e.Endereco.UF,
-			&e.Slug, &e.Status, &e.CriadoEm,
-			&treinoID, &treinoSlug, &treinoStatus,
+			&e.Slug, &e.Status, &e.CriadoEm, &e.MFAObrigatorio,
+			&treinoID, &treinoSlug, &treinoStatus, &treinoMFA,
 			&admNome, &admEmail,
 		); err != nil {
 			return nil, fmt.Errorf("falha ao ler empresa da listagem: %w", err)
 		}
 		e.Endereco.Complemento = complemento.String
 		if treinoID.Valid {
-			e.Treinamento = &TreinamentoResumo{ID: treinoID.String, Slug: treinoSlug.String, Status: treinoStatus.String}
+			e.Treinamento = &TreinamentoResumo{
+				ID: treinoID.String, Slug: treinoSlug.String, Status: treinoStatus.String,
+				MFAObrigatorio: treinoMFA.Bool,
+			}
 		}
 		if admNome.Valid {
 			e.Adm = &AdmResponsavel{Nome: admNome.String, Email: admEmail.String}

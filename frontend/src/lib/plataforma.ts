@@ -67,7 +67,10 @@ export interface EmpresaResumo {
   status: string;
   criadoEm: string;
   adm: { nome: string; email: string } | null;
-  treinamento: { id: string; slug: string; status: string } | null;
+  /** Story 14.2: se a Empresa exige dupla autenticação (valor gravado). */
+  mfaObrigatorio: boolean;
+  /** O `mfaObrigatorio` do Treinamento é o gravado nele — independente do da real. */
+  treinamento: { id: string; slug: string; status: string; mfaObrigatorio: boolean } | null;
 }
 
 /** Payload de criação. `slug` vazio -> o servidor deriva do nome fantasia. */
@@ -79,6 +82,8 @@ export interface NovaEmpresa {
   endereco: EnderecoEmpresa;
   admNome: string;
   admEmail: string;
+  /** Story 14.2: "Esta Empresa exige dupla autenticação?" — o Treinamento herda na criação. */
+  mfa_obrigatorio: boolean;
 }
 
 export interface EmpresaCriada {
@@ -87,6 +92,7 @@ export interface EmpresaCriada {
   slug: string;
   status: string;
   empresaOrigemId: string | null;
+  mfaObrigatorio: boolean;
 }
 
 async function erroDaResposta(res: Response): Promise<ErroPlataforma> {

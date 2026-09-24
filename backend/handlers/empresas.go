@@ -22,6 +22,10 @@ const novaEmpresaRequestMaxBytes = 64 * 1024
 // novaEmpresaRequest é o payload de POST /api/plataforma/empresas. `slug` é
 // opcional (vazio -> derivado do nome fantasia). Não existe campo de senha:
 // o `adm` define a própria senha pelo link do e-mail.
+//
+// `mfa_obrigatorio` (Story 14.2) é opcional: ausente ou null -> false. O nome
+// snake_case é o literal do AC; `mfaObrigatorio` (camelCase, padrão do resto
+// do payload) é aceito como sinônimo. Os dois com valores diferentes -> 400.
 type novaEmpresaRequest struct {
 	NomeFantasia string                   `json:"nomeFantasia"`
 	RazaoSocial  string                   `json:"razaoSocial"`
@@ -30,13 +34,33 @@ type novaEmpresaRequest struct {
 	Endereco     services.EnderecoEmpresa `json:"endereco"`
 	AdmNome      string                   `json:"admNome"`
 	AdmEmail     string                   `json:"admEmail"`
+
+	MFAObrigatorio      *bool `json:"mfa_obrigatorio"`
+	MFAObrigatorioCamel *bool `json:"mfaObrigatorio"`
+}
+
+// resolverMFAObrigatorio combina `mfa_obrigatorio` e o sinônimo
+// `mfaObrigatorio`: ausentes -> false; divergentes -> ok=false.
+func (req novaEmpresaRequest) resolverMFAObrigatorio() (mfa bool, ok bool) {
+	if req.MFAObrigatorio != nil {
+		mfa = *req.MFAObrigatorio
+	}
+	if req.MFAObrigatorioCamel != nil {
+		if req.MFAObrigatorio != nil && *req.MFAObrigatorio != *req.MFAObrigatorioCamel {
+			return false, false
+		}
+		mfa = *req.MFAObrigatorioCamel
+	}
+	return mfa, true
 }
 
 // CriarEmpresaHandler expõe POST /api/plataforma/empresas: cria a Empresa
 // real, o `adm` dela, o Ambiente de Treinamento (com dados de exemplo) e o
 // `adm` do Treinamento numa única transação. 201 `{empresa, treinamento}`;
 // validação -> 400 VALIDATION_ERROR com a mensagem do campo; CNPJ ou slug em
-// uso -> 409 CONFLICT nomeando qual.
+// uso -> 409 CONFLICT nomeando qual. `mfa_obrigatorio` (Story 14.2) vai para
+// a Empresa real e, por herança na criação, para o Treinamento; conflito com
+// o sinônimo `mfaObrigatorio` -> 400 VALIDATION_ERROR.
 func CriarEmpresaHandler(db *sql.DB, emailCfg services.EmailConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		dono, ok := donoDaRequisicao(w, r)
@@ -50,14 +74,21 @@ func CriarEmpresaHandler(db *sql.DB, emailCfg services.EmailConfig) http.Handler
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "payload inválido")
 			return
 		}
+		mfaObrigatorio, ok := req.resolverMFAObrigatorio()
+		if !ok {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR",
+				"mfa_obrigatorio e mfaObrigatorio foram enviados com valores diferentes")
+			return
+		}
 
 		empresa, treino, err := services.CriarEmpresaComTreinamento(db, emailCfg, services.NovaEmpresaInput{
 			DadosEmpresa: services.DadosEmpresa{
-				NomeFantasia: req.NomeFantasia,
-				RazaoSocial:  req.RazaoSocial,
-				CNPJ:         req.CNPJ,
-				Endereco:     req.Endereco,
-				Slug:         req.Slug,
+				NomeFantasia:   req.NomeFantasia,
+				RazaoSocial:    req.RazaoSocial,
+				CNPJ:           req.CNPJ,
+				Endereco:       req.Endereco,
+				Slug:           req.Slug,
+				MFAObrigatorio: mfaObrigatorio,
 			},
 			AdmNome:  req.AdmNome,
 			AdmEmail: req.AdmEmail,

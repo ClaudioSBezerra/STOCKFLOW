@@ -425,9 +425,85 @@ func TestListarEmpresasPlataforma_SoMetadado(t *testing.T) {
 		chaves = append(chaves, k)
 	}
 	sort.Strings(chaves)
-	want := "adm,cnpj,criadoEm,endereco,id,nomeFantasia,razaoSocial,slug,status,treinamento"
+	want := "adm,cnpj,criadoEm,endereco,id,mfaObrigatorio,nomeFantasia,razaoSocial,slug,status,treinamento"
 	if got := strings.Join(chaves, ","); got != want {
 		t.Errorf("chaves do resumo = %s, want %s", got, want)
+	}
+}
+
+// mfaGravado lê `empresas.mfa_obrigatorio` direto do banco.
+func mfaGravado(t *testing.T, db *sql.DB, empresaID string) bool {
+	t.Helper()
+	var v bool
+	if err := db.QueryRow(`SELECT mfa_obrigatorio FROM empresas WHERE id = $1`, empresaID).Scan(&v); err != nil {
+		t.Fatalf("ler mfa_obrigatorio de %s: %v", empresaID, err)
+	}
+	return v
+}
+
+// TestCriarEmpresaComTreinamento_MFAObrigatorio prova a Story 14.2 no
+// service: a escolha vai para a real e o Treinamento a herda na criação; o
+// default (campo não setado) deixa as duas `false`.
+func TestCriarEmpresaComTreinamento_MFAObrigatorio(t *testing.T) {
+	db := testDB(t)
+	comParLimpo(t, db, "plat-mfa-sim", "plat-mfa-nao")
+
+	input := novaEmpresaTeste("plat-mfa-sim", "961112220011", "Cliente MFA Sim")
+	input.MFAObrigatorio = true
+	empresa, treino, err := CriarEmpresaComTreinamento(db, testEmailCfg, input)
+	if err != nil {
+		t.Fatalf("CriarEmpresaComTreinamento (sim): %v", err)
+	}
+	if !empresa.MFAObrigatorio || !treino.MFAObrigatorio {
+		t.Errorf("retorno: real=%v treino=%v, want true/true", empresa.MFAObrigatorio, treino.MFAObrigatorio)
+	}
+	if !mfaGravado(t, db, empresa.ID) || !mfaGravado(t, db, treino.ID) {
+		t.Error("banco: real e Treinamento deveriam ter mfa_obrigatorio=true")
+	}
+
+	empresa, treino, err = CriarEmpresaComTreinamento(db, testEmailCfg, novaEmpresaTeste("plat-mfa-nao", "961112220012", "Cliente MFA Nao"))
+	if err != nil {
+		t.Fatalf("CriarEmpresaComTreinamento (default): %v", err)
+	}
+	if empresa.MFAObrigatorio || treino.MFAObrigatorio || mfaGravado(t, db, empresa.ID) || mfaGravado(t, db, treino.ID) {
+		t.Error("default: real e Treinamento deveriam ter mfa_obrigatorio=false")
+	}
+}
+
+// TestMFAObrigatorio_HerancaSoNaCriacao prova que, depois da criação, real e
+// Treinamento são independentes e a listagem mostra o valor gravado de cada.
+func TestMFAObrigatorio_HerancaSoNaCriacao(t *testing.T) {
+	db := testDB(t)
+	comParLimpo(t, db, "plat-mfa-indep")
+
+	input := novaEmpresaTeste("plat-mfa-indep", "961112220013", "Cliente MFA Indep")
+	input.MFAObrigatorio = true
+	empresa, treino, err := CriarEmpresaComTreinamento(db, testEmailCfg, input)
+	if err != nil {
+		t.Fatalf("CriarEmpresaComTreinamento: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE empresas SET mfa_obrigatorio = false WHERE id = $1`, empresa.ID); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if mfaGravado(t, db, empresa.ID) || !mfaGravado(t, db, treino.ID) {
+		t.Error("o UPDATE da real alterou o Treinamento (ou não gravou)")
+	}
+
+	lista, err := ListarEmpresasPlataforma(db)
+	if err != nil {
+		t.Fatalf("ListarEmpresasPlataforma: %v", err)
+	}
+	var achada *EmpresaResumo
+	for i := range lista {
+		if lista[i].ID == empresa.ID {
+			achada = &lista[i]
+		}
+	}
+	if achada == nil || achada.Treinamento == nil {
+		t.Fatalf("empresa/treinamento ausente da listagem: %+v", achada)
+	}
+	if achada.MFAObrigatorio || !achada.Treinamento.MFAObrigatorio {
+		t.Errorf("listagem: real=%v treino=%v, want false/true", achada.MFAObrigatorio, achada.Treinamento.MFAObrigatorio)
 	}
 }
 
