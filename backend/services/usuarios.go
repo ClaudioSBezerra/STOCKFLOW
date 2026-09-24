@@ -14,6 +14,9 @@ type UsuarioResumo struct {
 	Email string `json:"email"`
 	Papel string `json:"papel"`
 	Ativo bool   `json:"ativo"`
+	// MFAHabilitado (Story 14.4) diz à Gestão de Usuários quando oferecer
+	// "Resetar MFA". Só o booleano: o segredo nunca sai do banco.
+	MFAHabilitado bool `json:"mfaHabilitado"`
 }
 
 // ListarUsuarios devolve as contas da Empresa `empresaID` visíveis para quem
@@ -40,7 +43,7 @@ func ListarUsuarios(db *sql.DB, empresaID string, papelSolicitante string) ([]Us
 	var err error
 	if papelSolicitante == PapelAdm {
 		rows, err = db.Query(`
-			SELECT id, nome, email, papel, ativo
+			SELECT id, nome, email, papel, ativo, mfa_habilitado
 			FROM usuarios
 			WHERE empresa_id = $1
 			ORDER BY criado_em, id`, empresaID)
@@ -50,7 +53,7 @@ func ListarUsuarios(db *sql.DB, empresaID string, papelSolicitante string) ([]Us
 		// nomes de papel vêm das constantes do pacote, nunca de literais
 		// soltos na query.
 		rows, err = db.Query(`
-			SELECT id, nome, email, papel, ativo
+			SELECT id, nome, email, papel, ativo, mfa_habilitado
 			FROM usuarios
 			WHERE empresa_id = $1 AND papel IN ($2, $3)
 			ORDER BY criado_em, id`, empresaID, PapelUsuario, PapelAlmoxarife)
@@ -63,7 +66,7 @@ func ListarUsuarios(db *sql.DB, empresaID string, papelSolicitante string) ([]Us
 	usuarios := make([]UsuarioResumo, 0)
 	for rows.Next() {
 		var u UsuarioResumo
-		if err := rows.Scan(&u.ID, &u.Nome, &u.Email, &u.Papel, &u.Ativo); err != nil {
+		if err := rows.Scan(&u.ID, &u.Nome, &u.Email, &u.Papel, &u.Ativo, &u.MFAHabilitado); err != nil {
 			return nil, fmt.Errorf("falha ao ler linha de usuário: %w", err)
 		}
 		usuarios = append(usuarios, u)

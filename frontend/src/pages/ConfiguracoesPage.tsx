@@ -76,7 +76,9 @@ import { apiUrl, authHeaders } from '@/lib/api';
  *    sem MFA; "ativo" quando já habilitado. Fluxo de configuração: botão ->
  *    `POST /mfa/iniciar` (QR Code + segredo em texto) -> código TOTP ->
  *    `POST /mfa/confirmar` -> `atualizarUsuario` reflete `mfaHabilitado:true`
- *    sem round-trip extra a `/me`.
+ *    sem round-trip extra a `/me`. Com MFA ativo, "Desligar meu MFA" (Story
+ *    14.4) pede senha atual + código e chama `POST /mfa/desligar`; para
+ *    `gestor`/`adm` numa Empresa que exige, o botão some e fica a explicação.
  *  - "Dupla autenticação da Empresa" (`MfaEmpresaSection`, Story 14.3): só
  *    montada para `adm`, logo depois de "Segurança". Mostra se a Empresa
  *    exige MFA (`GET/PUT /api/seguranca/mfa-empresa`); ligar pede confirmação
@@ -109,6 +111,8 @@ interface SolicitacaoPendente {
 const MENSAGEM_ERRO_SOLICITAR =
   'Não foi possível solicitar a promoção agora. Tente novamente em instantes.';
 const MENSAGEM_ERRO_DECISAO = 'Não foi possível concluir a decisão.';
+const MENSAGEM_MFA_EXIGIDO_PELA_EMPRESA =
+  'A Empresa exige dupla autenticação para o seu papel; ela não pode ser desligada.';
 const MENSAGEM_ERRO_CARREGAR_MINHA =
   'Não foi possível verificar o estado da sua solicitação. Recarregue a página.';
 
@@ -129,13 +133,22 @@ const MENSAGEM_ERRO_CARREGAR_MINHA =
  * input de código) -> `POST /mfa/confirmar` no submit. Sucesso chama
  * `atualizarUsuario` (reflete `mfaHabilitado:true` sem round-trip extra) e
  * mostra um toast (`sonner`, molde do `Toaster` já montado em `main.tsx`).
+ *
+ * Desligamento (Story 14.4): com MFA ativo, "Desligar meu MFA" leva a
+ * `etapa 'desligando'` (senha atual + código) -> `POST /mfa/desligar`.
+ * Sucesso -> `atualizarUsuario({...usuario, mfaHabilitado:false})` + toast.
+ * Se `rank>=gestor && empresa.mfaObrigatorio`, o botão não aparece e fica o
+ * texto do 409 MFA_EXIGIDO_PELA_EMPRESA; o servidor segue sendo a autoridade
+ * (o 409 dele também vira alerta).
  */
 function SegurancaCard() {
   const { usuario, atualizarUsuario } = useAuth();
   const mfaHabilitado = usuario?.mfaHabilitado ?? false;
   const mfaObrigatorio = mfaSetupPendente(usuario);
+  const desligarBloqueadoPelaEmpresa =
+    rankPapel(usuario?.papel ?? '') >= rankPapel('gestor') && usuario?.empresa?.mfaObrigatorio === true;
 
-  const [etapa, setEtapa] = useState<'inicial' | 'configurando'>('inicial');
+  const [etapa, setEtapa] = useState<'inicial' | 'configurando' | 'desligando'>('inicial');
   const [segredo, setSegredo] = useState('');
   const [otpauthUrl, setOtpauthUrl] = useState('');
   const [codigo, setCodigo] = useState('');
@@ -143,6 +156,65 @@ function SegurancaCard() {
   const [iniciando, setIniciando] = useState(false);
   const [confirmando, setConfirmando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+  const [senhaDesligar, setSenhaDesligar] = useState('');
+  const [codigoDesligar, setCodigoDesligar] = useState('');
+  const [desligando, setDesligando] = useState(false);
+
+  function abrirDesligamento() {
+    setErro(null);
+    setSenhaDesligar('');
+    setCodigoDesligar('');
+    setEtapa('desligando');
+  }
+
+  function cancelarDesligamento() {
+    setEtapa('inicial');
+    setErro(null);
+    setSenhaDesligar('');
+    setCodigoDesligar('');
+  }
+
+  async function desligarMfa(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (desligando) {
+      return;
+    }
+    setErro(null);
+    setDesligando(true);
+    try {
+      const res = await fetch(apiUrl('/api/auth/mfa/desligar'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ senhaAtual: senhaDesligar, codigo: codigoDesligar }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as {
+          error?: { code?: string; message?: string };
+        };
+        if (res.status === 401) {
+          setErro('Senha ou código inválido.');
+        } else if (res.status === 409 && body.error?.code === 'MFA_EXIGIDO_PELA_EMPRESA') {
+          setErro(body.error.message ?? MENSAGEM_MFA_EXIGIDO_PELA_EMPRESA);
+        } else if (res.status === 429) {
+          setErro('Muitas tentativas. Tente novamente mais tarde.');
+        } else {
+          setErro('Não foi possível desligar a autenticação em duas etapas agora. Tente novamente em instantes.');
+        }
+        return;
+      }
+      if (usuario) {
+        atualizarUsuario({ ...usuario, mfaHabilitado: false });
+      }
+      setEtapa('inicial');
+      setSenhaDesligar('');
+      setCodigoDesligar('');
+      toast.success('Autenticação em duas etapas desligada.');
+    } catch {
+      setErro('Não foi possível desligar a autenticação em duas etapas agora. Tente novamente em instantes.');
+    } finally {
+      setDesligando(false);
+    }
+  }
 
   async function iniciarConfiguracao() {
     if (iniciando) {
@@ -213,7 +285,66 @@ function SegurancaCard() {
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {mfaHabilitado ? (
-          <p className="text-body">Autenticação em duas etapas ativa.</p>
+          etapa === 'desligando' ? (
+            <form onSubmit={desligarMfa} className="flex flex-col gap-4" noValidate>
+              <p className="text-body text-muted-foreground">
+                Para desligar, informe a sua senha atual e o código do aplicativo autenticador.
+              </p>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="mfa-desligar-senha">Senha atual</Label>
+                <Input
+                  id="mfa-desligar-senha"
+                  type="password"
+                  autoComplete="current-password"
+                  required
+                  value={senhaDesligar}
+                  onChange={(event) => setSenhaDesligar(event.target.value)}
+                />
+              </div>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="mfa-desligar-codigo">Código de verificação</Label>
+                <Input
+                  id="mfa-desligar-codigo"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  maxLength={6}
+                  required
+                  value={codigoDesligar}
+                  onChange={(event) => setCodigoDesligar(event.target.value.replace(/\D/g, ''))}
+                />
+              </div>
+              {erro && (
+                <p role="alert" className="text-body text-destructive">
+                  {erro}
+                </p>
+              )}
+              <div className="flex gap-2">
+                <Button type="submit" variant="destructive" disabled={desligando}>
+                  {desligando ? 'Desligando...' : 'Desligar'}
+                </Button>
+                <Button type="button" variant="outline" disabled={desligando} onClick={cancelarDesligamento}>
+                  Cancelar
+                </Button>
+              </div>
+            </form>
+          ) : (
+            <>
+              <p className="text-body">Autenticação em duas etapas ativa.</p>
+              {desligarBloqueadoPelaEmpresa ? (
+                <p className="text-body text-muted-foreground">{MENSAGEM_MFA_EXIGIDO_PELA_EMPRESA}</p>
+              ) : (
+                <Button type="button" variant="outline" onClick={abrirDesligamento} className="self-start">
+                  Desligar meu MFA
+                </Button>
+              )}
+              {erro && (
+                <p role="alert" className="text-body text-destructive">
+                  {erro}
+                </p>
+              )}
+            </>
+          )
         ) : etapa === 'inicial' ? (
           <>
             <p className="text-body text-muted-foreground">

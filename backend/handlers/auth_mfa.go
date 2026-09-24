@@ -14,6 +14,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"stockflow/backend/middleware"
 	"stockflow/backend/services"
@@ -165,6 +166,70 @@ func MFAConfirmarHandler(db *sql.DB) http.HandlerFunc {
 		default:
 			slog.Error("falha ao confirmar configuração de MFA", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao confirmar configuração de MFA")
+		}
+	}
+}
+
+// mfaDesligarRequest é o payload aceito por POST /api/auth/mfa/desligar.
+type mfaDesligarRequest struct {
+	SenhaAtual string `json:"senhaAtual"`
+	Codigo     string `json:"codigo"`
+}
+
+// MFADesligarHandler expõe POST /api/auth/mfa/desligar (Story 14.4), atrás só
+// de RequireAuth (qualquer papel): a própria conta desliga o seu MFA com senha
+// atual + código TOTP vigente. Corpo inválido ou campo vazio -> 400 (sem
+// contar tentativa); sessão sem MFA -> 409
+// MFA_NAO_CONFIGURADO; `gestor`/`adm` numa Empresa que exige -> 409
+// MFA_EXIGIDO_PELA_EMPRESA; conta bloqueada -> 429 ACCOUNT_LOCKED; senha OU
+// código errado -> o MESMO 401 INVALID_CREDENTIALS (as duas falhas contam
+// tentativa — sem oráculo da senha para quem tem um access token roubado).
+func MFADesligarHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		usuario, ok := middleware.UsuarioDaSessao(r.Context())
+		if !ok {
+			slog.Error("MFADesligarHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
+		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
+		var req mfaDesligarRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "payload inválido")
+			return
+		}
+		// Campo vazio nunca chega ao service: um envio em branco não pode
+		// consumir tentativa do bloqueio.
+		if strings.TrimSpace(req.SenhaAtual) == "" || strings.TrimSpace(req.Codigo) == "" {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "payload inválido")
+			return
+		}
+
+		if !usuario.MFAHabilitado {
+			escreverErro(w, http.StatusConflict, "MFA_NAO_CONFIGURADO", "autenticação em duas etapas não configurada para esta conta")
+			return
+		}
+
+		err := services.DesligarMFAPropria(db, usuario.ID, usuario.Papel, empresa.MFAObrigatorio, req.SenhaAtual, req.Codigo)
+		switch {
+		case err == nil:
+			escreverJSON(w, http.StatusOK, map[string]any{})
+		case errors.Is(err, services.ErrMFAExigidoPelaEmpresa):
+			escreverErro(w, http.StatusConflict, "MFA_EXIGIDO_PELA_EMPRESA", "A Empresa exige dupla autenticação para o seu papel; ela não pode ser desligada.")
+		case errors.Is(err, services.ErrMFANaoConfigurado):
+			escreverErro(w, http.StatusConflict, "MFA_NAO_CONFIGURADO", "autenticação em duas etapas não configurada para esta conta")
+		case errors.Is(err, services.ErrContaBloqueada):
+			escreverErro(w, http.StatusTooManyRequests, "ACCOUNT_LOCKED", "Muitas tentativas de login sem sucesso. Por segurança, novas tentativas ficam bloqueadas temporariamente. Tente novamente mais tarde.")
+		case errors.Is(err, services.ErrCredenciaisInvalidas), errors.Is(err, services.ErrMFACodigoInvalido):
+			escreverErro(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Senha ou código inválido.")
+		default:
+			slog.Error("falha ao desligar MFA", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao desligar MFA")
 		}
 	}
 }

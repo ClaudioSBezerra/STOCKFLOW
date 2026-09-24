@@ -108,3 +108,39 @@ func RebaixarUsuarioHandler(db *sql.DB) http.HandlerFunc {
 		}
 	}
 }
+
+// ResetarMFAUsuarioHandler expõe POST /api/usuarios/{id}/mfa-reset (Story
+// 14.4), atrás de RequireAuth + RequireRole(adm). Sem corpo. Zera o MFA da
+// conta alvo (rank estritamente menor que o do ator, mesma Empresa), revoga as
+// sessões dela e grava `mfa_resetado` em `auditoria_seguranca`.
+func ResetarMFAUsuarioHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		usuario, ok := middleware.UsuarioDaSessao(r.Context())
+		if !ok {
+			slog.Error("ResetarMFAUsuarioHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
+		u, err := services.ResetarMFAUsuario(db, empresa.ID, r.PathValue("id"), usuario.ID, usuario.Papel)
+		switch {
+		case err == nil:
+			escreverJSON(w, http.StatusOK, map[string]any{"usuario": u})
+		case errors.Is(err, services.ErrGestaoForaDeEscopo):
+			escreverErro(w, http.StatusForbidden, "FORBIDDEN", "papel insuficiente para agir sobre esta conta")
+		case errors.Is(err, services.ErrContaNaoEncontrada):
+			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "conta não encontrada")
+		case errors.Is(err, services.ErrMFANaoConfigurado):
+			escreverErro(w, http.StatusConflict, "MFA_NAO_CONFIGURADO", "esta conta não tem dupla autenticação configurada")
+		case errors.Is(err, services.ErrEstadoContaMudou):
+			escreverErro(w, http.StatusConflict, "CONFLICT", "o estado da conta mudou; recarregue a lista")
+		default:
+			slog.Error("falha ao resetar MFA de conta", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resetar MFA da conta")
+		}
+	}
+}

@@ -258,4 +258,113 @@ describe('GestaoUsuariosSection', () => {
     expect(container).toBeEmptyDOMElement();
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  describe('Resetar MFA (Story 14.4)', () => {
+    const CONTAS_MFA = [
+      { id: 'adm-1', nome: 'Eu Adm', email: 'adm@empresa.com', papel: 'adm', ativo: true, mfaHabilitado: true },
+      { id: 'g-1', nome: 'Gil Gestor', email: 'gil@empresa.com', papel: 'gestor', ativo: true, mfaHabilitado: true },
+      { id: 'g-2', nome: 'Gabi Sem MFA', email: 'gabi@empresa.com', papel: 'gestor', ativo: true, mfaHabilitado: false },
+      { id: 'adm-2', nome: 'Outro Adm', email: 'outro@empresa.com', papel: 'adm', ativo: true, mfaHabilitado: true },
+    ];
+
+    it('aparece para o adm numa conta gestor com MFA, e só nela', async () => {
+      authState.id = 'adm-1';
+      authState.papel = 'adm';
+      stubFetch((url) => {
+        if (url === '/api/usuarios') return jsonOk({ usuarios: CONTAS_MFA });
+        throw new Error(`URL inesperada: ${url}`);
+      });
+
+      render(<GestaoUsuariosSection />);
+
+      expect(await screen.findByRole('button', { name: 'Resetar MFA de Gil Gestor' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Resetar MFA de Gabi Sem MFA/ })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Resetar MFA de Outro Adm/ })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Resetar MFA de Eu Adm/ })).not.toBeInTheDocument();
+    });
+
+    it('não aparece para o ator gestor', async () => {
+      authState.id = 'g-9';
+      authState.papel = 'gestor';
+      stubFetch((url) => {
+        if (url === '/api/usuarios') {
+          return jsonOk({
+            usuarios: [{ id: 'a-9', nome: 'Almox MFA', email: 'x@empresa.com', papel: 'almoxarife', ativo: true, mfaHabilitado: true }],
+          });
+        }
+        throw new Error(`URL inesperada: ${url}`);
+      });
+
+      render(<GestaoUsuariosSection />);
+
+      await screen.findByText('Almox MFA');
+      expect(screen.queryByRole('button', { name: /Resetar MFA/ })).not.toBeInTheDocument();
+    });
+
+    it('confirmar faz POST .../mfa-reset sem corpo e recarrega a lista', async () => {
+      authState.id = 'adm-1';
+      authState.papel = 'adm';
+      let listaChamadas = 0;
+      const fetchMock = stubFetch((url, init) => {
+        if (url === '/api/usuarios') {
+          listaChamadas += 1;
+          const lista =
+            listaChamadas === 1
+              ? CONTAS_MFA
+              : CONTAS_MFA.map((c) => (c.id === 'g-1' ? { ...c, mfaHabilitado: false } : c));
+          return jsonOk({ usuarios: lista });
+        }
+        if (url === '/api/usuarios/g-1/mfa-reset' && init?.method === 'POST') {
+          return jsonOk({ usuario: { ...CONTAS_MFA[1], mfaHabilitado: false } });
+        }
+        throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
+      });
+
+      const user = userEvent.setup();
+      render(<GestaoUsuariosSection />);
+
+      await user.click(await screen.findByRole('button', { name: 'Resetar MFA de Gil Gestor' }));
+      const dialog = await screen.findByRole('alertdialog');
+      expect(within(dialog).getByText('Resetar a dupla autenticação de Gil Gestor?')).toBeInTheDocument();
+      expect(
+        within(dialog).getByText(
+          'As sessões da conta são encerradas e ela precisará configurar um novo MFA se a Empresa exigir.',
+        ),
+      ).toBeInTheDocument();
+      await user.click(within(dialog).getByRole('button', { name: 'Resetar MFA' }));
+
+      await waitFor(() =>
+        expect(fetchMock).toHaveBeenCalledWith(
+          '/api/usuarios/g-1/mfa-reset',
+          expect.objectContaining({ method: 'POST' }),
+        ),
+      );
+      const chamada = fetchMock.mock.calls.find(([u]) => u === '/api/usuarios/g-1/mfa-reset');
+      expect(chamada?.[1]?.body).toBeUndefined();
+      await waitFor(() => expect(listaChamadas).toBe(2));
+      await waitFor(() =>
+        expect(screen.queryByRole('button', { name: /Resetar MFA de Gil Gestor/ })).not.toBeInTheDocument(),
+      );
+    });
+
+    it('cancelar não chama a API', async () => {
+      authState.id = 'adm-1';
+      authState.papel = 'adm';
+      const fetchMock = stubFetch((url) => {
+        if (url === '/api/usuarios') return jsonOk({ usuarios: CONTAS_MFA });
+        throw new Error(`URL inesperada: ${url}`);
+      });
+
+      const user = userEvent.setup();
+      render(<GestaoUsuariosSection />);
+
+      await user.click(await screen.findByRole('button', { name: 'Resetar MFA de Gil Gestor' }));
+      const dialog = await screen.findByRole('alertdialog');
+      await user.click(within(dialog).getByRole('button', { name: /Cancelar/ }));
+
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls.some(([u]) => String(u).includes('mfa-reset'))).toBe(false);
+    });
+  });
 });

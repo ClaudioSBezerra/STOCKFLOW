@@ -468,6 +468,19 @@ func TestNewMux_RegistraRotasDeAutenticacao(t *testing.T) {
 			statusQuerAo: http.StatusUnauthorized,
 		},
 		{
+			nome:         "usuarios/{id}/mfa-reset sem token chega no RequireAuth antes de RequireRole(adm)",
+			metodo:       http.MethodPost,
+			caminho:      prefixoEmpresaTeste + "/api/usuarios/qualquer-id/mfa-reset",
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
+			nome:         "auth/mfa/desligar sem token chega no RequireAuth",
+			metodo:       http.MethodPost,
+			caminho:      prefixoEmpresaTeste + "/api/auth/mfa/desligar",
+			corpo:        `{"senhaAtual":"x","codigo":"123456"}`,
+			statusQuerAo: http.StatusUnauthorized,
+		},
+		{
 			nome:         "logs-acesso sem token chega no RequireAuth antes de RequireRole(adm)",
 			metodo:       http.MethodGet,
 			caminho:      prefixoEmpresaTeste + "/api/logs-acesso",

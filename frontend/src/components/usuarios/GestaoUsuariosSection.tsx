@@ -20,7 +20,11 @@ import { apiUrl, authHeaders } from '@/lib/api';
  *  - "Rebaixar para {papel}" quando existe papel abaixo -> `POST
  *    /api/usuarios/{id}/rebaixamento` (sem corpo; o alvo é derivado no servidor).
  *
- * "Desativar" e "Rebaixar" reduzem acesso: passam por um `ConfirmDialog` único
+ *  - "Resetar MFA" (Story 14.4) só para o ator `adm`, em conta com
+ *    `mfaHabilitado` e papel abaixo de `adm` -> `POST /api/usuarios/{id}/mfa-reset`
+ *    (sem corpo). O servidor revoga as sessões da conta e audita.
+ *
+ * "Desativar", "Rebaixar" e "Resetar MFA" reduzem acesso: passam por um `ConfirmDialog` único
  * (nunca `window.confirm()`). "Reativar" é direto. Falha de carga da lista e
  * falha de ação viram mensagem inline `role="alert"` (sem toast, molde de
  * `ConfiguracoesPage`); toda ação — sucesso OU falha — refaz o
@@ -33,13 +37,14 @@ interface UsuarioResumo {
   email: string;
   papel: string;
   ativo: boolean;
+  mfaHabilitado?: boolean;
 }
 
-type TipoAcao = 'desativar' | 'reativar' | 'rebaixar';
+type TipoAcao = 'desativar' | 'reativar' | 'rebaixar' | 'resetar-mfa';
 
 interface AcaoPendente {
   id: string;
-  tipo: 'desativar' | 'rebaixar';
+  tipo: 'desativar' | 'rebaixar' | 'resetar-mfa';
   nome: string;
   alvoRotulo?: string;
 }
@@ -52,6 +57,7 @@ export function GestaoUsuariosSection() {
   const { usuario } = useAuth();
   const atorId = usuario?.id ?? '';
   const podeGerir = rankPapel(usuario?.papel ?? '') >= rankPapel('gestor');
+  const atorEhAdm = usuario?.papel === 'adm';
 
   const [contas, setContas] = useState<UsuarioResumo[]>([]);
   const [erroCarregar, setErroCarregar] = useState<string | null>(null);
@@ -92,9 +98,11 @@ export function GestaoUsuariosSection() {
       const url =
         tipo === 'rebaixar'
           ? `/api/usuarios/${id}/rebaixamento`
-          : `/api/usuarios/${id}/desativacao`;
+          : tipo === 'resetar-mfa'
+            ? `/api/usuarios/${id}/mfa-reset`
+            : `/api/usuarios/${id}/desativacao`;
       const init: RequestInit =
-        tipo === 'rebaixar'
+        tipo === 'rebaixar' || tipo === 'resetar-mfa'
           ? { method: 'POST', headers: authHeaders() }
           : {
               method: 'POST',
@@ -155,6 +163,8 @@ export function GestaoUsuariosSection() {
             {contas.map((c) => {
               const abaixo = papelAbaixo(c.papel);
               const ehAtor = c.id === atorId;
+              const podeResetarMfa =
+                atorEhAdm && c.mfaHabilitado === true && rankPapel(c.papel) < rankPapel('adm');
               return (
                 <li
                   key={c.id}
@@ -213,6 +223,20 @@ export function GestaoUsuariosSection() {
                           Rebaixar para {rotuloPapel(abaixo)}
                         </Button>
                       )}
+                      {podeResetarMfa && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          aria-label={`Resetar MFA de ${c.nome}`}
+                          onClick={() =>
+                            setAcaoPendente({ id: c.id, tipo: 'resetar-mfa', nome: c.nome })
+                          }
+                          disabled={acaoEmCurso}
+                        >
+                          Resetar MFA
+                        </Button>
+                      )}
                     </div>
                   )}
                 </li>
@@ -233,14 +257,24 @@ export function GestaoUsuariosSection() {
         title={
           acaoPendente?.tipo === 'rebaixar'
             ? `Rebaixar ${acaoPendente.nome} para ${acaoPendente.alvoRotulo}?`
-            : `Desativar a conta de ${acaoPendente?.nome ?? ''}?`
+            : acaoPendente?.tipo === 'resetar-mfa'
+              ? `Resetar a dupla autenticação de ${acaoPendente.nome}?`
+              : `Desativar a conta de ${acaoPendente?.nome ?? ''}?`
         }
         description={
           acaoPendente?.tipo === 'rebaixar'
             ? 'A conta continua entrando, mas com menos privilégio já na próxima requisição.'
-            : 'A conta perde o acesso imediatamente e as sessões ativas são encerradas.'
+            : acaoPendente?.tipo === 'resetar-mfa'
+              ? 'As sessões da conta são encerradas e ela precisará configurar um novo MFA se a Empresa exigir.'
+              : 'A conta perde o acesso imediatamente e as sessões ativas são encerradas.'
         }
-        confirmLabel={acaoPendente?.tipo === 'rebaixar' ? 'Rebaixar' : 'Desativar'}
+        confirmLabel={
+          acaoPendente?.tipo === 'rebaixar'
+            ? 'Rebaixar'
+            : acaoPendente?.tipo === 'resetar-mfa'
+              ? 'Resetar MFA'
+              : 'Desativar'
+        }
       />
     </Card>
   );

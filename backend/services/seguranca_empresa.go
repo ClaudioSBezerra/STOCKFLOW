@@ -15,6 +15,14 @@ const maxEventosAuditoriaSeguranca = 200
 // `adm` liga ou desliga a exigência de MFA da Empresa.
 const AcaoExigenciaAlterada = "exigencia_alterada"
 
+// AcaoMFAResetado é gravada quando o `adm` zera o MFA de uma conta de rank
+// menor (Story 14.4). `ator_id` = adm, `alvo_id` = conta resetada.
+const AcaoMFAResetado = "mfa_resetado"
+
+// AcaoMFADesligado é gravada quando a própria conta desliga o seu MFA com
+// senha atual + código TOTP (Story 14.4). `ator_id` = `alvo_id` = a conta.
+const AcaoMFADesligado = "mfa_desligado"
+
 // ContarContasSemMFA conta as contas da Empresa que passariam a ser bloqueadas
 // pelo gate de middleware.RequireRole se a Empresa exigir MFA: ativas,
 // `gestor`/`adm`, sem MFA e COM senha. Conta sem `senha_hash` só entra por SSO,

@@ -199,8 +199,8 @@ func RebaixarUsuario(db *sql.DB, empresaID string, alvoID, atorID, papelAtor str
 func relerUsuarioResumoTx(tx *sql.Tx, empresaID string, id string) (UsuarioResumo, error) {
 	var u UsuarioResumo
 	err := tx.QueryRow(
-		`SELECT id, nome, email, papel, ativo FROM usuarios WHERE id = $1 AND empresa_id = $2`, id, empresaID,
-	).Scan(&u.ID, &u.Nome, &u.Email, &u.Papel, &u.Ativo)
+		`SELECT id, nome, email, papel, ativo, mfa_habilitado FROM usuarios WHERE id = $1 AND empresa_id = $2`, id, empresaID,
+	).Scan(&u.ID, &u.Nome, &u.Email, &u.Papel, &u.Ativo, &u.MFAHabilitado)
 	if err != nil {
 		return UsuarioResumo{}, fmt.Errorf("falha ao reler conta após a escrita: %w", err)
 	}

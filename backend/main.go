@@ -96,7 +96,10 @@
 // Movimentações consultável — Story 5.3 (GET /api/movimentacoes, mínimo
 // `almoxarife`: lista só-leitura das Movimentações com nome de Produto,
 // Estoques e autor resolvidos por JOIN, mais recente primeiro, teto de 500 —
-// sem rota de escrita, a trilha é append-only).
+// sem rota de escrita, a trilha é append-only). A recuperação de MFA — Story
+// 14.4 — acrescenta POST /api/usuarios/{id}/mfa-reset (mínimo `adm`, alvo de
+// rank menor) e POST /api/auth/mfa/desligar (só RequireAuth, a própria conta
+// com senha atual + código TOTP), ambas auditadas em `auditoria_seguranca`.
 package main
 
 import (
@@ -376,6 +379,10 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	registrar("POST /e/{slug}/api/auth/mfa/verificar", handlers.MFAVerificarHandler(db, jwtSecret))
 	registrar("POST /e/{slug}/api/auth/mfa/iniciar", middleware.RequireAuth(db, jwtSecret)(handlers.MFAIniciarHandler(db)))
 	registrar("POST /e/{slug}/api/auth/mfa/confirmar", middleware.RequireAuth(db, jwtSecret)(handlers.MFAConfirmarHandler(db)))
+	// Story 14.4: a própria conta desliga o seu MFA (senha atual + código
+	// TOTP). Só RequireAuth — qualquer papel; a recusa para gestor/adm numa
+	// Empresa que exige é regra do service, não gate de papel.
+	registrar("POST /e/{slug}/api/auth/mfa/desligar", middleware.RequireAuth(db, jwtSecret)(handlers.MFADesligarHandler(db)))
 	registrar("GET /e/{slug}/api/usuarios", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelGestor)(
 			handlers.ListarUsuariosHandler(db))))
@@ -395,6 +402,11 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	registrar("POST /e/{slug}/api/usuarios/{id}/rebaixamento", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelGestor)(
 			handlers.RebaixarUsuarioHandler(db))))
+	// Story 14.4: o `adm` reseta o MFA de uma conta de rank menor da própria
+	// Empresa (revoga as sessões dela e audita em `auditoria_seguranca`).
+	registrar("POST /e/{slug}/api/usuarios/{id}/mfa-reset", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAdm)(
+			handlers.ResetarMFAUsuarioHandler(db))))
 
 	// Log de acesso e auditoria — Story 1.12 (FR-38/NFR-3). Mesma composição de
 	// GET /api/usuarios, aqui com o gate de papel + MFA (Story 1.11) resolvido

@@ -663,6 +663,121 @@ describe('ConfiguracoesPage — Segurança (MFA, Story 1.11)', () => {
   });
 });
 
+describe('ConfiguracoesPage — Desligar meu MFA (Story 14.4)', () => {
+  function stubFetchBase(extra: FetchImpl) {
+    return stubFetch((url, init) => {
+      if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
+      if (url === '/api/promocoes' && (!init || init.method === undefined)) return jsonOk({ solicitacoes: [] });
+      if (url === '/api/usuarios') return jsonOk({ usuarios: [] });
+      if (url === '/api/convites') return jsonOk({ convites: [] });
+      return extra(url, init);
+    });
+  }
+
+  async function preencherEDesligar(senha: string, codigo: string) {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Desligar meu MFA' }));
+    await user.type(screen.getByLabelText('Senha atual'), senha);
+    await user.type(screen.getByLabelText('Código de verificação'), codigo);
+    await user.click(screen.getByRole('button', { name: 'Desligar' }));
+  }
+
+  it('envia {senhaAtual, codigo} e atualiza a sessão para mfaHabilitado:false', async () => {
+    authState.papel = 'usuario';
+    authState.mfaHabilitado = true;
+    const fetchMock = stubFetchBase((url, init) => {
+      if (url === '/api/auth/mfa/desligar' && init?.method === 'POST') return jsonOk({});
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    render(<ConfiguracoesPage />);
+    await preencherEDesligar('senha-correta-123', '123456');
+
+    await waitFor(() =>
+      expect(atualizarUsuarioMock).toHaveBeenCalledWith(expect.objectContaining({ mfaHabilitado: false })),
+    );
+    const chamada = fetchMock.mock.calls.find(([u]) => u === '/api/auth/mfa/desligar');
+    expect(JSON.parse((chamada?.[1] as RequestInit).body as string)).toEqual({
+      senhaAtual: 'senha-correta-123',
+      codigo: '123456',
+    });
+  });
+
+  it('401 vira alerta "Senha ou código inválido." e não atualiza a sessão', async () => {
+    authState.papel = 'usuario';
+    authState.mfaHabilitado = true;
+    stubFetchBase((url, init) => {
+      if (url === '/api/auth/mfa/desligar' && init?.method === 'POST') {
+        return Promise.resolve({
+          ok: false,
+          status: 401,
+          json: async () => ({ error: { code: 'INVALID_CREDENTIALS', message: 'Senha ou código inválido.' } }),
+        });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    render(<ConfiguracoesPage />);
+    await preencherEDesligar('senha-errada', '000000');
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Senha ou código inválido.');
+    expect(atualizarUsuarioMock).not.toHaveBeenCalled();
+  });
+
+  it('409 MFA_EXIGIDO_PELA_EMPRESA do servidor vira alerta com a mensagem dele', async () => {
+    authState.papel = 'gestor';
+    authState.mfaHabilitado = true;
+    authState.empresaMfaObrigatorio = false; // a sessão ainda não viu a mudança
+    const mensagem = 'A Empresa exige dupla autenticação para o seu papel; ela não pode ser desligada.';
+    stubFetchBase((url, init) => {
+      if (url === '/api/auth/mfa/desligar' && init?.method === 'POST') {
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: async () => ({ error: { code: 'MFA_EXIGIDO_PELA_EMPRESA', message: mensagem } }),
+        });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    render(<ConfiguracoesPage />);
+    await preencherEDesligar('senha-correta-123', '123456');
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(mensagem);
+    expect(atualizarUsuarioMock).not.toHaveBeenCalled();
+  });
+
+  it('gestor numa Empresa que exige não vê o botão e vê a explicação', async () => {
+    authState.papel = 'gestor';
+    authState.mfaHabilitado = true;
+    authState.empresaMfaObrigatorio = true;
+    stubFetchBase(() => {
+      throw new Error('URL inesperada');
+    });
+
+    render(<ConfiguracoesPage />);
+
+    expect(await screen.findByText('Autenticação em duas etapas ativa.')).toBeInTheDocument();
+    expect(
+      screen.getByText('A Empresa exige dupla autenticação para o seu papel; ela não pode ser desligada.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Desligar meu MFA' })).not.toBeInTheDocument();
+  });
+
+  it('usuario numa Empresa que exige ainda pode desligar (exigência é só de gestor/adm)', async () => {
+    authState.papel = 'usuario';
+    authState.mfaHabilitado = true;
+    authState.empresaMfaObrigatorio = true;
+    stubFetchBase(() => {
+      throw new Error('URL inesperada');
+    });
+
+    render(<ConfiguracoesPage />);
+
+    expect(await screen.findByRole('button', { name: 'Desligar meu MFA' })).toBeInTheDocument();
+  });
+});
+
 describe('ConfiguracoesPage — Log de Acesso (Story 1.12)', () => {
   it('adm vê a seção "Log de Acesso"', async () => {
     authState.papel = 'adm';

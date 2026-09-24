@@ -131,6 +131,14 @@ var (
 	// reconfigurar um MFA já ativo (Story 1.11, sem opção de
 	// desativar/reconfigurar nesta story).
 	ErrMFAJaConfigurado = errors.New("autenticação em duas etapas já configurada para esta conta")
+	// ErrMFANaoConfigurado indica que a conta não tem `mfa_habilitado=true` —
+	// não há o que resetar/desligar (Story 14.4). Handler -> 409
+	// MFA_NAO_CONFIGURADO.
+	ErrMFANaoConfigurado = errors.New("autenticação em duas etapas não configurada para esta conta")
+	// ErrMFAExigidoPelaEmpresa indica que a conta é `gestor`/`adm` numa
+	// Empresa com `mfa_obrigatorio=true` e por isso não pode desligar o
+	// próprio MFA (Story 14.4). Handler -> 409 MFA_EXIGIDO_PELA_EMPRESA.
+	ErrMFAExigidoPelaEmpresa = errors.New("a Empresa exige dupla autenticação para o seu papel; ela não pode ser desligada")
 )
 
 // normalizeEmail aplica a mesma normalização usada em cmd/seed-admin:
