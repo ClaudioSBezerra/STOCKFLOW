@@ -277,10 +277,17 @@ func limparParesPlataforma(t *testing.T, db *sql.DB, slugs ...string) {
 	t.Cleanup(remover)
 }
 
+// corpoNovaEmpresa monta o JSON de criação. O e-mail do `adm` deriva do slug:
+// desde a Story 15.1 o e-mail é único entre as Empresas reais, e vários
+// testes mantêm mais de uma Empresa criada ao mesmo tempo.
 func corpoNovaEmpresa(slug, cnpj, uf string) string {
+	return corpoNovaEmpresaComAdm(slug, cnpj, uf, "adm-"+slug+"@cliente.com")
+}
+
+func corpoNovaEmpresaComAdm(slug, cnpj, uf, admEmail string) string {
 	return `{"nomeFantasia":"Cliente Handlers","razaoSocial":"Cliente Handlers LTDA","cnpj":"` + cnpj + `",` +
 		`"slug":"` + slug + `","endereco":{"logradouro":"Rua A","numero":"1","complemento":"","bairro":"Centro",` +
-		`"cidade":"Recife","cep":"50000-000","uf":"` + uf + `"},"admNome":"Adm Handlers","admEmail":"adm-handlers@cliente.com"}`
+		`"cidade":"Recife","cep":"50000-000","uf":"` + uf + `"},"admNome":"Adm Handlers","admEmail":"` + admEmail + `"}`
 }
 
 func TestEmpresasPlataforma_SemTokenOuComTokenDeUsuario(t *testing.T) {
@@ -401,7 +408,7 @@ func TestEmpresasPlataforma_CriarListarDesativarReativar(t *testing.T) {
 	for _, e := range lista.Empresas {
 		if e.ID == criada.Empresa.ID {
 			achou = e.Treinamento != nil && e.Treinamento.Slug == "plat-handlers-treinamento" &&
-				e.Adm != nil && e.Adm.Email == "adm-handlers@cliente.com"
+				e.Adm != nil && e.Adm.Email == "adm-plat-handlers@cliente.com"
 		}
 	}
 	if !achou {
@@ -598,8 +605,10 @@ func TestMeHandler_AmbienteTreinamento(t *testing.T) {
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
 			var usuarioID string
+			// E-mail por caso: desde a Story 15.1 o mesmo e-mail não pode ter
+			// conta em duas Empresas reais (a padrão e a real de `plat-me`).
 			if err := db.QueryRow(`INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, empresa_id)
-				VALUES ('Fulano', 'fulano-me@empresa.com', 'h', 'usuario', true, $1) RETURNING id`, c.empresaID).Scan(&usuarioID); err != nil {
+				VALUES ('Fulano', $2, 'h', 'usuario', true, $1) RETURNING id`, c.empresaID, "fulano-me-"+c.slug+"@empresa.com").Scan(&usuarioID); err != nil {
 				t.Fatalf("criar usuario: %v", err)
 			}
 			token, _, _, err := services.EmitirSessao(db, testJWTSecret, usuarioID, "senha")
@@ -623,5 +632,41 @@ func TestMeHandler_AmbienteTreinamento(t *testing.T) {
 				t.Errorf("resposta = %+v, want ambienteTreinamento=%v empresaNome=%q", resp, c.want, c.empresaNome)
 			}
 		})
+	}
+}
+
+// TestEmpresasPlataforma_EmailAdmEmUso prova a linha "Criar Empresa com adm
+// em uso" da Story 15.1 na fronteira HTTP: 409 CONFLICT com a mensagem
+// genérica (nunca diz em qual Empresa) e nenhuma linha em `empresas` para o
+// slug nem para `{slug}-treinamento`.
+func TestEmpresasPlataforma_EmailAdmEmUso(t *testing.T) {
+	db := testDB(t)
+	limparParesPlataforma(t, db, "plat-u151-a", "plat-u151-b")
+	id, _ := criarDonoHandlers(t, db)
+	mux := muxPlataformaTeste(db)
+	token, _, _, err := services.EmitirSessaoPlataforma(db, segredoJWTPlataformaHandlers, id)
+	if err != nil {
+		t.Fatalf("EmitirSessaoPlataforma: %v", err)
+	}
+	post := func(corpo string) *httptest.ResponseRecorder {
+		return despacharPlataforma(mux, reqPlataforma{metodo: http.MethodPost, caminho: "/api/plataforma/empresas", token: token, corpo: corpo})
+	}
+
+	if w := post(corpoNovaEmpresaComAdm("plat-u151-a", "91510000001169", "PE", "adm.u151@cliente.com")); w.Code != http.StatusCreated {
+		t.Fatalf("primeira criação: status = %d, want 201 (body=%s)", w.Code, w.Body.String())
+	}
+	w := post(corpoNovaEmpresaComAdm("plat-u151-b", "91510000001240", "PE", "ADM.U151@cliente.com"))
+	if w.Code != http.StatusConflict || codigoDeErro(t, w) != "CONFLICT" {
+		t.Fatalf("status/code = %d/%s, want 409/CONFLICT (body=%s)", w.Code, codigoDeErro(t, w), w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Message != "O e-mail do administrador já está em uso." {
+		t.Errorf("message = %q", env.Error.Message)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM empresas WHERE slug IN ('plat-u151-b', 'plat-u151-b-treinamento')`).Scan(&n); err != nil {
+		t.Fatalf("contar empresas: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("%d empresas gravadas para a criação recusada", n)
 	}
 }

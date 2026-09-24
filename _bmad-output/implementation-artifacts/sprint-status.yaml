@@ -148,7 +148,7 @@ development_status:
   epic-14-retrospective: optional
 
   epic-15: backlog
-  15-1-e-mail-único-entre-as-empresas-reais: backlog
+  15-1-e-mail-único-entre-as-empresas-reais: done
   15-2-login-na-raiz-do-domínio-pela-conta: backlog
   15-3-esqueci-a-senha-na-raiz-do-domínio: backlog
   15-4-domínio-de-um-cliente-só-abre-direto-a-empresa: backlog

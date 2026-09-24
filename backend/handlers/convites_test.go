@@ -559,3 +559,96 @@ func TestCadastroHandler_PayloadInvalidoNaoQueimaConvite(t *testing.T) {
 		t.Fatalf("cadastro válido após a tentativa inválida: status = %d, want 201 (body=%s)", w.Code, w.Body.String())
 	}
 }
+
+// outraEmpresaRealHandlers provisiona uma segunda Empresa real (removida no
+// fim do teste) para os cenários da Story 15.1.
+func outraEmpresaRealHandlers(t *testing.T, db *sql.DB) string {
+	t.Helper()
+	const slug = "hconv-u151-outra"
+	removerEmpresaPlataformaHandlers(t, db, slug)
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	outra, err := services.ProvisionarEmpresa(tx, services.DadosEmpresa{
+		NomeFantasia: "HConv U151 Outra", RazaoSocial: "HConv U151 Outra LTDA", CNPJ: "91510000001320", Slug: slug,
+		Endereco: services.EnderecoEmpresa{Logradouro: "Rua", Numero: "1", Bairro: "Centro", Cidade: "Recife", CEP: "50000000", UF: "PE"},
+	})
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("provisionar outra empresa: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	t.Cleanup(func() { removerEmpresaPlataformaHandlers(t, db, slug) })
+	return outra.ID
+}
+
+// TestConvitesHandlers_EmailEmOutraEmpresaReal prova, na fronteira HTTP, as
+// linhas "Convite para e-mail de outra real" (409 na emissão, nada gravado)
+// e "Cadastro com convite antigo" (409 no cadastro, convite segue pendente) —
+// ambas com as mensagens de hoje, sem revelar a outra Empresa.
+func TestConvitesHandlers_EmailEmOutraEmpresaReal(t *testing.T) {
+	db := testDB(t)
+	outra := outraEmpresaRealHandlers(t, db)
+	gestor := contaComPapel(t, db, "Maria", "maria.u151@empresa.com", services.PapelGestor)
+	auth := tokenDeSessao(t, db, gestor)
+
+	// Convite antigo, gravado ANTES de a conta nascer na outra Empresa.
+	tokenAntigo := conviteDeTeste(t, db, empresaTeste, "antigo.u151@x.com")
+	for _, email := range []string{"ja.u151@x.com", "antigo.u151@x.com"} {
+		if _, err := db.Exec(
+			`INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, empresa_id)
+			 VALUES ('Na Outra', $1, 'h', 'usuario', true, true, $2)`, email, outra,
+		); err != nil {
+			t.Fatalf("conta na outra Empresa: %v", err)
+		}
+	}
+
+	t.Run("emissão", func(t *testing.T) {
+		var antes int
+		if err := db.QueryRow(`SELECT count(*) FROM convites_empresa`).Scan(&antes); err != nil {
+			t.Fatalf("contar (antes): %v", err)
+		}
+		w := requisicaoConvite(t, db, http.MethodPost, "/api/convites", `{"email":"JA.U151@x.com"}`, auth,
+			comSessaoConvite(db, services.PapelGestor, EmitirConviteHandler(db, testEmailCfg)))
+		if w.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want 409 (body=%s)", w.Code, w.Body.String())
+		}
+		if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "CONFLICT" || env.Error.Message != "Este e-mail já tem conta nesta empresa." {
+			t.Errorf("erro = %+v", env.Error)
+		}
+		var depois int
+		if err := db.QueryRow(`SELECT count(*) FROM convites_empresa`).Scan(&depois); err != nil {
+			t.Fatalf("contar (depois): %v", err)
+		}
+		if depois != antes {
+			t.Errorf("count(convites_empresa) = %d, want %d", depois, antes)
+		}
+	})
+
+	t.Run("cadastro com convite antigo", func(t *testing.T) {
+		w := postCadastro(db, `{"token":"`+tokenAntigo+`","nome":"Antigo","email":"antigo.u151@x.com","senha":"senha-123456"}`)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want 409 (body=%s)", w.Code, w.Body.String())
+		}
+		if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "CONFLICT" || env.Error.Message != "Este e-mail já está cadastrado." {
+			t.Errorf("erro = %+v", env.Error)
+		}
+		var n int
+		if err := db.QueryRow(`SELECT count(*) FROM usuarios WHERE empresa_id = $1 AND email = 'antigo.u151@x.com'`, empresaTeste).Scan(&n); err != nil {
+			t.Fatalf("contar (n): %v", err)
+		}
+		if n != 0 {
+			t.Errorf("%d conta(s) criada(s) na Empresa do convite", n)
+		}
+		var usado sql.NullTime
+		if err := db.QueryRow(`SELECT usado_em FROM convites_empresa WHERE token = $1`, tokenAntigo).Scan(&usado); err != nil {
+			t.Fatalf("reler convite: %v", err)
+		}
+		if usado.Valid {
+			t.Error("convite marcado como usado; want pendente")
+		}
+	})
+}

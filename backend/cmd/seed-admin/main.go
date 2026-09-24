@@ -25,23 +25,26 @@ import (
 // partial unique index idx_usuarios_unico_adm (see migration 000001).
 const pqUniqueViolation = "23505"
 
+// pqExclusionViolation é o SQLSTATE de violação de restrição de exclusão —
+// o e-mail já usado em outra Empresa real (Story 15.1).
+const pqExclusionViolation = "23P01"
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
 
 	nome := flag.String("nome", "", "Nome completo do primeiro administrador")
 	email := flag.String("email", "", "E-mail do primeiro administrador")
 	senha := flag.String("senha", "", "Senha do primeiro administrador")
-	// --empresa-slug é OPCIONAL (Story 9.1, spec-9-1): informado, resolve a
-	// Empresa daquele slug e cria o `adm` DENTRO dela; ausente, o
-	// comportamento é EXATAMENTE o de antes desta story (`empresa_id` NULL,
-	// unicidade global de `adm` preservada pelo NULLS NOT DISTINCT da
-	// migração 000032). O deploy em CI
-	// (.github/workflows/deploy-cliente-aws.yml) passa só
-	// --nome/--email/--senha e não pode quebrar.
-	empresaSlug := flag.String("empresa-slug", "", "Slug da Empresa em que criar o administrador (opcional; sem ele a conta nasce sem Empresa)")
+	// --empresa-slug é OBRIGATÓRIO desde a Story 15.1: a migration 000049
+	// (`usuarios.empresa_raiz_id NOT NULL`, preenchida por trigger a partir de
+	// `empresa_id`) faz o banco recusar conta sem Empresa. O slug resolve a
+	// Empresa e o `adm` nasce DENTRO dela. O deploy em CI
+	// (.github/workflows/deploy-cliente-aws.yml) só roda o seed-admin quando
+	// ADMIN_EMPRESA_SLUG está definido no .env.
+	empresaSlug := flag.String("empresa-slug", "", "Slug da Empresa em que criar o administrador (obrigatório)")
 	flag.Parse()
 
-	if err := validateFlags(*nome, *email, *senha); err != nil {
+	if err := validateFlags(*nome, *email, *senha, *empresaSlug); err != nil {
 		fmt.Fprintf(os.Stderr, "erro: %v\n", err)
 		flag.Usage()
 		os.Exit(1)
@@ -73,6 +76,8 @@ func main() {
 	if err != nil {
 		if errors.Is(err, errAdminAlreadyExists) {
 			fmt.Fprintln(os.Stderr, "erro: já existe uma conta com papel 'adm' — seed-admin não altera contas existentes")
+		} else if errors.Is(err, errEmailEmUso) {
+			fmt.Fprintln(os.Stderr, "erro: o e-mail já tem conta em outra empresa")
 		} else if errors.Is(err, errEmpresaNaoEncontrada) {
 			fmt.Fprintf(os.Stderr, "erro: nenhuma empresa ativa com o slug %q\n", strings.TrimSpace(*empresaSlug))
 		} else {
@@ -90,13 +95,19 @@ var errAdminAlreadyExists = errors.New("já existe uma conta com papel adm")
 // corresponde a nenhuma Empresa `ativa` — nenhuma conta é criada (Story 9.1).
 var errEmpresaNaoEncontrada = errors.New("empresa não encontrada")
 
-// validateFlags checa que --nome, --email e --senha foram informados com
+// errEmailEmUso indica que o e-mail já tem conta em outra Empresa real (ou no
+// Treinamento dela): a restrição usuarios_email_unico_entre_empresas_reais
+// (Story 15.1, migration 000049) recusou o INSERT com 23P01.
+var errEmailEmUso = errors.New("o e-mail já tem conta em outra empresa")
+
+// validateFlags checa que --nome, --email, --senha e --empresa-slug foram informados com
 // conteúdo não vazio após remover espaços nas bordas — evita, por exemplo,
 // que uma senha apenas com espaços (" ") passe pela checagem de string vazia
 // e seja hasheada como a senha real do primeiro admin.
-func validateFlags(nome, email, senha string) error {
-	if strings.TrimSpace(nome) == "" || strings.TrimSpace(email) == "" || strings.TrimSpace(senha) == "" {
-		return errors.New("--nome, --email e --senha são obrigatórios")
+func validateFlags(nome, email, senha, empresaSlug string) error {
+	if strings.TrimSpace(nome) == "" || strings.TrimSpace(email) == "" || strings.TrimSpace(senha) == "" ||
+		strings.TrimSpace(empresaSlug) == "" {
+		return errors.New("--nome, --email, --senha e --empresa-slug são obrigatórios")
 	}
 	return nil
 }
@@ -127,38 +138,29 @@ func seedAdmin(db *sql.DB, empresaSlug, nome, email, senha string) (string, erro
 
 	normalizedEmail := normalizeEmail(email)
 
-	// Sem `--empresa-slug`: comportamento idêntico ao de antes da Story 9.1 —
-	// `empresa_id` NULL e "nenhum adm existe" avaliado sobre as OUTRAS linhas
-	// sem Empresa (`empresa_id IS NULL`), que é exatamente o conjunto de
-	// contas legadas. Com o slug: a Empresa é resolvida primeiro e tanto o
-	// NOT EXISTS quanto o INSERT ficam recortados a ela — dois `adm` em
-	// Empresas distintas são aceitos, um segundo `adm` na MESMA Empresa é
-	// recusado (pelo NOT EXISTS ou, sob corrida, pelo índice único
-	// `idx_usuarios_unico_adm`, agora `(empresa_id, papel)`).
-	var empresaID sql.NullString
-	if empresaSlug != "" {
-		var id string
-		err := db.QueryRow(
-			`SELECT id FROM empresas WHERE slug = $1 AND status = 'ativa'`, empresaSlug,
-		).Scan(&id)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return "", errEmpresaNaoEncontrada
-			}
-			return "", fmt.Errorf("falha ao resolver empresa por slug: %w", err)
+	// A Empresa é resolvida primeiro e tanto o NOT EXISTS quanto o INSERT
+	// ficam recortados a ela — dois `adm` em Empresas distintas são aceitos,
+	// um segundo `adm` na MESMA Empresa é recusado (pelo NOT EXISTS ou, sob
+	// corrida, pelo índice único `idx_usuarios_unico_adm`, `(empresa_id,
+	// papel)`). Slug vazio não resolve nenhuma Empresa (errEmpresaNaoEncontrada)
+	// — main() já o recusa em validateFlags.
+	var empresaID string
+	err = db.QueryRow(
+		`SELECT id FROM empresas WHERE slug = $1 AND status = 'ativa'`, empresaSlug,
+	).Scan(&empresaID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", errEmpresaNaoEncontrada
 		}
-		empresaID = sql.NullString{String: id, Valid: true}
+		return "", fmt.Errorf("falha ao resolver empresa por slug: %w", err)
 	}
 
-	// `$4 IS NOT DISTINCT FROM empresa_id` casa NULL com NULL (sem slug) e
-	// id com id (com slug) numa única forma — a mesma semântica do
-	// `NULLS NOT DISTINCT` do índice único que serve de backstop.
 	const query = `
 		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, empresa_id)
 		SELECT $1, $2, $3, 'adm', true, true, $4
 		WHERE NOT EXISTS (
 			SELECT 1 FROM usuarios
-			WHERE papel = 'adm' AND $4 IS NOT DISTINCT FROM empresa_id
+			WHERE papel = 'adm' AND empresa_id = $4
 		)
 		RETURNING id`
 
@@ -171,6 +173,9 @@ func seedAdmin(db *sql.DB, empresaSlug, nome, email, senha string) (string, erro
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && pqErr.Code == pqUniqueViolation && pqErr.Constraint == "idx_usuarios_unico_adm" {
 			return "", errAdminAlreadyExists
+		}
+		if errors.As(err, &pqErr) && pqErr.Code == pqExclusionViolation && pqErr.Constraint == "usuarios_email_unico_entre_empresas_reais" {
+			return "", errEmailEmUso
 		}
 		return "", err
 	}

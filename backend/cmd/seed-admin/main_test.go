@@ -104,8 +104,9 @@ func testDB(t *testing.T) *sql.DB {
 // normalizado, email_verificado=true e ativo=true.
 func TestSeedAdmin_Inicial(t *testing.T) {
 	db := testDB(t)
+	garantirEmpresaSeed(t, db)
 
-	id, err := seedAdmin(db, "", "  Primeira Adm  ", "Admin@Empresa.COM", "senha-super-secreta")
+	id, err := seedAdmin(db, slugEmpresaSeed, "  Primeira Adm  ", "Admin@Empresa.COM", "senha-super-secreta")
 	if err != nil {
 		t.Fatalf("seedAdmin retornou erro inesperado: %v", err)
 	}
@@ -149,13 +150,14 @@ func TestSeedAdmin_Inicial(t *testing.T) {
 // alguma.
 func TestSeedAdmin_Duplicado(t *testing.T) {
 	db := testDB(t)
+	garantirEmpresaSeed(t, db)
 
-	firstID, err := seedAdmin(db, "", "Primeiro Adm", "primeiro@empresa.com", "senha-123456")
+	firstID, err := seedAdmin(db, slugEmpresaSeed, "Primeiro Adm", "primeiro@empresa.com", "senha-123456")
 	if err != nil {
 		t.Fatalf("primeiro seedAdmin falhou: %v", err)
 	}
 
-	_, err = seedAdmin(db, "", "Segundo Adm", "segundo@empresa.com", "outra-senha")
+	_, err = seedAdmin(db, slugEmpresaSeed, "Segundo Adm", "segundo@empresa.com", "outra-senha")
 	if !errors.Is(err, errAdminAlreadyExists) {
 		t.Fatalf("erro = %v, want errAdminAlreadyExists", err)
 	}
@@ -189,8 +191,9 @@ func TestSeedAdmin_Duplicado(t *testing.T) {
 // I/O Matrix: --email=Admin@Empresa.COM é gravado como admin@empresa.com.
 func TestSeedAdmin_EmailMaiusculo(t *testing.T) {
 	db := testDB(t)
+	garantirEmpresaSeed(t, db)
 
-	id, err := seedAdmin(db, "", "Adm Maiusculo", "ADMIN@EMPRESA.COM", "senha-123456")
+	id, err := seedAdmin(db, slugEmpresaSeed, "Adm Maiusculo", "ADMIN@EMPRESA.COM", "senha-123456")
 	if err != nil {
 		t.Fatalf("seedAdmin falhou: %v", err)
 	}
@@ -209,8 +212,9 @@ func TestSeedAdmin_EmailMaiusculo(t *testing.T) {
 // seedAdmin apenas hasheia o que recebeu, sem rejeitar.
 func TestSeedAdmin_SenhaFraca(t *testing.T) {
 	db := testDB(t)
+	garantirEmpresaSeed(t, db)
 
-	id, err := seedAdmin(db, "", "Adm Senha Fraca", "fraca@empresa.com", "123")
+	id, err := seedAdmin(db, slugEmpresaSeed, "Adm Senha Fraca", "fraca@empresa.com", "123")
 	if err != nil {
 		t.Fatalf("seedAdmin retornou erro para senha fraca (fora de escopo desta story): %v", err)
 	}
@@ -237,6 +241,7 @@ func TestSeedAdmin_SenhaFraca(t *testing.T) {
 // pelo mapeamento de erro desta função.
 func TestSeedAdmin_Concorrente(t *testing.T) {
 	db := testDB(t)
+	garantirEmpresaSeed(t, db)
 
 	const n = 2
 	start := make(chan struct{})
@@ -248,7 +253,7 @@ func TestSeedAdmin_Concorrente(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			_, err := seedAdmin(db, "", fmt.Sprintf("Adm Concorrente %d", i), fmt.Sprintf("concorrente%d@empresa.com", i), "senha-123456")
+			_, err := seedAdmin(db, slugEmpresaSeed, fmt.Sprintf("Adm Concorrente %d", i), fmt.Sprintf("concorrente%d@empresa.com", i), "senha-123456")
 			results[i] = err
 		}(i)
 	}
@@ -302,25 +307,33 @@ func TestNormalizeEmail(t *testing.T) {
 // story) e que nenhum teste, até então, cobria diretamente.
 func TestValidateFlags(t *testing.T) {
 	cases := []struct {
-		name, nome, email, senha string
-		wantErr                  bool
+		name, nome, email, senha, slug string
+		wantErr                        bool
 	}{
-		{"tudo preenchido", "Nome", "e@x.com", "senha123", false},
-		{"nome vazio", "", "e@x.com", "senha123", true},
-		{"nome só espaços", "   ", "e@x.com", "senha123", true},
-		{"email vazio", "Nome", "", "senha123", true},
-		{"senha vazia", "Nome", "e@x.com", "", true},
-		{"senha só espaços", "Nome", "e@x.com", "   ", true},
+		{"tudo preenchido", "Nome", "e@x.com", "senha123", "empresa", false},
+		{"nome vazio", "", "e@x.com", "senha123", "empresa", true},
+		{"nome só espaços", "   ", "e@x.com", "senha123", "empresa", true},
+		{"email vazio", "Nome", "", "senha123", "empresa", true},
+		{"senha vazia", "Nome", "e@x.com", "", "empresa", true},
+		{"senha só espaços", "Nome", "e@x.com", "   ", "empresa", true},
+		// Story 15.1: toda conta precisa de Empresa — sem slug nada chega ao banco.
+		{"slug vazio", "Nome", "e@x.com", "senha123", "", true},
+		{"slug só espaços", "Nome", "e@x.com", "senha123", "   ", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			err := validateFlags(c.nome, c.email, c.senha)
+			err := validateFlags(c.nome, c.email, c.senha, c.slug)
 			if (err != nil) != c.wantErr {
-				t.Errorf("validateFlags(%q, %q, %q) err = %v, wantErr %v", c.nome, c.email, c.senha, err, c.wantErr)
+				t.Errorf("validateFlags(%q, %q, %q, %q) err = %v, wantErr %v", c.nome, c.email, c.senha, c.slug, err, c.wantErr)
 			}
 		})
 	}
 }
+
+// slugEmpresaSeed é a Empresa em que os testes criam o `adm`: desde a Story
+// 15.1 toda conta tem Empresa, então nenhum cenário usa mais o slug vazio
+// (exceto o que prova a recusa).
+const slugEmpresaSeed = "seed-admin-empresa"
 
 // garantirEmpresaSeed devolve o id da Empresa desta suíte, provisionando-a na
 // primeira chamada — Story 9.1 (Multi-Empresa), spec-9-1. `empresas` não é
@@ -329,7 +342,7 @@ func TestValidateFlags(t *testing.T) {
 func garantirEmpresaSeed(t *testing.T, db *sql.DB) string {
 	t.Helper()
 
-	const slug = "seed-admin-empresa"
+	const slug = slugEmpresaSeed
 	var id string
 	err := db.QueryRow(`SELECT id FROM empresas WHERE slug = $1`, slug).Scan(&id)
 	if err == nil {
@@ -368,11 +381,10 @@ func garantirEmpresaSeed(t *testing.T, db *sql.DB) string {
 	return e.ID
 }
 
-// TestSeedAdmin_ComEmpresaSlug prova o contrato do flag OPCIONAL
-// `--empresa-slug` (Story 9.1): com o slug, o `adm` nasce DENTRO da Empresa;
-// um segundo `adm` na mesma Empresa é recusado; e o `adm` sem Empresa
-// (comportamento do deploy em CI, que não passa o flag) continua sendo aceito
-// em paralelo — é a prova do AC 5 na fronteira do CLI.
+// TestSeedAdmin_ComEmpresaSlug prova o contrato do flag `--empresa-slug`
+// (Story 9.1; obrigatório desde a Story 15.1): com o slug, o `adm` nasce DENTRO da Empresa;
+// um segundo `adm` na mesma Empresa é recusado; e o `adm` sem Empresa passa a
+// ser recusado pelo banco (Story 15.1).
 func TestSeedAdmin_ComEmpresaSlug(t *testing.T) {
 	db := testDB(t)
 	empresaID := garantirEmpresaSeed(t, db)
@@ -398,19 +410,22 @@ func TestSeedAdmin_ComEmpresaSlug(t *testing.T) {
 		t.Fatalf("segundo adm na mesma Empresa: erro = %v, want errAdminAlreadyExists", err)
 	}
 
-	// `adm` SEM Empresa (o que o deploy em CI faz) continua aceito: a
-	// unicidade passou a ser por Empresa, e `empresa_id IS NULL` é um escopo
-	// próprio.
-	idLegado, err := seedAdmin(db, "", "Adm Sem Empresa", "adm-sem-empresa@empresa.com", "senha-123456")
-	if err != nil {
-		t.Fatalf("seedAdmin sem slug depois do adm da Empresa: %v", err)
+	// Slug vazio (main() já o recusa em validateFlags): não resolve nenhuma
+	// Empresa e nenhuma linha é gravada — conta sem Empresa não existe desde
+	// a Story 15.1.
+	antes := 0
+	if err := db.QueryRow(`SELECT count(*) FROM usuarios`).Scan(&antes); err != nil {
+		t.Fatalf("falha ao contar linhas: %v", err)
 	}
-	var empresaLegado sql.NullString
-	if err := db.QueryRow(`SELECT empresa_id FROM usuarios WHERE id = $1`, idLegado).Scan(&empresaLegado); err != nil {
-		t.Fatalf("falha ao reler a conta legada: %v", err)
+	if _, err := seedAdmin(db, "", "Adm Sem Empresa", "adm-sem-empresa@empresa.com", "senha-123456"); !errors.Is(err, errEmpresaNaoEncontrada) {
+		t.Fatalf("seedAdmin sem slug: erro = %v, want errEmpresaNaoEncontrada", err)
 	}
-	if empresaLegado.Valid {
-		t.Errorf("empresa_id = %v, want NULL", empresaLegado)
+	depois := 0
+	if err := db.QueryRow(`SELECT count(*) FROM usuarios`).Scan(&depois); err != nil {
+		t.Fatalf("falha ao contar linhas: %v", err)
+	}
+	if depois != antes {
+		t.Errorf("count(*) usuarios = %d, want %d — conta sem Empresa não pode ser gravada", depois, antes)
 	}
 }
 
@@ -429,5 +444,68 @@ func TestSeedAdmin_EmpresaSlugInexistente(t *testing.T) {
 	}
 	if total != 0 {
 		t.Errorf("count(*) usuarios = %d, want 0 — slug inválido não pode inserir nada", total)
+	}
+}
+
+// garantirOutraEmpresaSeed provisiona (uma vez) uma segunda Empresa real para
+// o cenário de e-mail já usado em outra Empresa (Story 15.1).
+func garantirOutraEmpresaSeed(t *testing.T, db *sql.DB) string {
+	t.Helper()
+	const slug = "seed-admin-outra"
+	var id string
+	err := db.QueryRow(`SELECT id FROM empresas WHERE slug = $1`, slug).Scan(&id)
+	if err == nil {
+		return id
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("garantirOutraEmpresaSeed: %v", err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("garantirOutraEmpresaSeed: begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	e, err := services.ProvisionarEmpresa(tx, services.DadosEmpresa{
+		NomeFantasia: "Empresa Seed Admin Outra",
+		RazaoSocial:  "Empresa Seed Admin Outra LTDA",
+		CNPJ:         "91510000002130",
+		Slug:         slug,
+		Endereco: services.EnderecoEmpresa{
+			Logradouro: "Rua de Teste", Numero: "100", Bairro: "Centro",
+			Cidade: "Recife", CEP: "50000000", UF: "PE",
+		},
+	})
+	if err != nil {
+		t.Fatalf("garantirOutraEmpresaSeed: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("garantirOutraEmpresaSeed: commit: %v", err)
+	}
+	return e.ID
+}
+
+// TestSeedAdmin_EmailEmUsoEmOutraEmpresa prova que o e-mail já usado em outra
+// Empresa real é recusado com errEmailEmUso (23P01 da restrição
+// usuarios_email_unico_entre_empresas_reais) e nada é gravado.
+func TestSeedAdmin_EmailEmUsoEmOutraEmpresa(t *testing.T) {
+	db := testDB(t)
+	garantirEmpresaSeed(t, db)
+	outra := garantirOutraEmpresaSeed(t, db)
+	if _, err := db.Exec(
+		`INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, empresa_id)
+		 VALUES ('Na Outra', 'ja.usado@empresa.com', 'h', 'usuario', true, true, $1)`, outra,
+	); err != nil {
+		t.Fatalf("conta na outra Empresa: %v", err)
+	}
+
+	if _, err := seedAdmin(db, slugEmpresaSeed, "Adm", "JA.USADO@empresa.com", "senha-123456"); !errors.Is(err, errEmailEmUso) {
+		t.Fatalf("erro = %v, want errEmailEmUso", err)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM usuarios WHERE papel = 'adm'`).Scan(&n); err != nil {
+		t.Fatalf("contar adm: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("count(adm) = %d, want 0", n)
 	}
 }

@@ -725,3 +725,19 @@ source_spec: `spec-14-1-a-empresa-passa-a-definir-se-exige-mfa-gate-condicional.
 severity: medium
 reason: `/api/auth/me` só é consultado no bootstrap do AuthProvider e nada trata o 403 MFA_SETUP_REQUIRED globalmente. O servidor continua sendo a autoridade (o gate vale na próxima requisição). A falta de refresh do /me é anterior a esta story (papel e MFA também ficam defasados), mas pesa na 14.3, quando o adm passa a alterar o flag.
 status: open
+
+### DW-91: O caminho de conta órfã do CLI migrar-multi-empresa (usuarios em TabelasComEmpresaID e BuscarAdmSemEmpresa) ficou inalcançável depois da migration 000049.
+origin: spec-deferred a0fae9a75b98
+location: backend/services/migracao_multi_empresa.go
+source_spec: `spec-15-1-e-mail-unico-entre-as-empresas-reais.md`
+severity: low
+reason: usuarios.empresa_raiz_id NOT NULL, preenchida a partir de empresa_id, impede conta com empresa_id NULL; o backfill de usuarios sempre encontra 0 linhas e BuscarAdmSemEmpresa sempre devolve sql.ErrNoRows. A migração da 9.4 já rodou em produção, então o código é só legado morto.
+status: open
+
+### DW-92: Teste de handler de produtos descarta o erro de um QueryRow de contagem.
+origin: spec-deferred 50572cd7a2fa
+location: backend/handlers/produtos_test.go:2254
+source_spec: `spec-15-1-e-mail-unico-entre-as-empresas-reais.md`
+severity: low
+reason: Apontado durante a revisão da 15.1 (padrão `_ = db.QueryRow(...).Scan(...)`); já existia antes desta story.
+status: open

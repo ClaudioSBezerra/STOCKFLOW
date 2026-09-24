@@ -88,13 +88,21 @@ func criarUsuario(t *testing.T, db *sql.DB, email string, ativo bool) string {
 	t.Helper()
 	var id string
 	const insert = `
-		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
-		VALUES ('Usuário Teste', $1, 'hash-qualquer', 'usuario', true, $2)
+		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, empresa_id)
+		VALUES ('Usuário Teste', $1, 'hash-qualquer', 'usuario', true, $2, $3)
 		RETURNING id`
-	if err := db.QueryRow(insert, email, ativo).Scan(&id); err != nil {
+	if err := db.QueryRow(insert, email, ativo, empresaContasMiddleware(t, db)).Scan(&id); err != nil {
 		t.Fatalf("falha ao criar usuario de teste: %v", err)
 	}
 	return id
+}
+
+// empresaContasMiddleware devolve a Empresa das contas criadas direto no
+// banco por estes testes: desde a Story 15.1 (migration 000049) toda conta
+// tem Empresa (`usuarios.empresa_raiz_id NOT NULL`, preenchida por trigger).
+func empresaContasMiddleware(t *testing.T, db *sql.DB) string {
+	t.Helper()
+	return criarEmpresaMiddleware(t, db, "mw-empresa-ativa", "22333444000181", "MW Ativa").ID
 }
 
 // gerarAccessTokenTeste assina um JWT com o mesmo formato de

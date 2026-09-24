@@ -31,6 +31,15 @@ import (
 // mesmo padrão de backend/cmd/seed-admin/main.go.
 const pqUniqueViolation = "23505"
 
+// pqExclusionViolation é o SQLSTATE do Postgres para violação de restrição de
+// exclusão — usado pela `usuarios_email_unico_entre_empresas_reais` (Story
+// 15.1, AD-36): o mesmo e-mail em outra Empresa real (ou no Treinamento dela).
+const pqExclusionViolation = "23P01"
+
+// restricaoEmailUnicoEntreEmpresasReais é o nome da restrição de exclusão da
+// migration 000049: só a violação DELA vira "e-mail em uso".
+const restricaoEmailUnicoEntreEmpresasReais = "usuarios_email_unico_entre_empresas_reais"
+
 // tokenVerificacaoExpiracao é o prazo de validade do token de verificação de
 // e-mail: 24h é decisão desta story — nenhuma fonte do PRD/épico fixa prazo
 // para este tipo especificamente (os 30min de `redefinicao_senha` são só da
@@ -73,8 +82,10 @@ var (
 	// ErrCadastroValidacao indica campo obrigatório ausente/vazio no payload
 	// de cadastro (nome, e-mail ou senha).
 	ErrCadastroValidacao = errors.New("nome, e-mail e senha são obrigatórios")
-	// ErrEmailDuplicado indica que o e-mail normalizado já está cadastrado
-	// (comparação por lower(email), índice idx_usuarios_email_lower).
+	// ErrEmailDuplicado indica que o e-mail normalizado já está cadastrado:
+	// nesta Empresa (índice idx_usuarios_email_lower) ou em outra Empresa real
+	// (restrição usuarios_email_unico_entre_empresas_reais, Story 15.1). A
+	// mensagem é a mesma nos dois casos — nunca revela onde o e-mail existe.
 	ErrEmailDuplicado = errors.New("este e-mail já está cadastrado")
 	// ErrTokenNaoEncontrado indica que nenhum token de verificação com aquele
 	// valor e tipo existe.
@@ -161,10 +172,12 @@ func gerarTokenAcao() (string, error) {
 }
 
 // Cadastrar cria uma conta de autocadastro DENTRO da Empresa `empresaID`
-// (Story 9.1, AD-20): o mesmo e-mail pode existir em Empresas diferentes — a
-// unicidade passou a ser `(empresa_id, lower(email))` (migração 000032),
-// então ErrEmailDuplicado só dispara para uma colisão DENTRO da mesma
-// Empresa. `empresaSlug` só monta o link do e-mail de verificação
+// (Story 9.1, AD-20). Desde a Story 15.1 (AD-36) o e-mail é único somando
+// todas as Empresas reais: ErrEmailDuplicado dispara para colisão DENTRO da
+// mesma Empresa (23505, `idx_usuarios_email_lower`) e para e-mail já usado em
+// outra Empresa real ou no Treinamento dela (23P01,
+// `usuarios_email_unico_entre_empresas_reais`). O Treinamento repete o e-mail
+// da SUA Empresa real livremente. `empresaSlug` só monta o link do e-mail de verificação
 // (LinkDaEmpresa), nunca é usado para consultar nada.
 //
 // A partir da Story 9.3 (FR-42, AD-22) o autocadastro NÃO é mais aberto:
@@ -273,7 +286,8 @@ func Cadastrar(db *sql.DB, emailCfg EmailConfig, empresaID, empresaSlug string, 
 		RETURNING id`
 	if err := tx.QueryRow(insertUsuario, nomeTrimado, normalizedEmail, string(hash), empresaID).Scan(&usuarioID); err != nil {
 		var pqErr *pq.Error
-		if errors.As(err, &pqErr) && pqErr.Code == pqUniqueViolation {
+		if errors.As(err, &pqErr) && (pqErr.Code == pqUniqueViolation ||
+			(pqErr.Code == pqExclusionViolation && pqErr.Constraint == restricaoEmailUnicoEntreEmpresasReais)) {
 			return "", ErrEmailDuplicado
 		}
 		return "", fmt.Errorf("falha ao inserir usuario: %w", err)

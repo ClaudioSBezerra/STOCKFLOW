@@ -502,3 +502,104 @@ func TestCadastrar_DuploResgateConcorrente(t *testing.T) {
 		t.Errorf("contas criadas = %d, want 1", contas)
 	}
 }
+
+// --- Story 15.1 (AD-36): e-mail único entre as Empresas reais ---
+
+// parOutraEmpresaReal15 cria a Empresa real "u151-outra" com o seu
+// Treinamento (via CriarEmpresaComTreinamento, adm com e-mail próprio) e
+// remove o par no fim do teste.
+func parOutraEmpresaReal15(t *testing.T, db *sql.DB) (Empresa, Empresa) {
+	t.Helper()
+	comParLimpo(t, db, "u151-outra")
+	in := novaEmpresaTeste("u151-outra", "915100000001", "U151 Outra")
+	in.AdmEmail = "u151.adm.outra@x.com"
+	real, treino, err := CriarEmpresaComTreinamento(db, testEmailCfg, in)
+	if err != nil {
+		t.Fatalf("criar par de outra Empresa real: %v", err)
+	}
+	return real, treino
+}
+
+// TestEmitirConvite_EmailComContaEmOutraEmpresaReal prova as linhas "Convite
+// para e-mail de outra real" e "... do Treinamento de outra real": 409
+// (ErrConviteEmailJaCadastrado, a MESMA mensagem de hoje) e nenhum convite
+// gravado.
+func TestEmitirConvite_EmailComContaEmOutraEmpresaReal(t *testing.T) {
+	db := testDB(t)
+	outra, treinoOutra := parOutraEmpresaReal15(t, db)
+	gestorDeTeste(t, db, outra.ID, "Conta na Outra", "a151@x.com")
+	gestorDeTeste(t, db, treinoOutra.ID, "Conta no Treino da Outra", "b151.treino@x.com")
+	emissor := gestorDeTeste(t, db, empresaTeste, "Maria", "maria.u151@empresa.com")
+
+	for _, email := range []string{"A151@X.com", "b151.treino@x.com"} {
+		t.Run(email, func(t *testing.T) {
+			antes := contarLinhas(t, db, "convites_empresa")
+			_, err := EmitirConvite(db, testEmailCfg, empresaTeste, slugEmpresaTeste, emissor, email)
+			if !errors.Is(err, ErrConviteEmailJaCadastrado) {
+				t.Fatalf("erro = %v, want ErrConviteEmailJaCadastrado", err)
+			}
+			if depois := contarLinhas(t, db, "convites_empresa"); depois != antes {
+				t.Errorf("count(convites_empresa) = %d, want %d", depois, antes)
+			}
+		})
+	}
+}
+
+// TestEmitirConvite_TreinamentoParaContaDaPropriaReal prova a linha "Convite
+// no Treinamento para conta da real": aceito, e o cadastro depois cria a
+// conta de Treinamento com a mesma `empresa_raiz_id`.
+func TestEmitirConvite_TreinamentoParaContaDaPropriaReal(t *testing.T) {
+	db := testDB(t)
+	real, treino := parOutraEmpresaReal15(t, db)
+	gestorDeTeste(t, db, real.ID, "Pessoa Real", "c151@x.com")
+	emissor := gestorDeTeste(t, db, treino.ID, "Gestor Treino", "gestor.treino151@x.com")
+
+	c, err := EmitirConvite(db, testEmailCfg, treino.ID, treino.Slug, emissor, "C151@x.com")
+	if err != nil {
+		t.Fatalf("EmitirConvite no Treinamento: %v (want aceito)", err)
+	}
+	var token string
+	if err := db.QueryRow(`SELECT token FROM convites_empresa WHERE id = $1`, c.ID).Scan(&token); err != nil {
+		t.Fatalf("reler convite: %v", err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM convites_empresa WHERE empresa_id = $1`, treino.ID) })
+
+	id, err := Cadastrar(db, testEmailCfg, treino.ID, treino.Slug, "Pessoa Treino", "c151@x.com", "senha-123456", token)
+	if err != nil {
+		t.Fatalf("Cadastrar no Treinamento: %v", err)
+	}
+	var empresaID, raiz string
+	if err := db.QueryRow(`SELECT empresa_id, empresa_raiz_id FROM usuarios WHERE id = $1`, id).Scan(&empresaID, &raiz); err != nil {
+		t.Fatalf("ler conta: %v", err)
+	}
+	if empresaID != treino.ID || raiz != real.ID {
+		t.Errorf("conta: empresa_id = %s, empresa_raiz_id = %s; want %s / %s", empresaID, raiz, treino.ID, real.ID)
+	}
+}
+
+// TestCadastrar_ConviteAntigoEmailJaEmOutraEmpresaReal prova a linha
+// "Cadastro com convite antigo": o convite nasceu antes da conta na outra
+// Empresa real; o cadastro é recusado pela restrição do banco (23P01 ->
+// ErrEmailDuplicado), nada é gravado e o convite continua pendente.
+func TestCadastrar_ConviteAntigoEmailJaEmOutraEmpresaReal(t *testing.T) {
+	db := testDB(t)
+	outra, _ := parOutraEmpresaReal15(t, db)
+	token := conviteDeTeste(t, db, empresaTeste, "d151@x.com")
+	gestorDeTeste(t, db, outra.ID, "Conta Nova na Outra", "D151@x.com")
+
+	antes := contarLinhas(t, db, "usuarios")
+	_, err := Cadastrar(db, testEmailCfg, empresaTeste, slugEmpresaTeste, "D", "d151@x.com", "senha-123456", token)
+	if !errors.Is(err, ErrEmailDuplicado) {
+		t.Fatalf("erro = %v, want ErrEmailDuplicado", err)
+	}
+	if depois := contarLinhas(t, db, "usuarios"); depois != antes {
+		t.Errorf("count(usuarios) = %d, want %d", depois, antes)
+	}
+	if n := contarLinhas(t, db, "emails_pendentes"); n != 2 {
+		// Só os dois `primeiro_acesso` do par criado pelo setup.
+		t.Errorf("count(emails_pendentes) = %d, want 2 (nenhum e-mail de verificação)", n)
+	}
+	if _, usadoEm, revogadoEm := lerConvite(t, db, token); usadoEm.Valid || revogadoEm.Valid {
+		t.Errorf("convite usado_em=%v revogado_em=%v, want pendente", usadoEm, revogadoEm)
+	}
+}

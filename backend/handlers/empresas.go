@@ -111,6 +111,8 @@ func CriarEmpresaHandler(db *sql.DB, emailCfg services.EmailConfig) http.Handler
 			escreverErro(w, http.StatusConflict, "CONFLICT", "O endereço de acesso do Ambiente de Treinamento ({endereço}-treinamento) já está em uso. Escolha outro endereço de acesso.")
 		case errors.Is(err, services.ErrSlugDuplicado):
 			escreverErro(w, http.StatusConflict, "CONFLICT", "Já existe uma empresa com este endereço de acesso.")
+		case errors.Is(err, services.ErrEmailAdmEmUso):
+			escreverErro(w, http.StatusConflict, "CONFLICT", "O e-mail do administrador já está em uso.")
 		default:
 			slog.Error("falha ao criar empresa", "dono_id", dono.ID, "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao criar empresa")

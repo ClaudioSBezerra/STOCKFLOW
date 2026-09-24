@@ -10,6 +10,7 @@ import (
 	"encoding/base32"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime/multipart"
 	"net/http"
@@ -22,7 +23,7 @@ import (
 
 	"github.com/xuri/excelize/v2"
 
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 
 	"stockflow/backend/iam"
@@ -269,7 +270,7 @@ func TestRunMigrations_CreateUsuariosSchema(t *testing.T) {
 	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO usuarios (nome, email, papel) VALUES ('x', 'papel-invalido@example.com', 'inexistente')`); err == nil {
+	if _, err := db.Exec(`INSERT INTO usuarios (nome, email, papel, empresa_id) VALUES ('x', 'papel-invalido@example.com', 'inexistente', $1)`, empresaTeste); err == nil {
 		t.Error("esperava falha ao inserir papel fora do CHECK ('usuario','almoxarife','gestor','adm'), mas o insert teve sucesso")
 	}
 }
@@ -287,10 +288,10 @@ func TestRunMigrations_UniqueEmailLowerIndex(t *testing.T) {
 		t.Fatalf("truncate: %v", err)
 	}
 
-	if _, err := db.Exec(`INSERT INTO usuarios (nome, email, papel) VALUES ('a', 'Dup@Example.com', 'usuario')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO usuarios (nome, email, papel, empresa_id) VALUES ('a', 'Dup@Example.com', 'usuario', $1)`, empresaTeste); err != nil {
 		t.Fatalf("insert inicial falhou: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO usuarios (nome, email, papel) VALUES ('b', 'dup@example.com', 'usuario')`); err == nil {
+	if _, err := db.Exec(`INSERT INTO usuarios (nome, email, papel, empresa_id) VALUES ('b', 'dup@example.com', 'usuario', $1)`, empresaTeste); err == nil {
 		t.Error("esperava violação de unicidade por lower(email), insert teve sucesso")
 	}
 }
@@ -310,10 +311,10 @@ func TestRunMigrations_UniqueAdminIndex(t *testing.T) {
 		t.Fatalf("truncate: %v", err)
 	}
 
-	if _, err := db.Exec(`INSERT INTO usuarios (nome, email, papel) VALUES ('a', 'admin1@example.com', 'adm')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO usuarios (nome, email, papel, empresa_id) VALUES ('a', 'admin1@example.com', 'adm', $1)`, empresaTeste); err != nil {
 		t.Fatalf("insert inicial de adm falhou: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO usuarios (nome, email, papel) VALUES ('b', 'admin2@example.com', 'adm')`); err == nil {
+	if _, err := db.Exec(`INSERT INTO usuarios (nome, email, papel, empresa_id) VALUES ('b', 'admin2@example.com', 'adm', $1)`, empresaTeste); err == nil {
 		t.Error("esperava violação do índice único parcial idx_usuarios_unico_adm, insert teve sucesso")
 	}
 }
@@ -864,7 +865,7 @@ func TestRunMigrations_CheckConstraintsDeTokensEEmailsPendentes(t *testing.T) {
 		t.Fatalf("truncate: %v", err)
 	}
 	var usuarioID string
-	if err := db.QueryRow(`INSERT INTO usuarios (nome, email, papel) VALUES ('x', 'check-constraint@example.com', 'usuario') RETURNING id`).Scan(&usuarioID); err != nil {
+	if err := db.QueryRow(`INSERT INTO usuarios (nome, email, papel, empresa_id) VALUES ('x', 'check-constraint@example.com', 'usuario', $1) RETURNING id`, empresaTeste).Scan(&usuarioID); err != nil {
 		t.Fatalf("insert usuario: %v", err)
 	}
 
@@ -2312,7 +2313,7 @@ func TestRunMigrations_SolicitacoesPromocaoSchema(t *testing.T) {
 	}
 	var solicitanteID string
 	if err := db.QueryRow(
-		`INSERT INTO usuarios (nome, email, papel) VALUES ('x', 'promo-schema@example.com', 'usuario') RETURNING id`,
+		`INSERT INTO usuarios (nome, email, papel, empresa_id) VALUES ('x', 'promo-schema@example.com', 'usuario', $1) RETURNING id`, empresaTeste,
 	).Scan(&solicitanteID); err != nil {
 		t.Fatalf("insert usuario: %v", err)
 	}
@@ -3461,4 +3462,206 @@ func TestNewMux_CentrosCustoRotaCarregaRequireRole(t *testing.T) {
 			t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
 		}
 	})
+}
+
+// --- Story 15.1 (FR-42 revisado, AD-36): e-mail único entre as Empresas reais ---
+
+// provisionarEmpresaM49 provisiona uma Empresa DENTRO de `tx` (o teste faz
+// ROLLBACK no fim, então nada sobrevive no banco compartilhado). `origem`
+// não-nil cria um Ambiente de Treinamento daquela Empresa real.
+func provisionarEmpresaM49(t *testing.T, tx *sql.Tx, slug, cnpj, nome string, origem *string) services.Empresa {
+	t.Helper()
+	e, err := services.ProvisionarEmpresa(tx, services.DadosEmpresa{
+		NomeFantasia:    nome,
+		RazaoSocial:     nome + " LTDA",
+		CNPJ:            cnpj,
+		Slug:            slug,
+		EmpresaOrigemID: origem,
+		Endereco: services.EnderecoEmpresa{
+			Logradouro: "Rua de Teste", Numero: "49", Bairro: "Centro",
+			Cidade: "Recife", CEP: "50000000", UF: "PE",
+		},
+	})
+	if err != nil {
+		t.Fatalf("provisionarEmpresaM49(%s): %v", slug, err)
+	}
+	return e
+}
+
+// inserirContaM49 insere uma conta direto no banco (como um CLI/seed faria)
+// dentro de um SAVEPOINT — uma recusa do banco não aborta a transação do
+// teste — e devolve a `empresa_raiz_id` preenchida pelo trigger.
+func inserirContaM49(t *testing.T, tx *sql.Tx, empresaID any, email string, raizInformada any) (string, error) {
+	t.Helper()
+	if _, err := tx.Exec(`SAVEPOINT conta_m49`); err != nil {
+		t.Fatalf("savepoint: %v", err)
+	}
+	var raiz string
+	var err error
+	if raizInformada == nil {
+		err = tx.QueryRow(
+			`INSERT INTO usuarios (nome, email, papel, empresa_id) VALUES ('M49', $1, 'usuario', $2) RETURNING empresa_raiz_id`,
+			email, empresaID,
+		).Scan(&raiz)
+	} else {
+		err = tx.QueryRow(
+			`INSERT INTO usuarios (nome, email, papel, empresa_id, empresa_raiz_id) VALUES ('M49', $1, 'usuario', $2, $3) RETURNING empresa_raiz_id`,
+			email, empresaID, raizInformada,
+		).Scan(&raiz)
+	}
+	if err != nil {
+		if _, errRb := tx.Exec(`ROLLBACK TO SAVEPOINT conta_m49`); errRb != nil {
+			t.Fatalf("rollback to savepoint: %v", errRb)
+		}
+		return "", err
+	}
+	if _, err := tx.Exec(`RELEASE SAVEPOINT conta_m49`); err != nil {
+		t.Fatalf("release savepoint: %v", err)
+	}
+	return raiz, nil
+}
+
+// TestRunMigrations_EmpresaRaizIdEEmailUnicoEntreEmpresasReais prova a
+// migration 000049: `empresa_raiz_id` NOT NULL, preenchida (e sobrescrita)
+// pelo trigger para conta real e de Treinamento; o mesmo e-mail (caixa
+// diferente) é recusado em duas Empresas reais (23P01, restrição
+// `usuarios_email_unico_entre_empresas_reais`) e aceito na real + Treinamento
+// dela; conta sem Empresa é recusada.
+func TestRunMigrations_EmpresaRaizIdEEmailUnicoEntreEmpresasReais(t *testing.T) {
+	db := testDB(t)
+
+	var nullable string
+	if err := db.QueryRow(
+		`SELECT is_nullable FROM information_schema.columns
+		 WHERE table_schema = current_schema() AND table_name = 'usuarios' AND column_name = 'empresa_raiz_id'`,
+	).Scan(&nullable); err != nil {
+		t.Fatalf("coluna empresa_raiz_id não encontrada: %v", err)
+	}
+	if nullable != "NO" {
+		t.Errorf("empresa_raiz_id is_nullable = %q, want NO", nullable)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	realA := provisionarEmpresaM49(t, tx, "m49-real-a", "49150000000167", "M49 Real A", nil)
+	treinoA := provisionarEmpresaM49(t, tx, "m49-real-a-treinamento", "49150000000167", "M49 Real A - Treinamento", &realA.ID)
+	realB := provisionarEmpresaM49(t, tx, "m49-real-b", "49150000000248", "M49 Real B", nil)
+
+	raiz, err := inserirContaM49(t, tx, realA.ID, "m49.pessoa@x.com", nil)
+	if err != nil {
+		t.Fatalf("conta na real A: %v", err)
+	}
+	if raiz != realA.ID {
+		t.Errorf("real A: empresa_raiz_id = %s, want %s", raiz, realA.ID)
+	}
+
+	raiz, err = inserirContaM49(t, tx, treinoA.ID, "M49.Pessoa@X.com", nil)
+	if err != nil {
+		t.Fatalf("mesmo e-mail no Treinamento da real A: %v (want aceito)", err)
+	}
+	if raiz != realA.ID {
+		t.Errorf("Treinamento A: empresa_raiz_id = %s, want %s (a real)", raiz, realA.ID)
+	}
+
+	// O trigger sempre sobrescreve o valor informado no INSERT.
+	raiz, err = inserirContaM49(t, tx, realA.ID, "m49.outra@x.com", realB.ID)
+	if err != nil {
+		t.Fatalf("conta com empresa_raiz_id informada: %v", err)
+	}
+	if raiz != realA.ID {
+		t.Errorf("empresa_raiz_id informada = %s não foi sobrescrita, want %s", raiz, realA.ID)
+	}
+
+	_, err = inserirContaM49(t, tx, realB.ID, "M49.PESSOA@x.com", nil)
+	var pqErr *pq.Error
+	if !errors.As(err, &pqErr) || pqErr.Code != "23P01" || pqErr.Constraint != "usuarios_email_unico_entre_empresas_reais" {
+		t.Errorf("mesmo e-mail em outra Empresa real: err = %v, want 23P01 em usuarios_email_unico_entre_empresas_reais", err)
+	}
+
+	_, err = inserirContaM49(t, tx, nil, "m49.orfa@x.com", nil)
+	if !errors.As(err, &pqErr) || pqErr.Code != "23502" {
+		t.Errorf("conta sem Empresa: err = %v, want 23502 (NOT NULL)", err)
+	}
+}
+
+// TestMigration000049_FalhaComDuplicataOuContaOrfa executa o `down` e o `up`
+// da 000049 dentro de uma transação (DDL do Postgres é transacional): sobre um
+// estado com o mesmo e-mail em duas Empresas reais o `up` falha com o e-mail
+// na mensagem; sobre uma conta sem Empresa, falha com mensagem própria.
+// ROLLBACK no fim devolve o schema vigente.
+func TestMigration000049_FalhaComDuplicataOuContaOrfa(t *testing.T) {
+	db := testDB(t)
+
+	up, err := migrationsFS.ReadFile("migrations/000049_add_empresa_raiz_id_to_usuarios.up.sql")
+	if err != nil {
+		t.Fatalf("ler up: %v", err)
+	}
+	down, err := migrationsFS.ReadFile("migrations/000049_add_empresa_raiz_id_to_usuarios.down.sql")
+	if err != nil {
+		t.Fatalf("ler down: %v", err)
+	}
+
+	casos := []struct {
+		nome    string
+		preparo func(t *testing.T, tx *sql.Tx)
+		want    string
+	}{
+		{
+			nome: "e-mail em duas Empresas reais",
+			preparo: func(t *testing.T, tx *sql.Tx) {
+				a := provisionarEmpresaM49(t, tx, "m49-dup-a", "49150000000167", "M49 Dup A", nil)
+				b := provisionarEmpresaM49(t, tx, "m49-dup-b", "49150000000248", "M49 Dup B", nil)
+				for _, c := range []struct{ empresa, email string }{{a.ID, "m49.dup@x.com"}, {b.ID, "M49.Dup@X.com"}} {
+					if _, err := tx.Exec(
+						`INSERT INTO usuarios (nome, email, papel, empresa_id) VALUES ('Dup', $1, 'usuario', $2)`, c.email, c.empresa,
+					); err != nil {
+						t.Fatalf("inserir duplicata: %v", err)
+					}
+				}
+			},
+			want: "m49.dup@x.com",
+		},
+		{
+			nome: "conta sem Empresa",
+			preparo: func(t *testing.T, tx *sql.Tx) {
+				if _, err := tx.Exec(`INSERT INTO usuarios (nome, email, papel) VALUES ('Orfa', 'm49.orfa@x.com', 'usuario')`); err != nil {
+					t.Fatalf("inserir conta órfã: %v", err)
+				}
+			},
+			want: "sem empresa_id",
+		},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			tx, err := db.Begin()
+			if err != nil {
+				t.Fatalf("begin: %v", err)
+			}
+			defer func() { _ = tx.Rollback() }()
+
+			if _, err := tx.Exec(string(down)); err != nil {
+				t.Fatalf("down: %v", err)
+			}
+			c.preparo(t, tx)
+			_, err = tx.Exec(string(up))
+			if err == nil {
+				t.Fatal("up aplicou sobre um estado inválido; want falha")
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Errorf("erro do up = %q, want contendo %q", err.Error(), c.want)
+			}
+		})
+	}
+
+	// Depois do ROLLBACK o schema vigente segue intacto.
+	var n int
+	if err := db.QueryRow(
+		`SELECT count(*) FROM pg_constraint WHERE conname = 'usuarios_email_unico_entre_empresas_reais'`,
+	).Scan(&n); err != nil || n != 1 {
+		t.Errorf("restrição após os ROLLBACKs: n = %d, err = %v, want 1", n, err)
+	}
 }

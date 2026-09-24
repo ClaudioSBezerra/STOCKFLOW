@@ -61,10 +61,13 @@ var (
 	// VALIDATION_ERROR, sem gravar nenhuma linha.
 	ErrConviteValidacao = errors.New("informe um e-mail válido para o convite")
 	// ErrConviteEmailJaCadastrado indica que o e-mail já tem conta NA MESMA
-	// Empresa. Recusar na EMISSÃO é deliberado: sem este guard o convite
+	// Empresa ou em OUTRA Empresa real (ou no Treinamento dela) — Story 15.1,
+	// AD-36. Recusar na EMISSÃO é deliberado: sem este guard o convite
 	// nasceria morto — o INSERT em `usuarios` bateria em
-	// idx_usuarios_email_lower e a pessoa veria "e-mail já cadastrado" só
-	// depois de abrir o link. Handler -> 409 CONFLICT.
+	// idx_usuarios_email_lower ou em usuarios_email_unico_entre_empresas_reais
+	// e a pessoa veria "e-mail já cadastrado" só depois de abrir o link. A
+	// mensagem é a mesma nos dois casos: nunca revela em qual Empresa o e-mail
+	// existe. Handler -> 409 CONFLICT.
 	ErrConviteEmailJaCadastrado = errors.New("este e-mail já tem conta nesta empresa")
 	// ErrConviteNaoEncontrado cobre token/id inexistente, malformado (não-UUID,
 	// `pq` 22P02) e — deliberadamente — DE OUTRA EMPRESA: os três colapsam no
@@ -175,12 +178,21 @@ func EmitirConvite(db *sql.DB, emailCfg EmailConfig, empresaID, empresaSlug stri
 		return ConviteResumo{}, ErrConviteValidacao
 	}
 
-	// Guard de conta já existente NA MESMA Empresa: a unicidade de e-mail é
-	// `(empresa_id, lower(email))` desde a migration 000032, então a mesma
-	// pessoa pode ter conta em outra Empresa e ainda assim ser convidada aqui.
+	// Guard de conta já existente, espelhando as duas regras do banco: conta
+	// NESTA Empresa (`idx_usuarios_email_lower`) ou conta com Empresa real
+	// diferente da raiz desta Empresa (`usuarios_email_unico_entre_empresas_reais`,
+	// Story 15.1). O Treinamento pode convidar e-mail de conta da SUA Empresa
+	// real (mesma raiz), e vice-versa. IS DISTINCT FROM (e não `<>`): se a
+	// Empresa não existisse a subconsulta daria NULL e `<>` pularia a checagem
+	// em silêncio — assim qualquer conta com o e-mail recusa o convite.
 	var existe bool
 	err := db.QueryRow(
-		`SELECT EXISTS (SELECT 1 FROM usuarios WHERE empresa_id = $1 AND lower(email) = $2)`,
+		`SELECT EXISTS (
+			SELECT 1 FROM usuarios
+			 WHERE lower(email) = $2
+			   AND (empresa_id = $1
+			        OR empresa_raiz_id IS DISTINCT FROM (SELECT COALESCE(empresa_origem_id, id) FROM empresas WHERE id = $1))
+		)`,
 		empresaID, normalizado,
 	).Scan(&existe)
 	if err != nil {

@@ -184,11 +184,10 @@ jobs:
           ADMIN_NOME=$(grep '^ADMIN_NOME=' .env | tail -1 | cut -d= -f2-)
           ADMIN_EMAIL=$(grep '^ADMIN_EMAIL=' .env | tail -1 | cut -d= -f2-)
           ADMIN_SENHA=$(grep '^ADMIN_SENHA=' .env | tail -1 | cut -d= -f2-)
-          # ADMIN_EMPRESA_SLUG (Story 9.4): depois da migracao multi-Empresa
-          # toda conta pertence a uma Empresa. Sem o slug o seed-admin criaria
-          # uma conta orfa (empresa_id NULL) -- que o endurecimento da 9.4
-          # (empresa_id NOT NULL) passa a recusar. Vazio mantem o
-          # comportamento antigo, para uma instalacao ainda nao migrada.
+          # ADMIN_EMPRESA_SLUG (Story 9.4): toda conta pertence a uma Empresa.
+          # Desde a migration 000049 (Story 15.1) o banco recusa conta sem
+          # Empresa e o seed-admin exige --empresa-slug; vazio NAO mantem mais
+          # o comportamento antigo -- o seed do admin e pulado.
           ADMIN_EMPRESA_SLUG=$(grep '^ADMIN_EMPRESA_SLUG=' .env | tail -1 | cut -d= -f2-)
           if [ -z "$ADMIN_EMAIL" ] || [ -z "$ADMIN_SENHA" ]; then
             echo "ADMIN_EMAIL/ADMIN_SENHA nao definidos no .env -- pulando seed do admin."
@@ -202,7 +201,7 @@ jobs:
           if [ -n "$ADMIN_EMPRESA_SLUG" ]; then
             docker compose exec -T api ./seed-admin --nome "$ADMIN_NOME" --email "$ADMIN_EMAIL" --senha "$ADMIN_SENHA" --empresa-slug "$ADMIN_EMPRESA_SLUG" || true
           else
-            docker compose exec -T api ./seed-admin --nome "$ADMIN_NOME" --email "$ADMIN_EMAIL" --senha "$ADMIN_SENHA" || true
+            echo "::warning::ADMIN_EMPRESA_SLUG nao definido no .env -- pulando seed do admin."
           fi
 
       - name: Notify result

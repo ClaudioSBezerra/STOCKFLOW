@@ -20,7 +20,7 @@ import (
 func treinamentoParaFotos(t *testing.T, db *sql.DB, slug, cnpjBase12 string) (slugTreino, treinoID string) {
 	t.Helper()
 	comParLimpo(t, db, slug)
-	_, treino, err := CriarEmpresaComTreinamento(db, testEmailCfg, novaEmpresaTeste(slug, cnpjBase12, "Cliente Fotos "+slug))
+	_, treino, err := CriarEmpresaComTreinamento(db, testEmailCfg, novaEmpresaTesteAdmProprio(slug, cnpjBase12, "Cliente Fotos "+slug))
 	if err != nil {
 		t.Fatalf("CriarEmpresaComTreinamento(%s): %v", slug, err)
 	}

@@ -18,6 +18,9 @@ import (
 // que existem por causa dela, via DELETE — Treinamento antes da real.
 
 // novaEmpresaTeste monta um insumo válido de CriarEmpresaComTreinamento.
+// O e-mail do `adm` é fixo; desde a Story 15.1 (e-mail único entre as
+// Empresas reais) um teste que mantém duas Empresas criadas ao mesmo tempo
+// usa novaEmpresaTesteAdmProprio.
 func novaEmpresaTeste(slug, cnpjBase12, nomeFantasia string) NovaEmpresaInput {
 	return NovaEmpresaInput{
 		DadosEmpresa: DadosEmpresa{
@@ -38,6 +41,14 @@ func novaEmpresaTeste(slug, cnpjBase12, nomeFantasia string) NovaEmpresaInput {
 		AdmNome:  "Ana Administradora",
 		AdmEmail: "Ana.Adm@Cliente.com",
 	}
+}
+
+// novaEmpresaTesteAdmProprio é novaEmpresaTeste com o e-mail do `adm`
+// derivado do slug.
+func novaEmpresaTesteAdmProprio(slug, cnpjBase12, nomeFantasia string) NovaEmpresaInput {
+	in := novaEmpresaTeste(slug, cnpjBase12, nomeFantasia)
+	in.AdmEmail = "adm." + slug + "@cliente.com"
+	return in
 }
 
 // removerEmpresaComDados apaga a Empresa `slug` e todas as linhas criadas por
@@ -312,7 +323,7 @@ func TestCriarEmpresaComTreinamento_SlugDuplicadoNaoGravaNada(t *testing.T) {
 
 	t.Run("slug do treinamento em uso", func(t *testing.T) {
 		criarEmpresaDeTeste(t, db, "plat-colide-treinamento", "956789010001", "Empresa Que Colide")
-		_, _, err := CriarEmpresaComTreinamento(db, testEmailCfg, novaEmpresaTeste("plat-colide", "967890120001", "Cliente Colide"))
+		_, _, err := CriarEmpresaComTreinamento(db, testEmailCfg, novaEmpresaTesteAdmProprio("plat-colide", "967890120001", "Cliente Colide"))
 		if !errors.Is(err, ErrSlugTreinamentoDuplicado) || !errors.Is(err, ErrSlugDuplicado) {
 			t.Fatalf("erro = %v, want ErrSlugTreinamentoDuplicado", err)
 		}
@@ -463,7 +474,7 @@ func TestCriarEmpresaComTreinamento_MFAObrigatorio(t *testing.T) {
 		t.Error("banco: real e Treinamento deveriam ter mfa_obrigatorio=true")
 	}
 
-	empresa, treino, err = CriarEmpresaComTreinamento(db, testEmailCfg, novaEmpresaTeste("plat-mfa-nao", "961112220012", "Cliente MFA Nao"))
+	empresa, treino, err = CriarEmpresaComTreinamento(db, testEmailCfg, novaEmpresaTesteAdmProprio("plat-mfa-nao", "961112220012", "Cliente MFA Nao"))
 	if err != nil {
 		t.Fatalf("CriarEmpresaComTreinamento (default): %v", err)
 	}
@@ -610,5 +621,48 @@ func TestRenderizarTemplate_PrimeiroAcesso(t *testing.T) {
 		if !strings.Contains(tpl.CorpoHTML, trecho) {
 			t.Errorf("corpo sem %q", trecho)
 		}
+	}
+}
+
+// TestCriarEmpresaComTreinamento_AdmsComMesmaEmpresaRaiz prova a AC da Story
+// 15.1: o `adm` real e o do Treinamento (mesmo e-mail) nascem com
+// `empresa_raiz_id` = id da Empresa real.
+func TestCriarEmpresaComTreinamento_AdmsComMesmaEmpresaRaiz(t *testing.T) {
+	db := testDB(t)
+	comParLimpo(t, db, "u151-raiz")
+
+	empresa, treino, err := CriarEmpresaComTreinamento(db, testEmailCfg, novaEmpresaTeste("u151-raiz", "915100000002", "U151 Raiz"))
+	if err != nil {
+		t.Fatalf("CriarEmpresaComTreinamento: %v", err)
+	}
+	for _, e := range []Empresa{empresa, treino} {
+		var raiz string
+		if err := db.QueryRow(`SELECT empresa_raiz_id FROM usuarios WHERE empresa_id = $1 AND papel = 'adm'`, e.ID).Scan(&raiz); err != nil {
+			t.Fatalf("%s: ler adm: %v", e.Slug, err)
+		}
+		if raiz != empresa.ID {
+			t.Errorf("%s: empresa_raiz_id = %s, want %s (a real)", e.Slug, raiz, empresa.ID)
+		}
+	}
+}
+
+// TestCriarEmpresaComTreinamento_EmailAdmEmUsoNaoGravaNada prova a linha
+// "Criar Empresa com adm em uso" (Story 15.1): ErrEmailAdmEmUso e nenhuma
+// linha em `empresas` para o slug nem para `{slug}-treinamento`.
+func TestCriarEmpresaComTreinamento_EmailAdmEmUsoNaoGravaNada(t *testing.T) {
+	db := testDB(t)
+	comParLimpo(t, db, "u151-adm-a", "u151-adm-b")
+
+	if _, _, err := CriarEmpresaComTreinamento(db, testEmailCfg, novaEmpresaTeste("u151-adm-a", "915100000003", "U151 Adm A")); err != nil {
+		t.Fatalf("primeira criação: %v", err)
+	}
+	in := novaEmpresaTeste("u151-adm-b", "915100000004", "U151 Adm B")
+	in.AdmEmail = "ANA.ADM@cliente.com" // o mesmo e-mail, caixa diferente
+	_, _, err := CriarEmpresaComTreinamento(db, testEmailCfg, in)
+	if !errors.Is(err, ErrEmailAdmEmUso) {
+		t.Fatalf("erro = %v, want ErrEmailAdmEmUso", err)
+	}
+	if n := contar(t, db, `SELECT count(*) FROM empresas WHERE slug IN ('u151-adm-b', 'u151-adm-b-treinamento')`); n != 0 {
+		t.Errorf("%d empresas gravadas para a criação recusada", n)
 	}
 }

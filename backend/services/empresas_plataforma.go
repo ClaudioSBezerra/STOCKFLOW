@@ -50,6 +50,12 @@ const (
 // Embrulha ErrSlugDuplicado: errors.Is com qualquer um dos dois casa.
 var ErrSlugTreinamentoDuplicado = fmt.Errorf("o endereço do ambiente de treinamento já está em uso: %w", ErrSlugDuplicado)
 
+// ErrEmailAdmEmUso indica que o e-mail do primeiro `adm` já tem conta em
+// outra Empresa real (ou no Treinamento dela): a restrição
+// usuarios_email_unico_entre_empresas_reais (Story 15.1, AD-36) recusou o
+// INSERT (23P01). Handler -> 409 CONFLICT, sem revelar em qual Empresa.
+var ErrEmailAdmEmUso = errors.New("o e-mail do administrador já está em uso")
+
 // NovaEmpresaInput é o insumo de CriarEmpresaComTreinamento: os dados
 // cadastrais da Empresa real (`Slug` opcional — vazio usa
 // NormalizarSlug(NomeFantasia)) e o nome/e-mail do primeiro `adm`. O Dono
@@ -186,7 +192,11 @@ func ValidarDadosNovaEmpresa(input NovaEmpresaInput) (DadosEmpresa, string, stri
 //
 // Validação -> *ErroEmpresaValidacao, antes de abrir a transação. CNPJ de
 // outra Empresa real -> ErrCNPJDuplicado; slug em uso -> ErrSlugDuplicado;
-// `{slug}-treinamento` em uso -> ErrSlugTreinamentoDuplicado.
+// `{slug}-treinamento` em uso -> ErrSlugTreinamentoDuplicado; e-mail do `adm`
+// já usado em outra Empresa real (ou no Treinamento dela) -> ErrEmailAdmEmUso
+// (Story 15.1) — a transação é desfeita, nem a Empresa nem o Treinamento
+// ficam gravados. O `adm` do Treinamento repete o e-mail do `adm` real sem
+// conflito: as duas contas têm a mesma `empresa_raiz_id`.
 func CriarEmpresaComTreinamento(db *sql.DB, emailCfg EmailConfig, input NovaEmpresaInput) (Empresa, Empresa, error) {
 	dadosReal, admNome, admEmail, err := ValidarDadosNovaEmpresa(input)
 	if err != nil {
@@ -271,6 +281,10 @@ func provisionarAdmPrimeiroAcesso(tx *sql.Tx, emailCfg EmailConfig, empresa Empr
 		VALUES ($1, $2, NULL, 'adm', true, true, $3)
 		RETURNING id`
 	if err := tx.QueryRow(insertAdm, nome, email, empresa.ID).Scan(&usuarioID); err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == pqExclusionViolation && pqErr.Constraint == restricaoEmailUnicoEntreEmpresasReais {
+			return ErrEmailAdmEmUso
+		}
 		return fmt.Errorf("falha ao criar o administrador da empresa: %w", err)
 	}
 

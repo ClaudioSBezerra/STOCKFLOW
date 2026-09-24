@@ -351,10 +351,10 @@ func TestRequireRole_ComposicaoRequireAuthAntes_OrigemSSOPassa(t *testing.T) {
 	db := testDB(t)
 	var id string
 	const insert = `
-		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, mfa_habilitado)
-		VALUES ('Gestor SSO Sem MFA', $1, 'hash-qualquer', 'gestor', true, true, false)
+		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, mfa_habilitado, empresa_id)
+		VALUES ('Gestor SSO Sem MFA', $1, 'hash-qualquer', 'gestor', true, true, false, $2)
 		RETURNING id`
-	if err := db.QueryRow(insert, "requirerole-gestor-sso@empresa.com").Scan(&id); err != nil {
+	if err := db.QueryRow(insert, "requirerole-gestor-sso@empresa.com", empresaContasMiddleware(t, db)).Scan(&id); err != nil {
 		t.Fatalf("falha ao criar gestor de teste: %v", err)
 	}
 	token := gerarAccessTokenComOrigemTeste(t, testJWTSecret, id, "sso", time.Now().UTC().Add(30*time.Minute))
@@ -386,10 +386,10 @@ func TestRequireRole_ComposicaoRequireAuthAntes_GestorPassa(t *testing.T) {
 	db := testDB(t)
 	var id string
 	const insert = `
-		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo)
-		VALUES ('Gestor Teste', $1, 'hash-qualquer', 'gestor', true, true)
+		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, empresa_id)
+		VALUES ('Gestor Teste', $1, 'hash-qualquer', 'gestor', true, true, $2)
 		RETURNING id`
-	if err := db.QueryRow(insert, "requirerole-gestor@empresa.com").Scan(&id); err != nil {
+	if err := db.QueryRow(insert, "requirerole-gestor@empresa.com", empresaContasMiddleware(t, db)).Scan(&id); err != nil {
 		t.Fatalf("falha ao criar gestor de teste: %v", err)
 	}
 	token := gerarAccessTokenTeste(t, testJWTSecret, id, time.Now().UTC().Add(30*time.Minute))
