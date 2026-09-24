@@ -8,7 +8,7 @@ scope: 'Backend Go + PostgreSQL e frontend React do stockflow (migração do Cat
 status: final
 created: '2026-08-29'
 updated: '2026-09-24'
-binds: ['FR-1..FR-53', 'NFR (§8 do PRD)']
+binds: ['FR-1..FR-54', 'NFR (§8 do PRD)']
 sources: ['_bmad-output/planning-artifacts/prds/prd-stockflow-2026-08-29/prd.md', '_bmad-output/planning-artifacts/prds/prd-stockflow-2026-08-29/addendum.md', '/home/claudio/projetos/FB_APU02 (código real, referência de stack e Keycloak)']
 companions: []
 ---
@@ -278,6 +278,7 @@ erDiagram
 | Migração de dados legados | `cmd/migrate-legado` | AD-15 |
 | Operação (ambientes, backup, CI/CD, observabilidade) | infraestrutura, `.github/workflows` | AD-13, AD-16 |
 | Isolamento por Empresa (FR-40) | `middleware/`, `services/` (toda tabela de domínio) | AD-19, AD-20 |
+| Login na raiz do domínio e e-mail único entre Empresas reais (FR-54, FR-42) | `handlers/auth_raiz.go`, `services/auth_raiz.go`, `usuarios.empresa_raiz_id`, `lib/entrada.ts` | AD-36, AD-19, AD-6 |
 | Gestão de Empresas (FR-41) | `handlers/empresas.go`, `handlers/plataforma_auth.go`, tabela `donos_plataforma` | AD-21 |
 | Convite/vínculo a Empresa (FR-42) | `handlers/convites.go`, `services/`, tabela `convites_empresa` | AD-22, AD-14 (e-mail normalizado) |
 | Ambiente de Treinamento (FR-43) | `services/empresas.go` (provisionamento), tabela `empresas` | AD-23, AD-20 |
@@ -299,7 +300,7 @@ erDiagram
 
 - **Binds:** FR-40 a FR-44 (Multi-Empresa) — toda rota autenticada de Usuário/`adm`.
 - **Prevents:** dois services decidindo "qual Empresa" de formas incompatíveis (um lendo do e-mail, outro de um header); ambiguidade de login com e-mail não mais globalmente único (FR-42); reintrodução de subdomínio/DNS wildcard não planejado para esta fase.
-- **Rule:** URL de acesso carrega um path prefix com o slug da Empresa (ex. `/e/ferreira-costa/...`); `middleware/` resolve `empresa_id` a partir desse slug **uma vez**, popula o contexto da requisição junto com o papel já resolvido (mesmo padrão de AD-8) — nenhum `service` re-deriva ou aceita `empresa_id` vindo de body/query. Login (FR-1, FR-34) e todo endpoint de domínio vivem sob esse prefixo. Divergência deliberada de um subdomínio por Empresa (mais comum no mercado, `addendum.md` §I): exigiria DNS wildcard + certificado wildcard, infraestrutura nova incompatível com a urgência da V1 e com AD-13 (single-host simples); o path prefix funciona sobre a infraestrutura HTTP já existente sem mudança de DNS/certificado.
+- **Rule:** URL de acesso carrega um path prefix com o slug da Empresa (ex. `/e/ferreira-costa/...`); `middleware/` resolve `empresa_id` a partir desse slug **uma vez**, popula o contexto da requisição junto com o papel já resolvido (mesmo padrão de AD-8) — nenhum `service` re-deriva ou aceita `empresa_id` vindo de body/query. Login (FR-1, FR-34) e todo endpoint de domínio vivem sob esse prefixo. **Exceção (AD-36, 2026-09-24):** o login e o "esqueci a senha" da raiz do domínio (FR-54) ficam fora do prefixo e descobrem a Empresa pela conta; depois disso tudo volta a acontecer sob `/e/{slug}` — nenhuma rota de domínio passa a aceitar Empresa de outro lugar. Divergência deliberada de um subdomínio por Empresa (mais comum no mercado, `addendum.md` §I): exigiria DNS wildcard + certificado wildcard, infraestrutura nova incompatível com a urgência da V1 e com AD-13 (single-host simples); o path prefix funciona sobre a infraestrutura HTTP já existente sem mudança de DNS/certificado.
 
 ### AD-20 — Isolamento por Empresa via `empresa_id` em toda tabela de domínio, migração aditiva
 
@@ -421,6 +422,21 @@ erDiagram
   - **`auditoria_seguranca`:** tabela append-only (`id`, `empresa_id`, `ator_id`, `alvo_id` nulável, `acao` enum `exigencia_alterada | mfa_resetado | mfa_desligado`, `detalhe` jsonb, `criado_em`), escopada por `empresa_id` (AD-20), sem rota de edição/exclusão; consultável pelo `adm` da Empresa.
   - **Fora desta AD:** MFA do Dono da Plataforma (tabela `donos_plataforma`, AD-21) continua obrigatório e não lê este flag.
 - **Rationale:** manter o gate onde ele já vive (AD-8) e trocar só a condição custa uma linha e evita divergência entre servidor e interface; ler a Empresa por requisição casa com AD-5 (papel nunca cacheado) e com AD-19. A exigência continua por papel (gestor/adm) — estendê-la a `usuario`/`almoxarife` foi considerado e recusado pelo usuário em 2026-09-24.
+
+### AD-36 — Login na raiz descobre a Empresa pela conta; e-mail único entre Empresas reais garantido no banco
+
+- **Binds:** FR-54, FR-42 (revisado), FR-3, FR-40, FR-41 (cadastro do primeiro `adm`), FR-32 (esqueci a senha), FR-36 (bloqueio).
+- **Prevents:** a raiz virar um oráculo de "este e-mail tem conta, e em qual Empresa"; um segundo caminho de login com regras próprias (bloqueio, e-mail não confirmado, Empresa inativa, MFA) divergindo do login sob `/e/{slug}`; a unicidade de e-mail depender só de checagem em service (corrida entre dois convites); `empresa_id` vindo do corpo da requisição.
+- **Rule:**
+  - **Dado:** `usuarios.empresa_raiz_id UUID NOT NULL REFERENCES empresas(id)` = a Empresa real da conta (`COALESCE(empresas.empresa_origem_id, empresas.id)` da Empresa da conta). Preenchida por trigger `BEFORE INSERT` (uma conta nunca troca de Empresa — FR-42 —, então não há `UPDATE` a tratar), o que cobre todo ponto de `INSERT INTO usuarios` (cadastro, convite, primeiro `adm`, CLIs de seed e migração) sem cada um precisar lembrar. Backfill na mesma migration.
+  - **Unicidade no banco:** `CREATE EXTENSION IF NOT EXISTS btree_gist` e `EXCLUDE USING gist (lower(email) WITH =, empresa_raiz_id WITH <>)` — duas contas com o mesmo e-mail só coexistem se tiverem a mesma Empresa raiz, ou seja, uma Empresa real e o seu Treinamento. O índice único `(empresa_id, lower(email))` de hoje continua (nunca dois no mesmo Empresa). A violação (`23P01`) vira `409` com a mesma mensagem de e-mail em uso em convite, autocadastro e criação de Empresa. A migration falha com mensagem clara, antes de criar a restrição, se já houver duplicata entre Empresas reais. Verificado em 2026-09-24: o usuário da aplicação (sem superusuário) cria a extensão e a restrição no Postgres 15/16.
+  - **Rotas novas, fora do prefixo, sem `RequireEmpresa`:** `POST /api/auth/entrar`, `POST /api/auth/entrar/escolha` e `POST /api/auth/esqueci-senha`. São as únicas exceções novas a AD-19.
+  - **Entrar:** busca as contas daquele e-mail (normalizado, AD-14) em Empresas **ativas**. Chama o `services.Login(db, empresaID, email, senha)` de hoje para cada uma — bloqueio (FR-36), e-mail não confirmado, conta inativa e contagem de falha continuam num lugar só. Nenhuma conta, ou nenhuma senha conferida → a mesma `401 INVALID_CREDENTIALS` do login de hoje, com bcrypt rodando também quando não há conta (`dummyBcryptHash`). Conta bloqueada → `429 ACCOUNT_LOCKED`, como hoje. Uma conta conferida → segue como o login daquela Empresa. Duas (real e Treinamento) → `200 {escolha: [{slug, nomeFantasia, treinamento}], escolhaToken}`, com `escolhaToken` em `tokens_acao` (AD-18, tipo `escolha_empresa`, uso único, 5 min, preso aos ids das contas conferidas); `entrar/escolha {escolhaToken, slug}` só aceita um slug de uma dessas contas.
+  - **Saída = login da Empresa escolhida:** a resposta traz o `slug`. O refresh token vai no cookie com `Path=/e/{slug}/api/auth`, o mesmo de `refreshTokenCookiePath` para aquela Empresa, e o frontend recarrega em `/e/{slug}/` — o `AuthProvider` restaura a sessão pelo refresh silencioso de sempre. Conta com MFA → `{slug, mfaRequerido, mfaToken}` e o código é pedido no `POST /e/{slug}/api/auth/mfa/verificar` de hoje. A raiz nunca emite sessão sem passar pelas mesmas checagens.
+  - **Esqueci a senha na raiz:** para cada conta ativa daquele e-mail, chama o `SolicitarRedefinicaoSenha` de hoje com a Empresa e o slug dela (o link chega com `/e/{slug}`). Resposta sempre `202`, exista ou não a conta.
+  - **Domínio de um cliente só:** variável `EMPRESA_PADRAO` (slug) no backend, exposta por `GET /api/entrada` (`{empresaPadrao: slug | null}`, público, sem outro dado). Se o slug resolve para uma Empresa ativa, a app `sem-empresa` de `lib/entrada.ts` faz `location.replace('/e/{slug}/')`; se não resolve ou está vazia, mostra o login pela conta. Configurada só no servidor de `suprimentos.fcxlabs.com`, nunca em `stockflow.fbtechia.com`.
+  - **Frontend:** a app `sem-empresa` deixa de ser a página explicativa e vira a tela de login pela conta (e-mail, senha, "Esqueci a senha" e, quando houver, a pergunta "Ambiente real ou Treinamento?"). Não monta `AuthProvider`: só conversa com as três rotas da raiz e redireciona.
+- **Rationale:** reaproveitar `Login`/`SolicitarRedefinicaoSenha` por Empresa mantém um único conjunto de regras de acesso; a raiz só descobre a Empresa. A restrição de exclusão garante no banco exatamente a regra do usuário ("uma pessoa, uma Empresa real; o Treinamento pode repetir") sem uma coluna booleana de Treinamento em `usuarios` nem condicional `if treinamento` em service (AD-23). Cookie e sessão continuam por Empresa, sem sessão "global" nova.
 
 ## Deferred
 

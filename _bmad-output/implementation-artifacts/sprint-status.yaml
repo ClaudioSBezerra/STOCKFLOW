@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-29-2026 14:50
-last_updated: 09-24-2026 07:51
+last_updated: 09-24-2026 13:20
 project: stockflow
 project_key: NOKEY
 tracking_system: file-system
@@ -146,3 +146,10 @@ development_status:
   14-3-o-adm-altera-a-exigência-de-mfa-com-aviso-e-auditoria: done
   14-4-recuperação-reset-de-mfa-por-adm-e-desligamento-pela-própria: done
   epic-14-retrospective: optional
+
+  epic-15: backlog
+  15-1-e-mail-único-entre-as-empresas-reais: backlog
+  15-2-login-na-raiz-do-domínio-pela-conta: backlog
+  15-3-esqueci-a-senha-na-raiz-do-domínio: backlog
+  15-4-domínio-de-um-cliente-só-abre-direto-a-empresa: backlog
+  epic-15-retrospective: optional

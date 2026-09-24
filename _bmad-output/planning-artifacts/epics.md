@@ -88,6 +88,8 @@ FR50: Reserva de saldo ao enviar Pedido — saldo dos itens fica reservado (indi
 FR51: Cadastro de Filiais pelo `adm`+ — toda Filial pertence a exatamente uma Empresa; todo Estoque passa a pertencer a exatamente uma Filial (Depósito = Estoque existente + Filial como pai, não um terceiro nível); toda Empresa nova ganha uma Filial padrão automática; migração vincula todo Estoque legado a essa Filial padrão.
 FR52: Cadastro de Centro de Custo e Destino de Obra pelo `adm`+ — entidades próprias referenciáveis no envio de Pedido (FR22), coexistindo com o campo texto livre já existente (não o substituem nesta versão); mesma cópia por Empresa de FR40/FR48/FR49.
 FR53: A Empresa decide se exige dupla autenticação — pergunta no cadastro pelo Dono da Plataforma (padrão "Não", confirmação explícita), Empresas existentes iniciam "Não", Treinamento herda na criação; o `adm` altera depois em Configurações → Segurança com auditoria e aviso de quantos `gestor`/`adm` ainda não têm MFA; ligar obriga gestor/adm sem MFA a cadastrar no próximo acesso; desligar não desliga MFA de ninguém; recuperação: `adm` reseta o MFA de um membro e cada conta desliga o próprio (senha + código), ambos auditados. Dono da Plataforma continua com MFA obrigatório.
+FR42 (revisado): E-mail único entre as Empresas reais — convite, autocadastro e o cadastro do primeiro `adm` recusam um e-mail que já tem conta em outra Empresa real; o Ambiente de Treinamento pode repetir o e-mail de uma conta da sua Empresa real, nunca de outra.
+FR54: Login na raiz do domínio, sem a Empresa na URL — e-mail e senha descobrem a Empresa pela conta; conta na Empresa real e no Treinamento com a mesma senha → pergunta "Ambiente real ou Treinamento?" só depois da senha conferida; sem revelar quem tem conta; mesmas regras do login de hoje (bloqueio, e-mail não confirmado, Empresa inativa, MFA); "Esqueci a senha" na raiz; domínio de um cliente só abre direto a Empresa por configuração; endereços `/e/{empresa}`, convites e SSO não mudam.
 
 ### NonFunctional Requirements
 
@@ -242,6 +244,9 @@ FR52: Epic 12 - Cadastro de Centro de Custo e Destino de Obra
 FR8 (edição): Epic 13 - Editar um Produto já cadastrado (o PRD prevê edição em FR8/FR9; nenhuma tela existia)
 FR37 (revisado): Epic 14 - MFA exigido só quando a Empresa exige
 FR53: Epic 14 - A Empresa decide se exige dupla autenticação
+FR42 (revisado): Epic 15 - E-mail único entre as Empresas reais
+FR54: Epic 15 - Login na raiz do domínio, sem a Empresa na URL
+FR3 e FR40 (uma linha cada): Epic 15 - unicidade de e-mail e login pela conta
 FR41 (linha nova): Epic 14 - Cadastro da Empresa pergunta se exige MFA
 FR43 (linha nova): Epic 14 - Treinamento herda a escolha
 
@@ -302,6 +307,10 @@ Almoxarife corrige um Produto já cadastrado sem precisar cadastrar outro. Surgi
 ### Epic 14: Dupla autenticação por Empresa
 Cada Empresa decide se exige dupla autenticação (MFA) de seus `gestor`/`adm`, em vez de a exigência ser fixa para todos; o Dono da Plataforma responde à pergunta no cadastro, o `adm` altera depois, e existe saída para quem perde o celular. Pedido dos sócios e de clientes (2026-09-24).
 **FRs covered:** FR37 (revisado), FR53, FR41 e FR43 (uma linha cada)
+
+### Epic 15: Acesso sem a Empresa na URL
+Quem abre o stockflow sem `/e/{empresa}` entra só com e-mail e senha, e o sistema descobre a Empresa pela conta; o domínio de um cliente só abre direto a Empresa dele. Para isso, o e-mail passa a ser único entre as Empresas reais. Pedido do usuário (2026-09-24): `stockflow.fbtechia.com` é a plataforma comercial com várias Empresas, `suprimentos.fcxlabs.com` é o servidor de um cliente só.
+**FRs covered:** FR54, FR42 (revisado), FR3 e FR40 (uma linha cada)
 
 ## Epic 1: Autenticação e Gestão de Acesso
 
@@ -2108,3 +2117,141 @@ So that o MFA opcional não vire um bloqueio permanente.
 **Given** o fluxo de redefinição de senha (FR-32)
 **When** uma conta com MFA redefine a senha por e-mail
 **Then** o MFA continua ligado e o código continua sendo pedido no login seguinte — a redefinição não desliga nem contorna o segundo fator
+
+## Epic 15: Acesso sem a Empresa na URL
+
+Hoje só se entra no stockflow pelo endereço da Empresa (`/e/{empresa}`); a raiz do domínio mostra apenas uma página explicativa. Como cada conta pertence a uma só Empresa real, o e-mail basta para descobrir a Empresa: a raiz passa a ter login por e-mail e senha, e o domínio de um cliente só abre direto a Empresa dele. A premissa é o e-mail único entre as Empresas reais, garantido no banco (Architecture AD-36). O Ambiente de Treinamento continua podendo repetir o e-mail da sua Empresa real; nesse caso o login pergunta "Ambiente real ou Treinamento?".
+
+### Story 15.1: E-mail único entre as Empresas reais
+
+As a Dono da Plataforma,
+I want que um e-mail tenha no máximo uma conta somando todas as Empresas reais,
+So that o e-mail identifique sozinho a Empresa de cada pessoa.
+
+**Acceptance Criteria:**
+
+**Given** a migration desta story
+**When** ela roda contra um banco sem e-mail repetido entre Empresas reais
+**Then** `usuarios.empresa_raiz_id` é criada e preenchida (a Empresa real da conta: a própria Empresa, ou a de origem para contas de Treinamento), fica `NOT NULL`, e passa a valer a restrição `EXCLUDE USING gist (lower(email) WITH =, empresa_raiz_id WITH <>)` (Architecture AD-36)
+
+**Given** um banco com o mesmo e-mail em duas Empresas reais
+**When** a migration roda
+**Then** ela falha antes de criar a restrição, com mensagem que lista os e-mails repetidos — nada fica pela metade
+
+**Given** qualquer `INSERT INTO usuarios` (cadastro por convite, primeiro `adm` de Empresa nova, `adm` do Treinamento, CLIs de seed e migração)
+**When** a conta é criada
+**Then** `empresa_raiz_id` é preenchida pelo trigger `BEFORE INSERT`, sem o código de inserção precisar informá-la
+
+**Given** um convite ou autocadastro para um e-mail que já tem conta em outra Empresa real (ou no Treinamento de outra Empresa real)
+**When** o convite é criado ou o cadastro é enviado
+**Then** a resposta é 409 com a mesma mensagem de e-mail em uso de hoje, e nada é gravado
+
+**Given** o Dono da Plataforma criando uma Empresa cujo primeiro `adm` tem e-mail já usado em outra Empresa real
+**When** envia o cadastro
+**Then** a resposta é 409 indicando que o e-mail do administrador já está em uso, e nem a Empresa nem o Treinamento são criados
+
+**Given** o provisionamento de uma Empresa nova
+**When** o `adm` do Treinamento é criado com o mesmo e-mail do `adm` real
+**Then** a criação é aceita — real e Treinamento têm a mesma Empresa raiz
+
+**Given** um convite no Ambiente de Treinamento para o e-mail de uma conta da sua Empresa real
+**When** a pessoa se cadastra
+**Then** a conta de Treinamento é criada normalmente
+
+### Story 15.2: Login na raiz do domínio pela conta
+
+As a pessoa com conta no stockflow,
+I want entrar pela raiz do domínio só com e-mail e senha,
+So that eu não precise saber o endereço da minha Empresa.
+
+**Acceptance Criteria:**
+
+**Given** a raiz do domínio (qualquer caminho fora de `/e/{empresa}` e de `/plataforma`)
+**When** ela abre
+**Then** mostra a tela de login com e-mail, senha e "Esqueci a senha", no lugar da página explicativa de hoje (`lib/entrada.ts`, app `sem-empresa`)
+
+**Given** um e-mail com uma única conta ativa e a senha correta
+**When** a pessoa envia o login
+**Then** `POST /api/auth/entrar` devolve o slug da Empresa e grava o refresh token no cookie com `Path=/e/{slug}/api/auth`; o frontend recarrega em `/e/{slug}/` e a pessoa já está autenticada, sem digitar de novo (Architecture AD-36)
+
+**Given** um e-mail com conta na Empresa real e no Treinamento, e a senha correta nas duas
+**When** a pessoa envia o login
+**Then** a tela pergunta "Ambiente real ou Treinamento?" com o nome de cada Empresa; escolhida uma, `POST /api/auth/entrar/escolha` conclui o login naquela Empresa; o token da escolha é de uso único, vence em 5 minutos e só aceita as Empresas das contas conferidas
+
+**Given** um e-mail com conta na Empresa real e no Treinamento, e a senha correta só numa delas
+**When** a pessoa envia o login
+**Then** ela entra direto na Empresa cuja senha conferiu, sem pergunta
+
+**Given** um e-mail sem conta, ou uma senha errada
+**When** a pessoa envia o login
+**Then** a resposta é o mesmo `401 INVALID_CREDENTIALS` do login de hoje nos dois casos, com o bcrypt rodando também quando não há conta — a raiz nunca revela se o e-mail existe nem em qual Empresa
+
+**Given** senhas erradas repetidas
+**When** o limite de FR-36 é atingido
+**Then** a conta (cada conta daquele e-mail) fica bloqueada exatamente como no login pelo endereço da Empresa, e a raiz responde `429 ACCOUNT_LOCKED`
+
+**Given** uma conta desativada, com e-mail não confirmado, ou de Empresa desativada
+**When** ela tenta entrar pela raiz
+**Then** recebe a mesma recusa que receberia no login pelo endereço da Empresa — a raiz só descobre a Empresa, não abre exceção (a checagem é a do `services.Login` de hoje, chamado por Empresa)
+
+**Given** uma conta com MFA ligado
+**When** a senha confere na raiz
+**Then** a resposta traz o slug e o `mfaToken`, e a pessoa digita o código na etapa de MFA da Empresa, sob `/e/{slug}`, como hoje
+
+**Given** os endereços `/e/{empresa}`, os convites e o login SSO
+**When** esta story entra
+**Then** continuam funcionando exatamente como antes
+
+### Story 15.3: "Esqueci a senha" na raiz do domínio
+
+As a pessoa que esqueceu a senha,
+I want pedir a redefinição só com o e-mail, pela raiz do domínio,
+So that eu recupere o acesso sem saber o endereço da minha Empresa.
+
+**Acceptance Criteria:**
+
+**Given** a tela de login da raiz
+**When** a pessoa aciona "Esqueci a senha" e informa o e-mail
+**Then** `POST /api/auth/esqueci-senha` responde sempre `202` com a mesma mensagem, exista ou não a conta
+
+**Given** um e-mail com uma conta ativa
+**When** a redefinição é pedida pela raiz
+**Then** chega o e-mail de redefinição de hoje (FR-32), com o link já no endereço da Empresa da conta (`/e/{slug}/redefinir-senha?...`)
+
+**Given** um e-mail com conta na Empresa real e no Treinamento
+**When** a redefinição é pedida pela raiz
+**Then** chega um e-mail por conta, cada um com o nome e o endereço da sua Empresa
+
+**Given** o mesmo e-mail pedindo redefinição várias vezes
+**When** os pedidos chegam pela raiz
+**Then** valem os mesmos limites e prazos do pedido feito pelo endereço da Empresa (é o mesmo `SolicitarRedefinicaoSenha`, chamado por Empresa)
+
+### Story 15.4: Domínio de um cliente só abre direto a Empresa
+
+As a colaborador da Ferreira Costa,
+I want que `suprimentos.fcxlabs.com` abra direto o login da minha Empresa,
+So that eu não precise digitar nada além do meu acesso.
+
+**Acceptance Criteria:**
+
+**Given** o backend com `EMPRESA_PADRAO=ferreira-costa` e essa Empresa ativa
+**When** alguém abre a raiz do domínio
+**Then** `GET /api/entrada` devolve `{empresaPadrao: "ferreira-costa"}` e o frontend faz `location.replace('/e/ferreira-costa/')` — cai no login da Empresa, com SSO se configurado
+
+**Given** o backend sem `EMPRESA_PADRAO`, ou com um slug que não existe ou está desativado
+**When** alguém abre a raiz
+**Then** `GET /api/entrada` devolve `{empresaPadrao: null}` e aparece o login pela conta da Story 15.2 — nunca um erro nem um redirecionamento para Empresa inexistente
+
+**Given** `GET /api/entrada`
+**When** é chamado sem sessão
+**Then** responde só o slug padrão (ou `null`), sem nenhum outro dado da Empresa
+
+**Given** o `installer/cliente-aws/docker-compose.yml` (a lista de variáveis do container `api` é explícita e o deploy copia esse arquivo para o servidor)
+**When** esta story entra
+**Then** a lista ganha `EMPRESA_PADRAO=${EMPRESA_PADRAO}` — vazia no `.env` equivale a não configurada
+
+**Given** o `.env.example` e a documentação de implantação
+**When** esta story entra
+**Then** `EMPRESA_PADRAO` aparece documentada como opcional, só para servidores de um cliente só, e não é definida em `stockflow.fbtechia.com`
+
+**Operator action (depois do deploy):** acrescentar `EMPRESA_PADRAO=ferreira-costa` ao `.env` do servidor de `suprimentos.fcxlabs.com` (`/opt/apps/stockflow/cliente-aws/.env`) e reiniciar o container da API. Enquanto isso não for feito, a raiz desse domínio mostra o login pela conta (Story 15.2), que também funciona.
