@@ -8,7 +8,7 @@ scope: 'Backend Go + PostgreSQL e frontend React do stockflow (migração do Cat
 status: final
 created: '2026-08-29'
 updated: '2026-09-24'
-binds: ['FR-1..FR-54', 'NFR (§8 do PRD)']
+binds: ['FR-1..FR-56', 'NFR (§8 do PRD)']
 sources: ['_bmad-output/planning-artifacts/prds/prd-stockflow-2026-08-29/prd.md', '_bmad-output/planning-artifacts/prds/prd-stockflow-2026-08-29/addendum.md', '/home/claudio/projetos/FB_APU02 (código real, referência de stack e Keycloak)']
 companions: []
 ---
@@ -278,6 +278,7 @@ erDiagram
 | Migração de dados legados | `cmd/migrate-legado` | AD-15 |
 | Operação (ambientes, backup, CI/CD, observabilidade) | infraestrutura, `.github/workflows` | AD-13, AD-16 |
 | Isolamento por Empresa (FR-40) | `middleware/`, `services/` (toda tabela de domínio) | AD-19, AD-20 |
+| Inativar/reativar Produto e histórico do Produto (FR-55, FR-56) | `services/produtos_inativacao.go`, `produtos.inativado_em`, `produto_historico`, todo SELECT de Catálogo | AD-37, AD-20, AD-25, AD-32 |
 | Login na raiz do domínio e e-mail único entre Empresas reais (FR-54, FR-42) | `handlers/auth_raiz.go`, `services/auth_raiz.go`, `usuarios.empresa_raiz_id`, `lib/entrada.ts` | AD-36, AD-19, AD-6 |
 | Gestão de Empresas (FR-41) | `handlers/empresas.go`, `handlers/plataforma_auth.go`, tabela `donos_plataforma` | AD-21 |
 | Convite/vínculo a Empresa (FR-42) | `handlers/convites.go`, `services/`, tabela `convites_empresa` | AD-22, AD-14 (e-mail normalizado) |
@@ -388,7 +389,7 @@ erDiagram
 - **Binds:** FR-45, FR-46.
 - **Prevents:** confundir Código do Fornecedor/EAN-13 (FR-45) com o "Código de Identificação" interno de FR-8/FR-35 — são três campos disjuntos, sem relação funcional; builder tratando `unidade_medida` como obrigatória para Produto legado e travando o sistema por dado incompleto.
 - **Rule:**
-  - `produtos.codigo_fornecedor` (texto livre) e `produtos.ean13` (`CHAR(13)`, validado por dígito verificador quando informado) — ambos opcionais, sem índice de unicidade (FR-45 explícito: nenhuma garantia de unicidade nesta versão).
+  - `produtos.codigo_fornecedor` (texto livre) e `produtos.ean13` (`CHAR(13)`, validado por dígito verificador quando informado) — ambos opcionais, sem índice de unicidade (FR-45 explícito: nenhuma garantia de unicidade nesta versão). **Revisado em 2026-09-25 (FR-45):** `ean13` passa a ser único entre os Produtos **ativos** (`inativado_em IS NULL AND deleted_at IS NULL`, AD-37) da mesma Empresa, garantido no **service**, não por índice: `CriarProduto`, `AtualizarProduto` e a reativação (AD-37) tomam `pg_advisory_xact_lock(hashtext(empresa_id || ':' || ean13))` na transação da escrita e só então procuram outro Produto ativo com o mesmo EAN — duas escritas concorrentes do mesmo EAN são serializadas. Achou -> 409 `EAN_EM_USO` com código e nome do outro Produto. Índice único parcial foi considerado e recusado: os bancos já têm EAN repetido (o próprio caso que motivou a regra) e a migration abortaria o deploy (lição da 000049); duplicatas antigas ficam como estão e só bloqueiam o salvamento do Produto até alguém corrigir ou inativar um dos dois.
   - `produtos.unidade_medida` (enum já especificado em `addendum.md` §F, nunca implementado) e `produtos.embalagem` (texto livre, ex. "CX 24") — `unidade_medida` obrigatória só para Produto **novo**; migração aditiva (mesmo molde de AD-20/AD-24): coluna nasce `NULL`able, backfill em lote com valor único (`[ASSUMPTION]` "un", a confirmar) para todo Produto já existente sem essa informação, só então validação de obrigatoriedade passa a valer no cadastro/edição.
   - Ambos os pares aparecem como colunas próprias no Catálogo (FR-6) e no detalhe por Estoque (FR-7) — sem transformação, exibição direta.
 
@@ -437,6 +438,19 @@ erDiagram
   - **Domínio de um cliente só:** variável `EMPRESA_PADRAO` (slug) no backend, exposta por `GET /api/entrada` (`{empresaPadrao: slug | null}`, público, sem outro dado). Se o slug resolve para uma Empresa ativa, a app `sem-empresa` de `lib/entrada.ts` faz `location.replace('/e/{slug}/')`; se não resolve ou está vazia, mostra o login pela conta. Configurada só no servidor de `suprimentos.fcxlabs.com`, nunca em `stockflow.fbtechia.com`.
   - **Frontend:** a app `sem-empresa` deixa de ser a página explicativa e vira a tela de login pela conta (e-mail, senha, "Esqueci a senha" e, quando houver, a pergunta "Ambiente real ou Treinamento?"). Não monta `AuthProvider`: só conversa com as três rotas da raiz e redireciona.
 - **Rationale:** reaproveitar `Login`/`SolicitarRedefinicaoSenha` por Empresa mantém um único conjunto de regras de acesso; a raiz só descobre a Empresa. A restrição de exclusão garante no banco exatamente a regra do usuário ("uma pessoa, uma Empresa real; o Treinamento pode repetir") sem uma coluna booleana de Treinamento em `usuarios` nem condicional `if treinamento` em service (AD-23). Cookie e sessão continuam por Empresa, sem sessão "global" nova.
+
+### AD-37 — Produto inativo: coluna própria, filtro em toda leitura de operação, trava com a escrita de saldo; histórico append-only
+
+- **Binds:** FR-55, FR-56, FR-45 (reativação e EAN), FR-8 (troca de nome), FR-21/FR-47/FR-50/FR-10/FR-17/FR-19 (onde o inativo some).
+- **Prevents:** reaproveitar `deleted_at` (é o "removido pela mesclagem", irreversível, AD-11) para algo reversível; um Produto inativado com saldo ou reserva (saldo "preso" invisível); uma corrida em que alguém lança saldo ou reserva no instante em que outra pessoa inativa; o inativo reaparecer numa tela esquecida; troca de nome sem rastro.
+- **Rule:**
+  - **Dado:** `produtos.inativado_em TIMESTAMPTZ NULL` e `produtos.inativado_por UUID NULL REFERENCES usuarios(id)` — migração aditiva, todo Produto existente nasce ativo. "Ativo" = `inativado_em IS NULL AND deleted_at IS NULL`.
+  - **Inativar** (`POST /e/{slug}/api/produtos/{id}/inativacao`, `RequireRole(gestor)`, corpo `{motivo?}`): numa transação, `SELECT ... FROM produtos WHERE id AND empresa_id FOR UPDATE`; recusa (409 `PRODUTO_COM_SALDO`, listando os Estoques) se houver `lotes.quantidade > 0` ou `reservas_pedido_item` do Produto; senão grava `inativado_em/por`, remove os itens de `carrinho_itens` do Produto e grava `produto_historico` (`inativado`, motivo no `detalhe`). Já inativo -> 409.
+  - **Reativar** (`POST .../reativacao`, `RequireRole(gestor)`): limpa `inativado_em/por`, passa pela regra de EAN único (AD-32; conflito -> 409 `EAN_EM_USO`) e grava `produto_historico` (`reativado`).
+  - **Trava contra corrida:** toda escrita que cria saldo ou reserva para um Produto — lançamento de saldo (AD-24/FR-47), envio de Pedido (reserva, AD-25), linha de importação que atualiza Produto (FR-10) — toma `SELECT ... FROM produtos WHERE id ... FOR SHARE` na mesma transação e recusa Produto inativo. `FOR SHARE` x `FOR UPDATE` serializa com a inativação sem bloquear escritas concorrentes entre si.
+  - **Filtro:** toda leitura de operação ganha `inativado_em IS NULL` ao lado do `deleted_at IS NULL` que já existe — Catálogo e busca, leitura por código (FR-35), exportação, Carrinho (listagem trata inativo como "Produto que sumiu": remove com aviso, FR-21), detecção de duplicatas e inconsistências, lançamento de saldo. Leituras de **histórico** (Movimentações, Pedidos, recibos, detalhe do Produto) **não** filtram e expõem `inativo: true`. O Catálogo aceita `?inativos=1` só para `gestor`+ (senão ignorado).
+  - **Histórico:** tabela `produto_historico` (`id`, `empresa_id`, `produto_id`, `ator_id`, `acao` enum `nome_alterado | inativado | reativado`, `detalhe` jsonb — `{antes, depois}` para nome, `{motivo}` para inativar —, `criado_em`), escopada por `empresa_id` (AD-20), append-only, sem rota de escrita direta. `AtualizarProduto` e `AtualizarNomeProduto` gravam `nome_alterado` na MESMA transação quando o nome muda de fato. Leitura: `GET .../produtos/{id}/historico` para `almoxarife`+.
+- **Rationale:** coluna própria mantém a mesclagem (irreversível) e a inativação (reversível) sem se confundirem; a regra de saldo zero força o destino do material antes de sumir, e a trava `FOR SHARE`/`FOR UPDATE` fecha a corrida sem índice nem fila. Um único histórico por Produto serve às três ações que o usuário pediu para rastrear, no mesmo molde de `auditoria_seguranca` (AD-35).
 
 ## Deferred
 

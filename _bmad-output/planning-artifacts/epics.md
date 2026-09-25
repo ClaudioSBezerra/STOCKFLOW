@@ -90,6 +90,9 @@ FR52: Cadastro de Centro de Custo e Destino de Obra pelo `adm`+ — entidades pr
 FR53: A Empresa decide se exige dupla autenticação — pergunta no cadastro pelo Dono da Plataforma (padrão "Não", confirmação explícita), Empresas existentes iniciam "Não", Treinamento herda na criação; o `adm` altera depois em Configurações → Segurança com auditoria e aviso de quantos `gestor`/`adm` ainda não têm MFA; ligar obriga gestor/adm sem MFA a cadastrar no próximo acesso; desligar não desliga MFA de ninguém; recuperação: `adm` reseta o MFA de um membro e cada conta desliga o próprio (senha + código), ambos auditados. Dono da Plataforma continua com MFA obrigatório.
 FR42 (revisado): E-mail único entre as Empresas reais — convite, autocadastro e o cadastro do primeiro `adm` recusam um e-mail que já tem conta em outra Empresa real; o Ambiente de Treinamento pode repetir o e-mail de uma conta da sua Empresa real, nunca de outra.
 FR54: Login na raiz do domínio, sem a Empresa na URL — e-mail e senha descobrem a Empresa pela conta; conta na Empresa real e no Treinamento com a mesma senha → pergunta "Ambiente real ou Treinamento?" só depois da senha conferida; sem revelar quem tem conta; mesmas regras do login de hoje (bloqueio, e-mail não confirmado, Empresa inativa, MFA); "Esqueci a senha" na raiz; domínio de um cliente só abre direto a Empresa por configuração; endereços `/e/{empresa}`, convites e SSO não mudam.
+FR45 (revisado): EAN-13 único entre os Produtos ativos da Empresa — cadastro, edição e reativação recusam EAN já usado por outro Produto ativo, dizendo qual; inativo libera o EAN; duplicatas antigas não são alteradas e bloqueiam o salvamento até correção.
+FR55: Inativar e reativar Produto — gestor/adm, qualquer motivo (opcional), só sem saldo nem reserva (a recusa diz onde há saldo); o inativo some de Catálogo, busca, leitura por código, exportação, Carrinho, duplicatas/inconsistências, lançamento de saldo e importação, e continua no histórico com a marca "Inativo"; filtro "Inativos" e reativar para gestor/adm.
+FR56: Histórico de alterações do Produto — troca de nome (antes/depois), inativação e reativação registradas com quem e quando, visíveis no detalhe do Produto para almoxarife+.
 
 ### NonFunctional Requirements
 
@@ -247,6 +250,9 @@ FR53: Epic 14 - A Empresa decide se exige dupla autenticação
 FR42 (revisado): Epic 15 - E-mail único entre as Empresas reais
 FR54: Epic 15 - Login na raiz do domínio, sem a Empresa na URL
 FR3 e FR40 (uma linha cada): Epic 15 - unicidade de e-mail e login pela conta
+FR55: Epic 16 - Inativar e reativar Produto
+FR56: Epic 16 - Histórico de alterações do Produto
+FR45 (revisado): Epic 16 - EAN-13 único entre Produtos ativos
 FR41 (linha nova): Epic 14 - Cadastro da Empresa pergunta se exige MFA
 FR43 (linha nova): Epic 14 - Treinamento herda a escolha
 
@@ -311,6 +317,10 @@ Cada Empresa decide se exige dupla autenticação (MFA) de seus `gestor`/`adm`, 
 ### Epic 15: Acesso sem a Empresa na URL
 Quem abre o stockflow sem `/e/{empresa}` entra só com e-mail e senha, e o sistema descobre a Empresa pela conta; o domínio de um cliente só abre direto a Empresa dele. Para isso, o e-mail passa a ser único entre as Empresas reais. Pedido do usuário (2026-09-24): `stockflow.fbtechia.com` é a plataforma comercial com várias Empresas, `suprimentos.fcxlabs.com` é o servidor de um cliente só.
 **FRs covered:** FR54, FR42 (revisado), FR3 e FR40 (uma linha cada)
+
+### Epic 16: Inativar Produto, EAN único e histórico do Produto
+Gestor e adm tiram de uso um Produto sem apagá-lo (só sem saldo) e o reativam depois; o EAN-13 deixa de poder repetir entre Produtos ativos; e toda troca de nome, inativação e reativação fica registrada. Feedback do treinamento da Ferreira Costa (Karla, 2026-09-25).
+**FRs covered:** FR55, FR56, FR45 (revisado)
 
 ## Epic 1: Autenticação e Gestão de Acesso
 
@@ -2255,3 +2265,127 @@ So that eu não precise digitar nada além do meu acesso.
 **Then** `EMPRESA_PADRAO` aparece documentada como opcional, só para servidores de um cliente só, e não é definida em `stockflow.fbtechia.com`
 
 **Operator action (depois do deploy):** acrescentar `EMPRESA_PADRAO=ferreira-costa` ao `.env` do servidor de `suprimentos.fcxlabs.com` (`/opt/apps/stockflow/cliente-aws/.env`) e reiniciar o container da API. Enquanto isso não for feito, a raiz desse domínio mostra o login pela conta (Story 15.2), que também funciona.
+
+## Epic 16: Inativar Produto, EAN único e histórico do Produto
+
+Do treinamento da Ferreira Costa (Karla, 2026-09-25): não havia como tirar de uso um Produto sem apagá-lo; a edição aceitou o mesmo EAN-13 de outro Produto ativo (o mesmo item com dois códigos internos); e a troca da descrição inteira não deixava rastro. Inativar exige saldo zero — o material é transferido ou baixado antes. O inativo some das operações e continua no histórico (Architecture AD-37); o EAN passa a ser único entre ativos, garantido no service (AD-32 revisada).
+
+### Story 16.1: Inativar e reativar um Produto
+
+As a gestor ou adm,
+I want inativar um Produto que não usamos mais e reativá-lo se precisar,
+So that o Catálogo mostre só o que está em uso, sem perder o histórico.
+
+**Acceptance Criteria:**
+
+**Given** a migration desta story
+**When** ela roda
+**Then** `produtos` ganha `inativado_em` e `inativado_por` (nulos — todo Produto existente continua ativo) e existe a tabela `produto_historico` (`acao` em `nome_alterado | inativado | reativado`, escopada por Empresa, append-only) (Architecture AD-37)
+
+**Given** um `gestor` ou `adm` no detalhe de um Produto ativo sem saldo e sem reserva
+**When** aciona "Inativar produto", informa (ou não) o motivo e confirma
+**Then** `POST /api/produtos/{id}/inativacao` grava a inativação e uma linha `inativado` no histórico com o motivo, e o detalhe passa a mostrar a marca "Inativo" e o botão "Reativar"
+
+**Given** um Produto com saldo em algum Estoque ou com reserva de Pedido pendente
+**When** o gestor tenta inativar
+**Then** a resposta é 409 `PRODUTO_COM_SALDO` e a tela diz em quais Estoques há saldo (ou que há reserva), orientando a transferir ou dar baixa antes — nada é gravado
+
+**Given** um `almoxarife` ou `usuario`
+**When** tenta inativar ou reativar (tela ou API)
+**Then** o botão não aparece e a API responde 403
+
+**Given** um Produto que está no Carrinho de alguém
+**When** é inativado
+**Then** o item sai do Carrinho e a pessoa vê o aviso de item removido, como já acontece com Produto que some (FR-21)
+
+**Given** uma inativação e, ao mesmo tempo, um lançamento de saldo ou envio de Pedido do mesmo Produto
+**When** as duas chegam juntas
+**Then** uma espera a outra (`FOR UPDATE` x `FOR SHARE`, AD-37): ou a inativação é recusada por saldo/reserva, ou o lançamento/pedido é recusado por Produto inativo — nunca fica um Produto inativo com saldo
+
+**Given** um Produto inativo
+**When** o gestor aciona "Reativar"
+**Then** `POST /api/produtos/{id}/reativacao` o devolve às operações e grava `reativado` no histórico; se o EAN-13 dele já estiver em outro Produto ativo, a resposta é 409 `EAN_EM_USO` dizendo qual (a regra da Story 16.4)
+
+### Story 16.2: Produto inativo some das operações; filtro "Inativos"
+
+As a almoxarife,
+I want que Produtos inativos não apareçam onde eu opero o estoque,
+So that ninguém reserve, lance saldo ou importe algo que não usamos mais.
+
+**Acceptance Criteria:**
+
+**Given** um Produto inativo
+**When** alguém usa Catálogo, busca, leitura por QR Code/código de barras ou a exportação do Catálogo
+**Then** ele não aparece (a leitura por código responde como código não encontrado)
+
+**Given** um Produto inativo
+**When** alguém tenta lançar saldo inicial, adicionar ao Carrinho ou enviar Pedido com ele (inclusive por chamada direta à API)
+**Then** a resposta é 409 dizendo que o Produto está inativo
+
+**Given** uma planilha de importação com o código de um Produto inativo
+**When** a linha é processada
+**Then** ela é marcada como erro ("Produto inativo — reative antes de importar") sem interromper as demais linhas
+
+**Given** a detecção de duplicatas e de inconsistências (Normalização)
+**When** roda
+**Then** Produtos inativos ficam de fora
+
+**Given** Movimentações, Pedidos, recibos em PDF e o detalhe do Produto
+**When** mostram um Produto inativo
+**Then** ele continua aparecendo, com a marca "Inativo"
+
+**Given** um `gestor` ou `adm` no Catálogo
+**When** liga o filtro "Inativos"
+**Then** vê só os Produtos inativos e abre o detalhe de cada um para reativar; para `almoxarife`/`usuario` o filtro não aparece e `?inativos=1` é ignorado
+
+### Story 16.3: Histórico de alterações do Produto
+
+As a gestor,
+I want ver quem trocou o nome de um Produto e quem o inativou ou reativou,
+So that uma alteração indevida possa ser identificada e corrigida.
+
+**Acceptance Criteria:**
+
+**Given** a edição de Produto (`PUT /api/produtos/{id}`) ou a rota de renomear
+**When** o nome muda de fato
+**Then** uma linha `nome_alterado` com `{antes, depois}`, o autor e o horário é gravada na mesma transação; salvar sem mudar o nome não grava nada
+
+**Given** o detalhe de um Produto aberto por `almoxarife`+
+**When** a seção "Histórico do produto" carrega (`GET /api/produtos/{id}/historico`)
+**Then** mostra, do mais recente para o mais antigo, cada troca de nome (antes → depois), inativação (com motivo) e reativação, com nome de quem fez e data/hora
+
+**Given** um `usuario`
+**When** abre o detalhe
+**Then** a seção não aparece e a rota responde 403
+
+**Given** o histórico de um Produto de outra Empresa
+**When** é pedido
+**Then** a resposta é 404, sem revelar existência (AD-20)
+
+### Story 16.4: EAN-13 único entre os Produtos ativos da Empresa
+
+As a almoxarife,
+I want que o sistema recuse um EAN-13 que já está em outro Produto ativo,
+So that o mesmo item não seja cadastrado duas vezes com códigos internos diferentes.
+
+**Acceptance Criteria:**
+
+**Given** o cadastro ou a edição de um Produto com um EAN-13 já usado por outro Produto **ativo** da mesma Empresa
+**When** a pessoa salva
+**Then** a resposta é 409 `EAN_EM_USO` e a tela diz "Este EAN já está no produto {código} — {nome}"; nada é gravado
+
+**Given** o mesmo EAN-13 num Produto **inativo** ou em outra Empresa
+**When** a pessoa salva
+**Then** o salvamento é aceito
+
+**Given** duas gravações simultâneas do mesmo EAN-13 em Produtos diferentes da mesma Empresa
+**When** chegam juntas
+**Then** só uma é aceita (lock por Empresa + EAN na transação, AD-32 revisada)
+
+**Given** dois Produtos ativos que já tinham o mesmo EAN antes desta story
+**When** esta story entra
+**Then** nenhum dado é alterado; editar um dos dois só salva depois que o EAN for corrigido ou o outro Produto for inativado, e a mensagem diz qual é o outro
+
+**Given** a edição de um Produto sem mudar o EAN e sem conflito
+**When** salva
+**Then** nada muda no comportamento de hoje

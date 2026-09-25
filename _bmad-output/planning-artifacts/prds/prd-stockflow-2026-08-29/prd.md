@@ -25,6 +25,8 @@ Toda a numeração de FRs (FR-1 a FR-33) é herdada do PRD original para preserv
 
 **Atualização de 2026-09-24 (b) ("Acesso sem a Empresa na URL"):** o stockflow roda em dois domínios: `stockflow.fbtechia.com` (a plataforma comercial, com várias Empresas no mesmo servidor) e `suprimentos.fcxlabs.com` (servidor próprio de um único cliente, a Ferreira Costa). Exigir que cada pessoa saiba o endereço `/e/{empresa}` atrapalha o acesso nos dois. Como cada conta pertence a uma só Empresa real, o e-mail passa a ser único entre as Empresas reais (FR-42 revisado; o Ambiente de Treinamento pode repetir o e-mail da Empresa real), e o login na raiz do domínio descobre a Empresa pela conta (FR-54 novo; FR-40 e FR-3 ganham uma linha cada). Domínio de um único cliente abre direto a Empresa dele.
 
+**Atualização de 2026-09-25 ("Inativar Produto, EAN único e histórico do Produto"):** do treinamento da Ferreira Costa (Karla): (a) não havia como tirar de uso um Produto sem apagá-lo — passa a existir inativar/reativar (FR-55 novo); (b) a edição de Produto aceitou o mesmo EAN-13 de outro Produto ativo, gerando o mesmo item com dois códigos internos — o EAN passa a ser único entre os Produtos ativos da Empresa (FR-45 revisado); (c) a edição permite trocar a descrição inteira sem deixar rastro — continua permitido, agora com histórico (FR-56 novo).
+
 *Nota de organização:* os FRs em §4 estão agrupados por área funcional, não em ordem numérica estrita — por isso FR-31 a FR-39 (Autenticação/Acesso) aparecem antes de FR-4 (Catálogo) no corpo do documento. A numeração reflete a ordem histórica de introdução de cada capacidade (preservada do PRD original), não a ordem de leitura.
 
 ## 1. Visão
@@ -340,7 +342,26 @@ Dois campos adicionais e independentes do código interno de FR-8: Código do Fo
 **Consequences:**
 - Nenhum dos dois tem relação funcional com o "Código de Identificação" já reaproveitado por FR-35 (QR Code/código de barras interno do sistema) — confirmado com o usuário: coexistem, sem substituir nada.
 - EAN-13 é validado no formato (13 dígitos + dígito verificador), quando informado; ambos os campos são opcionais.
-- Não há garantia de unicidade entre Produtos para nenhum dos dois campos nesta versão (um fornecedor pode reaproveitar/reemitir EAN-13, ex. produto descontinuado).
+- **EAN-13 único entre os Produtos ativos da Empresa** *(revisado em 2026-09-25 — antes não havia garantia de unicidade)*: cadastro, edição e reativação (FR-55) recusam um EAN-13 que já esteja num Produto **ativo** da mesma Empresa, dizendo qual (código e nome). Um Produto **inativo** não prende o EAN: é assim que o EAN reemitido pelo fornecedor para um item novo é reaproveitado depois de inativar o descontinuado. Empresas diferentes nunca se enxergam (FR-40).
+- Produtos que já estavam com EAN repetido antes desta regra não são alterados automaticamente; ao editar um deles, o salvamento é recusado com a indicação do outro Produto até que um dos dois seja corrigido ou inativado.
+- Código do Fornecedor continua sem garantia de unicidade (fornecedores diferentes podem usar o mesmo código).
+
+#### FR-55: Inativar e reativar Produto *(novo — 2026-09-25)*
+`gestor` e `adm` tiram de uso um Produto, por qualquer motivo, sem apagá-lo, e podem reativá-lo depois.
+**Consequences:**
+- **Só sem saldo:** um Produto com saldo em qualquer Estoque ou com reserva de Pedido pendente (FR-50) não pode ser inativado; a recusa diz em quais Estoques ainda há saldo, para transferir ou dar baixa antes (FR-15, FR-16).
+- **Some das operações:** Produto inativo não aparece no Catálogo, na busca, na leitura por QR Code/código de barras, na exportação, no Carrinho (item já no Carrinho é removido com aviso, FR-21), na detecção de duplicatas e inconsistências (FR-17, FR-19), e não recebe lançamento de saldo (FR-47) nem importação (FR-10) — a planilha que traz o código de um Produto inativo tem a linha recusada, pedindo para reativar antes.
+- **Continua no histórico:** Movimentações, Pedidos, recibos e o detalhe do Produto continuam mostrando o Produto inativo, com a marca "Inativo". O código interno continua reservado a ele.
+- **Encontrar e reativar:** `gestor`/`adm` filtram "Inativos" no Catálogo e reativam pelo detalhe do Produto; a reativação passa pela regra de EAN único (FR-45).
+- **Registro:** inativar e reativar gravam quem, quando e o motivo (opcional) no histórico do Produto (FR-56).
+**Out of Scope:** excluir Produto de vez; inativação em lote.
+
+#### FR-56: Histórico de alterações do Produto *(novo — 2026-09-25)*
+Toda troca de descrição (nome) e toda inativação/reativação de um Produto fica registrada e visível no detalhe do Produto.
+**Consequences:**
+- A troca de nome continua permitida pela edição (FR-8), com as regras de hoje (template, FR-9); o registro guarda quem, quando, o nome antes e o nome depois.
+- O histórico aparece no detalhe do Produto para `almoxarife`+, do mais recente para o mais antigo; não tem edição nem exclusão.
+**Out of Scope:** histórico campo a campo das demais propriedades (dimensões, categoria etc.) nesta versão.
 
 #### FR-46: Unidade de Medida e Embalagem no cadastro de Produto *(novo)*
 Unidade de Medida (ex. `un, m, m², m³, kg, L, cx, rolo, barra, mm, cm, kg/m²` — mesmo conjunto já especificado em `addendum.md` §F, nunca implementado) e Embalagem (ex. "CX 24" — múltiplo de venda/armazenamento) como campos do Produto.
