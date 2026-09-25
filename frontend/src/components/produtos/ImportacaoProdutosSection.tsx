@@ -247,13 +247,13 @@ export function ImportacaoProdutosSection() {
             {/*
               CTA "Verificar duplicatas agora" (Story 3.4, spec-3-4; ligado à
               Detecção de duplicatas pela Story 6.3, spec-6-3):
-              `?verificarDuplicatas=1` leva `/normalizacao` direto para a aba
-              Duplicatas com a análise já em andamento — `NormalizacaoPage`
+              `?verificarDuplicatas=1` leva direto a `/normalizacao/duplicatas` com
+              a análise já em andamento — `DuplicatasPage`
               lê o parâmetro e passa `autoAnalisar` para `DuplicatasSection`,
               sem exigir um segundo clique do Almoxarife.
             */}
             <Button asChild variant="outline" className="self-start">
-              <Link to="/normalizacao?verificarDuplicatas=1">Verificar duplicatas agora</Link>
+              <Link to="/normalizacao/duplicatas?verificarDuplicatas=1">Verificar duplicatas agora</Link>
             </Button>
             {relatorio.linhas_rejeitadas.length > 0 && (
               <div className="overflow-x-auto">

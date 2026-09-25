@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import type { ReactNode } from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import * as authModule from '@/lib/auth';
 import { clearAccessToken, getAccessToken } from '@/lib/session';
@@ -125,7 +125,7 @@ describe('RotaProtegida (unidade)', () => {
 
     expect(screen.getByText('árvore protegida')).toBeInTheDocument();
     expect(screen.getByTestId('pathname')).toHaveTextContent('/');
-    expect(screen.getAllByRole('navigation', { name: 'Navegação principal' })).toHaveLength(2);
+    expect(screen.getAllByRole('navigation', { name: 'Menu principal' })).toHaveLength(1);
     expect(screen.queryByText('tela de login')).not.toBeInTheDocument();
   });
 
@@ -284,7 +284,7 @@ describe('<App /> — wiring real de AuthProvider + RotaProtegida', () => {
     expect(await screen.findByText('Acesse sua conta do stockflow.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Entrar' })).toBeInTheDocument();
     expect(window.location.pathname).toBe('/login');
-    expect(screen.queryByRole('navigation', { name: 'Navegação principal' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('navigation', { name: 'Menu principal' })).not.toBeInTheDocument();
   });
 
   it('/esqueci-senha renderiza EsqueciSenhaPage sem passar pelo RotaProtegida', async () => {
@@ -302,7 +302,7 @@ describe('<App /> — wiring real de AuthProvider + RotaProtegida', () => {
       await screen.findByText('Informe seu e-mail e enviaremos um link para redefinir a senha.'),
     ).toBeInTheDocument();
     expect(window.location.pathname).toBe('/esqueci-senha');
-    expect(screen.queryByRole('navigation', { name: 'Navegação principal' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('navigation', { name: 'Menu principal' })).not.toBeInTheDocument();
   });
 
   it('/redefinir-senha renderiza RedefinirSenhaPage sem passar pelo RotaProtegida', async () => {
@@ -320,7 +320,7 @@ describe('<App /> — wiring real de AuthProvider + RotaProtegida', () => {
     // tocar a API — prova que a rota pública renderiza a página, não o shell.
     expect(await screen.findByText('Este link de redefinição é inválido.')).toBeInTheDocument();
     expect(window.location.pathname).toBe('/redefinir-senha');
-    expect(screen.queryByRole('navigation', { name: 'Navegação principal' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('navigation', { name: 'Menu principal' })).not.toBeInTheDocument();
   });
 
   it('/configuracoes renderiza ConfiguracoesPage dentro do shell, não a PlaceholderPage', async () => {
@@ -346,7 +346,7 @@ describe('<App /> — wiring real de AuthProvider + RotaProtegida', () => {
     expect(await screen.findByRole('heading', { name: 'Meu Perfil' })).toBeInTheDocument();
     expect(window.location.pathname).toBe('/configuracoes');
     expect(screen.getByRole('button', { name: 'Solicitar promoção para Almoxarife' })).toBeInTheDocument();
-    expect(screen.getAllByRole('navigation', { name: 'Navegação principal' }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('navigation', { name: 'Menu principal' }).length).toBeGreaterThan(0);
     expect(screen.queryByText('Em construção')).not.toBeInTheDocument();
   });
 
@@ -376,7 +376,7 @@ describe('<App /> — wiring real de AuthProvider + RotaProtegida', () => {
 
     expect(await screen.findByRole('heading', { name: 'Meus Pedidos' })).toBeInTheDocument();
     expect(window.location.pathname).toBe('/pedidos');
-    expect(screen.getAllByRole('navigation', { name: 'Navegação principal' }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('navigation', { name: 'Menu principal' }).length).toBeGreaterThan(0);
     expect(screen.queryByText('Em construção')).not.toBeInTheDocument();
   });
 
@@ -412,39 +412,15 @@ describe('<App /> — wiring real de AuthProvider + RotaProtegida', () => {
     expect(screen.queryByText('Cadastrar Produto')).not.toBeInTheDocument();
   });
 
-  it('/ com papel almoxarife+ também renderiza CadastroProdutoSection', async () => {
-    fetchMock.mockImplementation((url: string) => {
-      if (url === '/api/auth/refresh') {
-        return Promise.resolve({ ok: true, json: async () => ({ token: 'access-abc' }) });
-      }
-      if (url === '/api/auth/me') {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({ id: '1', nome: 'Fulano', email: 'f@empresa.com', papel: 'almoxarife' }),
-        });
-      }
-      if (url === '/api/categorias') {
-        return Promise.resolve({ ok: true, json: async () => ({ categorias: [] }) });
-      }
-      if (url === '/api/estoques') {
-        return Promise.resolve({ ok: true, json: async () => ({ estoques: [] }) });
-      }
-      if (typeof url === 'string' && url.startsWith('/api/produtos/catalogo')) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({
-            produtos: [],
-            paginacao: { pagina: 1, tamanho: 24, total: 0, totalPaginas: 0 },
-          }),
-        });
-      }
-      throw new Error(`URL inesperada: ${url}`);
-    });
+  it('/ com papel almoxarife+ NÃO mostra mais o cadastro/abas: só busca + listagem (Story 17.1)', async () => {
+    fetchMock.mockImplementation(sessaoFetch('almoxarife', () => catalogoVazio));
 
     render(<App />);
 
-    expect(await screen.findByText('Cadastrar Produto')).toBeInTheDocument();
-    expect(screen.getByLabelText('Catálogo de produtos')).toBeInTheDocument();
+    expect(await screen.findByText('Nenhum produto no catálogo.')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'Produtos' })).toBeInTheDocument();
+    expect(screen.queryByText('Cadastrar Produto')).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument();
     expect(window.location.pathname).toBe('/');
   });
 
@@ -465,10 +441,181 @@ describe('<App /> — wiring real de AuthProvider + RotaProtegida', () => {
     render(<App />);
 
     await waitFor(() =>
-      expect(screen.getAllByRole('navigation', { name: 'Navegação principal' })).toHaveLength(2),
+      expect(screen.getAllByRole('navigation', { name: 'Menu principal' })).toHaveLength(1),
     );
     expect(window.location.pathname).toBe('/');
     expect(getAccessToken()).toBe('access-abc');
     expect(screen.queryByText('Acesse sua conta do stockflow.')).not.toBeInTheDocument();
+  });
+});
+
+// ---- Story 17.1: rotas próprias no lugar das abas --------------------------
+
+const catalogoVazio = {
+  ok: true,
+  json: async () => ({
+    produtos: [],
+    paginacao: { pagina: 1, tamanho: 24, total: 0, totalPaginas: 0 },
+  }),
+};
+
+// Sessão autenticada com o papel dado; `outras` responde as demais URLs (undefined = 404 seco).
+function sessaoFetch(
+  papel: string,
+  outras: (url: string) => unknown = () => undefined,
+) {
+  return (url: string) => {
+    if (url === '/api/auth/refresh') {
+      return Promise.resolve({ ok: true, json: async () => ({ token: 'access-abc' }) });
+    }
+    if (url === '/api/auth/me') {
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ id: '1', nome: 'Fulano', email: 'f@empresa.com', papel }),
+      });
+    }
+    const resposta = outras(url);
+    if (resposta) return Promise.resolve(resposta);
+    if (url === '/api/categorias') return Promise.resolve({ ok: true, json: async () => ({ categorias: [] }) });
+    if (url === '/api/estoques') return Promise.resolve({ ok: true, json: async () => ({ estoques: [] }) });
+    if (url.startsWith('/api/movimentacoes')) {
+      return Promise.resolve({ ok: true, json: async () => ({ movimentacoes: [] }) });
+    }
+    throw new Error(`URL inesperada: ${url}`);
+  };
+}
+
+describe('<App /> — rotas próprias do menu (Story 17.1)', () => {
+  const fetchMock = vi.fn();
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    clearAccessToken();
+    useAuthMock.mockReset();
+  });
+
+  beforeEach(async () => {
+    useAuthMock.mockImplementation(authReal.useAuth);
+    vi.stubGlobal('fetch', fetchMock);
+    fetchMock.mockReset();
+    clearAccessToken();
+    await router.navigate('/');
+    window.localStorage.clear();
+    conectarRealtimeMock.mockImplementation((_receber, mudar) => {
+      mudar('conectado');
+      return vi.fn();
+    });
+  });
+
+  it.each([
+    ['/produtos/novo', 'Cadastrar produto', 'Cadastrar produto'],
+    ['/produtos/importar', 'Importar planilha', 'Importar planilha'],
+    ['/estoques', 'Locais', 'Locais'],
+    ['/estoques/lancar-saldo', 'Lançar saldo', 'Lançar saldo'],
+    ['/estoques/movimentacoes', 'Movimentações', 'Movimentações'],
+    ['/normalizacao', 'Inconsistências', 'Inconsistências'],
+    ['/normalizacao/duplicatas', 'Duplicatas', 'Duplicatas'],
+  ])('almoxarife abre %s direto: h1 "%s", item ativo "%s" no menu, sem abas', async (rota, titulo, itemMenu) => {
+    fetchMock.mockImplementation(sessaoFetch('almoxarife'));
+    await router.navigate(rota);
+
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { level: 1, name: titulo })).toBeInTheDocument();
+    expect(window.location.pathname).toBe(rota);
+    const menu = screen.getByRole('navigation', { name: 'Menu principal' });
+    expect(within(menu).getByRole('link', { name: itemMenu })).toHaveAttribute('aria-current', 'page');
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument();
+    expect(screen.queryByText('Em construção')).not.toBeInTheDocument();
+  });
+
+  it('/pedidos/fila abre a Fila de Pedidos para almoxarife', async () => {
+    fetchMock.mockImplementation(
+      sessaoFetch('almoxarife', (url) =>
+        url.startsWith('/api/pedidos')
+          ? { ok: true, json: async () => ({ pedidos: [] }) }
+          : undefined,
+      ),
+    );
+    await router.navigate('/pedidos/fila');
+
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Fila de Pedidos' })).toBeInTheDocument();
+    const menu = screen.getByRole('navigation', { name: 'Menu principal' });
+    expect(within(menu).getByRole('link', { name: 'Fila de aprovação' })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+  });
+
+  it.each([
+    ['/pedidos/fila', 'Você não tem acesso à Fila de aprovação.'],
+    ['/estoques/movimentacoes', 'Você não tem acesso à área de Estoques.'],
+    ['/estoques/lancar-saldo', 'Você não tem acesso à área de Estoques.'],
+    ['/normalizacao/duplicatas', 'Você não tem acesso à área de Normalização.'],
+    ['/produtos/novo', 'Você não tem acesso ao cadastro de produtos.'],
+    ['/produtos/importar', 'Você não tem acesso à importação de produtos.'],
+  ])('%s como usuario mostra a recusa de hoje e o menu sem os itens gated', async (rota, recusa) => {
+    fetchMock.mockImplementation(sessaoFetch('usuario'));
+    await router.navigate(rota);
+
+    render(<App />);
+
+    expect(await screen.findByText(recusa)).toBeInTheDocument();
+    const menu = screen.getByRole('navigation', { name: 'Menu principal' });
+    expect(within(menu).queryByRole('button', { name: 'Estoque' })).not.toBeInTheDocument();
+    expect(within(menu).queryByRole('link', { name: 'Fila de aprovação' })).not.toBeInTheDocument();
+  });
+
+  it('link antigo /normalizacao?verificarDuplicatas=1 redireciona para Duplicatas e analisa uma vez', async () => {
+    fetchMock.mockImplementation(
+      sessaoFetch('almoxarife', (url) =>
+        url === '/api/normalizacao/duplicatas'
+          ? { ok: true, json: async () => ({ grupos: [] }) }
+          : undefined,
+      ),
+    );
+    await router.navigate('/normalizacao?verificarDuplicatas=1');
+
+    render(<App />);
+
+    expect(await screen.findByText('Nenhuma duplicata encontrada.')).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/normalizacao/duplicatas');
+    expect(window.location.search).toBe('?verificarDuplicatas=1');
+    expect(
+      fetchMock.mock.calls.filter(([url]) => url === '/api/normalizacao/duplicatas'),
+    ).toHaveLength(1);
+  });
+
+  it('gate de MFA: menu visível e toda rota do menu leva a /configuracoes', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/api/auth/refresh') {
+        return Promise.resolve({ ok: true, json: async () => ({ token: 'access-abc' }) });
+      }
+      if (url === '/api/auth/me') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            id: '1',
+            nome: 'Gestora',
+            email: 'g@empresa.com',
+            papel: 'gestor',
+            mfaHabilitado: false,
+            origem: 'senha',
+            empresa: { mfaObrigatorio: true },
+          }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+    await router.navigate('/estoques/movimentacoes');
+
+    render(<App />);
+
+    const menu = await screen.findByRole('navigation', { name: 'Menu principal' });
+    await waitFor(() => expect(window.location.pathname).toBe('/configuracoes'));
+    expect(within(menu).getByRole('link', { name: 'Movimentações' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Meu perfil' })).toHaveAttribute('aria-current', 'page');
   });
 });

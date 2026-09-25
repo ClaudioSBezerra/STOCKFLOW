@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { AppShell } from './AppShell';
 
 // AppShell consome useAuth() para gatear a navegação por papel (Story 1.5).
@@ -10,16 +10,21 @@ import { AppShell } from './AppShell';
 // inalterados.
 const authState = vi.hoisted(() => ({
   papel: 'adm' as string,
+  id: '1',
   logout: vi.fn(),
   // Story 9.2: undefined = usuário SEM os campos novos (o mock de sempre).
   ambienteTreinamento: undefined as boolean | undefined,
 }));
 
+function LocalizacaoAtual() {
+  return <output data-testid="local">{useLocation().pathname}</output>;
+}
+
 vi.mock('@/lib/auth', () => ({
   useAuth: () => ({
     estado: 'autenticado',
     usuario: {
-      id: '1',
+      id: authState.id,
       nome: 'Teste',
       email: 'teste@empresa.com',
       papel: authState.papel,
@@ -51,6 +56,7 @@ vi.mock('@/lib/carrinho', () => ({
 // para nenhum teste herdar uma contagem deixada por um teste anterior do
 // cart-badge.
 beforeEach(() => {
+  window.localStorage.clear();
   carrinhoState.count = 0;
   authState.ambienteTreinamento = undefined;
 });
@@ -61,313 +67,412 @@ function renderShell(initialPath = '/') {
       <Routes>
         <Route path="/" element={<AppShell />}>
           <Route index element={<div>página inicial</div>} />
-          <Route path="*" element={<div>página inicial</div>} />
+          <Route path="*" element={<LocalizacaoAtual />} />
         </Route>
       </Routes>
     </MemoryRouter>,
   );
 }
 
-describe('AppShell', () => {
+// A classe do item ativo, não o `hover:bg-sidebar-item-active` de todos os itens.
+const ATIVO = /(^|\s)sidebar-item-active(\s|$)/;
+const menu = () => screen.getByRole('navigation', { name: 'Menu principal' });
+const link = (nome: string | RegExp) => within(menu()).getByRole('link', { name: nome });
+const semLink = (nome: string | RegExp) =>
+  expect(within(menu()).queryByRole('link', { name: nome })).not.toBeInTheDocument();
+
+describe('AppShell — menu lateral', () => {
   beforeEach(() => {
     authState.papel = 'adm';
     authState.logout.mockClear();
   });
 
-  it('renderiza o rail (desktop) e a bottom nav (mobile) com as classes de breakpoint corretas', () => {
+  it('renderiza um único nav "Menu principal", sem bottom nav nem navegação antiga', () => {
     renderShell();
 
-    const navs = screen.getAllByRole('navigation', { name: 'Navegação principal' });
-    expect(navs).toHaveLength(2);
-
-    const [rail, bottomNav] = navs;
-    expect(rail.className).toContain('hidden');
-    expect(rail.className).toContain('md:flex');
-
-    expect(bottomNav.className).toContain('flex');
-    expect(bottomNav.className).toContain('md:hidden');
+    expect(screen.getAllByRole('navigation', { name: 'Menu principal' })).toHaveLength(1);
+    expect(screen.queryByRole('navigation', { name: 'Navegação principal' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Mais' })).not.toBeInTheDocument();
+    // Sidebar fixa só a partir de md; o topo continua em todas as larguras.
+    expect(menu().closest('aside')?.className).toContain('hidden');
+    expect(menu().closest('aside')?.className).toContain('md:block');
+    expect(menu().closest('aside')?.className).toContain('w-sidebar-width');
   });
 
-  it('mostra Catálogo, Carrinho, Pedidos e Mais na bottom nav', () => {
+  it('mostra a marca do ambiente e "Meu perfil" no rodapé do menu', () => {
     renderShell();
-    const bottomNav = screen.getAllByRole('navigation', { name: 'Navegação principal' })[1];
-    const scoped = within(bottomNav);
 
-    expect(scoped.getByRole('link', { name: 'Catálogo' })).toBeInTheDocument();
-    expect(scoped.getByRole('link', { name: 'Carrinho' })).toBeInTheDocument();
-    expect(scoped.getByRole('link', { name: 'Pedidos' })).toBeInTheDocument();
-    expect(scoped.getByRole('button', { name: 'Mais' })).toBeInTheDocument();
+    expect(screen.getByText('stockflow')).toBeInTheDocument();
+    const perfil = screen.getByRole('link', { name: 'Meu perfil' });
+    expect(perfil).toHaveAttribute('href', '/configuracoes');
+    expect(menu()).not.toContainElement(perfil);
   });
 
-  it('marca o item da rota atual com nav-item-active no rail', () => {
-    renderShell('/carrinho');
-    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
-    const scoped = within(rail);
+  it('mostra todos os grupos e itens desta story para adm', () => {
+    renderShell();
+    const nav = within(menu());
 
-    expect(scoped.getByRole('link', { name: 'Carrinho' }).className).toContain('nav-item-active');
-    expect(scoped.getByRole('link', { name: 'Catálogo' }).className).not.toContain(
-      'nav-item-active',
+    for (const g of ['Catálogo', 'Pedidos', 'Estoque', 'Qualidade dos dados']) {
+      expect(nav.getByRole('button', { name: g })).toHaveAttribute('aria-expanded', 'true');
+    }
+    for (const item of [
+      'Produtos',
+      'Cadastrar produto',
+      'Importar planilha',
+      'Carrinho',
+      'Meus pedidos',
+      'Fila de aprovação',
+      'Locais',
+      'Lançar saldo',
+      'Movimentações',
+      'Inconsistências',
+      'Duplicatas',
+    ]) {
+      expect(nav.getByRole('link', { name: item })).toBeInTheDocument();
+    }
+    semLink('Relatórios');
+  });
+
+  it('cada item aponta para a rota própria', () => {
+    renderShell();
+    expect(link('Cadastrar produto')).toHaveAttribute('href', '/produtos/novo');
+    expect(link('Importar planilha')).toHaveAttribute('href', '/produtos/importar');
+    expect(link('Fila de aprovação')).toHaveAttribute('href', '/pedidos/fila');
+    expect(link('Lançar saldo')).toHaveAttribute('href', '/estoques/lancar-saldo');
+    expect(link('Movimentações')).toHaveAttribute('href', '/estoques/movimentacoes');
+    expect(link('Duplicatas')).toHaveAttribute('href', '/normalizacao/duplicatas');
+  });
+
+  it('papel usuario: só Produtos, Carrinho e Meus pedidos; grupos Estoque e Qualidade somem', () => {
+    authState.papel = 'usuario';
+    renderShell();
+    const nav = within(menu());
+
+    expect(nav.getByRole('link', { name: 'Produtos' })).toBeInTheDocument();
+    expect(nav.getByRole('link', { name: 'Carrinho' })).toBeInTheDocument();
+    expect(nav.getByRole('link', { name: 'Meus pedidos' })).toBeInTheDocument();
+    semLink('Cadastrar produto');
+    semLink('Importar planilha');
+    semLink('Fila de aprovação');
+    expect(nav.queryByRole('button', { name: 'Estoque' })).not.toBeInTheDocument();
+    expect(nav.queryByRole('button', { name: 'Qualidade dos dados' })).not.toBeInTheDocument();
+    expect(nav.getAllByRole('button')).toHaveLength(2);
+    expect(screen.queryByText(/acesso negado/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Meu perfil' })).toBeInTheDocument();
+  });
+
+  it('papel almoxarife vê os grupos Estoque e Qualidade dos dados', () => {
+    authState.papel = 'almoxarife';
+    renderShell();
+    expect(link('Locais')).toBeInTheDocument();
+    expect(link('Inconsistências')).toBeInTheDocument();
+  });
+
+  it('item da rota atual: aria-current="page", negrito branco, barra vermelha e grupo aberto', () => {
+    renderShell('/estoques/movimentacoes');
+
+    const ativo = link('Movimentações');
+    expect(ativo).toHaveAttribute('aria-current', 'page');
+    expect(ativo.className).toMatch(ATIVO);
+    // Casamento exato: Locais (/estoques) não fica ativo em /estoques/movimentacoes.
+    expect(link('Locais')).not.toHaveAttribute('aria-current');
+    expect(link('Locais').className).not.toMatch(ATIVO);
+    expect(link('Produtos')).not.toHaveAttribute('aria-current');
+    expect(within(menu()).getByRole('button', { name: 'Estoque' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
     );
   });
 
-  it('mostra um Tooltip com o rótulo ao passar o mouse sobre um ícone do rail', async () => {
-    const user = userEvent.setup();
-    renderShell();
-    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
-    const catalogoLink = within(rail).getByRole('link', { name: 'Catálogo' });
-
-    await user.hover(catalogoLink);
-
-    const tooltip = await screen.findByRole('tooltip');
-    expect(tooltip).toHaveTextContent('Catálogo');
+  it('a raiz marca só Produtos, não os demais', () => {
+    renderShell('/');
+    expect(link('Produtos')).toHaveAttribute('aria-current', 'page');
+    expect(link('Carrinho')).not.toHaveAttribute('aria-current');
   });
 
-  it('não marca um item inativo do rail com aria-current', () => {
-    renderShell('/carrinho');
-    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
-    const scoped = within(rail);
+  it('"Meu perfil" fica ativo em /configuracoes', () => {
+    renderShell('/configuracoes');
+    const perfil = screen.getByRole('link', { name: 'Meu perfil' });
+    expect(perfil).toHaveAttribute('aria-current', 'page');
+    expect(perfil.className).toMatch(ATIVO);
+  });
 
-    expect(scoped.getByRole('link', { name: 'Carrinho' })).toHaveAttribute(
-      'aria-current',
-      'page',
+  it('grupo é botão com aria-expanded: recolhe e reabre os itens', async () => {
+    const user = userEvent.setup();
+    renderShell();
+    const grupo = within(menu()).getByRole('button', { name: 'Pedidos' });
+
+    await user.click(grupo);
+    expect(grupo).toHaveAttribute('aria-expanded', 'false');
+    semLink('Meus pedidos');
+
+    await user.click(grupo);
+    expect(grupo).toHaveAttribute('aria-expanded', 'true');
+    expect(link('Meus pedidos')).toBeInTheDocument();
+  });
+
+  it('o grupo do item ativo abre sozinho ao navegar, mesmo lembrado como fechado', async () => {
+    const user = userEvent.setup();
+    renderShell('/');
+    const estoque = within(menu()).getByRole('button', { name: 'Estoque' });
+    await user.click(estoque);
+    expect(estoque).toHaveAttribute('aria-expanded', 'false');
+
+    // Navegar para um item fora do grupo e voltar: o grupo abre sozinho.
+    await user.click(link('Meus pedidos'));
+    await user.click(within(menu()).getByRole('button', { name: 'Estoque' }));
+    await user.click(link('Locais'));
+    expect(within(menu()).getByRole('button', { name: 'Estoque' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
     );
-    expect(scoped.getByRole('link', { name: 'Catálogo' })).not.toHaveAttribute('aria-current');
   });
 
-  it('abre o DropdownMenu de perfil no rail com o link Meu Perfil', async () => {
+  it('lembra os grupos fechados no localStorage e, ao remontar, mantém o estado', async () => {
     const user = userEvent.setup();
+    const { unmount } = renderShell();
+    await user.click(within(menu()).getByRole('button', { name: 'Pedidos' }));
+    unmount();
+
     renderShell();
-    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
-
-    await user.click(within(rail).getByRole('button', { name: 'Meu Perfil' }));
-
-    const menu = await screen.findByRole('menu');
-    const link = within(menu).getByRole('menuitem', { name: 'Meu Perfil' });
-    expect(link).toHaveAttribute('href', '/configuracoes');
+    expect(within(menu()).getByRole('button', { name: 'Pedidos' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
   });
 
-  it('aplica o alvo de toque mínimo (48px) ao item "Meu Perfil" dentro do DropdownMenu do rail', async () => {
+  it('topo: Ajuda abre o diálogo e o menu da conta tem Meu perfil e Sair', async () => {
     const user = userEvent.setup();
     renderShell();
-    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
 
-    await user.click(within(rail).getByRole('button', { name: 'Meu Perfil' }));
+    await user.click(screen.getByRole('button', { name: 'Ajuda' }));
+    const dialogo = await screen.findByRole('dialog');
+    expect(dialogo).toHaveTextContent('Dúvidas de uso? Fale com o administrador da sua empresa.');
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
 
-    const menu = await screen.findByRole('menu');
-    const link = within(menu).getByRole('menuitem', { name: 'Meu Perfil' });
-    expect(link.className).toContain('min-h-touch-target-min');
-    expect(link.className).toContain('min-w-touch-target-min');
-  });
-
-  it('mostra "Sair" no DropdownMenu de perfil do rail e chama logout ao clicar', async () => {
-    const user = userEvent.setup();
-    renderShell();
-    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
-
-    await user.click(within(rail).getByRole('button', { name: 'Meu Perfil' }));
-
-    const menu = await screen.findByRole('menu');
-    const sair = within(menu).getByRole('menuitem', { name: 'Sair' });
-    await user.click(sair);
-
+    await user.click(screen.getByRole('button', { name: 'Menu da conta' }));
+    const conta = await screen.findByRole('menu');
+    expect(within(conta).getByRole('menuitem', { name: 'Meu perfil' })).toHaveAttribute(
+      'href',
+      '/configuracoes',
+    );
+    await user.click(within(conta).getByRole('menuitem', { name: 'Sair' }));
     expect(authState.logout).toHaveBeenCalledTimes(1);
   });
 
-  it('mostra "Sair" no Sheet "Mais" (mobile) e chama logout ao clicar', async () => {
-    const user = userEvent.setup();
+  it('o topo tem 56px (topbar-height) e fundo branco', () => {
     renderShell();
-    const bottomNav = screen.getAllByRole('navigation', { name: 'Navegação principal' })[1];
-
-    await user.click(within(bottomNav).getByRole('button', { name: 'Mais' }));
-    const dialog = await screen.findByRole('dialog');
-
-    await user.click(within(dialog).getByRole('button', { name: 'Sair' }));
-
-    expect(authState.logout).toHaveBeenCalledTimes(1);
+    const topo = screen.getByRole('banner');
+    expect(topo.className).toContain('h-topbar-height');
+    expect(topo.className).toContain('bg-card');
   });
 
-  it('abre o Sheet de "Mais" com os itens administrativos e Meu Perfil', async () => {
-    const user = userEvent.setup();
+  it('itens do menu têm alvo de toque mínimo (48px)', () => {
     renderShell();
-    const bottomNav = screen.getAllByRole('navigation', { name: 'Navegação principal' })[1];
+    expect(link('Produtos').className).toContain('min-h-touch-target-min');
+  });
+});
 
-    await user.click(within(bottomNav).getByRole('button', { name: 'Mais' }));
+describe('AppShell — marca do ambiente', () => {
+  it('usa "Suprimentos" quando o host começa com "suprimentos."', () => {
+    vi.stubGlobal('location', { ...window.location, hostname: 'suprimentos.fcxlabs.com' });
+    try {
+      renderShell();
+      expect(screen.getByText('Suprimentos')).toBeInTheDocument();
+      expect(screen.queryByText('stockflow')).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
 
-    const dialog = await screen.findByRole('dialog');
-    const scoped = within(dialog);
-    expect(scoped.getByRole('link', { name: /Estoques/ })).toBeInTheDocument();
-    expect(scoped.getByRole('link', { name: /Normalização/ })).toBeInTheDocument();
-    expect(scoped.getByRole('link', { name: /Relatórios/ })).toBeInTheDocument();
-    expect(scoped.getByRole('link', { name: /Meu Perfil/ })).toBeInTheDocument();
+describe('AppShell — menu recolhido', () => {
+  beforeEach(() => {
+    authState.papel = 'adm';
   });
 
-  it('fecha o Sheet de "Mais" ao clicar num item de navegação administrativo', async () => {
+  it('recolher leva a 64px, mostra ícones de grupo com tooltip e lembra a escolha', async () => {
+    const user = userEvent.setup();
+    const { unmount } = renderShell();
+
+    await user.click(screen.getByRole('button', { name: 'Recolher menu' }));
+
+    expect(menu().closest('aside')?.className).toContain('w-sidebar-width-collapsed');
+    expect(within(menu()).queryByRole('link', { name: 'Produtos' })).not.toBeInTheDocument();
+    const grupo = within(menu()).getByRole('button', { name: 'Catálogo' });
+    await user.hover(grupo);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Catálogo');
+    unmount();
+
+    // Lembrado: ao remontar continua recolhido.
+    renderShell();
+    expect(menu().closest('aside')?.className).toContain('w-sidebar-width-collapsed');
+    expect(screen.getByRole('button', { name: 'Expandir menu' })).toBeInTheDocument();
+  });
+
+  it('a escolha de recolher é por pessoa: outro usuário no mesmo navegador abre expandido', async () => {
+    const user = userEvent.setup();
+    const { unmount } = renderShell();
+    await user.click(screen.getByRole('button', { name: 'Recolher menu' }));
+    unmount();
+
+    authState.id = '2';
+    try {
+      renderShell();
+      expect(menu().closest('aside')?.className).not.toContain('w-sidebar-width-collapsed');
+    } finally {
+      authState.id = '1';
+    }
+  });
+
+  it('recolhido, o cart-badge aparece no ícone do grupo Catálogo e o grupo da rota ativa é destacado', async () => {
+    const user = userEvent.setup();
+    carrinhoState.count = 3;
+    renderShell('/estoques');
+    await user.click(screen.getByRole('button', { name: 'Recolher menu' }));
+
+    expect(within(within(menu()).getByRole('button', { name: 'Catálogo' })).getByText('3')).toBeInTheDocument();
+    expect(within(menu()).getByRole('button', { name: 'Estoque' }).className).toMatch(ATIVO);
+    carrinhoState.count = 0;
+  });
+
+  it('clicar no ícone do grupo abre o painel flutuante com os itens e navega', async () => {
     const user = userEvent.setup();
     renderShell();
-    const bottomNav = screen.getAllByRole('navigation', { name: 'Navegação principal' })[1];
+    await user.click(screen.getByRole('button', { name: 'Recolher menu' }));
 
-    await user.click(within(bottomNav).getByRole('button', { name: 'Mais' }));
-    const dialog = await screen.findByRole('dialog');
+    await user.click(within(menu()).getByRole('button', { name: 'Estoque' }));
+    const painel = await screen.findByRole('menu');
+    expect(within(painel).getByRole('menuitem', { name: 'Locais' })).toBeInTheDocument();
+    expect(within(painel).getByRole('menuitem', { name: 'Movimentações' })).toBeInTheDocument();
 
-    await user.click(within(dialog).getByRole('link', { name: /Estoques/ }));
+    await user.click(within(painel).getByRole('menuitem', { name: 'Movimentações' }));
+    expect(screen.getByTestId('local')).toHaveTextContent('/estoques/movimentacoes');
+  });
+
+  it('expandir de volta mostra os grupos escritos', async () => {
+    const user = userEvent.setup();
+    renderShell();
+    await user.click(screen.getByRole('button', { name: 'Recolher menu' }));
+    await user.click(screen.getByRole('button', { name: 'Expandir menu' }));
+    expect(link('Produtos')).toBeInTheDocument();
+    expect(menu().closest('aside')?.className).toContain('w-sidebar-width');
+    expect(menu().closest('aside')?.className).not.toContain('collapsed');
+  });
+
+  it('sem localStorage (lança) abre expandido e continua funcionando', async () => {
+    const user = userEvent.setup();
+    const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('bloqueado');
+    });
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('bloqueado');
+    });
+    try {
+      renderShell();
+      expect(link('Produtos')).toBeInTheDocument();
+      expect(within(menu()).getByRole('button', { name: 'Catálogo' })).toHaveAttribute(
+        'aria-expanded',
+        'true',
+      );
+      await user.click(screen.getByRole('button', { name: 'Recolher menu' }));
+      expect(screen.getByRole('button', { name: 'Expandir menu' })).toBeInTheDocument();
+    } finally {
+      getItem.mockRestore();
+      setItem.mockRestore();
+    }
+  });
+});
+
+describe('AppShell — gaveta no celular', () => {
+  beforeEach(() => {
+    authState.papel = 'adm';
+  });
+
+  it('☰ abre a gaveta com os mesmos grupos, foco vai para ela e volta ao ☰ ao fechar com Esc', async () => {
+    const user = userEvent.setup();
+    renderShell();
+    const hamburguer = screen.getByRole('button', { name: 'Abrir menu' });
+    expect(hamburguer.className).toContain('md:hidden');
+
+    await user.click(hamburguer);
+    const gaveta = await screen.findByRole('dialog');
+    expect(within(gaveta).getByRole('navigation', { name: 'Menu principal' })).toBeInTheDocument();
+    expect(within(gaveta).getByRole('link', { name: 'Fila de aprovação' })).toBeInTheDocument();
+    expect(within(gaveta).getByRole('link', { name: 'Meu perfil' })).toBeInTheDocument();
+    expect(gaveta.className).toContain('left-0');
+    await waitFor(() => expect(gaveta).toContainElement(document.activeElement as HTMLElement));
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await waitFor(() => expect(hamburguer).toHaveFocus());
+  });
+
+  it('fecha ao escolher um item e navega', async () => {
+    const user = userEvent.setup();
+    renderShell();
+
+    await user.click(screen.getByRole('button', { name: 'Abrir menu' }));
+    const gaveta = await screen.findByRole('dialog');
+    await user.click(within(gaveta).getByRole('link', { name: 'Locais' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.getByTestId('local')).toHaveTextContent('/estoques');
+  });
+
+  it('fecha ao tocar fora (overlay)', async () => {
+    const user = userEvent.setup();
+    renderShell();
+
+    await user.click(screen.getByRole('button', { name: 'Abrir menu' }));
+    await screen.findByRole('dialog');
+    const overlay = document.querySelector('[data-slot="sheet-overlay"]') as HTMLElement;
+    await user.click(overlay);
 
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 
-  it('aplica o alvo de toque mínimo (48px) a todo ícone de navegação', () => {
-    renderShell();
-    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
-    const catalogoLink = within(rail).getByRole('link', { name: 'Catálogo' });
-
-    expect(catalogoLink.className).toContain('min-h-touch-target-min');
-    expect(catalogoLink.className).toContain('min-w-touch-target-min');
-  });
-
-  it('renderiza tabs e sideNav quando fornecidos', () => {
-    render(
-      <MemoryRouter>
-        <AppShell tabs={<div>abas do módulo</div>} sideNav={<div>submenu do módulo</div>}>
-          <div>conteúdo</div>
-        </AppShell>
-      </MemoryRouter>,
-    );
-
-    expect(screen.getByText('abas do módulo')).toBeInTheDocument();
-    expect(screen.getByText('submenu do módulo')).toBeInTheDocument();
-    expect(screen.getByText('conteúdo')).toBeInTheDocument();
-  });
-
-  it('não renderiza tabs/sideNav quando omitidos (sem consumidor real nesta story)', () => {
-    renderShell();
-    expect(screen.queryByText('abas do módulo')).not.toBeInTheDocument();
-  });
-});
-
-describe('AppShell — navegação gated por papel (Story 1.5)', () => {
-  beforeEach(() => {
+  it('a gaveta respeita o papel: usuario não vê Estoque nem Qualidade', async () => {
     authState.papel = 'usuario';
-  });
-
-  it('esconde Estoques/Normalização/Relatórios no rail para papel usuario', () => {
-    renderShell();
-    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
-    const scoped = within(rail);
-
-    expect(scoped.getByRole('link', { name: 'Catálogo' })).toBeInTheDocument();
-    expect(scoped.getByRole('link', { name: 'Carrinho' })).toBeInTheDocument();
-    expect(scoped.getByRole('link', { name: 'Pedidos' })).toBeInTheDocument();
-    expect(scoped.queryByRole('link', { name: 'Estoques' })).not.toBeInTheDocument();
-    expect(scoped.queryByRole('link', { name: 'Normalização' })).not.toBeInTheDocument();
-    expect(scoped.queryByRole('link', { name: 'Relatórios' })).not.toBeInTheDocument();
-  });
-
-  it('esconde os itens admin na bottom nav para papel usuario', () => {
-    renderShell();
-    const bottomNav = screen.getAllByRole('navigation', { name: 'Navegação principal' })[1];
-    const scoped = within(bottomNav);
-
-    expect(scoped.getByRole('link', { name: 'Catálogo' })).toBeInTheDocument();
-    expect(scoped.queryByRole('link', { name: 'Estoques' })).not.toBeInTheDocument();
-    expect(scoped.queryByRole('link', { name: 'Normalização' })).not.toBeInTheDocument();
-    expect(scoped.queryByRole('link', { name: 'Relatórios' })).not.toBeInTheDocument();
-  });
-
-  it('esconde os itens admin no Sheet "Mais" para papel usuario (sem tela de acesso negado)', async () => {
     const user = userEvent.setup();
     renderShell();
-    const bottomNav = screen.getAllByRole('navigation', { name: 'Navegação principal' })[1];
 
-    await user.click(within(bottomNav).getByRole('button', { name: 'Mais' }));
-    const dialog = await screen.findByRole('dialog');
-    const scoped = within(dialog);
-
-    expect(scoped.queryByRole('link', { name: /Estoques/ })).not.toBeInTheDocument();
-    expect(scoped.queryByRole('link', { name: /Normalização/ })).not.toBeInTheDocument();
-    expect(scoped.queryByRole('link', { name: /Relatórios/ })).not.toBeInTheDocument();
-    // "Meu Perfil" (papelMinimo 'usuario') continua visível.
-    expect(scoped.getByRole('link', { name: /Meu Perfil/ })).toBeInTheDocument();
-    expect(screen.queryByText(/acesso negado/i)).not.toBeInTheDocument();
-  });
-
-  it('mostra os itens admin quando o papel é almoxarife', () => {
-    authState.papel = 'almoxarife';
-    renderShell();
-    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
-    const scoped = within(rail);
-
-    expect(scoped.getByRole('link', { name: 'Estoques' })).toBeInTheDocument();
-    expect(scoped.getByRole('link', { name: 'Normalização' })).toBeInTheDocument();
-    expect(scoped.getByRole('link', { name: 'Relatórios' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Abrir menu' }));
+    const gaveta = await screen.findByRole('dialog');
+    expect(within(gaveta).queryByRole('button', { name: 'Estoque' })).not.toBeInTheDocument();
+    expect(within(gaveta).getByRole('link', { name: 'Meus pedidos' })).toBeInTheDocument();
   });
 });
 
-describe('AppShell — cart-badge (Story 7.1)', () => {
+describe('AppShell — cart-badge', () => {
   it('não mostra o cart-badge quando o carrinho está vazio (count 0)', () => {
     carrinhoState.count = 0;
     renderShell();
-    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
-    const bottomNav = screen.getAllByRole('navigation', { name: 'Navegação principal' })[1];
-
-    expect(within(rail).getByRole('link', { name: 'Carrinho' })).toBeInTheDocument();
-    expect(within(rail).queryByText('3')).not.toBeInTheDocument();
-    expect(within(bottomNav).getByRole('link', { name: 'Carrinho' })).toBeInTheDocument();
+    expect(within(link('Carrinho')).queryByText(/^\d+\+?$/)).not.toBeInTheDocument();
   });
 
-  it('mostra o cart-badge com a contagem no rail e na bottom nav quando count > 0', () => {
+  it('mostra o cart-badge com a contagem só no item Carrinho', () => {
     carrinhoState.count = 3;
     renderShell();
-    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
-    const bottomNav = screen.getAllByRole('navigation', { name: 'Navegação principal' })[1];
-
-    expect(within(rail).getByText('3')).toBeInTheDocument();
-    expect(within(bottomNav).getByText('3')).toBeInTheDocument();
+    expect(within(link('Carrinho')).getByText('3')).toBeInTheDocument();
+    expect(within(menu()).getAllByText('3')).toHaveLength(1);
   });
 
   it('o cart-badge nunca muda o nome acessível do link "Carrinho"', () => {
     carrinhoState.count = 5;
     renderShell();
-    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
-
-    // O número é aria-hidden — o link continua com o rótulo acessível "Carrinho"
-    // (nunca "Carrinho 5"), então getByRole com o nome exato ainda o encontra.
-    expect(within(rail).getByRole('link', { name: 'Carrinho' })).toBeInTheDocument();
+    expect(link('Carrinho')).toHaveAccessibleName('Carrinho');
   });
 
-  it('trunca a contagem acima de 99 para "99+"', () => {
-    carrinhoState.count = 150;
+  it.each([
+    [99, '99'],
+    [100, '99+'],
+    [150, '99+'],
+  ])('contagem %i aparece como "%s"', (count, texto) => {
+    carrinhoState.count = count;
     renderShell();
-    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
-
-    expect(within(rail).getByText('99+')).toBeInTheDocument();
-  });
-
-  it('mostra "99" por extenso no limite (count = 99, fronteira nunca trunca)', () => {
-    carrinhoState.count = 99;
-    renderShell();
-    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
-
-    expect(within(rail).getByText('99')).toBeInTheDocument();
-    expect(within(rail).queryByText('99+')).not.toBeInTheDocument();
-  });
-
-  it('trunca para "99+" já em count = 100 (um a mais que a fronteira)', () => {
-    carrinhoState.count = 100;
-    renderShell();
-    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
-
-    expect(within(rail).getByText('99+')).toBeInTheDocument();
-  });
-
-  it('nunca mostra o cart-badge em outro item de navegação além de Carrinho', () => {
-    carrinhoState.count = 4;
-    authState.papel = 'almoxarife';
-    renderShell();
-    const rail = screen.getAllByRole('navigation', { name: 'Navegação principal' })[0];
-
-    expect(within(rail).getByRole('link', { name: 'Estoques' })).toBeInTheDocument();
-    // O rail inteiro tem exatamente UM "4" (o badge do Carrinho) — não duas
-    // ocorrências (o que aconteceria se outro item também ganhasse badge).
-    expect(within(rail).getAllByText('4')).toHaveLength(1);
+    expect(within(link('Carrinho')).getByText(texto)).toBeInTheDocument();
   });
 });
 
@@ -375,12 +480,11 @@ describe('AppShell — Ambiente de Treinamento (Story 9.2)', () => {
   const TEXTO_FAIXA =
     'AMBIENTE DE TREINAMENTO — dados de exemplo, nada aqui afeta a operação real';
 
-  it('sem o flag (usuário sem os campos novos), não há faixa e o header continua "stockflow"', () => {
+  it('sem o flag, não há faixa nem indicador no topo', () => {
     renderShell();
 
     expect(screen.queryByRole('note')).not.toBeInTheDocument();
-    expect(screen.queryByText(TEXTO_FAIXA)).not.toBeInTheDocument();
-    expect(screen.getByText('stockflow')).toBeInTheDocument();
+    expect(screen.queryByText('Treinamento')).not.toBeInTheDocument();
   });
 
   it('com ambienteTreinamento:false, também não há faixa', () => {
@@ -390,7 +494,7 @@ describe('AppShell — Ambiente de Treinamento (Story 9.2)', () => {
     expect(screen.queryByText(TEXTO_FAIXA)).not.toBeInTheDocument();
   });
 
-  it('com ambienteTreinamento:true, mostra a faixa persistente em todas as larguras e o header "stockflow · Treinamento"', () => {
+  it('com ambienteTreinamento:true, mostra a faixa persistente, o indicador no topo e o menu', () => {
     authState.ambienteTreinamento = true;
     renderShell();
 
@@ -399,21 +503,30 @@ describe('AppShell — Ambiente de Treinamento (Story 9.2)', () => {
     expect(faixa.className).toContain('bg-warning');
     expect(faixa.className).not.toMatch(/(^|\s)(hidden|md:hidden|md:flex)(\s|$)/);
     expect(faixa.parentElement?.className).toContain('border-warning');
-    expect(screen.getByText('stockflow · Treinamento')).toBeInTheDocument();
-    // A navegação continua a mesma dentro da moldura.
-    expect(screen.getAllByRole('navigation', { name: 'Navegação principal' })).toHaveLength(2);
+    expect(within(screen.getByRole('banner')).getByText('Treinamento')).toBeInTheDocument();
+    expect(screen.getAllByRole('navigation', { name: 'Menu principal' })).toHaveLength(1);
   });
 });
 
-describe('AppShell (sem consumo de erro global)', () => {
-  beforeEach(() => {
-    authState.papel = 'adm';
+describe('AppShell — conteúdo', () => {
+  it('renderiza os children quando fornecidos', () => {
+    render(
+      <MemoryRouter>
+        <AppShell>
+          <div>conteúdo</div>
+        </AppShell>
+      </MemoryRouter>,
+    );
+    expect(screen.getByText('conteúdo')).toBeInTheDocument();
   });
 
   it('não quebra ao montar sem props obrigatórias além do Router', () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     renderShell();
     expect(consoleError).not.toHaveBeenCalled();
+    expect(consoleWarn).not.toHaveBeenCalled();
     consoleError.mockRestore();
+    consoleWarn.mockRestore();
   });
 });

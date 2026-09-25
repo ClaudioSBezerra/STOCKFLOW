@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
-  adminNavItems,
   filtrarNavPorPapel,
-  navItems,
-  primaryNavItems,
-  profileNavItem,
+  gruposVisiveis,
+  itemAtivo,
+  navGrupos,
+  perfil,
   rankPapel,
 } from './nav-items';
+
+const todosItens = navGrupos.flatMap((g) => g.itens);
+const idsVisiveis = (papel: string) =>
+  gruposVisiveis(navGrupos, papel).flatMap((g) => g.itens.map((i) => i.id));
 
 describe('rankPapel', () => {
   it('espelha a ordem total do backend (usuario<almoxarife<gestor<adm)', () => {
@@ -26,47 +30,72 @@ describe('rankPapel', () => {
   });
 });
 
-describe('nav-items: papelMinimo por item', () => {
-  it('primary e profile exigem no mínimo usuario; admin exige no mínimo almoxarife', () => {
-    for (const item of primaryNavItems) {
-      expect(item.papelMinimo).toBe('usuario');
+describe('nav-items: grupos e papéis', () => {
+  it('declara os grupos e as rotas do EXPERIENCE.md', () => {
+    expect(navGrupos.map((g) => g.label)).toEqual([
+      'Catálogo',
+      'Pedidos',
+      'Estoque',
+      'Qualidade dos dados',
+    ]);
+    expect(todosItens.map((i) => i.to)).toEqual([
+      '/',
+      '/produtos/novo',
+      '/produtos/importar',
+      '/carrinho',
+      '/pedidos',
+      '/pedidos/fila',
+      '/estoques',
+      '/estoques/lancar-saldo',
+      '/estoques/movimentacoes',
+      '/normalizacao',
+      '/normalizacao/duplicatas',
+    ]);
+    expect(todosItens.some((i) => i.to === '/relatorios')).toBe(false);
+    expect(perfil.to).toBe('/configuracoes');
+    expect(perfil.papelMinimo).toBe('usuario');
+  });
+
+  it('papel usuario vê só Produtos, Carrinho e Meus pedidos; Estoque e Qualidade somem', () => {
+    expect(idsVisiveis('usuario')).toEqual(['produtos', 'carrinho', 'meus-pedidos']);
+    expect(gruposVisiveis(navGrupos, 'usuario').map((g) => g.id)).toEqual(['catalogo', 'pedidos']);
+  });
+
+  it('papel almoxarife, gestor e adm veem todos os itens desta story', () => {
+    for (const papel of ['almoxarife', 'gestor', 'adm']) {
+      expect(idsVisiveis(papel)).toHaveLength(todosItens.length);
     }
-    expect(profileNavItem.papelMinimo).toBe('usuario');
-    for (const item of adminNavItems) {
-      expect(item.papelMinimo).toBe('almoxarife');
-    }
+  });
+
+  it('papel desconhecido/vazio não vê grupo nenhum', () => {
+    expect(gruposVisiveis(navGrupos, '')).toHaveLength(0);
+    expect(gruposVisiveis(navGrupos, 'invalido')).toHaveLength(0);
+  });
+
+  it('grupo sem item visível some inteiro', () => {
+    const grupos = [{ ...navGrupos[2], itens: navGrupos[2].itens }];
+    expect(gruposVisiveis(grupos, 'usuario')).toEqual([]);
+  });
+});
+
+describe('itemAtivo', () => {
+  it('casa a rota exata e devolve o grupo do item', () => {
+    expect(itemAtivo(navGrupos, '/estoques/movimentacoes')).toEqual({
+      grupoId: 'estoque',
+      itemId: 'movimentacoes',
+    });
+    expect(itemAtivo(navGrupos, '/estoques')).toEqual({ grupoId: 'estoque', itemId: 'locais' });
+    expect(itemAtivo(navGrupos, '/')).toEqual({ grupoId: 'catalogo', itemId: 'produtos' });
+    expect(itemAtivo(navGrupos, '/pedidos/')).toEqual({ grupoId: 'pedidos', itemId: 'meus-pedidos' });
+  });
+
+  it('rota fora do menu não tem item ativo', () => {
+    expect(itemAtivo(navGrupos, '/configuracoes')).toBeNull();
+    expect(itemAtivo(navGrupos, '/produtos/abc')).toBeNull();
   });
 });
 
 describe('filtrarNavPorPapel', () => {
-  it('papel usuario esconde todos os itens admin', () => {
-    const visiveis = filtrarNavPorPapel(navItems, 'usuario');
-    const ids = visiveis.map((i) => i.id);
-    expect(ids).toEqual(['catalogo', 'carrinho', 'pedidos', 'perfil']);
-    expect(ids).not.toContain('estoques');
-    expect(ids).not.toContain('normalizacao');
-    expect(ids).not.toContain('relatorios');
-  });
-
-  it('papel almoxarife revela os itens admin', () => {
-    const visiveis = filtrarNavPorPapel(navItems, 'almoxarife');
-    const ids = visiveis.map((i) => i.id);
-    expect(ids).toContain('estoques');
-    expect(ids).toContain('normalizacao');
-    expect(ids).toContain('relatorios');
-  });
-
-  it('papel gestor e adm veem tudo', () => {
-    for (const papel of ['gestor', 'adm']) {
-      expect(filtrarNavPorPapel(navItems, papel)).toHaveLength(navItems.length);
-    }
-  });
-
-  it('papel desconhecido/vazio não vê nenhum item', () => {
-    expect(filtrarNavPorPapel(navItems, '')).toHaveLength(0);
-    expect(filtrarNavPorPapel(navItems, 'invalido')).toHaveLength(0);
-  });
-
   it('esconde (fail-closed) um item cujo papelMinimo não está no mapa de ranks', () => {
     // Simula um item mal configurado (typo / papel novo não espelhado no TS):
     // rankPapel(papelMinimo) === 0 deve escondê-lo, nunca liberá-lo a todos.
@@ -76,8 +105,8 @@ describe('filtrarNavPorPapel', () => {
   });
 
   it('é uma função pura — não muta a lista de entrada', () => {
-    const entrada = [...navItems];
+    const entrada = [...todosItens];
     filtrarNavPorPapel(entrada, 'usuario');
-    expect(entrada).toEqual(navItems);
+    expect(entrada).toEqual(todosItens);
   });
 });

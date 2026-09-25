@@ -15,6 +15,12 @@ import { EsqueciSenhaPage } from '@/pages/EsqueciSenhaPage';
 import { RedefinirSenhaPage } from '@/pages/RedefinirSenhaPage';
 import { ConfiguracoesPage } from '@/pages/ConfiguracoesPage';
 import { EstoquesPage } from '@/pages/EstoquesPage';
+import { PedidosFilaPage } from '@/pages/PedidosFilaPage';
+import { LancarSaldoPage } from '@/pages/LancarSaldoPage';
+import { MovimentacoesPage } from '@/pages/MovimentacoesPage';
+import { DuplicatasPage } from '@/pages/DuplicatasPage';
+import { CadastrarProdutoPage } from '@/pages/CadastrarProdutoPage';
+import { ImportarProdutosPage } from '@/pages/ImportarProdutosPage';
 import { NormalizacaoPage } from '@/pages/NormalizacaoPage';
 import { AuthCallbackPage } from '@/pages/AuthCallbackPage';
 
@@ -71,7 +77,7 @@ import { AuthCallbackPage } from '@/pages/AuthCallbackPage';
  * `!mfaHabilitado`, a navegação normal fica bloqueada — todo caminho que não
  * seja `/configuracoes` redireciona para lá (replace), espelhando no cliente
  * o mesmo `403 MFA_SETUP_REQUIRED` que o servidor já aplicaria em
- * `middleware.RequireRole`. Itens do rail continuam visíveis (UX-DR22:
+ * `middleware.RequireRole`. O menu continua visíveis (UX-DR22:
  * "bloqueando a navegação normal", não "escondendo") — só a navegação em si
  * é interceptada aqui, uma camada acima do shell.
  *
@@ -115,12 +121,18 @@ export const router = createBrowserRouter(
       element: <RotaProtegida />,
       children: [
         { index: true, element: <CatalogoPage /> },
+        { path: 'produtos/novo', element: <CadastrarProdutoPage /> },
+        { path: 'produtos/importar', element: <ImportarProdutosPage /> },
         { path: 'produtos/:id', element: <ProdutoDetalhePage /> },
         { path: 'carrinho', element: <CarrinhoPage /> },
         { path: 'pedidos', element: <PedidosPage /> },
+        { path: 'pedidos/fila', element: <PedidosFilaPage /> },
         { path: 'configuracoes', element: <ConfiguracoesPage /> },
         { path: 'estoques', element: <EstoquesPage /> },
+        { path: 'estoques/lancar-saldo', element: <LancarSaldoPage /> },
+        { path: 'estoques/movimentacoes', element: <MovimentacoesPage /> },
         { path: 'normalizacao', element: <NormalizacaoPage /> },
+        { path: 'normalizacao/duplicatas', element: <DuplicatasPage /> },
         { path: '*', element: <PlaceholderPage /> },
       ],
     },

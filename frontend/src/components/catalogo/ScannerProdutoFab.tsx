@@ -210,7 +210,7 @@ export function ScannerProdutoFab({ aoFalharLeitura }: ScannerProdutoFabProps) {
         type="button"
         onClick={aoTocarFab}
         aria-label="Escanear código do produto"
-        className="fixed right-fab-margin bottom-fab-offset-mobile z-40 flex size-fab-size items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg md:bottom-fab-margin"
+        className="fixed right-fab-margin bottom-fab-margin z-40 flex size-fab-size items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg"
       >
         <ScanLine aria-hidden="true" className="size-6" />
       </button>

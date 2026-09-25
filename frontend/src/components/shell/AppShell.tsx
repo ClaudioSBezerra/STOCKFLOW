@@ -1,21 +1,19 @@
-import { useState, type ReactNode } from 'react';
-import { NavLink, Outlet, useMatch } from 'react-router-dom';
-import { Menu, TriangleAlert } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { CircleHelp, Menu, TriangleAlert } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetTrigger,
-} from '@/components/ui/sheet';
+import { TooltipProvider } from '@/components/ui/tooltip';
+import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -25,124 +23,17 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { useAuth } from '@/lib/auth';
 import { useCarrinho } from '@/lib/carrinho';
-import {
-  adminNavItems,
-  filtrarNavPorPapel,
-  primaryNavItems,
-  profileNavItem,
-  type NavItem,
-} from './nav-items';
-
-export interface AppShellProps {
-  /** Conteúdo da página atual. Se omitido, renderiza o `<Outlet />` do react-router. */
-  children?: ReactNode;
-  /**
-   * Abas horizontais opcionais do módulo atual (ex.: Catálogo/Pedidos).
-   * Sem consumidor real nesta story — capacidade provada por teste de componente.
-   */
-  tabs?: ReactNode;
-  /**
-   * Submenu vertical opcional de {spacing.sidenav-width} (224px), usado por
-   * módulos como Estoques/Normalização. Sem consumidor real nesta story.
-   */
-  sideNav?: ReactNode;
-}
+import { nomeDaMarca } from '@/lib/marca';
+import { gruposVisiveis, itemAtivo, navGrupos, perfil } from './nav-items';
+import { MenuLateral } from './MenuLateral';
+import { useMenuEstado } from './useMenuEstado';
 
 const touchTarget = 'min-h-touch-target-min min-w-touch-target-min';
 
-function navLinkClasses(isActive: boolean, extra?: string) {
-  return cn(
-    'flex items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground',
-    touchTarget,
-    isActive && 'nav-item-active',
-    extra,
-  );
-}
-
-// CartBadge é o `cart-badge` (UX-DR5, epic-7-context.md): contador circular
-// com preenchimento `destructive` sobreposto ao ícone do item `carrinho` —
-// nunca renderizado sozinho, sempre atrás de `item.id === 'carrinho' &&
-// count > 0` no chamador (o chamador também garante que nunca aparece
-// "0"). `aria-hidden`: o número é decorativo aqui — o rótulo acessível do
-// link continua sendo só `item.label` ("Carrinho"), a contagem em si não é
-// parte do nome do link; quem precisa da contagem falada tem `/carrinho`
-// (Story 7.1) como fonte, não o ícone de navegação.
-function CartBadge({ count }: { count: number }) {
-  return (
-    <span
-      aria-hidden="true"
-      className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] leading-none font-medium text-white"
-    >
-      {count > 99 ? '99+' : count}
-    </span>
-  );
-}
-
-function RailNavIcon({ item, count }: { item: NavItem; count: number }) {
-  const Icon = item.icon;
-  // `TooltipTrigger asChild` clona este NavLink via Radix Slot, que mescla
-  // `className` assumindo string dos dois lados — um `className` em forma de
-  // função (a API padrão do NavLink) seria serializado incorretamente nesse
-  // merge. Por isso o `isActive` é resolvido aqui fora e passado como string.
-  const isActive = Boolean(useMatch({ path: item.to, end: item.to === '/' }));
-  const mostrarBadge = item.id === 'carrinho' && count > 0;
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <NavLink
-          to={item.to}
-          end={item.to === '/'}
-          aria-label={item.label}
-          className={navLinkClasses(isActive, 'relative')}
-        >
-          <Icon className="size-5" aria-hidden="true" />
-          {mostrarBadge && <CartBadge count={count} />}
-        </NavLink>
-      </TooltipTrigger>
-      <TooltipContent side="right">{item.label}</TooltipContent>
-    </Tooltip>
-  );
-}
-
-function BottomNavIcon({ item, count }: { item: NavItem; count: number }) {
-  const Icon = item.icon;
-  const mostrarBadge = item.id === 'carrinho' && count > 0;
-  return (
-    <NavLink
-      to={item.to}
-      end={item.to === '/'}
-      className={({ isActive }) =>
-        navLinkClasses(isActive, 'relative flex-1 flex-col gap-0.5 text-label')
-      }
-    >
-      <Icon className="size-5" aria-hidden="true" />
-      {mostrarBadge && <CartBadge count={count} />}
-      <span>{item.label}</span>
-    </NavLink>
-  );
-}
-
-function SheetNavRow({ item, onNavigate }: { item: NavItem; onNavigate: () => void }) {
-  const Icon = item.icon;
-  return (
-    <NavLink
-      to={item.to}
-      onClick={onNavigate}
-      className={({ isActive }) =>
-        navLinkClasses(isActive, 'w-full justify-start gap-3 px-3 text-body')
-      }
-    >
-      <Icon className="size-5 shrink-0" aria-hidden="true" />
-      {item.label}
-    </NavLink>
-  );
-}
-
 /**
  * Faixa do Ambiente de Treinamento (Story 9.2, UX do épico 9): persistente no
- * topo, em TODAS as larguras (sem `hidden`/`md:`), fundo warning com texto
- * escuro — difícil de ignorar, para ninguém confundir o Treinamento com a
- * operação real.
+ * topo, em TODAS as larguras, fundo warning com texto escuro — difícil de
+ * ignorar, para ninguém confundir o Treinamento com a operação real.
  */
 function FaixaTreinamento() {
   return (
@@ -156,176 +47,158 @@ function FaixaTreinamento() {
   );
 }
 
-/**
- * Layout raiz do stockflow: rail + header no desktop (`>= md`, 768px),
- * bottom nav + "Mais" no mobile (`< md`, a partir de 360px). Ver
- * EXPERIENCE.md (Information Architecture, Responsive & Platform) e
- * DESIGN.md (spacing, nav-item-active).
- */
-export function AppShell({ children, tabs, sideNav }: AppShellProps) {
-  const content = children ?? <Outlet />;
-  // `Sheet` precisa ser controlado para poder ser fechado a partir do clique
-  // num item de navegação dentro dele — descontrolado, o Radix só fecha via
-  // Esc/clique fora, deixando o overlay/painel aberto sobre a rota nova.
-  const [moreOpen, setMoreOpen] = useState(false);
+/** Ajuda: diálogo curto, sem página de ajuda nova (Story 17.1). */
+function BotaoAjuda() {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button variant="ghost" className={cn('gap-2', touchTarget)}>
+          <CircleHelp className="size-5" aria-hidden="true" />
+          Ajuda
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Ajuda</DialogTitle>
+          <DialogDescription>
+            Dúvidas de uso? Fale com o administrador da sua empresa.
+          </DialogDescription>
+        </DialogHeader>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
-  // Navegação gated por papel (Story 1.5): cada superfície só renderiza os
-  // itens cujo `papelMinimo` o papel do usuário alcança. Item sem permissão
-  // simplesmente não aparece — nunca desabilitado, nunca "acesso negado".
+/**
+ * Layout raiz do stockflow (Epic 17, Story 17.1): menu lateral azul-marinho
+ * de 240px (64px recolhido) no desktop (`>= md`, 768px) e topo branco de 56px
+ * com ☰ que abre o mesmo menu numa gaveta à esquerda no celular. Ver
+ * EXPERIENCE.md (Menu agrupado) e DESIGN.md (sidebar-item-active).
+ */
+export function AppShell({ children }: { children?: React.ReactNode }) {
+  const content = children ?? <Outlet />;
+  const { pathname } = useLocation();
+  // Guarda a rota em que a gaveta foi aberta: rota mudou (botão voltar, link
+  // dentro da página) e ela fecha sozinha, sem ficar por cima do conteúdo novo.
+  const [gavetaEm, setGavetaEm] = useState<string | null>(null);
+  const gavetaAberta = gavetaEm === pathname;
+  const setGavetaAberta = (aberta: boolean) => setGavetaEm(aberta ? pathname : null);
+
+  // Navegação gated por papel: item sem permissão some (nunca desabilitado) e
+  // grupo sem item visível some inteiro — `gruposVisiveis` usa
+  // `filtrarNavPorPapel`, a mesma regra de sempre.
   const { usuario, logout } = useAuth();
-  // cart-badge (Story 7.1, UX-DR5): contagem do carrinho do usuário, lida do
-  // estado global já mantido por CarrinhoProvider (App.tsx) — este
-  // componente nunca busca /api/carrinho por conta própria.
+  // cart-badge: contagem lida do estado global do CarrinhoProvider.
   const { count } = useCarrinho();
   const papel = usuario?.papel ?? '';
-  const primaryItems = filtrarNavPorPapel(primaryNavItems, papel);
-  const adminItems = filtrarNavPorPapel(adminNavItems, papel);
-  // Mesma regra de visibilidade que os demais itens usam — uma única
-  // implementação (`filtrarNavPorPapel`), nunca uma comparação de rank inline.
-  const mostrarPerfil = filtrarNavPorPapel([profileNavItem], papel).length > 0;
-  // Ambiente de Treinamento (Story 9.2): só flag de exibição, vindo da
-  // resposta de sessão. Ausente -> o layout de sempre, sem nenhuma mudança.
+  const grupos = gruposVisiveis(navGrupos, papel);
+  const ativo = itemAtivo(grupos, pathname);
+  const perfilAtivo = pathname === perfil.to;
   const emTreinamento = usuario?.ambienteTreinamento === true;
+  const marca = nomeDaMarca(window.location.hostname);
+
+  const estado = useMenuEstado(usuario?.id ?? '');
+  const { abrirGrupo } = estado;
+  const grupoAtivoId = ativo?.grupoId ?? null;
+  // O grupo do item ativo abre sozinho ao navegar até ele.
+  useEffect(() => {
+    if (grupoAtivoId) abrirGrupo(grupoAtivoId);
+  }, [grupoAtivoId, abrirGrupo]);
+
+  const menuProps = {
+    grupos,
+    papel,
+    itemAtivoId: ativo?.itemId ?? null,
+    perfilAtivo,
+    marca,
+    estado,
+    cartCount: count,
+  };
 
   const shell = (
-      <div
+    <div
+      className={cn(
+        'flex flex-col bg-background text-foreground md:h-svh md:flex-row md:overflow-hidden',
+        emTreinamento ? 'min-h-0 flex-1 md:h-auto' : 'min-h-svh',
+      )}
+    >
+      {/* Menu lateral fixo — desktop (>= md) */}
+      <aside
         className={cn(
-          'flex flex-col bg-background text-foreground md:flex-row',
-          emTreinamento ? 'min-h-0 flex-1' : 'min-h-svh',
+          'hidden shrink-0 md:block',
+          estado.recolhido ? 'w-sidebar-width-collapsed' : 'w-sidebar-width',
         )}
       >
-        {/* Rail — desktop (>= md) */}
-        <nav
-          aria-label="Navegação principal"
-          className="hidden w-rail-width shrink-0 flex-col items-center justify-between border-r border-border bg-card py-3 md:flex"
-        >
-          <div className="flex flex-col items-center gap-1">
-            {primaryItems.map((item) => (
-              <RailNavIcon key={item.id} item={item} count={count} />
-            ))}
-            {adminItems.length > 0 ? <hr className="my-2 w-8 border-border" /> : null}
-            {adminItems.map((item) => (
-              <RailNavIcon key={item.id} item={item} count={count} />
-            ))}
-          </div>
+        <MenuLateral {...menuProps} recolhido={estado.recolhido} podeRecolher />
+      </aside>
 
-          {mostrarPerfil ? (
+      <div className="flex min-w-0 flex-1 flex-col md:min-h-0">
+        {/* Topo branco de 56px */}
+        <header className="sticky top-0 z-30 flex h-topbar-height shrink-0 items-center gap-2 border-b border-border bg-card px-4 md:static">
+          <Sheet open={gavetaAberta} onOpenChange={setGavetaAberta}>
+            <SheetTrigger asChild>
+              <Button
+                variant="ghost"
+                aria-label="Abrir menu"
+                className={cn('md:hidden', touchTarget)}
+              >
+                <Menu className="size-5" aria-hidden="true" />
+              </Button>
+            </SheetTrigger>
+            <SheetContent
+              side="left"
+              showCloseButton={false}
+              aria-describedby={undefined}
+              className="w-sidebar-width max-w-[85vw] gap-0 border-sidebar-item-active bg-sidebar p-0 sm:max-w-none"
+            >
+              <SheetTitle className="sr-only">Menu</SheetTitle>
+              <MenuLateral {...menuProps} onNavigate={() => setGavetaAberta(false)} />
+            </SheetContent>
+          </Sheet>
+
+          <div className="ml-auto flex items-center gap-2">
+            {emTreinamento ? (
+              <span className="rounded-full bg-warning/10 px-3 py-1 text-label text-text-on-tint-warning">
+                Treinamento
+              </span>
+            ) : null}
+            <BotaoAjuda />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
-                  aria-label={profileNavItem.label}
+                  aria-label="Menu da conta"
                   className={cn('flex items-center justify-center rounded-full', touchTarget)}
                 >
                   <Avatar className="size-8">
                     <AvatarFallback>
-                      <profileNavItem.icon className="size-4" aria-hidden="true" />
+                      <perfil.icon className="size-4" aria-hidden="true" />
                     </AvatarFallback>
                   </Avatar>
                 </button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" side="right">
+              <DropdownMenuContent align="end">
                 <DropdownMenuItem asChild className={touchTarget}>
-                  <NavLink to={profileNavItem.to}>{profileNavItem.label}</NavLink>
+                  <NavLink to={perfil.to}>{perfil.label}</NavLink>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem asChild className={touchTarget}>
-                  <button type="button" onClick={logout} aria-label="Sair">
-                    Sair
-                  </button>
+                <DropdownMenuItem className={touchTarget} onSelect={() => logout()}>
+                  Sair
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-          ) : null}
-        </nav>
-
-        <div className="flex min-w-0 flex-1 flex-col">
-          {/* Header fino — desktop */}
-          <header className="hidden h-12 shrink-0 items-center border-b border-border bg-card px-4 md:flex">
-            <span className="text-heading-md">
-              {emTreinamento ? 'stockflow · Treinamento' : 'stockflow'}
-            </span>
-          </header>
-
-          {tabs ? <div className="border-b border-border">{tabs}</div> : null}
-
-          <div className="flex min-h-0 flex-1">
-            {sideNav ? (
-              <aside className="hidden w-sidenav-width shrink-0 border-r border-border md:block">
-                {sideNav}
-              </aside>
-            ) : null}
-
-            <main className="min-w-0 flex-1 overflow-y-auto pb-bottom-nav-height md:pb-0">
-              {content}
-            </main>
           </div>
-        </div>
+        </header>
 
-        {/* Bottom nav — mobile (< md) */}
-        <nav
-          aria-label="Navegação principal"
-          className="fixed inset-x-0 bottom-0 z-40 flex h-bottom-nav-height items-stretch border-t border-border bg-card md:hidden"
-        >
-          {primaryItems.map((item) => (
-            <BottomNavIcon key={item.id} item={item} count={count} />
-          ))}
-
-          <Sheet open={moreOpen} onOpenChange={setMoreOpen}>
-            <SheetTrigger asChild>
-              <button
-                type="button"
-                className={cn(
-                  'flex flex-1 flex-col items-center justify-center gap-0.5 text-label text-muted-foreground',
-                  touchTarget,
-                )}
-              >
-                <Menu className="size-5" aria-hidden="true" />
-                <span>Mais</span>
-              </button>
-            </SheetTrigger>
-            <SheetContent side="bottom">
-              <SheetHeader>
-                <SheetTitle>Mais</SheetTitle>
-              </SheetHeader>
-              <div className="flex flex-col gap-1 px-4 pb-4">
-                {adminItems.map((item) => (
-                  <SheetNavRow key={item.id} item={item} onNavigate={() => setMoreOpen(false)} />
-                ))}
-                {adminItems.length > 0 && mostrarPerfil ? (
-                  <hr className="my-1 border-border" />
-                ) : null}
-                {mostrarPerfil ? (
-                  <>
-                    <SheetNavRow item={profileNavItem} onNavigate={() => setMoreOpen(false)} />
-                    <hr className="my-1 border-border" />
-                    <button
-                      type="button"
-                      aria-label="Sair"
-                      onClick={() => {
-                        setMoreOpen(false);
-                        logout();
-                      }}
-                      className={cn(
-                        'flex w-full items-center justify-start gap-3 rounded-md px-3 text-body text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground',
-                        touchTarget,
-                      )}
-                    >
-                      Sair
-                    </button>
-                  </>
-                ) : null}
-              </div>
-            </SheetContent>
-          </Sheet>
-        </nav>
+        <main className="min-w-0 flex-1 md:min-h-0 md:overflow-y-auto">{content}</main>
       </div>
+    </div>
   );
 
   return (
     <TooltipProvider>
       {emTreinamento ? (
-        <div className="flex min-h-svh flex-col border-4 border-warning">
+        <div className="flex min-h-svh flex-col border-4 border-warning md:h-svh">
           <FaixaTreinamento />
           {shell}
         </div>

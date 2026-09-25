@@ -317,7 +317,7 @@ describe('ImportacaoProdutosSection — relatório com atualizados e CTA de dupl
     expect(screen.queryByRole('link', { name: 'Verificar duplicatas agora' })).not.toBeInTheDocument();
   });
 
-  it('após envio com sucesso: mostra criados/atualizados/rejeitados e o CTA aponta para /normalizacao', async () => {
+  it('após envio com sucesso: mostra criados/atualizados/rejeitados e o CTA aponta para /normalizacao/duplicatas', async () => {
     stubFetch((url, init) => {
       if (url === '/api/importacoes/ultima') return jsonOk(SEM_IMPORTACAO_ANTERIOR);
       if (url === '/api/importacoes' && init?.method === 'POST') {
@@ -339,6 +339,6 @@ describe('ImportacaoProdutosSection — relatório com atualizados e CTA de dupl
     expect(await screen.findByText('1 criado(s), 2 atualizado(s), 0 rejeitado(s).')).toBeInTheDocument();
     const cta = screen.getByRole('link', { name: 'Verificar duplicatas agora' });
     expect(cta).toBeInTheDocument();
-    expect(cta).toHaveAttribute('href', '/normalizacao?verificarDuplicatas=1');
+    expect(cta).toHaveAttribute('href', '/normalizacao/duplicatas?verificarDuplicatas=1');
   });
 });

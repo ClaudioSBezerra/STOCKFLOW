@@ -4,9 +4,6 @@ import { rankPapel } from '@/components/shell/nav-items';
 import { BuscaCatalogo } from '@/components/catalogo/BuscaCatalogo';
 import { CatalogoListagem } from '@/components/catalogo/CatalogoListagem';
 import { ScannerProdutoFab } from '@/components/catalogo/ScannerProdutoFab';
-import { CadastroProdutoSection } from '@/components/produtos/CadastroProdutoSection';
-import { ImportacaoProdutosSection } from '@/components/produtos/ImportacaoProdutosSection';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 // DEBOUNCE_MS_TERMO_FILTRO é o mesmo debounce (300ms) de BuscaCatalogo — a
 // listagem filtrada e as sugestões inline reagem ao MESMO termo digitado,
@@ -33,11 +30,9 @@ const DEBOUNCE_MS_TERMO_FILTRO = 300;
  * mudança no comportamento próprio de `BuscaCatalogo` (suas sugestões
  * inline continuam exatamente como na Story 4.1).
  *
- * Quando `rankPapel(papel) >= rankPapel('almoxarife')`, mostra também
- * `Tabs` ("Cadastro"/"Importação", Story 3.3, spec-3-3) envolvendo
- * `CadastroProdutoSection`/`ImportacaoProdutosSection` — resolve o que antes
- * era uma simplificação deliberada (empilhamento simples, sem abas), agora
- * que a Story 3.3 entrega o segundo fluxo que faz as abas valerem a pena.
+ * Story 17.1: as abas "Cadastro"/"Importação" viraram rotas próprias
+ * (`/produtos/novo`, `/produtos/importar`); esta página ficou com título,
+ * busca, listagem e scanner.
  *
  * `ScannerProdutoFab` (Story 4.5, spec-4-5, FR-35) é montado ao final do
  * container: o `fab-scanner` (botão flutuante) só existe onde este
@@ -54,7 +49,6 @@ const DEBOUNCE_MS_TERMO_FILTRO = 300;
  */
 export function CatalogoPage() {
   const { usuario } = useAuth();
-  const podeCadastrar = rankPapel(usuario?.papel ?? '') >= rankPapel('almoxarife');
   // podeExportar (Story 4.6, spec-4-6, FR-30): mesmo rank mínimo de
   // `podeCadastrar` (`almoxarife`+) — a exportação do Catálogo para Excel é
   // restrita ao mesmo papel; o servidor continua sendo a autoridade real
@@ -90,22 +84,9 @@ export function CatalogoPage() {
 
   return (
     <div className="flex flex-col gap-6 p-6">
+      <h1 className="text-heading-lg">Produtos</h1>
       <BuscaCatalogo onTermoChange={aoTermoDigitado} inputRef={buscaInputRef} />
       <CatalogoListagem termo={termoFiltro} podeExportar={podeExportar} podeVerInativos={podeVerInativos} />
-      {podeCadastrar && (
-        <Tabs defaultValue="cadastro">
-          <TabsList>
-            <TabsTrigger value="cadastro">Cadastro</TabsTrigger>
-            <TabsTrigger value="importacao">Importação</TabsTrigger>
-          </TabsList>
-          <TabsContent value="cadastro">
-            <CadastroProdutoSection />
-          </TabsContent>
-          <TabsContent value="importacao">
-            <ImportacaoProdutosSection />
-          </TabsContent>
-        </Tabs>
-      )}
       <ScannerProdutoFab aoFalharLeitura={devolverFocoABusca} />
     </div>
   );

@@ -1,8 +1,8 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { useEffect } from 'react';
 import { cleanup, render, screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import { PedidosPage } from './PedidosPage';
+import { PedidosFilaPage } from './PedidosFilaPage';
 
 // useAuth() fornece o papel do ator — configurável por teste.
 const authState = vi.hoisted(() => ({ papel: 'usuario' as string }));
@@ -65,86 +65,37 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('PedidosPage — gate de papel', () => {
-  it('papel usuario vê só a aba "Meus Pedidos" — "Fila" não existe na tela', () => {
-    authState.papel = 'usuario';
-    render(<PedidosPage />);
-
-    expect(screen.getByRole('tab', { name: 'Meus Pedidos' })).toBeInTheDocument();
-    expect(screen.queryByRole('tab', { name: 'Fila' })).not.toBeInTheDocument();
-    expect(screen.getByTestId('secao-meus-pedidos')).toBeInTheDocument();
-    expect(screen.queryByTestId('secao-fila-pedidos')).not.toBeInTheDocument();
-  });
-
-  it.each(['almoxarife', 'gestor', 'adm'])(
-    'papel %s vê as abas "Meus Pedidos" e "Fila" e pode alternar entre elas',
-    async (papel) => {
+describe('PedidosPage (/pedidos) — Meus pedidos', () => {
+  it.each(['usuario', 'almoxarife', 'gestor', 'adm'])(
+    'papel %s vê Meus pedidos direto, sem abas e sem a Fila',
+    (papel) => {
       authState.papel = papel;
       render(<PedidosPage />);
 
-      expect(screen.getByRole('tab', { name: 'Meus Pedidos' })).toBeInTheDocument();
-      expect(screen.getByRole('tab', { name: 'Fila' })).toBeInTheDocument();
-      // Aba default: "Meus Pedidos".
       expect(screen.getByTestId('secao-meus-pedidos')).toBeInTheDocument();
       expect(screen.queryByTestId('secao-fila-pedidos')).not.toBeInTheDocument();
-
-      const user = userEvent.setup();
-      await user.click(screen.getByRole('tab', { name: 'Fila' }));
-
-      expect(screen.getByRole('tab', { name: 'Fila', selected: true })).toBeInTheDocument();
-      expect(screen.getByTestId('secao-fila-pedidos')).toBeInTheDocument();
+      expect(screen.queryByRole('tab')).not.toBeInTheDocument();
+      expect(montarFilaMock).not.toHaveBeenCalled();
     },
   );
+});
 
-  it('trocar de "Meus Pedidos" para "Fila" desmonta/remonta cada seção corretamente, sem erro', async () => {
-    authState.papel = 'almoxarife';
-    render(<PedidosPage />);
+describe('PedidosFilaPage (/pedidos/fila) — gate de papel', () => {
+  it.each(['almoxarife', 'gestor', 'adm'])('papel %s cai direto na Fila', (papel) => {
+    authState.papel = papel;
+    render(<PedidosFilaPage />);
 
-    expect(montarMeusMock).toHaveBeenCalledTimes(1);
-    expect(montarFilaMock).not.toHaveBeenCalled();
-
-    const user = userEvent.setup();
-    await user.click(screen.getByRole('tab', { name: 'Fila' }));
-
-    expect(montarFilaMock).toHaveBeenCalledTimes(1);
-    expect(desmontarMeusMock).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId('secao-fila-pedidos')).toBeInTheDocument();
     expect(screen.queryByTestId('secao-meus-pedidos')).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole('tab', { name: 'Meus Pedidos' }));
-
-    expect(montarMeusMock).toHaveBeenCalledTimes(2);
-    expect(desmontarFilaMock).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId('secao-meus-pedidos')).toBeInTheDocument();
-    expect(screen.queryByTestId('secao-fila-pedidos')).not.toBeInTheDocument();
+    expect(montarFilaMock).toHaveBeenCalledTimes(1);
   });
 
-  // Regressão de code review: `Tabs` é não-controlado (`defaultValue`) — sem
-  // a `key={String(podeVerFila)}` em PedidosPage.tsx, uma rebaixada de papel
-  // refletida em tempo real (ex.: AuthProvider atualiza `usuario.papel` sem
-  // reload de página) enquanto "Fila" era a aba ativa faria o
-  // TabsTrigger/TabsContent daquela aba sumirem do JSX, mas o estado interno
-  // do Radix continuaria apontando para "fila" — nenhum painel visível até
-  // um clique manual em "Meus Pedidos". Este teste prova que a remontagem
-  // forçada pela `key` evita esse painel em branco.
-  it('rebaixar o papel com "Fila" ativa não deixa um painel em branco — volta para "Meus Pedidos"', async () => {
-    authState.papel = 'almoxarife';
-    const { rerender } = render(<PedidosPage />);
-
-    const user = userEvent.setup();
-    await user.click(screen.getByRole('tab', { name: 'Fila' }));
-    expect(screen.getByTestId('secao-fila-pedidos')).toBeInTheDocument();
-
-    // Rebaixamento de papel refletido em tempo real, sem reload de página —
-    // simulado por um re-render com o mesmo authState mutado (mesmo molde de
-    // "papel muda sob o mesmo componente montado").
+  it('papel usuario vê a recusa e a Fila nem é montada (o servidor segue como autoridade)', () => {
     authState.papel = 'usuario';
-    rerender(<PedidosPage />);
+    render(<PedidosFilaPage />);
 
-    // Nenhum painel em branco: "Meus Pedidos" volta a ser o conteúdo
-    // visível, e a aba "Fila" (inacessível para o novo papel) some.
-    expect(screen.getByTestId('secao-meus-pedidos')).toBeInTheDocument();
+    expect(screen.getByText('Você não tem acesso à Fila de aprovação.')).toBeInTheDocument();
     expect(screen.queryByTestId('secao-fila-pedidos')).not.toBeInTheDocument();
-    expect(screen.queryByRole('tab', { name: 'Fila' })).not.toBeInTheDocument();
+    expect(montarFilaMock).not.toHaveBeenCalled();
   });
 });

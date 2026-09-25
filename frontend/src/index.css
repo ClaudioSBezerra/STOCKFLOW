@@ -31,6 +31,11 @@
   --color-text-on-tint-warning: #92400e;
   --color-text-on-tint-info: #075985;
   --color-text-on-tint-destructive: #b91c1c;
+  --color-sidebar: #0f1729;
+  --color-sidebar-foreground: #cbd5e1;
+  --color-sidebar-foreground-active: #ffffff;
+  --color-sidebar-item-active: #1e293b;
+  --color-sidebar-group-title: #ffffff;
 
   /* Derivadas dos tokens acima — exigidas pelos primitivos shadcn */
   --color-popover: var(--color-card);
@@ -76,13 +81,12 @@
   --radius-full: 9999px;
 
   /* Spacing — DESIGN.md `spacing` */
-  --spacing-rail-width: 56px;
-  --spacing-bottom-nav-height: 56px;
   --spacing-fab-size: 56px;
-  --spacing-fab-offset-mobile: 72px;
   --spacing-fab-margin: 16px;
-  --spacing-sidenav-width: 224px;
   --spacing-touch-target-min: 48px;
+  --spacing-sidebar-width: 240px;
+  --spacing-sidebar-width-collapsed: 64px;
+  --spacing-topbar-height: 56px;
 }
 
 @layer base {
@@ -93,12 +97,13 @@
 
 @layer components {
   /*
-   * DESIGN.md `components.nav-item-active`: fundo primary a 10%, ícone/texto
-   * em primary sólido — aplicado ao item de navegação da rota atual (rail e
-   * bottom nav).
+   * DESIGN.md `components.sidebar-item-active`: fundo sidebar-item-active,
+   * texto branco em negrito e barra de 3px vermelho FC (primary) à esquerda.
    */
-  .nav-item-active {
-    background-color: color-mix(in oklab, var(--color-primary) 10%, transparent);
-    color: var(--color-primary);
+  .sidebar-item-active {
+    background-color: var(--color-sidebar-item-active);
+    color: var(--color-sidebar-foreground-active);
+    font-weight: 600;
+    box-shadow: inset 3px 0 0 var(--color-primary);
   }
 }

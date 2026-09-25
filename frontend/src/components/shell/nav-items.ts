@@ -1,28 +1,19 @@
 import {
   ClipboardList,
-  FileBarChart,
   LayoutGrid,
-  ShoppingCart,
+  ScanSearch,
   UserCircle,
-  Wand2,
   Warehouse,
   type LucideIcon,
 } from 'lucide-react';
 
 /**
- * Áreas de navegação, refletindo a Information Architecture de EXPERIENCE.md:
- * - `primary`: sempre visíveis (rail e bottom nav) — Catálogo, Carrinho, Pedidos.
- * - `admin`: visíveis diretamente no rail (desktop); recolhidos para dentro
- *   do Sheet de "Mais" na bottom nav (mobile) — Estoques, Normalização, Relatórios.
- * - `profile`: Configurações/Meu Perfil — rodapé do rail (avatar + DropdownMenu)
- *   no desktop; dentro do mesmo Sheet de "Mais" no mobile.
- *
- * Cada item declara um `papelMinimo` (Story 1.5): o `AppShell` só renderiza
- * os itens cujo papel mínimo o papel do usuário alcança, nas três superfícies
- * (rail, bottom nav, Sheet "Mais"). Item sem permissão simplesmente não
- * aparece — nunca desabilitado, nunca tela de "acesso negado".
+ * Menu lateral agrupado (Epic 17, Story 17.1; EXPERIENCE.md "Menu agrupado").
+ * Cada grupo tem itens com rota própria e `papelMinimo`: o menu só renderiza
+ * os itens cujo papel mínimo o papel do usuário alcança, e o grupo sem item
+ * visível some inteiro. Item sem permissão simplesmente não aparece — nunca
+ * desabilitado. Os grupos Cadastros e Administração chegam na Story 17.2.
  */
-export type NavArea = 'primary' | 'admin' | 'profile';
 
 /**
  * Papéis da hierarquia de acesso (AD-8). Espelho MÍNIMO e deliberado de
@@ -47,21 +38,67 @@ export function rankPapel(papel: string): number {
 export interface NavItem {
   id: string;
   label: string;
-  icon: LucideIcon;
   to: string;
-  area: NavArea;
   papelMinimo: Papel;
 }
 
-export const navItems: NavItem[] = [
-  { id: 'catalogo', label: 'Catálogo', icon: LayoutGrid, to: '/', area: 'primary', papelMinimo: 'usuario' },
-  { id: 'carrinho', label: 'Carrinho', icon: ShoppingCart, to: '/carrinho', area: 'primary', papelMinimo: 'usuario' },
-  { id: 'pedidos', label: 'Pedidos', icon: ClipboardList, to: '/pedidos', area: 'primary', papelMinimo: 'usuario' },
-  { id: 'estoques', label: 'Estoques', icon: Warehouse, to: '/estoques', area: 'admin', papelMinimo: 'almoxarife' },
-  { id: 'normalizacao', label: 'Normalização', icon: Wand2, to: '/normalizacao', area: 'admin', papelMinimo: 'almoxarife' },
-  { id: 'relatorios', label: 'Relatórios', icon: FileBarChart, to: '/relatorios', area: 'admin', papelMinimo: 'almoxarife' },
-  { id: 'perfil', label: 'Meu Perfil', icon: UserCircle, to: '/configuracoes', area: 'profile', papelMinimo: 'usuario' },
+export interface NavGrupo {
+  id: string;
+  label: string;
+  icon: LucideIcon;
+  itens: NavItem[];
+}
+
+export const navGrupos: NavGrupo[] = [
+  {
+    id: 'catalogo',
+    label: 'Catálogo',
+    icon: LayoutGrid,
+    itens: [
+      { id: 'produtos', label: 'Produtos', to: '/', papelMinimo: 'usuario' },
+      { id: 'cadastrar-produto', label: 'Cadastrar produto', to: '/produtos/novo', papelMinimo: 'almoxarife' },
+      { id: 'importar-planilha', label: 'Importar planilha', to: '/produtos/importar', papelMinimo: 'almoxarife' },
+      { id: 'carrinho', label: 'Carrinho', to: '/carrinho', papelMinimo: 'usuario' },
+    ],
+  },
+  {
+    id: 'pedidos',
+    label: 'Pedidos',
+    icon: ClipboardList,
+    itens: [
+      { id: 'meus-pedidos', label: 'Meus pedidos', to: '/pedidos', papelMinimo: 'usuario' },
+      { id: 'fila-aprovacao', label: 'Fila de aprovação', to: '/pedidos/fila', papelMinimo: 'almoxarife' },
+    ],
+  },
+  {
+    id: 'estoque',
+    label: 'Estoque',
+    icon: Warehouse,
+    itens: [
+      { id: 'locais', label: 'Locais', to: '/estoques', papelMinimo: 'almoxarife' },
+      { id: 'lancar-saldo', label: 'Lançar saldo', to: '/estoques/lancar-saldo', papelMinimo: 'almoxarife' },
+      { id: 'movimentacoes', label: 'Movimentações', to: '/estoques/movimentacoes', papelMinimo: 'almoxarife' },
+    ],
+  },
+  {
+    id: 'qualidade',
+    label: 'Qualidade dos dados',
+    icon: ScanSearch,
+    itens: [
+      { id: 'inconsistencias', label: 'Inconsistências', to: '/normalizacao', papelMinimo: 'almoxarife' },
+      { id: 'duplicatas', label: 'Duplicatas', to: '/normalizacao/duplicatas', papelMinimo: 'almoxarife' },
+    ],
+  },
 ];
+
+/** "Meu perfil" — rodapé do menu (as seções de conta continuam em `/configuracoes`). */
+export const perfil: NavItem & { icon: LucideIcon } = {
+  id: 'perfil',
+  label: 'Meu perfil',
+  to: '/configuracoes',
+  papelMinimo: 'usuario',
+  icon: UserCircle,
+};
 
 /**
  * Filtra uma lista de itens de navegação pelo papel do usuário: mantém só os
@@ -79,6 +116,33 @@ export function filtrarNavPorPapel<T extends { papelMinimo: Papel }>(items: T[],
   });
 }
 
-export const primaryNavItems = navItems.filter((item) => item.area === 'primary');
-export const adminNavItems = navItems.filter((item) => item.area === 'admin');
-export const profileNavItem = navItems.find((item) => item.area === 'profile') as NavItem;
+/**
+ * Grupos visíveis para o papel: filtra os itens por `filtrarNavPorPapel` e
+ * descarta o grupo que ficou sem nenhum item. Função pura.
+ */
+export function gruposVisiveis(grupos: NavGrupo[], papel: string): NavGrupo[] {
+  return grupos
+    .map((g) => ({ ...g, itens: filtrarNavPorPapel(g.itens, papel) }))
+    .filter((g) => g.itens.length > 0);
+}
+
+function semBarraFinal(caminho: string): string {
+  return caminho.length > 1 ? caminho.replace(/\/+$/, '') : caminho;
+}
+
+/**
+ * Item ativo para o `pathname` (já sem o basename da Empresa): casamento
+ * exato — `/estoques` não marca Locais quando a rota é `/estoques/movimentacoes`.
+ */
+export function itemAtivo(
+  grupos: NavGrupo[],
+  pathname: string,
+): { grupoId: string; itemId: string } | null {
+  const caminho = semBarraFinal(pathname);
+  for (const g of grupos) {
+    for (const item of g.itens) {
+      if (item.to === caminho) return { grupoId: g.id, itemId: item.id };
+    }
+  }
+  return null;
+}

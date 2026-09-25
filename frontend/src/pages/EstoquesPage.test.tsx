@@ -1,7 +1,8 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import { EstoquesPage } from './EstoquesPage';
+import { LancarSaldoPage } from './LancarSaldoPage';
+import { MovimentacoesPage } from './MovimentacoesPage';
 import type { EventoRealtime, StatusRealtime } from '@/lib/realtime/client';
 
 // useAuth() fornece o papel — configurável por teste.
@@ -60,58 +61,70 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('EstoquesPage — gate de papel', () => {
-  it.each(['almoxarife', 'gestor', 'adm'])('papel %s vê as abas "Locais" e "Movimentações"', async (papel) => {
+describe('EstoquesPage — Locais (/estoques)', () => {
+  it.each(['almoxarife', 'gestor', 'adm'])('papel %s vê a tela Locais direto, sem abas', async (papel) => {
     authState.papel = papel;
     render(<EstoquesPage />);
 
     expect(await screen.findByRole('heading', { name: 'Locais' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Adicionar estoque' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Locais' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Lançar saldo' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Movimentações' })).toBeInTheDocument();
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument();
     expect(
       screen.queryByText('Você não tem acesso à área de Estoques.'),
     ).not.toBeInTheDocument();
   });
 
-  it('papel usuario vê a mensagem de acesso restrito e nenhuma aba', () => {
+  it('papel usuario vê a mensagem de acesso restrito', () => {
     authState.papel = 'usuario';
     render(<EstoquesPage />);
 
     expect(screen.getByText('Você não tem acesso à área de Estoques.')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Locais' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('tab', { name: 'Movimentações' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('tab', { name: 'Lançar saldo' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Adicionar estoque' })).not.toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalled();
   });
+});
 
-  it('clicar na aba "Lançar saldo" monta a LancamentoSaldoSection', async () => {
-    const user = userEvent.setup();
-    render(<EstoquesPage />);
-
-    await user.click(await screen.findByRole('tab', { name: 'Lançar saldo' }));
+describe('LancarSaldoPage (/estoques/lancar-saldo)', () => {
+  it('almoxarife+ cai direto na LancamentoSaldoSection', async () => {
+    render(<LancarSaldoPage />);
 
     expect(await screen.findByRole('heading', { name: 'Lançar saldo' })).toBeInTheDocument();
     expect(screen.getByLabelText('Quantidade')).toBeInTheDocument();
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument();
   });
 
-  it('clicar na aba "Movimentações" monta a MovimentacoesSection', async () => {
-    const user = userEvent.setup();
-    render(<EstoquesPage />);
+  it('papel usuario vê a mensagem de acesso restrito', () => {
+    authState.papel = 'usuario';
+    render(<LancarSaldoPage />);
 
-    await user.click(await screen.findByRole('tab', { name: 'Movimentações' }));
+    expect(screen.getByText('Você não tem acesso à área de Estoques.')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Quantidade')).not.toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('MovimentacoesPage (/estoques/movimentacoes)', () => {
+  it('almoxarife+ cai direto na MovimentacoesSection, com h1', async () => {
+    render(<MovimentacoesPage />);
 
     // A seção só carrega a partir de aoMudarStatus('conectado').
     act(() => {
       aoMudarStatus('conectado');
     });
 
-    expect(await screen.findByRole('heading', { name: 'Movimentações' })).toBeInTheDocument();
-    expect(
-      await screen.findByText('Nenhuma movimentação registrada.'),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Movimentações' })).toBeInTheDocument();
+    expect(await screen.findByText('Nenhuma movimentação registrada.')).toBeInTheDocument();
     expect(fetch).toHaveBeenCalledWith('/api/movimentacoes', expect.anything());
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument();
+  });
+
+  it('papel usuario vê a mensagem de acesso restrito e nenhuma chamada', () => {
+    authState.papel = 'usuario';
+    render(<MovimentacoesPage />);
+
+    expect(screen.getByText('Você não tem acesso à área de Estoques.')).toBeInTheDocument();
+    expect(conectarRealtimeMock).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

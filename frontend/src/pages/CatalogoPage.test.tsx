@@ -96,13 +96,14 @@ describe('CatalogoPage — gate de papel', () => {
   });
 
   it.each(['almoxarife', 'gestor', 'adm'])(
-    'papel %s vê a listagem E a seção de cadastro',
+    'papel %s vê a listagem, sem a seção de cadastro (rota própria)',
     async (papel) => {
       authState.papel = papel;
       render(<CatalogoPage />, { wrapper: MemoryRouter });
 
       expect(screen.getByLabelText('Catálogo de produtos')).toBeInTheDocument();
-      expect(await screen.findByText('Cadastrar Produto')).toBeInTheDocument();
+      await screen.findByText('Nenhum produto no catálogo.');
+      expect(screen.queryByText('Cadastrar Produto')).not.toBeInTheDocument();
     },
   );
 });
@@ -122,28 +123,16 @@ describe('CatalogoPage — filtro "Mostrar só inativos" (Story 16.2)', () => {
   });
 });
 
-describe('CatalogoPage — abas Cadastro/Importação (Story 3.3)', () => {
-  it('almoxarife+ vê as abas "Cadastro"/"Importação", com Cadastro ativa por padrão', async () => {
+describe('CatalogoPage — sem abas de cadastro/importação (Story 17.1)', () => {
+  it('tem h1 "Produtos" e não mostra abas nem as seções de cadastro/importação, nem para almoxarife+', async () => {
     authState.papel = 'almoxarife';
     render(<CatalogoPage />, { wrapper: MemoryRouter });
 
-    expect(await screen.findByText('Cadastrar Produto')).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Cadastro' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByRole('tab', { name: 'Importação' })).toHaveAttribute('aria-selected', 'false');
-    // Radix Tabs desmonta o conteúdo da aba inativa por padrão — a seção de
-    // Importação não deveria estar no DOM antes de a aba ser selecionada.
+    expect(await screen.findByRole('heading', { level: 1, name: 'Produtos' })).toBeInTheDocument();
+    await screen.findByText('Nenhum produto no catálogo.');
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument();
+    expect(screen.queryByText('Cadastrar Produto')).not.toBeInTheDocument();
     expect(screen.queryByText('Importar Produtos')).not.toBeInTheDocument();
-  });
-
-  it('selecionar a aba "Importação" monta ImportacaoProdutosSection', async () => {
-    authState.papel = 'almoxarife';
-    const user = userEvent.setup();
-    render(<CatalogoPage />, { wrapper: MemoryRouter });
-
-    await screen.findByText('Cadastrar Produto');
-    await user.click(screen.getByRole('tab', { name: 'Importação' }));
-
-    expect(await screen.findByText('Importar Produtos')).toBeInTheDocument();
   });
 });
 
