@@ -184,3 +184,84 @@ func TestValidateFlags(t *testing.T) {
 		})
 	}
 }
+
+// TestRedefinirDono_TrocaTudoERevogaSessoes prova o modo --redefinir: o Dono
+// existente passa a ter nome, e-mail, senha e segredo novos, volta a ativo, o
+// último passo TOTP é zerado e toda sessão aberta da plataforma é revogada.
+func TestRedefinirDono_TrocaTudoERevogaSessoes(t *testing.T) {
+	db := testDB(t)
+
+	if err := seedDono(db, &bytes.Buffer{}, "Antigo", "antigo@plataforma.com", "senha-forte-1"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	var idAntigo, segredoAntigo string
+	if err := db.QueryRow(`SELECT id, mfa_secret FROM donos_plataforma`).Scan(&idAntigo, &segredoAntigo); err != nil {
+		t.Fatalf("ler dono: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE donos_plataforma SET ativo = false, mfa_ultimo_passo_usado = 42`); err != nil {
+		t.Fatalf("preparar dono: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO sessoes_plataforma (dono_id, refresh_token, expira_em) VALUES ($1, 'rt-redefinir', now() + interval '1 day')`, idAntigo,
+	); err != nil {
+		t.Fatalf("criar sessão: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := redefinirDono(db, &out, " Novo Nome ", "Novo@Plataforma.COM", "senha-nova-2"); err != nil {
+		t.Fatalf("redefinirDono: %v", err)
+	}
+	segredo := valorDaLinha(t, out.String(), "segredo TOTP:")
+	if segredo == segredoAntigo {
+		t.Error("o segredo TOTP não foi trocado")
+	}
+
+	var id, nome, email, senhaHash, segredoGravado string
+	var ativo bool
+	var ultimoPasso sql.NullInt64
+	if err := db.QueryRow(`SELECT id, nome, email, senha_hash, mfa_secret, ativo, mfa_ultimo_passo_usado FROM donos_plataforma`).
+		Scan(&id, &nome, &email, &senhaHash, &segredoGravado, &ativo, &ultimoPasso); err != nil {
+		t.Fatalf("ler dono redefinido: %v", err)
+	}
+	if id != idAntigo || nome != "Novo Nome" || email != "novo@plataforma.com" || segredoGravado != segredo || !ativo || ultimoPasso.Valid {
+		t.Errorf("dono = id igual %v, nome %q, email %q, segredo confere %v, ativo %v, ultimoPasso %v",
+			id == idAntigo, nome, email, segredoGravado == segredo, ativo, ultimoPasso)
+	}
+	if bcrypt.CompareHashAndPassword([]byte(senhaHash), []byte("senha-nova-2")) != nil {
+		t.Error("senha nova não confere via bcrypt")
+	}
+	var vivas int
+	if err := db.QueryRow(`SELECT count(*) FROM sessoes_plataforma WHERE revogado_em IS NULL`).Scan(&vivas); err != nil {
+		t.Fatalf("contar sessões: %v", err)
+	}
+	if vivas != 0 {
+		t.Errorf("sessões vivas depois de redefinir = %d, want 0", vivas)
+	}
+}
+
+func TestRedefinirDono_SemDonoOuSenhaFraca(t *testing.T) {
+	db := testDB(t)
+
+	err := redefinirDono(db, &bytes.Buffer{}, "Nome", "dono@plataforma.com", "senha-forte-1")
+	if !errors.Is(err, services.ErrDonoInexistente) {
+		t.Fatalf("sem Dono: err = %v, want ErrDonoInexistente", err)
+	}
+	if !strings.Contains(mensagemDeErro(err), "rode sem --redefinir") {
+		t.Errorf("mensagem = %q", mensagemDeErro(err))
+	}
+
+	if err := seedDono(db, &bytes.Buffer{}, "Dono", "dono@plataforma.com", "senha-forte-1"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	var antes string
+	_ = db.QueryRow(`SELECT senha_hash FROM donos_plataforma`).Scan(&antes)
+	var out bytes.Buffer
+	if err := redefinirDono(db, &out, "Dono", "dono@plataforma.com", "fraca"); !errors.Is(err, services.ErrSenhaFraca) {
+		t.Fatalf("senha fraca: err = %v, want ErrSenhaFraca", err)
+	}
+	var depois string
+	_ = db.QueryRow(`SELECT senha_hash FROM donos_plataforma`).Scan(&depois)
+	if antes != depois || out.Len() != 0 {
+		t.Error("redefinição recusada alterou o Dono ou imprimiu na saída")
+	}
+}

@@ -61,6 +61,9 @@ var (
 	// ErrDonoJaExiste indica que já existe um Dono: o bootstrap por CLI só
 	// cria a PRIMEIRA linha e nunca altera uma existente.
 	ErrDonoJaExiste = errors.New("já existe um dono da plataforma")
+	// ErrDonoInexistente indica que `--redefinir` foi pedido sem nenhum Dono
+	// cadastrado — o caminho certo é o bootstrap, sem `--redefinir`.
+	ErrDonoInexistente = errors.New("nenhum dono da plataforma cadastrado")
 	// ErrDonoValidacao indica nome/e-mail ausentes, longos demais ou e-mail
 	// sem @ no bootstrap do Dono.
 	ErrDonoValidacao = errors.New("nome e e-mail são obrigatórios (e-mail com @, até 255 caracteres)")
@@ -301,6 +304,80 @@ func CriarPrimeiroDonoPlataforma(db *sql.DB, nome, email, senha string) (id, seg
 		return "", "", fmt.Errorf("falha ao commitar criação do dono da plataforma: %w", err)
 	}
 	slog.Info("primeiro dono da plataforma criado", "dono_id", id)
+	return id, segredo, nil
+}
+
+// RedefinirDonoPlataforma troca nome, e-mail e senha do Dono EXISTENTE e gera
+// um segredo TOTP novo — o caminho de recuperação quando o operador perdeu a
+// senha ou o autenticador. Como CriarPrimeiroDonoPlataforma, é chamado SÓ pelo
+// CLI `cmd/seed-dono-plataforma --redefinir`, dentro do container (AD-12:
+// nenhuma rota HTTP cria nem altera Dono; quem tem acesso ao servidor já tem
+// acesso ao banco).
+//
+// Mesmas validações do bootstrap antes de qualquer escrita. Numa transação sob
+// o mesmo LOCK: exige exatamente um Dono (nenhum -> ErrDonoInexistente; mais
+// de um -> erro, o CLI nunca cria dois), grava os dados novos, reativa a conta,
+// zera `mfa_ultimo_passo_usado` e revoga todas as sessões da plataforma — o
+// autenticador antigo e qualquer sessão aberta deixam de valer. O segredo novo
+// é devolvido UMA vez.
+func RedefinirDonoPlataforma(db *sql.DB, nome, email, senha string) (id, segredo string, err error) {
+	nomeTrimado := strings.TrimSpace(nome)
+	emailNormalizado := normalizeEmail(email)
+	if nomeTrimado == "" || utf8.RuneCountInString(nomeTrimado) > 255 || !emailPlausivel(emailNormalizado) {
+		return "", "", ErrDonoValidacao
+	}
+	if err := ValidarForcaSenha(senha); err != nil {
+		return "", "", err
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(senha), bcrypt.DefaultCost)
+	if err != nil {
+		return "", "", fmt.Errorf("falha ao gerar hash da senha: %w", err)
+	}
+	segredo, err = GerarSegredoTOTP()
+	if err != nil {
+		return "", "", err
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return "", "", fmt.Errorf("falha ao iniciar transação: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
+
+	if _, err := tx.Exec(`LOCK TABLE donos_plataforma IN EXCLUSIVE MODE`); err != nil {
+		return "", "", fmt.Errorf("falha ao travar a tabela de donos da plataforma: %w", err)
+	}
+
+	var total int
+	if err := tx.QueryRow(`SELECT count(*) FROM donos_plataforma`).Scan(&total); err != nil {
+		return "", "", fmt.Errorf("falha ao contar donos da plataforma: %w", err)
+	}
+	switch {
+	case total == 0:
+		return "", "", ErrDonoInexistente
+	case total > 1:
+		return "", "", fmt.Errorf("há %d Donos da Plataforma; --redefinir só atua quando existe exatamente um", total)
+	}
+
+	const atualizar = `
+		UPDATE donos_plataforma
+		SET nome = $1, email = $2, senha_hash = $3, mfa_secret = $4,
+		    mfa_ultimo_passo_usado = NULL, ativo = true
+		RETURNING id`
+	if err := tx.QueryRow(atualizar, nomeTrimado, emailNormalizado, string(hash), segredo).Scan(&id); err != nil {
+		return "", "", fmt.Errorf("falha ao redefinir o dono da plataforma: %w", err)
+	}
+	if _, err := tx.Exec(
+		`UPDATE sessoes_plataforma SET revogado_em = now() WHERE dono_id = $1 AND revogado_em IS NULL`, id,
+	); err != nil {
+		return "", "", fmt.Errorf("falha ao revogar sessões do dono da plataforma: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", "", fmt.Errorf("falha ao commitar a redefinição do dono da plataforma: %w", err)
+	}
+	slog.Warn("dono da plataforma redefinido pelo CLI (senha e autenticador novos, sessões revogadas)", "dono_id", id)
 	return id, segredo, nil
 }
 

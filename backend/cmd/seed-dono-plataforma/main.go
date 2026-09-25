@@ -12,6 +12,12 @@
 // executa dentro do container `api`:
 //
 //	./seed-dono-plataforma --nome "Nome" --email dono@exemplo.com --senha 'Senha-forte-1'
+//
+// Recuperação (senha ou autenticador perdidos): `--redefinir` troca nome,
+// e-mail e senha do Dono existente, gera um segredo TOTP novo (impresso uma
+// vez, como no bootstrap) e revoga as sessões abertas da plataforma:
+//
+//	./seed-dono-plataforma --redefinir --nome "Nome" --email dono@exemplo.com --senha 'Senha-forte-1'
 package main
 
 import (
@@ -36,6 +42,7 @@ func main() {
 	nome := flag.String("nome", "", "Nome do Dono da Plataforma")
 	email := flag.String("email", "", "E-mail do Dono da Plataforma")
 	senha := flag.String("senha", "", "Senha do Dono da Plataforma (8+ caracteres, com letra e número)")
+	redefinir := flag.Bool("redefinir", false, "Redefine o Dono EXISTENTE (nome, e-mail, senha e autenticador novos) em vez de criar o primeiro")
 	flag.Parse()
 
 	if err := validateFlags(*nome, *email, *senha); err != nil {
@@ -66,7 +73,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := seedDono(db, os.Stdout, *nome, *email, *senha); err != nil {
+	executar := seedDono
+	if *redefinir {
+		executar = redefinirDono
+	}
+	if err := executar(db, os.Stdout, *nome, *email, *senha); err != nil {
 		fmt.Fprintf(os.Stderr, "erro: %s\n", mensagemDeErro(err))
 		os.Exit(1)
 	}
@@ -97,11 +108,29 @@ func seedDono(db *sql.DB, out io.Writer, nome, email, senha string) error {
 	return nil
 }
 
+// redefinirDono redefine o Dono existente (services.RedefinirDonoPlataforma) e
+// imprime em `out` o e-mail novo, o segredo TOTP e a URL `otpauth://`.
+func redefinirDono(db *sql.DB, out io.Writer, nome, email, senha string) error {
+	id, segredo, err := services.RedefinirDonoPlataforma(db, nome, email, senha)
+	if err != nil {
+		return err
+	}
+	emailNormalizado := strings.ToLower(strings.TrimSpace(email))
+	fmt.Fprintf(out, "Dono da Plataforma redefinido: id=%s email=%s\n\n", id, emailNormalizado)
+	fmt.Fprintln(out, "O autenticador ANTIGO deixou de valer e as sessões abertas foram encerradas. Cadastre AGORA o novo:")
+	fmt.Fprintf(out, "  segredo TOTP: %s\n", segredo)
+	fmt.Fprintf(out, "  URL otpauth:  %s\n\n", services.URLProvisionamentoTOTP(emailNormalizado, segredo))
+	fmt.Fprintln(out, "Estes dados NÃO serão exibidos de novo. Entre em /plataforma com o e-mail, a senha e o código do autenticador.")
+	return nil
+}
+
 // mensagemDeErro traduz os erros conhecidos do bootstrap para o operador.
 func mensagemDeErro(err error) string {
 	switch {
 	case errors.Is(err, services.ErrDonoJaExiste):
-		return "já existe um Dono da Plataforma — seed-dono-plataforma não altera contas existentes"
+		return "já existe um Dono da Plataforma — para trocar e-mail, senha e autenticador, rode de novo com --redefinir"
+	case errors.Is(err, services.ErrDonoInexistente):
+		return "nenhum Dono da Plataforma cadastrado — rode sem --redefinir para criar o primeiro"
 	case errors.Is(err, services.ErrSenhaFraca):
 		return "a senha deve ter ao menos 8 caracteres, incluindo uma letra e um número"
 	case errors.Is(err, services.ErrDonoValidacao):
