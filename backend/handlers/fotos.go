@@ -463,3 +463,36 @@ func ListarFotosProdutoHandler(db *sql.DB, fotosDir string) http.HandlerFunc {
 		}
 	}
 }
+
+// RemoverFotoProdutoHandler expõe DELETE /api/produtos/{id}/fotos/{arquivo}
+// (mínimo `almoxarife`, mesmo papel do envio): apaga uma foto do Produto via
+// services.RemoverFotoProduto. Nome fora do padrão, foto ausente ou Produto de
+// outra Empresa -> o mesmo 404; sucesso -> 204.
+func RemoverFotoProdutoHandler(db *sql.DB, fotosDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		usuario, ok := middleware.UsuarioDaSessao(r.Context())
+		if !ok {
+			slog.Error("RemoverFotoProdutoHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
+		produtoID := r.PathValue("id")
+		nomeArquivo := r.PathValue("arquivo")
+		err := services.RemoverFotoProduto(db, empresa.ID, fotosDir, produtoID, nomeArquivo)
+		switch {
+		case err == nil:
+			slog.Info("foto de produto removida", "usuario_id", usuario.ID, "produto_id", produtoID, "arquivo", nomeArquivo)
+			w.WriteHeader(http.StatusNoContent)
+		case errors.Is(err, services.ErrFotoNaoEncontrada), errors.Is(err, services.ErrProdutoNaoEncontrado):
+			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "foto não encontrada")
+		default:
+			slog.Error("falha ao remover foto de produto", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao remover foto")
+		}
+	}
+}

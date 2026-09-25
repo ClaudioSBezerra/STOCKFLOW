@@ -41,7 +41,9 @@ describe('SemEmpresaPage — login pela conta (Story 15.2)', () => {
     expect(screen.getByRole('button', { name: 'Entrar' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Esqueci a senha' })).toBeInTheDocument();
     expect(screen.queryByText('Acesse pelo endereço da sua empresa')).not.toBeInTheDocument();
-    expect(document.body.textContent ?? '').not.toMatch(/plataforma/i);
+    // Única menção à Plataforma: o link discreto para o login do Dono, que
+    // não entra por este formulário (contas disjuntas, AD-21).
+    expect(screen.getByRole('link', { name: 'Acesso do Dono da Plataforma' })).toHaveAttribute('href', '/plataforma');
   });
 
   it('"Esqueci a senha" abre o pedido com o e-mail já digitado e mostra o sucesso (Story 15.3)', async () => {

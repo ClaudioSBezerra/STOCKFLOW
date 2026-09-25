@@ -277,6 +277,15 @@ export function SemEmpresaPage() {
               Esqueci a senha
             </Button>
           </form>
+          {/* A conta do Dono da Plataforma é separada das contas de Empresa e
+              não entra por este formulário (AD-21): sem o link, o Dono tentava
+              aqui, recebia a recusa genérica e o "Esqueci a senha" não enviava
+              nada. Âncora simples: a app `sem-empresa` não monta router. */}
+          <p className="mt-4 text-center text-label text-muted-foreground">
+            <a href="/plataforma" className="underline underline-offset-4 hover:text-foreground">
+              Acesso do Dono da Plataforma
+            </a>
+          </p>
         </CardContent>
       </Card>
     </div>

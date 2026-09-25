@@ -614,6 +614,7 @@ describe('CadastroProdutoSection', () => {
     expect(corpoDoPost(fetchMock).codigo).toBeUndefined();
 
     expect(screen.getByLabelText('Código')).toBeDisabled();
+    expect(screen.getByLabelText('Código')).toHaveAttribute('placeholder', 'Gerado automaticamente ao cadastrar');
     expect(screen.getByLabelText('Código')).toHaveValue('000007');
   });
 

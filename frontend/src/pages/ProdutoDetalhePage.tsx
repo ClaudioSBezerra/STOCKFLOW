@@ -881,6 +881,7 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
           open={editando}
           onOpenChange={setEditando}
           onSalvo={carregarDetalhe}
+          onFotosAlteradas={carregarDetalhe}
         />
       )}
 

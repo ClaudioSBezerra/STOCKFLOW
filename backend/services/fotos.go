@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"time"
 
@@ -158,4 +159,36 @@ func ListarFotosProduto(db *sql.DB, empresaID string, fotosDir string, produtoID
 	sort.Slice(fotos, func(i, j int) bool { return fotos[i].Nome < fotos[j].Nome })
 
 	return fotos, nil
+}
+
+// ErrFotoNaoEncontrada indica que o arquivo pedido em RemoverFotoProduto não
+// existe (ou o nome não é de uma foto daquele Produto).
+var ErrFotoNaoEncontrada = errors.New("foto não encontrada")
+
+// RemoverFotoProduto apaga UMA foto do Produto (DELETE
+// /api/produtos/{id}/fotos/{arquivo}, mínimo `almoxarife`). Trocar uma foto é
+// remover a antiga e enviar a nova. Mesmas defesas de servir o arquivo:
+//
+//   - `nome` precisa bater `^<produtoID>-\d+\.jpg$` ANTES de qualquer acesso ao
+//     disco (nunca apaga fora de `fotosDir` nem foto de outro Produto) ->
+//     senão ErrFotoNaoEncontrada;
+//   - o Produto precisa ser da Empresa (produtoDaEmpresa) ->
+//     ErrProdutoNaoEncontrado, antes de tocar o disco;
+//   - arquivo ausente -> ErrFotoNaoEncontrada; outro erro de disco (permissão,
+//     volume) sobe como falha de infraestrutura, nunca vira "não encontrada".
+func RemoverFotoProduto(db *sql.DB, empresaID, fotosDir, produtoID, nome string) error {
+	padrao, err := regexp.Compile(`^` + regexp.QuoteMeta(produtoID) + `-\d+\.jpg$`)
+	if err != nil || !padrao.MatchString(nome) {
+		return ErrFotoNaoEncontrada
+	}
+	if err := produtoDaEmpresa(db, empresaID, produtoID); err != nil {
+		return err
+	}
+	if err := os.Remove(filepath.Join(fotosDir, nome)); err != nil {
+		if os.IsNotExist(err) {
+			return ErrFotoNaoEncontrada
+		}
+		return fmt.Errorf("falha ao remover foto do produto: %w", err)
+	}
+	return nil
 }

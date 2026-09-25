@@ -19,11 +19,14 @@ import {
   type DimensaoEstado,
 } from '@/lib/produtos';
 import { DimensaoField } from './DimensaoField';
+import { FotosProdutoSection } from './FotosProdutoSection';
 
 /**
  * Diálogo "Editar produto" (spec-13-1): formulário pré-preenchido a partir do
  * detalhe do Produto, `PUT /api/produtos/{id}`. Código é somente-leitura;
- * saldo, reservas e fotos não são editáveis aqui. Nenhuma validação de
+ * saldo e reservas não são editáveis aqui. As fotos têm seção própria
+ * (FotosProdutoSection: adicionar, trocar, remover), fora do formulário e
+ * gravadas na hora — não dependem do "Salvar". Nenhuma validação de
  * formato roda no cliente — o servidor é a fonte de verdade e o erro dele
  * aparece em `role="alert"`.
  */
@@ -68,9 +71,12 @@ interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSalvo: () => void | Promise<void>;
+  /** Chamado ao FECHAR o diálogo se alguma foto mudou, para quem abriu recarregar a galeria. */
+  onFotosAlteradas?: () => void | Promise<void>;
 }
 
-export function EditarProdutoDialog({ produto, open, onOpenChange, onSalvo }: Props) {
+export function EditarProdutoDialog({ produto, open, onOpenChange, onSalvo, onFotosAlteradas }: Props) {
+  const [fotosAlteradas, setFotosAlteradas] = useState(false);
   const [nome, setNome] = useState('');
   const [observacoes, setObservacoes] = useState('');
   const [categoriaId, setCategoriaId] = useState('');
@@ -184,6 +190,10 @@ export function EditarProdutoDialog({ produto, open, onOpenChange, onSalvo }: Pr
       open={open}
       onOpenChange={(aberto) => {
         if (!aberto && enviando) return;
+        if (!aberto && fotosAlteradas) {
+          setFotosAlteradas(false);
+          void onFotosAlteradas?.();
+        }
         onOpenChange(aberto);
       }}
     >
@@ -310,6 +320,8 @@ export function EditarProdutoDialog({ produto, open, onOpenChange, onSalvo }: Pr
             {enviando ? 'Salvando...' : 'Salvar'}
           </Button>
         </form>
+
+        {open && <FotosProdutoSection produtoId={produto.id} onAlterado={() => setFotosAlteradas(true)} />}
       </DialogContent>
     </Dialog>
   );

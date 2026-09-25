@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"stockflow/backend/middleware"
@@ -621,5 +622,118 @@ func TestListarFotosProdutoHandler_QualquerPapelAutenticado(t *testing.T) {
 	wLista := listarFotosProduto(db, fotosDir, "Bearer "+tokenUsuario, produtoID)
 	if wLista.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body=%s) — listagem deveria ser liberada a qualquer papel", wLista.Code, wLista.Body.String())
+	}
+}
+
+// deleteFotoProduto despacha DELETE /api/produtos/{id}/fotos/{arquivo} pela
+// MESMA composição de newMux (RequireAuth + RequireRole(almoxarife)).
+func deleteFotoProduto(db *sql.DB, fotosDir, authHeader, produtoID, arquivo string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("DELETE /e/{slug}/api/produtos/{id}/fotos/{arquivo}",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					RemoverFotoProdutoHandler(db, fotosDir)))))
+
+	r := httptest.NewRequest(http.MethodDelete, prefixoEmpresaTeste+"/api/produtos/"+produtoID+"/fotos/"+arquivo, nil)
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+// TestRemoverFotoProdutoHandler_RemoveSoAFotoPedida prova o caminho feliz e a
+// troca (remover + enviar): 204, o arquivo some do disco e da listagem, a
+// outra foto do Produto fica; remover de novo -> 404.
+func TestRemoverFotoProdutoHandler_RemoveSoAFotoPedida(t *testing.T) {
+	db := testDB(t)
+	limparProdutosFotos(t, db)
+	fotosDir := t.TempDir()
+	criarContaComPapel(t, db, "Almox Remove", "foto-remove@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "foto-remove@empresa.com", "senha-123456")
+	produtoID := criarProdutoParaFotoHandler(t, db, "Produto Foto Remover")
+
+	var nomes []string
+	for i := 0; i < 2; i++ {
+		w := postFotoProduto(db, fotosDir, "Bearer "+token, produtoID, construirJPEG(t, 100, 100), "foto.jpg")
+		if w.Code != http.StatusCreated {
+			t.Fatalf("envio %d: status = %d (body=%s)", i, w.Code, w.Body.String())
+		}
+		var resp struct {
+			Foto services.FotoProduto `json:"foto"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode envio: %v", err)
+		}
+		nomes = append(nomes, resp.Foto.Nome)
+	}
+
+	w := deleteFotoProduto(db, fotosDir, "Bearer "+token, produtoID, nomes[0])
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("remover: status = %d, want 204 (body=%s)", w.Code, w.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(fotosDir, nomes[0])); !os.IsNotExist(err) {
+		t.Errorf("a foto removida continua em disco (err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(fotosDir, nomes[1])); err != nil {
+		t.Errorf("a outra foto do Produto sumiu: %v", err)
+	}
+
+	w = listarFotosProduto(db, fotosDir, "Bearer "+token, produtoID)
+	var lista struct {
+		Fotos []services.FotoProduto `json:"fotos"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &lista); err != nil {
+		t.Fatalf("decode listagem: %v", err)
+	}
+	if len(lista.Fotos) != 1 || lista.Fotos[0].Nome != nomes[1] {
+		t.Errorf("listagem depois de remover = %+v, want só %s", lista.Fotos, nomes[1])
+	}
+
+	if w := deleteFotoProduto(db, fotosDir, "Bearer "+token, produtoID, nomes[0]); w.Code != http.StatusNotFound {
+		t.Errorf("remover de novo: status = %d, want 404", w.Code)
+	}
+}
+
+// TestRemoverFotoProdutoHandler_Recusas prova as defesas: papel `usuario` ->
+// 403 sem apagar; nome fora do padrão (outro Produto, travessia de caminho) e
+// Produto inexistente -> 404 sem tocar em nenhum arquivo.
+func TestRemoverFotoProdutoHandler_Recusas(t *testing.T) {
+	db := testDB(t)
+	limparProdutosFotos(t, db)
+	fotosDir := t.TempDir()
+	criarContaComPapel(t, db, "Almox Recusa", "foto-recusa-almox@empresa.com", "senha-123456", "almoxarife")
+	tokenAlmox := tokenDeLogin(t, db, "foto-recusa-almox@empresa.com", "senha-123456")
+	criarContaComPapel(t, db, "Usuario Recusa", "foto-recusa-usuario@empresa.com", "senha-123456", "usuario")
+	tokenUsuario := tokenDeLogin(t, db, "foto-recusa-usuario@empresa.com", "senha-123456")
+	produtoA := criarProdutoParaFotoHandler(t, db, "Produto Foto Recusa A")
+	produtoB := criarProdutoParaFotoHandler(t, db, "Produto Foto Recusa B")
+
+	w := postFotoProduto(db, fotosDir, "Bearer "+tokenAlmox, produtoA, construirJPEG(t, 100, 100), "foto.jpg")
+	var resp struct {
+		Foto services.FotoProduto `json:"foto"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || w.Code != http.StatusCreated {
+		t.Fatalf("envio: status = %d, err = %v", w.Code, err)
+	}
+	nome := resp.Foto.Nome
+
+	if w := deleteFotoProduto(db, fotosDir, "Bearer "+tokenUsuario, produtoA, nome); w.Code != http.StatusForbidden {
+		t.Errorf("papel usuario: status = %d, want 403", w.Code)
+	}
+	if w := deleteFotoProduto(db, fotosDir, "Bearer "+tokenAlmox, produtoB, nome); w.Code != http.StatusNotFound {
+		t.Errorf("foto de outro Produto: status = %d, want 404", w.Code)
+	}
+	if w := deleteFotoProduto(db, fotosDir, "Bearer "+tokenAlmox, produtoA, "..%2F..%2Fetc%2Fpasswd"); w.Code != http.StatusNotFound {
+		t.Errorf("nome fora do padrão: status = %d, want 404", w.Code)
+	}
+	if w := deleteFotoProduto(db, fotosDir, "Bearer "+tokenAlmox, "00000000-0000-0000-0000-000000000000",
+		"00000000-0000-0000-0000-000000000000-1790000000.jpg"); w.Code != http.StatusNotFound {
+		t.Errorf("Produto inexistente: status = %d, want 404", w.Code)
+	}
+	if _, err := os.Stat(filepath.Join(fotosDir, nome)); err != nil {
+		t.Errorf("uma recusa apagou a foto: %v", err)
 	}
 }

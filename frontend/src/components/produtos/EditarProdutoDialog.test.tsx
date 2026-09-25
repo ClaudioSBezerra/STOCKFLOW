@@ -40,6 +40,8 @@ function stub(put: () => Promise<unknown>) {
       return resposta(true, { templates: [{ id: 't1', subtipo: 'Cabo', template: 'CABO [TIPO] [BITOLA]' }] });
     }
     if (url === '/api/produtos/p1' && init?.method === 'PUT') return put();
+    // Seção "Fotos" (FotosProdutoSection): galeria vazia nestes testes.
+    if (url === '/api/produtos/p1/fotos' && !init?.method) return resposta(true, { fotos: [] });
     throw new Error(`URL inesperada: ${url}`);
   });
   vi.stubGlobal('fetch', fn);

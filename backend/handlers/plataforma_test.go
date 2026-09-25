@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +62,10 @@ func criarDonoHandlers(t *testing.T, db *sql.DB) (id, segredo string) {
 	return id, segredo
 }
 
+// fotosDirPlataformaTeste é o FOTOS_DIR das rotas do Dono nos testes: a
+// criação de Empresa grava ali as fotos de exemplo do Treinamento.
+var fotosDirPlataformaTeste = filepath.Join(os.TempDir(), "stockflow-fotos-plataforma-teste")
+
 // muxPlataformaTeste compõe as rotas do Dono exatamente como newMux.
 func muxPlataformaTeste(db *sql.DB) *http.ServeMux {
 	mux := http.NewServeMux()
@@ -69,7 +75,7 @@ func muxPlataformaTeste(db *sql.DB) *http.ServeMux {
 	mux.HandleFunc("POST /api/plataforma/auth/logout", PlataformaLogoutHandler(db))
 	mux.HandleFunc("GET /api/plataforma/auth/me", requireDono(PlataformaMeHandler()))
 	mux.HandleFunc("GET /api/plataforma/empresas", requireDono(ListarEmpresasHandler(db)))
-	mux.HandleFunc("POST /api/plataforma/empresas", requireDono(CriarEmpresaHandler(db, testEmailCfg)))
+	mux.HandleFunc("POST /api/plataforma/empresas", requireDono(CriarEmpresaHandler(db, testEmailCfg, fotosDirPlataformaTeste)))
 	mux.HandleFunc("POST /api/plataforma/empresas/{id}/desativacao", requireDono(DesativarEmpresaHandler(db)))
 	mux.HandleFunc("POST /api/plataforma/empresas/{id}/reativacao", requireDono(ReativarEmpresaHandler(db)))
 	return mux
@@ -349,6 +355,15 @@ func TestEmpresasPlataforma_CriarListarDesativarReativar(t *testing.T) {
 	if criada.Empresa.Slug != "plat-handlers" || criada.Treinamento.Slug != "plat-handlers-treinamento" ||
 		criada.Treinamento.EmpresaOrigemID == nil || *criada.Treinamento.EmpresaOrigemID != criada.Empresa.ID {
 		t.Errorf("resposta de criação = %+v", criada)
+	}
+	// O Treinamento nasce com as fotos de exemplo: um dry-run logo depois não
+	// tem nada a semear e acha todos os Produtos de exemplo já com foto.
+	fotos, err := services.SemearFotosTreinamento(db, fotosDirPlataformaTeste, criada.Treinamento.Slug, false)
+	if err != nil {
+		t.Fatalf("dry-run das fotos do Treinamento: %v", err)
+	}
+	if fotos.Semeadas != 0 || fotos.JaComFoto == 0 {
+		t.Errorf("fotos do Treinamento recém-criado = %+v, want todas já gravadas", fotos)
 	}
 	// Nenhuma resposta ao Dono carrega o token de primeiro acesso nem senha.
 	var tokens []string

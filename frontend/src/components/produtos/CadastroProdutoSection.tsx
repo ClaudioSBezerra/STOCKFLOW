@@ -452,6 +452,7 @@ export function CadastroProdutoSection() {
             <Input
               id="produto-codigo"
               value={codigoVisivel ? (produtoCriado?.codigo ?? '') : ''}
+              placeholder="Gerado automaticamente ao cadastrar"
               disabled
             />
           </div>

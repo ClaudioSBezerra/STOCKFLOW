@@ -390,7 +390,7 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	mux.HandleFunc("POST /api/plataforma/auth/logout", handlers.PlataformaLogoutHandler(db))
 	mux.HandleFunc("GET /api/plataforma/auth/me", requireDono(handlers.PlataformaMeHandler()))
 	mux.HandleFunc("GET /api/plataforma/empresas", requireDono(handlers.ListarEmpresasHandler(db)))
-	mux.HandleFunc("POST /api/plataforma/empresas", requireDono(handlers.CriarEmpresaHandler(db, emailCfg)))
+	mux.HandleFunc("POST /api/plataforma/empresas", requireDono(handlers.CriarEmpresaHandler(db, emailCfg, fotosDir)))
 	mux.HandleFunc("POST /api/plataforma/empresas/{id}/desativacao", requireDono(handlers.DesativarEmpresaHandler(db)))
 	mux.HandleFunc("POST /api/plataforma/empresas/{id}/reativacao", requireDono(handlers.ReativarEmpresaHandler(db)))
 
@@ -627,6 +627,10 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 		handlers.ServirFotoProdutoHandler(db, fotosDir)))
 	registrar("GET /e/{slug}/api/produtos/{id}/fotos", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarFotosProdutoHandler(db, fotosDir)))
+	// Remover uma foto (trocar = remover + enviar) — mesmo papel mínimo do envio.
+	registrar("DELETE /e/{slug}/api/produtos/{id}/fotos/{arquivo}", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAlmoxarife)(
+			handlers.RemoverFotoProdutoHandler(db, fotosDir))))
 
 	// Busca por nome/código/categoria com sugestões — Story 4.1 (FR-4). GET
 	// /api/produtos/busca leva só RequireAuth, mesmo padrão de GET

@@ -19,6 +19,12 @@ FROM alpine:3.20
 
 RUN apk add --no-cache ca-certificates
 RUN adduser -D -u 10001 appuser
+# /data/fotos nasce na imagem com dono appuser: um volume nomeado NOVO montado
+# ali herda esse dono na primeira montagem. Sem isto o volume nascia root e o
+# processo (USER appuser) não gravava fotos — upload e seed-fotos-treinamento
+# falhavam com "permission denied" (Ferreira Costa, 2026-09-25). Volumes já
+# existentes não mudam: esses precisam de um chown único.
+RUN mkdir -p /data/fotos && chown appuser:appuser /data/fotos
 
 WORKDIR /app
 COPY --from=build /out/api ./api

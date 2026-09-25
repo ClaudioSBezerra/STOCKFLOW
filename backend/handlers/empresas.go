@@ -61,7 +61,13 @@ func (req novaEmpresaRequest) resolverMFAObrigatorio() (mfa bool, ok bool) {
 // uso -> 409 CONFLICT nomeando qual. `mfa_obrigatorio` (Story 14.2) vai para
 // a Empresa real e, por herança na criação, para o Treinamento; conflito com
 // o sinônimo `mfaObrigatorio` -> 400 VALIDATION_ERROR.
-func CriarEmpresaHandler(db *sql.DB, emailCfg services.EmailConfig) http.HandlerFunc {
+//
+// Depois do commit, grava as fotos de exemplo nos Produtos do Treinamento
+// (services.SemearFotosTreinamento, a mesma rotina do CLI da Story 12.4), para
+// o Treinamento já nascer com catálogo ilustrado. É melhor-esforço e fica FORA
+// da transação (arquivo em disco): uma falha só é registrada em log — a
+// Empresa já existe, o 201 não muda e o CLI continua servindo para completar.
+func CriarEmpresaHandler(db *sql.DB, emailCfg services.EmailConfig, fotosDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		dono, ok := donoDaRequisicao(w, r)
 		if !ok {
@@ -99,6 +105,12 @@ func CriarEmpresaHandler(db *sql.DB, emailCfg services.EmailConfig) http.Handler
 			slog.Info("empresa criada pelo dono da plataforma",
 				"dono_id", dono.ID, "empresa_id", empresa.ID, "slug", empresa.Slug,
 				"treinamento_id", treino.ID, "treinamento_slug", treino.Slug)
+			if res, errFotos := services.SemearFotosTreinamento(db, fotosDir, treino.Slug, true); errFotos != nil {
+				slog.Warn("empresa criada, mas as fotos de exemplo do Treinamento não foram gravadas; rode seed-fotos-treinamento",
+					"treinamento_slug", treino.Slug, "error", errFotos)
+			} else {
+				slog.Info("fotos de exemplo gravadas no Treinamento", "treinamento_slug", treino.Slug, "semeadas", res.Semeadas)
+			}
 			escreverJSON(w, http.StatusCreated, map[string]any{
 				"empresa":     empresa,
 				"treinamento": treino,
