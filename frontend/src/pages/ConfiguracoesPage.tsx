@@ -8,87 +8,26 @@ import { Label } from '@/components/ui/label';
 import { mfaSetupPendente, useAuth } from '@/lib/auth';
 import { rankPapel } from '@/components/shell/nav-items';
 import { proximoPapel, rotuloPapel } from '@/lib/promocao';
-import { GestaoUsuariosSection } from '@/components/usuarios/GestaoUsuariosSection';
-import { ConvitesSection } from '@/components/usuarios/ConvitesSection';
-import { SolicitacoesExclusaoSection } from '@/components/usuarios/SolicitacoesExclusaoSection';
-import { LogAcessoSection } from '@/components/logs/LogAcessoSection';
-import { MfaEmpresaSection } from '@/components/seguranca/MfaEmpresaSection';
-import { CategoriasSection } from '@/components/categorias/CategoriasSection';
-import { CentrosCustoSection } from '@/components/centroscusto/CentrosCustoSection';
-import { FiliaisSection } from '@/components/filiais/FiliaisSection';
-import { TemplatesNomenclaturaSection } from '@/components/nomenclatura/TemplatesNomenclaturaSection';
 import { PrivacidadeSection } from '@/components/privacidade/PrivacidadeSection';
 import { apiUrl, authHeaders } from '@/lib/api';
 
 /**
- * Página "Meu Perfil" (`/configuracoes`, Story 1.7, spec-1-7). Renderizada
- * dentro do `AppShell`/`RotaProtegida`. Duas seções empilhadas na mesma
- * página (simplificação deliberada do "aba dentro de Configurações" do
- * EXPERIENCE.md — o `AppShell` não tem abas horizontais nesta story):
+ * Página "Meu perfil" (`/configuracoes`, Story 1.7; reduzida na Story 17.2).
+ * Fica só com o que é da própria pessoa:
  *
- *  - "Meu Perfil": identidade (`nome`/`email`/`papel` de `useAuth()`) + botão
- *    "Solicitar promoção" para quem tem papel abaixo de `gestor`. O estado do
- *    botão vem de `GET /api/promocoes/minha` (consulta sob demanda no mount —
- *    sem toast, sem notificação: isso fica para uma story posterior).
- *  - "Decidir promoções": só montada para `gestor`/`adm`. Lista de
- *    `GET /api/promocoes` com "Aprovar"/"Recusar" por item, chamando
- *    `POST /api/promocoes/{id}/decisao`.
- *  - "Gestão de Usuários" (`GestaoUsuariosSection`, Story 1.8): só montada para
- *    `gestor`/`adm`. Lista `GET /api/usuarios` com "Desativar"/"Reativar"/
- *    "Rebaixar" por linha, chamando `POST /api/usuarios/{id}/desativacao` e
- *    `POST /api/usuarios/{id}/rebaixamento`.
- *  - "Convites" (`ConvitesSection`, Story 9.3): só montada para `gestor`/`adm`,
- *    sob o mesmo gate de "Gestão de Usuários". Emite convites nominais
- *    (`POST /api/convites`) e devolve o LINK para o gestor compartilhar — o
- *    produto não envia esse e-mail. Lista `GET /api/convites` com a `situacao`
- *    de cada convite e cancela os pendentes com
- *    `POST /api/convites/{id}/revogacao`. Desde esta story o autocadastro só
- *    acontece a partir de um convite válido.
- *  - "Log de Acesso" (`LogAcessoSection`, Story 1.12): só montada para `adm`.
- *    Tabela somente-leitura de `GET /api/logs-acesso` (toda tentativa de login
- *    por senha ou SSO, sucesso ou falha), filtrável por período. Nenhuma ação
- *    de edição/exclusão — a trilha é append-only.
- *  - "Filiais" (`FiliaisSection`, Story 12.1): só montada para `adm`+.
- *    Lista e cadastra as Filiais da Empresa (`GET/POST /api/filiais`); todo
- *    Estoque novo é vinculado a uma delas.
- *  - "Centros de custo" (`CentrosCustoSection`, Story 12.3): só montada para
- *    `adm`+. Lista e cadastra os Centros de Custo da Empresa
- *    (`GET/POST /api/centros-custo`); o envio de Pedido pode escolher um.
- *  - "Categorias" (`CategoriasSection`, Story 10.5): só montada para `adm`+.
- *    CRUD das categorias de produto da Empresa (`GET/POST /api/categorias`,
- *    `PUT/DELETE /api/categorias/{id}`); exclusão bloqueada (409) enquanto
- *    algum Produto usa a categoria.
- *  - "Templates de Nomenclatura" (`TemplatesNomenclaturaSection`, Story
- *    10.6): só montada para `adm`+. CRUD dos templates de nome da Empresa
- *    (`GET/POST /api/nomenclatura-templates`, `PUT/DELETE
- *    /api/nomenclatura-templates/{id}`); exclusão bloqueada (409) enquanto
- *    algum Produto usa o template ou se for o único fallback `[NOME LIVRE]`.
- *  - "Privacidade" (`PrivacidadeSection`, Story 8.1): montada para QUALQUER
- *    papel autenticado, sem gate de `rankPapel` — a LGPD exige que todo
- *    Usuário consiga baixar os próprios dados. Botão "Baixar meus dados" ->
- *    `GET /api/usuarios/me/exportar-dados` -> download de `meus-dados.json`
- *    (identidade + log de acesso + Movimentações + Pedidos do próprio
- *    usuário).
- *  - "Segurança" (`SegurancaCard`, Story 1.11): visível a TODOS os papéis —
- *    "obrigatório para o seu papel" quando `origem==='senha'`, o papel
- *    alcança `gestor` sem MFA habilitado e a Empresa exige MFA (Story 14.1,
- *    `mfaSetupPendente`); "opcional" para os demais casos
- *    sem MFA; "ativo" quando já habilitado. Fluxo de configuração: botão ->
- *    `POST /mfa/iniciar` (QR Code + segredo em texto) -> código TOTP ->
- *    `POST /mfa/confirmar` -> `atualizarUsuario` reflete `mfaHabilitado:true`
- *    sem round-trip extra a `/me`. Com MFA ativo, "Desligar meu MFA" (Story
- *    14.4) pede senha atual + código e chama `POST /mfa/desligar`; para
- *    `gestor`/`adm` numa Empresa que exige, o botão some e fica a explicação.
- *  - "Dupla autenticação da Empresa" (`MfaEmpresaSection`, Story 14.3): só
- *    montada para `adm`, logo depois de "Segurança". Mostra se a Empresa
- *    exige MFA (`GET/PUT /api/seguranca/mfa-empresa`); ligar pede confirmação
- *    com a contagem de contas `gestor`/`adm` sem MFA. Traz o histórico
- *    somente-leitura de `GET /api/seguranca/auditoria`.
+ *  - Dados da conta (`nome`/`email`/`papel`) + "Solicitar promoção" para quem
+ *    tem papel abaixo de `gestor` (`GET /api/promocoes/minha`,
+ *    `POST /api/promocoes`).
+ *  - "Segurança" (`SegurancaCard`, Stories 1.11/14.1/14.4): minha dupla
+ *    autenticação (TOTP) — configurar, e desligar quando a Empresa não exige.
+ *  - "Privacidade" (`PrivacidadeSection`, Story 8.1): qualquer papel baixa os
+ *    próprios dados (LGPD).
  *
- * O backend é sempre a autoridade: o papel-alvo é derivado no servidor a
- * partir do papel atual do solicitante, nunca enviado pelo cliente. Falha de
- * rede/HTTP vira mensagem inline (`role="alert"`), consistente com
- * `CadastroPage`/`RedefinirSenhaPage`.
+ * As seções administrativas (Decidir promoções, Usuários, Convites, MFA da
+ * Empresa, Log de acesso, Filiais, Centros de custo, Categorias, Templates e
+ * Solicitações LGPD) ganharam rota própria em `/cadastros/*` e `/admin/*`
+ * (Story 17.2). O servidor é sempre a autoridade; falha de rede/HTTP vira
+ * mensagem inline (`role="alert"`).
  */
 
 interface MinhaSolicitacao {
@@ -99,18 +38,8 @@ interface MinhaSolicitacao {
   decidido_em: string | null;
 }
 
-interface SolicitacaoPendente {
-  id: string;
-  solicitante_nome: string;
-  solicitante_email: string;
-  papel_atual: string;
-  papel_alvo: string;
-  criado_em: string;
-}
-
 const MENSAGEM_ERRO_SOLICITAR =
   'Não foi possível solicitar a promoção agora. Tente novamente em instantes.';
-const MENSAGEM_ERRO_DECISAO = 'Não foi possível concluir a decisão.';
 const MENSAGEM_MFA_EXIGIDO_PELA_EMPRESA =
   'A Empresa exige dupla autenticação para o seu papel; ela não pode ser desligada.';
 const MENSAGEM_ERRO_CARREGAR_MINHA =
@@ -435,16 +364,10 @@ export function ConfiguracoesPage() {
   const { usuario } = useAuth();
   const papel = usuario?.papel ?? '';
   const alvo = proximoPapel(papel);
-  const podeDecidir = rankPapel(papel) >= rankPapel('gestor');
 
   const [minha, setMinha] = useState<MinhaSolicitacao | null>(null);
-  const [pendentes, setPendentes] = useState<SolicitacaoPendente[]>([]);
   const [enviando, setEnviando] = useState(false);
   const [erroSolicitar, setErroSolicitar] = useState<string | null>(null);
-  const [decidindoId, setDecidindoId] = useState<string | null>(null);
-  const [erroDecisao, setErroDecisao] = useState<string | null>(null);
-  const [avisoDecisao, setAvisoDecisao] = useState<string | null>(null);
-  const [erroCarregarPendentes, setErroCarregarPendentes] = useState<string | null>(null);
   const [erroCarregarMinha, setErroCarregarMinha] = useState<string | null>(null);
 
   const carregarMinha = useCallback(async () => {
@@ -467,32 +390,11 @@ export function ConfiguracoesPage() {
     }
   }, []);
 
-  const carregarPendentes = useCallback(async () => {
-    try {
-      const res = await fetch(apiUrl('/api/promocoes'), { headers: authHeaders() });
-      if (!res.ok) {
-        // Sem este alerta, uma falha de carga deixaria o gestor/adm olhando
-        // "Nenhuma solicitação pendente." — um falso "nada a fazer" que
-        // esconde promoções reais aguardando decisão.
-        setErroCarregarPendentes('Não foi possível carregar as solicitações pendentes.');
-        return;
-      }
-      const body = (await res.json()) as { solicitacoes: SolicitacaoPendente[] };
-      setPendentes(body.solicitacoes ?? []);
-      setErroCarregarPendentes(null);
-    } catch {
-      setErroCarregarPendentes('Não foi possível carregar as solicitações pendentes.');
-    }
-  }, []);
-
   useEffect(() => {
     void (async () => {
       await carregarMinha();
-      if (podeDecidir) {
-        await carregarPendentes();
-      }
     })();
-  }, [carregarMinha, carregarPendentes, podeDecidir]);
+  }, [carregarMinha]);
 
   async function solicitar() {
     // Defesa em profundidade contra duplo-submit (molde de CadastroPage): o
@@ -513,40 +415,6 @@ export function ConfiguracoesPage() {
       setErroSolicitar(MENSAGEM_ERRO_SOLICITAR);
     } finally {
       setEnviando(false);
-    }
-  }
-
-  async function decidir(id: string, aprovar: boolean) {
-    if (decidindoId !== null) {
-      return;
-    }
-    setErroDecisao(null);
-    setAvisoDecisao(null);
-    setDecidindoId(id);
-    try {
-      const res = await fetch(apiUrl(`/api/promocoes/${id}/decisao`), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ aprovar }),
-      });
-      if (!res.ok) {
-        setErroDecisao(MENSAGEM_ERRO_DECISAO);
-        // Uma decisão que falha por 404/409 (o item já foi decidido por outro
-        // gestor) deixaria a linha na lista para ser retentada sem fim —
-        // recarrega a fila para a linha obsoleta cair.
-        await carregarPendentes();
-        return;
-      }
-      setAvisoDecisao(aprovar ? 'Promoção aprovada.' : 'Promoção recusada.');
-      await carregarPendentes();
-    } catch {
-      setErroDecisao(MENSAGEM_ERRO_DECISAO);
-      // Mesma razão do ramo `!res.ok`: uma falha aqui pode ter coincidido com
-      // o item já sendo decidido por outro gestor — recarrega a fila para a
-      // linha obsoleta cair em vez de ser retentada sem fim.
-      await carregarPendentes();
-    } finally {
-      setDecidindoId(null);
     }
   }
 
@@ -620,95 +488,9 @@ export function ConfiguracoesPage() {
         </CardContent>
       </Card>
 
-      <PrivacidadeSection />
-
-      {podeDecidir && (
-        <Card>
-          <CardHeader>
-            <h2 className="text-heading-md">Decidir promoções</h2>
-            <CardDescription>Solicitações de promoção aguardando sua decisão.</CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-4">
-            {avisoDecisao && <output className="text-body">{avisoDecisao}</output>}
-            {erroDecisao && (
-              <p role="alert" className="text-body text-destructive">
-                {erroDecisao}
-              </p>
-            )}
-            {erroCarregarPendentes && (
-              <p role="alert" className="text-body text-destructive">
-                {erroCarregarPendentes}
-              </p>
-            )}
-            {!erroCarregarPendentes && pendentes.length === 0 && (
-              <p className="text-body text-muted-foreground">Nenhuma solicitação pendente.</p>
-            )}
-            {!erroCarregarPendentes && pendentes.length > 0 && (
-              <ul className="flex flex-col gap-3">
-                {pendentes.map((p) => (
-                  <li
-                    key={p.id}
-                    className="flex flex-col gap-2 border-b border-border pb-3 last:border-b-0 last:pb-0"
-                  >
-                    <div className="flex flex-col">
-                      <span className="text-body">{p.solicitante_nome}</span>
-                      <span className="text-label text-muted-foreground">
-                        {p.solicitante_email}
-                      </span>
-                      <span className="text-label text-muted-foreground">
-                        {rotuloPapel(p.papel_atual)} &rarr; {rotuloPapel(p.papel_alvo)}
-                      </span>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button
-                        type="button"
-                        size="sm"
-                        aria-label={`Aprovar promoção de ${p.solicitante_nome}`}
-                        onClick={() => decidir(p.id, true)}
-                        disabled={decidindoId !== null}
-                      >
-                        Aprovar
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        aria-label={`Recusar promoção de ${p.solicitante_nome}`}
-                        onClick={() => decidir(p.id, false)}
-                        disabled={decidindoId !== null}
-                      >
-                        Recusar
-                      </Button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
       <SegurancaCard />
 
-      {rankPapel(papel) >= rankPapel('adm') && <MfaEmpresaSection />}
-
-      {podeDecidir && <GestaoUsuariosSection />}
-
-      {podeDecidir && <ConvitesSection />}
-
-      {rankPapel(papel) >= rankPapel('adm') && <LogAcessoSection />}
-
-      {rankPapel(papel) >= rankPapel('adm') && <FiliaisSection />}
-      {rankPapel(papel) >= rankPapel('adm') && <CentrosCustoSection />}
-
-      {rankPapel(papel) >= rankPapel('adm') && <CategoriasSection />}
-
-      {rankPapel(papel) >= rankPapel('adm') && <TemplatesNomenclaturaSection />}
-
-      {/* SolicitacoesExclusaoSection já se auto-gateia por rankPapel('adm')
-          internamente (molde de PrivacidadeSection) — montada incondicionalmente
-          aqui para não duplicar o gate em dois lugares. */}
-      <SolicitacoesExclusaoSection />
+      <PrivacidadeSection />
     </div>
   );
 }

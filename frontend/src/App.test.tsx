@@ -323,6 +323,28 @@ describe('<App /> — wiring real de AuthProvider + RotaProtegida', () => {
     expect(screen.queryByRole('navigation', { name: 'Menu principal' })).not.toBeInTheDocument();
   });
 
+  it('/admin/usuarios abre a página própria dentro do shell, com o item ativo (Story 17.2)', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/api/auth/refresh') {
+        return Promise.resolve({ ok: true, json: async () => ({ token: 'access-abc' }) });
+      }
+      if (url === '/api/auth/me') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ id: '1', nome: 'Gê', email: 'g@empresa.com', papel: 'gestor', mfaHabilitado: true }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ usuarios: [] }) });
+    });
+    await router.navigate('/admin/usuarios');
+
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'Usuários' })).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/admin/usuarios');
+    expect(screen.queryByText('Em construção')).not.toBeInTheDocument();
+  });
+
   it('/configuracoes renderiza ConfiguracoesPage dentro do shell, não a PlaceholderPage', async () => {
     fetchMock.mockImplementation((url: string) => {
       if (url === '/api/auth/refresh') {

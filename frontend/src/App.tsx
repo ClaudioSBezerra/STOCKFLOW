@@ -22,6 +22,16 @@ import { DuplicatasPage } from '@/pages/DuplicatasPage';
 import { CadastrarProdutoPage } from '@/pages/CadastrarProdutoPage';
 import { ImportarProdutosPage } from '@/pages/ImportarProdutosPage';
 import { NormalizacaoPage } from '@/pages/NormalizacaoPage';
+import { CategoriasPage } from '@/pages/cadastros/CategoriasPage';
+import { TemplatesPage } from '@/pages/cadastros/TemplatesPage';
+import { FiliaisPage } from '@/pages/cadastros/FiliaisPage';
+import { CentrosCustoPage } from '@/pages/cadastros/CentrosCustoPage';
+import { UsuariosPage } from '@/pages/admin/UsuariosPage';
+import { ConvitesPage } from '@/pages/admin/ConvitesPage';
+import { PromocoesPage } from '@/pages/admin/PromocoesPage';
+import { SegurancaEmpresaPage } from '@/pages/admin/SegurancaEmpresaPage';
+import { LogAcessoPage } from '@/pages/admin/LogAcessoPage';
+import { LgpdPage } from '@/pages/admin/LgpdPage';
 import { AuthCallbackPage } from '@/pages/AuthCallbackPage';
 
 /**
@@ -133,6 +143,16 @@ export const router = createBrowserRouter(
         { path: 'estoques/movimentacoes', element: <MovimentacoesPage /> },
         { path: 'normalizacao', element: <NormalizacaoPage /> },
         { path: 'normalizacao/duplicatas', element: <DuplicatasPage /> },
+        { path: 'cadastros/categorias', element: <CategoriasPage /> },
+        { path: 'cadastros/templates', element: <TemplatesPage /> },
+        { path: 'cadastros/filiais', element: <FiliaisPage /> },
+        { path: 'cadastros/centros-custo', element: <CentrosCustoPage /> },
+        { path: 'admin/usuarios', element: <UsuariosPage /> },
+        { path: 'admin/convites', element: <ConvitesPage /> },
+        { path: 'admin/promocoes', element: <PromocoesPage /> },
+        { path: 'admin/seguranca', element: <SegurancaEmpresaPage /> },
+        { path: 'admin/log-acesso', element: <LogAcessoPage /> },
+        { path: 'admin/lgpd', element: <LgpdPage /> },
         { path: '*', element: <PlaceholderPage /> },
       ],
     },

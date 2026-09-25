@@ -1,7 +1,9 @@
 import {
   ClipboardList,
+  Database,
   LayoutGrid,
   ScanSearch,
+  Settings,
   UserCircle,
   Warehouse,
   type LucideIcon,
@@ -12,7 +14,7 @@ import {
  * Cada grupo tem itens com rota própria e `papelMinimo`: o menu só renderiza
  * os itens cujo papel mínimo o papel do usuário alcança, e o grupo sem item
  * visível some inteiro. Item sem permissão simplesmente não aparece — nunca
- * desabilitado. Os grupos Cadastros e Administração chegam na Story 17.2.
+ * desabilitado. Cadastros e Administração vieram na Story 17.2.
  */
 
 /**
@@ -87,6 +89,30 @@ export const navGrupos: NavGrupo[] = [
     itens: [
       { id: 'inconsistencias', label: 'Inconsistências', to: '/normalizacao', papelMinimo: 'almoxarife' },
       { id: 'duplicatas', label: 'Duplicatas', to: '/normalizacao/duplicatas', papelMinimo: 'almoxarife' },
+    ],
+  },
+  {
+    id: 'cadastros',
+    label: 'Cadastros',
+    icon: Database,
+    itens: [
+      { id: 'categorias', label: 'Categorias', to: '/cadastros/categorias', papelMinimo: 'adm' },
+      { id: 'templates', label: 'Templates de nome', to: '/cadastros/templates', papelMinimo: 'adm' },
+      { id: 'filiais', label: 'Filiais', to: '/cadastros/filiais', papelMinimo: 'adm' },
+      { id: 'centros-custo', label: 'Centros de custo', to: '/cadastros/centros-custo', papelMinimo: 'adm' },
+    ],
+  },
+  {
+    id: 'administracao',
+    label: 'Administração',
+    icon: Settings,
+    itens: [
+      { id: 'usuarios', label: 'Usuários', to: '/admin/usuarios', papelMinimo: 'gestor' },
+      { id: 'convites', label: 'Convites', to: '/admin/convites', papelMinimo: 'gestor' },
+      { id: 'promocoes', label: 'Promoções', to: '/admin/promocoes', papelMinimo: 'gestor' },
+      { id: 'seguranca-empresa', label: 'Segurança da empresa (MFA)', to: '/admin/seguranca', papelMinimo: 'adm' },
+      { id: 'log-acesso', label: 'Log de acesso', to: '/admin/log-acesso', papelMinimo: 'adm' },
+      { id: 'lgpd', label: 'Solicitações LGPD', to: '/admin/lgpd', papelMinimo: 'adm' },
     ],
   },
 ];

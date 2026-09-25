@@ -37,6 +37,8 @@ describe('nav-items: grupos e papéis', () => {
       'Pedidos',
       'Estoque',
       'Qualidade dos dados',
+      'Cadastros',
+      'Administração',
     ]);
     expect(todosItens.map((i) => i.to)).toEqual([
       '/',
@@ -50,6 +52,16 @@ describe('nav-items: grupos e papéis', () => {
       '/estoques/movimentacoes',
       '/normalizacao',
       '/normalizacao/duplicatas',
+      '/cadastros/categorias',
+      '/cadastros/templates',
+      '/cadastros/filiais',
+      '/cadastros/centros-custo',
+      '/admin/usuarios',
+      '/admin/convites',
+      '/admin/promocoes',
+      '/admin/seguranca',
+      '/admin/log-acesso',
+      '/admin/lgpd',
     ]);
     expect(todosItens.some((i) => i.to === '/relatorios')).toBe(false);
     expect(perfil.to).toBe('/configuracoes');
@@ -61,10 +73,19 @@ describe('nav-items: grupos e papéis', () => {
     expect(gruposVisiveis(navGrupos, 'usuario').map((g) => g.id)).toEqual(['catalogo', 'pedidos']);
   });
 
-  it('papel almoxarife, gestor e adm veem todos os itens desta story', () => {
-    for (const papel of ['almoxarife', 'gestor', 'adm']) {
-      expect(idsVisiveis(papel)).toHaveLength(todosItens.length);
-    }
+  it('almoxarife não vê Cadastros nem Administração', () => {
+    const ids = gruposVisiveis(navGrupos, 'almoxarife').map((g) => g.id);
+    expect(ids).toEqual(['catalogo', 'pedidos', 'estoque', 'qualidade']);
+  });
+
+  it('gestor vê só Usuários, Convites e Promoções em Administração; sem Cadastros', () => {
+    const grupos = gruposVisiveis(navGrupos, 'gestor');
+    expect(grupos.map((g) => g.id)).toEqual(['catalogo', 'pedidos', 'estoque', 'qualidade', 'administracao']);
+    expect(grupos[4].itens.map((i) => i.id)).toEqual(['usuarios', 'convites', 'promocoes']);
+  });
+
+  it('adm vê todos os itens', () => {
+    expect(idsVisiveis('adm')).toHaveLength(todosItens.length);
   });
 
   it('papel desconhecido/vazio não vê grupo nenhum', () => {

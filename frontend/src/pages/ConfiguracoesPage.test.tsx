@@ -2,6 +2,15 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ConfiguracoesPage } from './ConfiguracoesPage';
+import { CategoriasPage } from './cadastros/CategoriasPage';
+import { CentrosCustoPage } from './cadastros/CentrosCustoPage';
+import { FiliaisPage } from './cadastros/FiliaisPage';
+import { LgpdPage } from './admin/LgpdPage';
+import { LogAcessoPage } from './admin/LogAcessoPage';
+import { PromocoesPage } from './admin/PromocoesPage';
+import { SegurancaEmpresaPage } from './admin/SegurancaEmpresaPage';
+import { TemplatesPage } from './cadastros/TemplatesPage';
+import { UsuariosPage } from './admin/UsuariosPage';
 
 // useAuth() fornece a identidade e o papel — configuráveis por teste.
 const authState = vi.hoisted(() => ({
@@ -192,7 +201,7 @@ describe('ConfiguracoesPage — Meu Perfil', () => {
     expect(screen.getByRole('button', { name: 'Solicitar promoção para Almoxarife' })).toBeEnabled();
   });
 
-  it('gestor: sem botão de solicitar e com a seção "Decidir promoções"', async () => {
+  it('gestor: sem botão de solicitar e sem seções administrativas (Story 17.2)', async () => {
     authState.papel = 'gestor';
     stubFetch((url) => {
       if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
@@ -208,10 +217,11 @@ describe('ConfiguracoesPage — Meu Perfil', () => {
       await screen.findByText('Não há promoção disponível para o seu papel.'),
     ).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Solicitar promoção/ })).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Decidir promoções' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Decidir promoções' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Gestão de Usuários' })).not.toBeInTheDocument();
   });
 
-  it('gestor vê o heading "Gestão de Usuários"; usuario não', async () => {
+  it('UsuariosPage: gestor vê "Usuários" e a Gestão de Usuários; usuario recebe a recusa sem fetch', async () => {
     authState.papel = 'gestor';
     stubFetch((url) => {
       if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
@@ -221,7 +231,8 @@ describe('ConfiguracoesPage — Meu Perfil', () => {
       throw new Error(`URL inesperada: ${url}`);
     });
 
-    const { unmount } = render(<ConfiguracoesPage />);
+    const { unmount } = render(<UsuariosPage />);
+    expect(screen.getByRole('heading', { level: 1, name: 'Usuários' })).toBeInTheDocument();
     expect(
       await screen.findByRole('heading', { name: 'Gestão de Usuários' }),
     ).toBeInTheDocument();
@@ -234,10 +245,10 @@ describe('ConfiguracoesPage — Meu Perfil', () => {
       throw new Error(`URL inesperada: ${url}`);
     });
 
-    render(<ConfiguracoesPage />);
-    await screen.findByRole('button', { name: /Solicitar promoção/ });
+    render(<UsuariosPage />);
+    expect(screen.getByText('Você não tem acesso a Usuários.')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Gestão de Usuários' })).not.toBeInTheDocument();
-    expect(fetchMock).not.toHaveBeenCalledWith('/api/usuarios', expect.anything());
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('erro HTTP ao solicitar promoção mostra um role="alert"', async () => {
@@ -276,7 +287,7 @@ describe('ConfiguracoesPage — Meu Perfil', () => {
   });
 });
 
-describe('ConfiguracoesPage — Decidir promoções', () => {
+describe('PromocoesPage — Decidir promoções', () => {
   beforeEach(() => {
     authState.papel = 'gestor';
   });
@@ -331,7 +342,7 @@ describe('ConfiguracoesPage — Decidir promoções', () => {
     });
 
     const user = userEvent.setup();
-    render(<ConfiguracoesPage />);
+    render(<PromocoesPage />);
 
     expect(await screen.findByText('Bruno')).toBeInTheDocument();
     expect(screen.getByText('Carla')).toBeInTheDocument();
@@ -380,7 +391,7 @@ describe('ConfiguracoesPage — Decidir promoções', () => {
     });
 
     const user = userEvent.setup();
-    render(<ConfiguracoesPage />);
+    render(<PromocoesPage />);
 
     await user.click(await screen.findByRole('button', { name: 'Recusar promoção de Bruno' }));
 
@@ -400,7 +411,7 @@ describe('ConfiguracoesPage — Decidir promoções', () => {
       throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
     });
 
-    render(<ConfiguracoesPage />);
+    render(<PromocoesPage />);
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Não foi possível carregar as solicitações pendentes.',
@@ -439,7 +450,7 @@ describe('ConfiguracoesPage — Decidir promoções', () => {
     });
 
     const user = userEvent.setup();
-    render(<ConfiguracoesPage />);
+    render(<PromocoesPage />);
 
     await user.click(await screen.findByRole('button', { name: 'Aprovar promoção de Bruno' }));
 
@@ -470,7 +481,7 @@ describe('ConfiguracoesPage — Segurança (MFA, Story 1.11)', () => {
 
     render(<ConfiguracoesPage />);
 
-    expect(await screen.findByRole('heading', { name: 'Segurança' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 2, name: 'Segurança' })).toBeInTheDocument();
     expect(
       screen.getByText('Obrigatório para o seu papel. Configure para continuar acessando ações restritas.'),
     ).toBeInTheDocument();
@@ -778,7 +789,7 @@ describe('ConfiguracoesPage — Desligar meu MFA (Story 14.4)', () => {
   });
 });
 
-describe('ConfiguracoesPage — Log de Acesso (Story 1.12)', () => {
+describe('LogAcessoPage — Log de Acesso (Story 1.12)', () => {
   it('adm vê a seção "Log de Acesso"', async () => {
     authState.papel = 'adm';
     stubFetch((url) => {
@@ -793,10 +804,10 @@ describe('ConfiguracoesPage — Log de Acesso (Story 1.12)', () => {
       throw new Error(`URL inesperada: ${url}`);
     });
 
-    render(<ConfiguracoesPage />);
+    render(<LogAcessoPage />);
 
     expect(
-      await screen.findByRole('heading', { name: 'Log de Acesso' }),
+      await screen.findByRole('heading', { level: 2, name: 'Log de Acesso' }),
     ).toBeInTheDocument();
   });
 
@@ -810,9 +821,9 @@ describe('ConfiguracoesPage — Log de Acesso (Story 1.12)', () => {
       throw new Error(`URL inesperada: ${url}`);
     });
 
-    render(<ConfiguracoesPage />);
+    render(<LogAcessoPage />);
 
-    await screen.findByRole('heading', { name: 'Decidir promoções' });
+    await screen.findByText(/Você não tem acesso a/);
     expect(screen.queryByRole('heading', { name: 'Log de Acesso' })).not.toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalledWith(
       expect.stringContaining('/api/logs-acesso'),
@@ -827,14 +838,14 @@ describe('ConfiguracoesPage — Log de Acesso (Story 1.12)', () => {
       throw new Error(`URL inesperada: ${url}`);
     });
 
-    render(<ConfiguracoesPage />);
+    render(<LogAcessoPage />);
 
-    await screen.findByRole('button', { name: /Solicitar promoção/ });
+    await screen.findByText(/Você não tem acesso a/);
     expect(screen.queryByRole('heading', { name: 'Log de Acesso' })).not.toBeInTheDocument();
   });
 });
 
-describe('ConfiguracoesPage — Filiais (Story 12.1)', () => {
+describe('FiliaisPage — Filiais (Story 12.1)', () => {
   it('adm vê a seção "Filiais" e carrega GET /api/filiais', async () => {
     authState.papel = 'adm';
     const fetchMock = stubFetch((url) => {
@@ -850,9 +861,9 @@ describe('ConfiguracoesPage — Filiais (Story 12.1)', () => {
       throw new Error(`URL inesperada: ${url}`);
     });
 
-    render(<ConfiguracoesPage />);
+    render(<FiliaisPage />);
 
-    expect(await screen.findByRole('heading', { name: 'Filiais' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 2, name: 'Filiais' })).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith('/api/filiais', expect.anything());
   });
 
@@ -868,9 +879,9 @@ describe('ConfiguracoesPage — Filiais (Story 12.1)', () => {
         throw new Error(`URL inesperada: ${url}`);
       });
 
-      render(<ConfiguracoesPage />);
+      render(<FiliaisPage />);
 
-      await screen.findByRole('heading', { name: 'Privacidade' });
+      await screen.findByText(/Você não tem acesso a/);
       expect(screen.queryByRole('heading', { name: 'Filiais' })).not.toBeInTheDocument();
       expect(fetchMock).not.toHaveBeenCalledWith(
         expect.stringContaining('/api/filiais'),
@@ -880,7 +891,7 @@ describe('ConfiguracoesPage — Filiais (Story 12.1)', () => {
   );
 });
 
-describe('ConfiguracoesPage — Centros de custo (Story 12.3)', () => {
+describe('CentrosCustoPage — Centros de custo (Story 12.3)', () => {
   it('adm vê a seção "Centros de custo" e carrega GET /api/centros-custo', async () => {
     authState.papel = 'adm';
     const fetchMock = stubFetch((url) => {
@@ -897,9 +908,9 @@ describe('ConfiguracoesPage — Centros de custo (Story 12.3)', () => {
       throw new Error(`URL inesperada: ${url}`);
     });
 
-    render(<ConfiguracoesPage />);
+    render(<CentrosCustoPage />);
 
-    expect(await screen.findByRole('heading', { name: 'Centros de custo' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 2, name: 'Centros de custo' })).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith('/api/centros-custo', expect.anything());
   });
 
@@ -915,9 +926,9 @@ describe('ConfiguracoesPage — Centros de custo (Story 12.3)', () => {
         throw new Error(`URL inesperada: ${url}`);
       });
 
-      render(<ConfiguracoesPage />);
+      render(<CentrosCustoPage />);
 
-      await screen.findByRole('heading', { name: 'Privacidade' });
+      await screen.findByText(/Você não tem acesso a/);
       expect(screen.queryByRole('heading', { name: 'Centros de custo' })).not.toBeInTheDocument();
       expect(fetchMock).not.toHaveBeenCalledWith(
         expect.stringContaining('/api/centros-custo'),
@@ -927,7 +938,7 @@ describe('ConfiguracoesPage — Centros de custo (Story 12.3)', () => {
   );
 });
 
-describe('ConfiguracoesPage — Dupla autenticação da Empresa (Story 14.3)', () => {
+describe('SegurancaEmpresaPage — Dupla autenticação da Empresa (Story 14.3)', () => {
   it('adm vê a seção e carrega a exigência e o histórico', async () => {
     authState.papel = 'adm';
     authState.mfaHabilitado = true;
@@ -947,10 +958,10 @@ describe('ConfiguracoesPage — Dupla autenticação da Empresa (Story 14.3)', (
       throw new Error(`URL inesperada: ${url}`);
     });
 
-    render(<ConfiguracoesPage />);
+    render(<SegurancaEmpresaPage />);
 
     expect(
-      await screen.findByRole('heading', { name: 'Dupla autenticação da Empresa' }),
+      await screen.findByRole('heading', { level: 2, name: 'Dupla autenticação da Empresa' }),
     ).toBeInTheDocument();
     expect(await screen.findByRole('button', { name: 'Passar a exigir' })).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith('/api/seguranca/mfa-empresa', expect.anything());
@@ -970,9 +981,9 @@ describe('ConfiguracoesPage — Dupla autenticação da Empresa (Story 14.3)', (
         throw new Error(`URL inesperada: ${url}`);
       });
 
-      render(<ConfiguracoesPage />);
+      render(<SegurancaEmpresaPage />);
 
-      await screen.findByRole('heading', { name: 'Privacidade' });
+      await screen.findByText(/Você não tem acesso a/);
       expect(
         screen.queryByRole('heading', { name: 'Dupla autenticação da Empresa' }),
       ).not.toBeInTheDocument();
@@ -984,7 +995,7 @@ describe('ConfiguracoesPage — Dupla autenticação da Empresa (Story 14.3)', (
   );
 });
 
-describe('ConfiguracoesPage — Categorias (Story 10.5)', () => {
+describe('CategoriasPage — Categorias (Story 10.5)', () => {
   it('adm vê a seção "Categorias" e carrega GET /api/categorias', async () => {
     authState.papel = 'adm';
     const fetchMock = stubFetch((url) => {
@@ -999,9 +1010,9 @@ describe('ConfiguracoesPage — Categorias (Story 10.5)', () => {
       throw new Error(`URL inesperada: ${url}`);
     });
 
-    render(<ConfiguracoesPage />);
+    render(<CategoriasPage />);
 
-    expect(await screen.findByRole('heading', { name: 'Categorias' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 2, name: 'Categorias' })).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith('/api/categorias', expect.anything());
   });
 
@@ -1017,9 +1028,9 @@ describe('ConfiguracoesPage — Categorias (Story 10.5)', () => {
         throw new Error(`URL inesperada: ${url}`);
       });
 
-      render(<ConfiguracoesPage />);
+      render(<CategoriasPage />);
 
-      await screen.findByRole('heading', { name: 'Privacidade' });
+      await screen.findByText(/Você não tem acesso a/);
       expect(screen.queryByRole('heading', { name: 'Categorias' })).not.toBeInTheDocument();
       expect(fetchMock).not.toHaveBeenCalledWith(
         expect.stringContaining('/api/categorias'),
@@ -1029,7 +1040,7 @@ describe('ConfiguracoesPage — Categorias (Story 10.5)', () => {
   );
 });
 
-describe('ConfiguracoesPage — Templates de Nomenclatura (Story 10.6)', () => {
+describe('TemplatesPage — Templates de Nomenclatura (Story 10.6)', () => {
   it('adm vê a seção "Templates de Nomenclatura" e carrega GET /api/nomenclatura-templates', async () => {
     authState.papel = 'adm';
     const fetchMock = stubFetch((url) => {
@@ -1044,10 +1055,10 @@ describe('ConfiguracoesPage — Templates de Nomenclatura (Story 10.6)', () => {
       throw new Error(`URL inesperada: ${url}`);
     });
 
-    render(<ConfiguracoesPage />);
+    render(<TemplatesPage />);
 
     expect(
-      await screen.findByRole('heading', { name: 'Templates de Nomenclatura' }),
+      await screen.findByRole('heading', { level: 2, name: 'Templates de Nomenclatura' }),
     ).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith('/api/nomenclatura-templates', expect.anything());
   });
@@ -1064,9 +1075,9 @@ describe('ConfiguracoesPage — Templates de Nomenclatura (Story 10.6)', () => {
         throw new Error(`URL inesperada: ${url}`);
       });
 
-      render(<ConfiguracoesPage />);
+      render(<TemplatesPage />);
 
-      await screen.findByRole('heading', { name: 'Privacidade' });
+      await screen.findByText(/Você não tem acesso a/);
       expect(
         screen.queryByRole('heading', { name: 'Templates de Nomenclatura' }),
       ).not.toBeInTheDocument();
@@ -1097,7 +1108,7 @@ describe('ConfiguracoesPage — Privacidade (Story 8.1)', () => {
 
       render(<ConfiguracoesPage />);
 
-      expect(await screen.findByRole('heading', { name: 'Privacidade' })).toBeInTheDocument();
+      expect(await screen.findByRole('heading', { level: 2, name: 'Privacidade' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Baixar meus dados' })).toBeInTheDocument();
     },
   );
@@ -1119,7 +1130,7 @@ describe('ConfiguracoesPage — Privacidade (Story 8.1)', () => {
   });
 });
 
-describe('ConfiguracoesPage — Solicitações de exclusão (Story 8.2)', () => {
+describe('LgpdPage — Solicitações de exclusão (Story 8.2)', () => {
   it('adm vê a seção "Solicitações de exclusão"', async () => {
     authState.papel = 'adm';
     stubFetch((url) => {
@@ -1134,10 +1145,10 @@ describe('ConfiguracoesPage — Solicitações de exclusão (Story 8.2)', () => 
       throw new Error(`URL inesperada: ${url}`);
     });
 
-    render(<ConfiguracoesPage />);
+    render(<LgpdPage />);
 
     expect(
-      await screen.findByRole('heading', { name: 'Solicitações de exclusão' }),
+      await screen.findByRole('heading', { level: 2, name: 'Solicitações de exclusão' }),
     ).toBeInTheDocument();
   });
 
@@ -1153,9 +1164,9 @@ describe('ConfiguracoesPage — Solicitações de exclusão (Story 8.2)', () => 
         throw new Error(`URL inesperada: ${url}`);
       });
 
-      render(<ConfiguracoesPage />);
+      render(<LgpdPage />);
 
-      await screen.findByRole('heading', { name: 'Privacidade' });
+      await screen.findByText(/Você não tem acesso a/);
       expect(
         screen.queryByRole('heading', { name: 'Solicitações de exclusão' }),
       ).not.toBeInTheDocument();
