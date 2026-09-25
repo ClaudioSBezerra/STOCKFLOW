@@ -149,12 +149,15 @@ func CriarProdutoHandler(db *sql.DB, registro *realtime.Registry) http.HandlerFu
 
 		produto, err := services.CriarProduto(db, empresa.ID, input)
 		var erroValidacao *services.ErroProdutoValidacao
+		var erroEAN *services.ErroEANEmUso
 		switch {
 		case err == nil:
 			registro.Publish(empresa.ID, "produtos", realtime.Evento{ID: produto.ID, Change: "created"})
 			escreverJSON(w, http.StatusCreated, map[string]any{"produto": produto})
 		case errors.As(err, &erroValidacao):
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
+		case errors.As(err, &erroEAN):
+			escreverErro(w, http.StatusConflict, "EAN_EM_USO", erroEAN.Error())
 		default:
 			slog.Error("falha ao criar produto", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao criar produto")
@@ -285,6 +288,7 @@ func AtualizarProdutoHandler(db *sql.DB, registro *realtime.Registry) http.Handl
 		}
 
 		produto, err := services.AtualizarProduto(db, empresa.ID, usuario.ID, r.PathValue("id"), input)
+		var erroEAN *services.ErroEANEmUso
 		var erroValidacao *services.ErroProdutoValidacao
 		switch {
 		case err == nil:
@@ -294,6 +298,8 @@ func AtualizarProdutoHandler(db *sql.DB, registro *realtime.Registry) http.Handl
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
 		case errors.Is(err, services.ErrProdutoNaoEncontrado):
 			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "produto não encontrado")
+		case errors.As(err, &erroEAN):
+			escreverErro(w, http.StatusConflict, "EAN_EM_USO", erroEAN.Error())
 		default:
 			slog.Error("falha ao atualizar produto", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao atualizar produto")

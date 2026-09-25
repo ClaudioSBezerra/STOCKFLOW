@@ -448,6 +448,12 @@ func CriarProduto(db *sql.DB, empresaID string, input CriarProdutoInput) (Produt
 				return Produto{}, false, err
 			}
 
+			// EAN-13 único entre os Produtos ativos da Empresa (Story 16.4,
+			// AD-37): lock por Empresa+EAN e checagem na mesma transação.
+			if err := garantirEANLivreTx(tx, empresaID, ean13.String, ""); err != nil {
+				return Produto{}, false, err
+			}
+
 			// A Categoria informada precisa pertencer À MESMA Empresa (Story 9.1,
 			// AD-20): em vez de um SELECT-antes-de-INSERT (que teria janela de
 			// corrida), o próprio INSERT lê `categorias` com o filtro de Empresa —
@@ -664,11 +670,12 @@ func AtualizarProduto(db *sql.DB, empresaID string, atorID string, id string, in
 
 	var nomeAtual string
 	var templateAtual, unidadeAtual sql.NullString
+	var inativadoEm sql.NullTime
 	err = tx.QueryRow(
-		`SELECT nome, template_id, unidade_medida FROM produtos
+		`SELECT nome, template_id, unidade_medida, inativado_em FROM produtos
 		 WHERE id = $1 AND empresa_id = $2 AND deleted_at IS NULL FOR UPDATE`,
 		id, empresaID,
-	).Scan(&nomeAtual, &templateAtual, &unidadeAtual)
+	).Scan(&nomeAtual, &templateAtual, &unidadeAtual, &inativadoEm)
 	if err != nil {
 		var pqErr *pq.Error
 		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
@@ -706,6 +713,15 @@ func AtualizarProduto(db *sql.DB, empresaID string, atorID string, id string, in
 			return Produto{}, &ErroProdutoValidacao{Mensagem: mensagemNomeForaDoTemplate("aplicado a este produto", templateTexto)}
 		}
 		templateID = templateAtual
+	}
+
+	// EAN-13 único entre os Produtos ativos (Story 16.4): vale mesmo sem
+	// mudar o EAN (duplicata antiga só salva depois de corrigida); Produto
+	// inativo não disputa o EAN, então não é checado.
+	if !inativadoEm.Valid {
+		if err := garantirEANLivreTx(tx, empresaID, ean13.String, id); err != nil {
+			return Produto{}, err
+		}
 	}
 
 	var unidadeMedida sql.NullString
