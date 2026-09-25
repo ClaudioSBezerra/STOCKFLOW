@@ -1130,3 +1130,54 @@ func nomeCentroCusto(n *string) string {
 	}
 	return *n
 }
+
+// IndicadoresPedido são os contadores exibidos na faixa de indicadores das
+// páginas de Pedidos (Story 17.4) — calculados de uma única query, escopados
+// por papel e empresa.
+type IndicadoresPedido struct {
+	Pendentes     int `json:"pendentes"`
+	AprovadosMes  int `json:"aprovadosMes"`
+	RejeitadosMes int `json:"rejeitadosMes"`
+}
+
+// IndicadoresPedidos conta os indicadores da faixa de Pedidos (Story 17.4,
+// spec-17-4). Se `escopoTodos && RankPapel(papel) >= RankPapel(PapelAlmoxarife)`:
+// conta todos os Pedidos da Empresa; caso contrário, conta só os do próprio
+// Usuário — nunca retorna erro de autorização (mesmo padrão de
+// ListarPedidosParaSessao).
+//
+// $1 = empresaID; $2 = usuarioID (escopo próprio) ou ausente (escopo todos).
+// Indicadores: Pendentes = status='pendente'; AprovadosMes = status IN
+// ('aprovado','parcialmente_aprovado') AND decidido_em no mês corrente;
+// RejeitadosMes = status='rejeitado' AND decidido_em no mês corrente.
+func IndicadoresPedidos(db *sql.DB, empresaID, usuarioID, papel string, escopoTodos bool) (IndicadoresPedido, error) {
+	var ind IndicadoresPedido
+	if escopoTodos && RankPapel(papel) >= RankPapel(PapelAlmoxarife) {
+		const q = `
+			SELECT
+			  COUNT(*) FILTER (WHERE status = 'pendente'),
+			  COUNT(*) FILTER (WHERE status IN ('aprovado','parcialmente_aprovado')
+			    AND decidido_em >= date_trunc('month', CURRENT_DATE)),
+			  COUNT(*) FILTER (WHERE status = 'rejeitado'
+			    AND decidido_em >= date_trunc('month', CURRENT_DATE))
+			FROM pedidos
+			WHERE empresa_id = $1`
+		if err := db.QueryRow(q, empresaID).Scan(&ind.Pendentes, &ind.AprovadosMes, &ind.RejeitadosMes); err != nil {
+			return IndicadoresPedido{}, fmt.Errorf("falha ao calcular indicadores de pedidos (todos): %w", err)
+		}
+	} else {
+		const q = `
+			SELECT
+			  COUNT(*) FILTER (WHERE status = 'pendente'),
+			  COUNT(*) FILTER (WHERE status IN ('aprovado','parcialmente_aprovado')
+			    AND decidido_em >= date_trunc('month', CURRENT_DATE)),
+			  COUNT(*) FILTER (WHERE status = 'rejeitado'
+			    AND decidido_em >= date_trunc('month', CURRENT_DATE))
+			FROM pedidos
+			WHERE empresa_id = $1 AND usuario_id = $2`
+		if err := db.QueryRow(q, empresaID, usuarioID).Scan(&ind.Pendentes, &ind.AprovadosMes, &ind.RejeitadosMes); err != nil {
+			return IndicadoresPedido{}, fmt.Errorf("falha ao calcular indicadores de pedidos (próprios): %w", err)
+		}
+	}
+	return ind, nil
+}

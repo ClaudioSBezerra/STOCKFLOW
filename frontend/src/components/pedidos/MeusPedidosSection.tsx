@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import {
@@ -16,10 +15,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { ClipboardList } from 'lucide-react';
 import { conectarRealtime, type StatusRealtime } from '@/lib/realtime/client';
 import { formatarQuantidade } from '@/components/catalogo/formatacao';
 import { StatusPedidoBadge } from '@/components/pedidos/StatusPedidoBadge';
+import { FaixaIndicadores } from '@/components/lista/FaixaIndicadores';
 import {
+  buscarIndicadoresPedidos,
   buscarPedido,
   buscarReciboPedidoBlob,
   listarPedidos,
@@ -43,6 +45,13 @@ import {
  * com os itens em SNAPSHOT (`GET /api/pedidos/{id}`, AD-17 — nunca join ao
  * vivo).
  *
+ * Faixa de indicadores (Story 17.4, spec-17-4): `FaixaIndicadores` exibe
+ * Pendentes/Aprovados no mês/Rejeitados no mês buscados de
+ * `GET /api/pedidos/indicadores` (sem `?escopo=todos`). `carregarIndicadores`
+ * é acionado nos mesmos eventos que `carregar` — `aoMudarStatus('conectado')`
+ * e evento SSE `resource === 'pedidos'`. Falha de `/indicadores` → tela
+ * continua funcionando, faixa exibe "—".
+ *
  * Tempo real (molde de `MovimentacoesSection`, Story 5.3): a carga inicial E
  * todo refetch passam pelo MESMO `carregar`, disparado por
  * `aoMudarStatus('conectado')` (inclusive a 1ª conexão) e por eventos SSE
@@ -55,9 +64,6 @@ import {
  *
  * O filtro por status (`Select` com opção "Todos") também rebusca pelo mesmo
  * `carregar` (lê `filtroRef.current`), sem reconectar a SSE.
- *
- * Nenhuma mudança de COMPORTAMENTO em relação à antiga `MeusPedidosPage` —
- * só o local/nome (Never de spec-7-4).
  *
  * "Baixar recibo" (Story 7.6, spec-7-6): botão PRÓPRIO deste Dialog "Ver
  * itens", visível só quando o Pedido já foi decidido com sucesso
@@ -91,6 +97,14 @@ export function MeusPedidosSection() {
   const [statusConexao, setStatusConexao] = useState<StatusRealtime | null>(null);
   const [filtro, setFiltro] = useState<FiltroStatus>(TODOS);
 
+  // Indicadores da faixa (Story 17.4): null enquanto não carregados ou após
+  // falha — FaixaIndicadores exibe "—" para valores nulos.
+  const [indicadores, setIndicadores] = useState<{
+    pendentes: number;
+    aprovadosMes: number;
+    rejeitadosMes: number;
+  } | null>(null);
+
   // `carregar` lê o filtro corrente por ref para permanecer estável
   // (`useCallback([])`) — a árvore de tempo real não pode reconectar a cada
   // troca de filtro, e a carga inicial/refetch precisam do MESMO caminho.
@@ -115,25 +129,38 @@ export function MeusPedidosSection() {
     }
   }, []);
 
+  // `carregarIndicadores` é independente do filtro de status — indicadores são
+  // totais globais. Falha → setIndicadores(null), tela continua funcionando.
+  const carregarIndicadores = useCallback(async () => {
+    try {
+      const ind = await buscarIndicadoresPedidos();
+      setIndicadores(ind);
+    } catch {
+      setIndicadores(null);
+    }
+  }, []);
+
   useEffect(() => {
     const desconectar = conectarRealtime(
       (evento) => {
         if (evento.resource === 'pedidos') {
           toast.info('Meus Pedidos atualizados.');
           void carregar();
+          void carregarIndicadores();
         }
       },
       (status) => {
         setStatusConexao(status);
         if (status === 'conectado') {
           void carregar();
+          void carregarIndicadores();
         }
       },
     );
     return () => {
       desconectar();
     };
-  }, [carregar]);
+  }, [carregar, carregarIndicadores]);
 
   function aoMudarFiltro(valor: string) {
     const novo = (OPCOES_FILTRO.some((o) => o.valor === valor) ? valor : TODOS) as FiltroStatus;
@@ -212,95 +239,92 @@ export function MeusPedidosSection() {
   const vazio = carregou && !erroCarregar && pedidos.length === 0;
 
   return (
-    <div className="flex flex-col gap-4 p-6">
-      <Card>
-        <CardHeader>
-          <h1 className="text-heading-lg">Meus Pedidos</h1>
-          <CardDescription>
-            Os pedidos que você enviou, do mais recente ao mais antigo.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="pedidos-filtro-status" className="text-label text-muted-foreground">
-              Status
-            </Label>
-            <Select value={filtro} onValueChange={aoMudarFiltro}>
-              <SelectTrigger id="pedidos-filtro-status" className="min-h-touch-target-min w-48">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {OPCOES_FILTRO.map((opcao) => (
-                  <SelectItem key={opcao.valor} value={opcao.valor}>
-                    {opcao.rotulo}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+    <div className="flex flex-col gap-4">
+      <h1 className="text-heading-lg">Meus Pedidos</h1>
+      <div className="flex flex-col gap-1">
+        <Label htmlFor="pedidos-filtro-status" className="text-label text-muted-foreground">
+          Status
+        </Label>
+        <Select value={filtro} onValueChange={aoMudarFiltro}>
+          <SelectTrigger id="pedidos-filtro-status" className="min-h-touch-target-min w-48">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {OPCOES_FILTRO.map((opcao) => (
+              <SelectItem key={opcao.valor} value={opcao.valor}>
+                {opcao.rotulo}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
 
-          {statusConexao === 'reconectando' && (
-            <output aria-live="polite" className="text-label text-muted-foreground">
-              Reconectando...
-            </output>
-          )}
+      <FaixaIndicadores
+        indicadores={[
+          { rotulo: 'Pendentes', valor: indicadores?.pendentes ?? null, alerta: true },
+          { rotulo: 'Aprovados no mês', valor: indicadores?.aprovadosMes ?? null },
+          { rotulo: 'Rejeitados no mês', valor: indicadores?.rejeitadosMes ?? null },
+        ]}
+      />
 
-          {erroCarregar && (
-            <p role="alert" className="text-body text-destructive">
-              {erroCarregar}
-            </p>
-          )}
+      {statusConexao === 'reconectando' && (
+        <output aria-live="polite" className="text-label text-muted-foreground">
+          Reconectando...
+        </output>
+      )}
 
-          {!carregou && !erroCarregar && (
-            <output className="text-body text-muted-foreground">Carregando pedidos...</output>
-          )}
+      {erroCarregar && (
+        <p role="alert" className="text-body text-destructive">
+          {erroCarregar}
+        </p>
+      )}
 
-          {vazio && (
-            <p className="text-body text-muted-foreground">
-              {filtro === TODOS ? MENSAGEM_VAZIO : MENSAGEM_VAZIO_FILTRO}
-            </p>
-          )}
+      {!carregou && !erroCarregar && (
+        <output className="text-body text-muted-foreground">Carregando pedidos...</output>
+      )}
 
-          {pedidos.length > 0 && (
-            <ul className="flex flex-col gap-2">
-              {pedidos.map((pedido) => (
-                <li
-                  key={pedido.id}
-                  className="text-body flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3 last:border-b-0 last:pb-0"
+      {vazio && (
+        <p className="text-body text-muted-foreground">
+          {filtro === TODOS ? MENSAGEM_VAZIO : MENSAGEM_VAZIO_FILTRO}
+        </p>
+      )}
+
+      {pedidos.length > 0 && (
+        <ul className="flex flex-col">
+          {pedidos.map((pedido) => (
+            <li
+              key={pedido.id}
+              className="flex h-[60px] items-center gap-3 border-b border-border"
+            >
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted">
+                <ClipboardList aria-hidden="true" className="h-4 w-4 text-muted-foreground" />
+              </div>
+              <div className="flex min-w-0 flex-1 flex-col">
+                <span className="text-body font-medium">{pedido.solicitante}</span>
+                <span className="text-label text-muted-foreground truncate">
+                  {pedido.obraCentroCusto}
+                  {' · '}
+                  {pedido.qtdItens} {pedido.qtdItens === 1 ? 'item' : 'itens'}
+                  {' · '}
+                  {new Date(pedido.criadoEm).toLocaleDateString('pt-BR')}
+                </span>
+              </div>
+              <span className="flex shrink-0 items-center gap-3">
+                <StatusPedidoBadge status={pedido.status} />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  aria-label={`Ver itens do pedido de ${pedido.solicitante} — ${pedido.obraCentroCusto} — ${new Date(pedido.criadoEm).toLocaleString('pt-BR')}`}
+                  onClick={() => void abrirItens(pedido)}
                 >
-                  <div className="flex min-w-0 flex-col gap-0.5">
-                    <span className="min-w-0 truncate font-medium">{pedido.solicitante}</span>
-                    <span className="text-label text-muted-foreground min-w-0 truncate">
-                      {pedido.obraCentroCusto}
-                    </span>
-                    {pedido.centroCusto && (
-                      <span className="text-label text-muted-foreground min-w-0 truncate">
-                        Centro de custo: {pedido.centroCusto}
-                      </span>
-                    )}
-                    <span className="text-label text-muted-foreground">
-                      {new Date(pedido.criadoEm).toLocaleString('pt-BR')} ·{' '}
-                      {pedido.qtdItens} {pedido.qtdItens === 1 ? 'item' : 'itens'}
-                    </span>
-                  </div>
-                  <span className="flex shrink-0 items-center gap-3">
-                    <StatusPedidoBadge status={pedido.status} />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      aria-label={`Ver itens do pedido de ${pedido.solicitante} — ${pedido.obraCentroCusto} — ${new Date(pedido.criadoEm).toLocaleString('pt-BR')}`}
-                      onClick={() => void abrirItens(pedido)}
-                    >
-                      Ver itens
-                    </Button>
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </CardContent>
-      </Card>
+                  Ver itens
+                </Button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
 
       <Dialog
         open={detalheDe !== null}

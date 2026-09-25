@@ -2134,3 +2134,142 @@ func TestPedido_CentroCustoAparecemEmDetalheFilaDecisaoERecibo(t *testing.T) {
 		t.Errorf("RenderizarReciboPedidoPDF: len=%d err=%v", len(pdf), err)
 	}
 }
+
+// --- IndicadoresPedidos — Story 17.4 (Epic 17, Novo visual) -----------------
+
+// inserirPedidoDireto insere uma linha em `pedidos` com o status informado
+// (sem itens nem reservas) — usado exclusivamente em testes de indicadores,
+// onde não é necessário passar pelo fluxo completo de carrinho+envio.
+func inserirPedidoDireto(t *testing.T, db *sql.DB, empresaID, usuarioID, status string) string {
+	t.Helper()
+	var id string
+	const q = `
+		INSERT INTO pedidos (usuario_id, solicitante, obra_centro_custo, empresa_id, status)
+		VALUES ($1, 'Solicitante Ind', 'Obra Ind', $2, $3)
+		RETURNING id`
+	if err := db.QueryRow(q, usuarioID, empresaID, status).Scan(&id); err != nil {
+		t.Fatalf("inserirPedidoDireto: %v", err)
+	}
+	return id
+}
+
+// marcarPedidoDecidido força `decidido_em = now()` em um pedido já inserido,
+// simulando o que DecidirPedido faz dentro da transação — usado só em testes
+// de indicadores de mês.
+func marcarPedidoDecidido(t *testing.T, db *sql.DB, pedidoID, status string) {
+	t.Helper()
+	if _, err := db.Exec(
+		`UPDATE pedidos SET status = $2, decidido_em = now(), decidido_por = usuario_id WHERE id = $1`,
+		pedidoID, status,
+	); err != nil {
+		t.Fatalf("marcarPedidoDecidido: %v", err)
+	}
+}
+
+func TestIndicadoresPedidos_EscopoProprio(t *testing.T) {
+	db := testDB(t)
+	usuarioA := semearConta(t, db, "Ind Proprio A", "ind-proprio-a-174@empresa.com", PapelUsuario, 0)
+	usuarioB := semearConta(t, db, "Ind Proprio B", "ind-proprio-b-174@empresa.com", PapelUsuario, 0)
+
+	// A tem 2 pedidos pendentes; B tem 1.
+	inserirPedidoDireto(t, db, empresaTeste, usuarioA, "pendente")
+	inserirPedidoDireto(t, db, empresaTeste, usuarioA, "pendente")
+	inserirPedidoDireto(t, db, empresaTeste, usuarioB, "pendente")
+
+	ind, err := IndicadoresPedidos(db, empresaTeste, usuarioA, PapelUsuario, false)
+	if err != nil {
+		t.Fatalf("IndicadoresPedidos: %v", err)
+	}
+	if ind.Pendentes != 2 {
+		t.Errorf("Pendentes = %d, want 2 (só os de A)", ind.Pendentes)
+	}
+}
+
+func TestIndicadoresPedidos_EscopoTodosAlmoxarife(t *testing.T) {
+	db := testDB(t)
+	usuarioID := semearConta(t, db, "Ind Todos Usua", "ind-todos-usua-174@empresa.com", PapelUsuario, 0)
+	almoxID := semearConta(t, db, "Ind Todos Almox", "ind-todos-almox-174@empresa.com", PapelAlmoxarife, 0)
+
+	inserirPedidoDireto(t, db, empresaTeste, usuarioID, "pendente")
+	inserirPedidoDireto(t, db, empresaTeste, almoxID, "pendente")
+
+	// Almoxarife com escopoTodos vê os dois.
+	ind, err := IndicadoresPedidos(db, empresaTeste, almoxID, PapelAlmoxarife, true)
+	if err != nil {
+		t.Fatalf("IndicadoresPedidos todos: %v", err)
+	}
+	if ind.Pendentes < 2 {
+		t.Errorf("Pendentes = %d, want >= 2 (todos da empresa)", ind.Pendentes)
+	}
+}
+
+func TestIndicadoresPedidos_PapelInsuficienteIgnoraEscopoTodos(t *testing.T) {
+	db := testDB(t)
+	usuarioA := semearConta(t, db, "Ind Papel Insuf A", "ind-papel-insuf-a-174@empresa.com", PapelUsuario, 0)
+	usuarioB := semearConta(t, db, "Ind Papel Insuf B", "ind-papel-insuf-b-174@empresa.com", PapelUsuario, 0)
+
+	// A tem 1 pedido pendente, B tem 1.
+	inserirPedidoDireto(t, db, empresaTeste, usuarioA, "pendente")
+	inserirPedidoDireto(t, db, empresaTeste, usuarioB, "pendente")
+
+	// A com papel usuario e escopoTodos=true continua vendo só o próprio.
+	ind, err := IndicadoresPedidos(db, empresaTeste, usuarioA, PapelUsuario, true)
+	if err != nil {
+		t.Fatalf("IndicadoresPedidos: %v", err)
+	}
+	if ind.Pendentes != 1 {
+		t.Errorf("Pendentes = %d, want 1 (só os de A, papel insuficiente)", ind.Pendentes)
+	}
+}
+
+func TestIndicadoresPedidos_AprovadosERejeitadosNoMes(t *testing.T) {
+	db := testDB(t)
+	usuarioID := semearConta(t, db, "Ind Mes Usua", "ind-mes-usua-174@empresa.com", PapelUsuario, 0)
+
+	// 2 pendentes, 1 aprovado no mês, 1 rejeitado no mês.
+	inserirPedidoDireto(t, db, empresaTeste, usuarioID, "pendente")
+	inserirPedidoDireto(t, db, empresaTeste, usuarioID, "pendente")
+	aprov := inserirPedidoDireto(t, db, empresaTeste, usuarioID, "aprovado")
+	marcarPedidoDecidido(t, db, aprov, "aprovado")
+	rejeit := inserirPedidoDireto(t, db, empresaTeste, usuarioID, "rejeitado")
+	marcarPedidoDecidido(t, db, rejeit, "rejeitado")
+
+	ind, err := IndicadoresPedidos(db, empresaTeste, usuarioID, PapelUsuario, false)
+	if err != nil {
+		t.Fatalf("IndicadoresPedidos: %v", err)
+	}
+	if ind.Pendentes != 2 {
+		t.Errorf("Pendentes = %d, want 2", ind.Pendentes)
+	}
+	if ind.AprovadosMes != 1 {
+		t.Errorf("AprovadosMes = %d, want 1", ind.AprovadosMes)
+	}
+	if ind.RejeitadosMes != 1 {
+		t.Errorf("RejeitadosMes = %d, want 1", ind.RejeitadosMes)
+	}
+}
+
+func TestIndicadoresPedidos_EmpresaIsolada(t *testing.T) {
+	db := testDB(t)
+	// Cria uma segunda Empresa e insere um pedido nela.
+	outraEmpresa := criarEmpresaDeTeste(t, db, "outra-empresa-ind-174", "777888990001", "Outra Empresa Ind 174")
+	defer removerEmpresaDeTeste(t, db, "outra-empresa-ind-174")
+	usuarioOutra := semearContaNaEmpresa(t, db, outraEmpresa.ID, "Ind Outra Empresa", "ind-outra-174@outra.com", PapelUsuario)
+	inserirPedidoDireto(t, db, outraEmpresa.ID, usuarioOutra, "pendente")
+
+	// IndicadoresPedidos para empresaTeste não deve contar o pedido da outra.
+	usuarioTeste := semearConta(t, db, "Ind Iso Teste", "ind-iso-teste-174@empresa.com", PapelAlmoxarife, 0)
+	antes, err := IndicadoresPedidos(db, empresaTeste, usuarioTeste, PapelAlmoxarife, true)
+	if err != nil {
+		t.Fatalf("IndicadoresPedidos antes: %v", err)
+	}
+	// Agora insere também em empresaTeste para ter baseline.
+	inserirPedidoDireto(t, db, empresaTeste, usuarioTeste, "pendente")
+	depois, err := IndicadoresPedidos(db, empresaTeste, usuarioTeste, PapelAlmoxarife, true)
+	if err != nil {
+		t.Fatalf("IndicadoresPedidos depois: %v", err)
+	}
+	if depois.Pendentes != antes.Pendentes+1 {
+		t.Errorf("EmpresaIsolada: Pendentes cresceu %d (want 1) ao inserir em empresaTeste", depois.Pendentes-antes.Pendentes)
+	}
+}

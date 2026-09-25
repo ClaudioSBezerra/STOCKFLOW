@@ -13,11 +13,13 @@ const listarFilaPedidosMock = vi.hoisted(() => vi.fn());
 const buscarPedidoMock = vi.hoisted(() => vi.fn());
 const decidirPedidoMock = vi.hoisted(() => vi.fn());
 const buscarReciboPedidoBlobMock = vi.hoisted(() => vi.fn());
+const buscarIndicadoresPedidosMock = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/pedidos', () => ({
   listarFilaPedidos: listarFilaPedidosMock,
   buscarPedido: buscarPedidoMock,
   decidirPedido: decidirPedidoMock,
   buscarReciboPedidoBlob: buscarReciboPedidoBlobMock,
+  buscarIndicadoresPedidos: buscarIndicadoresPedidosMock,
   MENSAGEM_ERRO_RECIBO: 'Não foi possível baixar o recibo agora. Tente novamente em instantes.',
 }));
 
@@ -69,6 +71,7 @@ beforeEach(() => {
   listarFilaPedidosMock.mockResolvedValue(PEDIDOS);
   buscarPedidoMock.mockResolvedValue({ ...PEDIDOS[0], itens: [] });
   decidirPedidoMock.mockResolvedValue({ ...PEDIDOS[0], status: 'aprovado', itens: [] });
+  buscarIndicadoresPedidosMock.mockResolvedValue({ pendentes: 0, aprovadosMes: 0, rejeitadosMes: 0 });
 });
 
 afterEach(() => {
@@ -86,20 +89,28 @@ describe('FilaPedidosSection', () => {
       aoMudarStatus('conectado');
     });
 
-    expect(await screen.findByText('Obra Norte')).toBeInTheDocument();
+    expect(await screen.findByText(/Obra Norte/)).toBeInTheDocument();
     expect(listarFilaPedidosMock).toHaveBeenCalledWith(undefined);
     expect(screen.queryByText('Carregando pedidos...')).not.toBeInTheDocument();
   });
 
-  it('mostra o Centro de custo cadastrado do Pedido, e nada quando ele não escolheu um', async () => {
+  it('mostra o Centro de custo cadastrado do Pedido no diálogo, não na linha da lista', async () => {
     render(<FilaPedidosSection />);
     act(() => {
       aoMudarStatus('conectado');
     });
+    await screen.findByText(/Obra Norte/);
 
-    expect(await screen.findByText('Centro de custo: Estoque do Cabo')).toBeInTheDocument();
-    // O 2º Pedido não tem Centro: só uma linha "Centro de custo:" na tela.
-    expect(screen.getAllByText(/^Centro de custo:/)).toHaveLength(1);
+    // O centroCusto NÃO aparece mais na linha da lista (design 60px compacto);
+    // aparece no diálogo de detalhe (campo centroCusto preservado pelo backend).
+    expect(screen.queryByText('Centro de custo: Estoque do Cabo')).not.toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole('button', { name: /^Ver itens do pedido de Ana Silva — Obra Norte/ }),
+    );
+    const dialogo = await screen.findByRole('dialog');
+    expect(within(dialogo).getByText(/Estoque do Cabo/)).toBeInTheDocument();
   });
 
   it('mostra Pedidos de VÁRIOS solicitantes', async () => {
@@ -117,7 +128,7 @@ describe('FilaPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     const pendente = screen.getByText('Pendente');
     const aprovado = screen.getByText('Aprovado');
@@ -133,7 +144,7 @@ describe('FilaPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     listarFilaPedidosMock.mockClear();
     listarFilaPedidosMock.mockResolvedValue([PEDIDOS[1]]);
@@ -150,7 +161,7 @@ describe('FilaPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     listarFilaPedidosMock.mockClear();
     listarFilaPedidosMock.mockResolvedValue([]);
@@ -167,7 +178,7 @@ describe('FilaPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     listarFilaPedidosMock.mockClear();
     act(() => {
@@ -177,7 +188,7 @@ describe('FilaPedidosSection', () => {
     await waitFor(() => expect(listarFilaPedidosMock).toHaveBeenCalledTimes(1));
     expect(toastInfo).toHaveBeenCalledWith('Fila de Pedidos atualizada.');
     // A tela não se desmontou: as linhas antigas continuam visíveis.
-    expect(screen.getByText('Obra Norte')).toBeInTheDocument();
+    expect(screen.getByText(/Obra Norte/)).toBeInTheDocument();
   });
 
   it('um evento SSE de outro canal é ignorado', async () => {
@@ -185,7 +196,7 @@ describe('FilaPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     listarFilaPedidosMock.mockClear();
     act(() => {
@@ -257,7 +268,7 @@ describe('FilaPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     const user = userEvent.setup();
     await user.click(
@@ -274,7 +285,7 @@ describe('FilaPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     expect(
       screen.getByRole('button', { name: /^Ver itens do pedido de Ana Silva — Obra Norte/ }),
@@ -321,7 +332,7 @@ describe('FilaPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     const user = userEvent.setup();
     await user.click(
@@ -342,7 +353,7 @@ describe('FilaPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     const user = userEvent.setup();
     await user.click(
@@ -361,7 +372,7 @@ describe('FilaPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     const user = userEvent.setup();
     await user.click(
@@ -398,7 +409,7 @@ describe('FilaPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     const user = userEvent.setup();
     const botaoA = screen.getByRole('button', { name: /^Ver itens do pedido de Ana Silva — Obra Norte/ });
@@ -462,7 +473,7 @@ describe('FilaPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     const user = userEvent.setup();
     const botaoA = screen.getByRole('button', { name: /^Ver itens do pedido de Ana Silva — Obra Norte/ });
@@ -490,7 +501,7 @@ describe('FilaPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     listarFilaPedidosMock.mockResolvedValue([]);
     const user = userEvent.setup();
@@ -506,7 +517,7 @@ describe('FilaPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     const user = userEvent.setup();
     await user.click(screen.getByRole('combobox', { name: 'Status' }));
@@ -528,7 +539,7 @@ describe('FilaPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
     await user.click(
       screen.getByRole('button', { name: /^Ver itens do pedido de Ana Silva — Obra Norte/ }),
     );
@@ -550,7 +561,7 @@ describe('FilaPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
     await user.click(
       screen.getByRole('button', { name: /^Ver itens do pedido de Bruno Costa — Obra Sul/ }),
     );
@@ -684,7 +695,7 @@ describe('FilaPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
     await user.click(
       screen.getByRole('button', { name: /^Ver itens do pedido de Bruno Costa — Obra Sul/ }),
     );
@@ -714,7 +725,7 @@ describe('FilaPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
     await user.click(
       screen.getByRole('button', { name: /^Ver itens do pedido de Bruno Costa — Obra Sul/ }),
     );
@@ -739,7 +750,7 @@ describe('FilaPedidosSection — recibo (Story 7.6)', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     // Pendente (p-1, Ana Silva): sem botão.
     await user.click(
@@ -764,7 +775,7 @@ describe('FilaPedidosSection — recibo (Story 7.6)', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Sul');
+    await screen.findByText(/Obra Sul/);
 
     await user.click(
       screen.getByRole('button', { name: /^Ver itens do pedido de Bruno Costa — Obra Sul/ }),
@@ -781,7 +792,7 @@ describe('FilaPedidosSection — recibo (Story 7.6)', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     const user = userEvent.setup();
     await user.click(
@@ -806,7 +817,7 @@ describe('FilaPedidosSection — recibo (Story 7.6)', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     const user = userEvent.setup();
     await user.click(
@@ -827,7 +838,7 @@ describe('FilaPedidosSection — recibo (Story 7.6)', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     const user = userEvent.setup();
     await user.click(
@@ -840,5 +851,75 @@ describe('FilaPedidosSection — recibo (Story 7.6)', () => {
         'Não foi possível baixar o recibo agora. Tente novamente em instantes.',
       ),
     );
+  });
+});
+
+// --- Story 17.4: faixa de indicadores ---------------------------------------
+
+describe('FilaPedidosSection — faixa de indicadores (Story 17.4)', () => {
+  it('exibe os três rótulos da faixa sempre que a seção renderiza', async () => {
+    render(<FilaPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText(/Obra Norte/);
+
+    expect(screen.getByText('Pendentes')).toBeInTheDocument();
+    expect(screen.getByText('Aprovados no mês')).toBeInTheDocument();
+    expect(screen.getByText('Rejeitados no mês')).toBeInTheDocument();
+  });
+
+  it('faixa mostra valores numéricos quando buscarIndicadoresPedidos resolve', async () => {
+    buscarIndicadoresPedidosMock.mockResolvedValue({ pendentes: 3, aprovadosMes: 9, rejeitadosMes: 2 });
+    render(<FilaPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText(/Obra Norte/);
+    await waitFor(() => expect(buscarIndicadoresPedidosMock).toHaveBeenCalled());
+
+    expect(screen.getByText('3')).toBeInTheDocument();
+    expect(screen.getByText('9')).toBeInTheDocument();
+    expect(screen.getByText('2')).toBeInTheDocument();
+  });
+
+  it('/indicadores falha → faixa exibe "—" para os três valores, tela continua funcionando', async () => {
+    buscarIndicadoresPedidosMock.mockRejectedValue(new Error('rede indisponível'));
+    render(<FilaPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText(/Obra Norte/);
+    await waitFor(() => expect(buscarIndicadoresPedidosMock).toHaveBeenCalled());
+
+    expect(screen.getAllByText('—')).toHaveLength(3);
+    // A lista continua visível mesmo com indicadores indisponíveis.
+    expect(screen.getByText('Ana Silva')).toBeInTheDocument();
+  });
+
+  it('SSE evento resource="pedidos" aciona carregarIndicadores além de carregar', async () => {
+    render(<FilaPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText(/Obra Norte/);
+
+    buscarIndicadoresPedidosMock.mockClear();
+    act(() => {
+      aoReceberEvento({ resource: 'pedidos', id: 'p-9', change: 'created' });
+    });
+
+    await waitFor(() => expect(buscarIndicadoresPedidosMock).toHaveBeenCalledTimes(1));
+    // Fila deve chamar com 'todos'.
+    expect(buscarIndicadoresPedidosMock).toHaveBeenCalledWith('todos');
+  });
+
+  it('buscarIndicadoresPedidos é chamado com argumento "todos" (escopo da fila)', async () => {
+    render(<FilaPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await waitFor(() => expect(buscarIndicadoresPedidosMock).toHaveBeenCalled());
+    expect(buscarIndicadoresPedidosMock).toHaveBeenCalledWith('todos');
   });
 });

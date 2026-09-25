@@ -157,3 +157,30 @@ export async function buscarReciboPedidoBlob(id: string): Promise<Blob> {
   }
   return res.blob();
 }
+
+const MENSAGEM_ERRO_INDICADORES =
+  'Não foi possível carregar os indicadores de pedidos agora. Tente novamente em instantes.';
+
+/**
+ * Busca os indicadores da faixa de Pedidos (Story 17.4, spec-17-4).
+ *
+ * `escopo === 'todos'` → GET /api/pedidos/indicadores?escopo=todos (Fila,
+ * almoxarife+); omitido → GET /api/pedidos/indicadores (Meus Pedidos).
+ * Em ambos os casos o servidor decide o escopo real por papel — este módulo
+ * nunca checa papel. Erro lança (chamador usa try/catch e mantém a faixa
+ * com "—").
+ */
+export async function buscarIndicadoresPedidos(
+  escopo?: 'todos',
+): Promise<{ pendentes: number; aprovadosMes: number; rejeitadosMes: number }> {
+  const url =
+    escopo === 'todos'
+      ? '/api/pedidos/indicadores?escopo=todos'
+      : '/api/pedidos/indicadores';
+  const res = await fetch(apiUrl(url), { headers: authHeaders() });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+    throw new Error(body.error?.message ?? MENSAGEM_ERRO_INDICADORES);
+  }
+  return (await res.json()) as { pendentes: number; aprovadosMes: number; rejeitadosMes: number };
+}

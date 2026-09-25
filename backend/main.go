@@ -855,6 +855,12 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// publica nada.
 	registrar("GET /e/{slug}/api/pedidos", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarPedidosHandler(db)))
+	// Indicadores de Pedidos — Story 17.4 (Epic 17, Novo visual). Registrado
+	// ANTES de GET /api/pedidos/{id} para evitar conflito de path com o
+	// padrão /{id}. Mesmo RequireAuth do GET acima; escopo por papel resolvido
+	// no service, nunca 403.
+	registrar("GET /e/{slug}/api/pedidos/indicadores", middleware.RequireAuth(db, jwtSecret)(
+		handlers.IndicadoresPedidosHandler(db)))
 	registrar("GET /e/{slug}/api/pedidos/{id}", middleware.RequireAuth(db, jwtSecret)(
 		handlers.BuscarPedidoHandler(db)))
 

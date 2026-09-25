@@ -150,6 +150,36 @@ func ListarPedidosHandler(db *sql.DB) http.HandlerFunc {
 	}
 }
 
+// IndicadoresPedidosHandler expõe GET /api/pedidos/indicadores (Story 17.4,
+// spec-17-4), registrado em newMux ANTES de GET /api/pedidos/{id} para evitar
+// conflito de path. Atrás SÓ de RequireAuth (usuario+) — molde de
+// ListarPedidosHandler. Com `?escopo=todos` E papel almoxarife+: conta todos
+// os Pedidos da Empresa; caso contrário: só os do próprio Usuário — nunca 403.
+// Sucesso -> `200 {"pendentes":N,"aprovadosMes":N,"rejeitadosMes":N}`.
+func IndicadoresPedidosHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		usuario, ok := middleware.UsuarioDaSessao(r.Context())
+		if !ok {
+			slog.Error("IndicadoresPedidosHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
+		escopoTodos := r.URL.Query().Get("escopo") == "todos"
+		ind, err := services.IndicadoresPedidos(db, empresa.ID, usuario.ID, usuario.Papel, escopoTodos)
+		if err != nil {
+			slog.Error("falha ao calcular indicadores de pedidos", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao calcular indicadores de pedidos")
+			return
+		}
+		escreverJSON(w, http.StatusOK, ind)
+	}
+}
+
 // decisaoPedidoRequest é o corpo aceito por POST /api/pedidos/{id}/decisao.
 // `Aprovar` é um ponteiro DE PROPÓSITO — mesmo molde de `decisaoRequest`
 // (handlers/promocao.go): um corpo `{}`, `{"aprovar":null}` ou com a chave

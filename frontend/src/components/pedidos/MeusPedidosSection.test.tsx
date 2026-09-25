@@ -11,10 +11,12 @@ vi.mock('sonner', () => ({ toast: { info: toastInfo, error: toastError } }));
 const listarPedidosMock = vi.hoisted(() => vi.fn());
 const buscarPedidoMock = vi.hoisted(() => vi.fn());
 const buscarReciboPedidoBlobMock = vi.hoisted(() => vi.fn());
+const buscarIndicadoresPedidosMock = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/pedidos', () => ({
   listarPedidos: listarPedidosMock,
   buscarPedido: buscarPedidoMock,
   buscarReciboPedidoBlob: buscarReciboPedidoBlobMock,
+  buscarIndicadoresPedidos: buscarIndicadoresPedidosMock,
   MENSAGEM_ERRO_RECIBO: 'Não foi possível baixar o recibo agora. Tente novamente em instantes.',
 }));
 
@@ -29,6 +31,9 @@ let aoReceberEvento: (evento: EventoRealtime) => void;
 let aoMudarStatus: (status: StatusRealtime) => void;
 const desconectarMock = vi.fn();
 
+// Ambos os pedidos têm solicitante 'Ana Silva' (cenário real: usuário enviando
+// vários pedidos). Usar o obraCentroCusto (único por pedido) como âncora de
+// espera para evitar a ambiguidade de findByText com múltiplos matches.
 const PEDIDOS = [
   {
     id: 'p-1',
@@ -62,6 +67,7 @@ beforeEach(() => {
   );
   listarPedidosMock.mockResolvedValue(PEDIDOS);
   buscarPedidoMock.mockResolvedValue({ ...PEDIDOS[0], itens: [] });
+  buscarIndicadoresPedidosMock.mockResolvedValue({ pendentes: 0, aprovadosMes: 0, rejeitadosMes: 0 });
 });
 
 afterEach(() => {
@@ -79,7 +85,11 @@ describe('MeusPedidosSection', () => {
       aoMudarStatus('conectado');
     });
 
-    expect(await screen.findByText('Obra Norte')).toBeInTheDocument();
+    // 'Obra Norte' é único (subtítulo do 1º pedido) — âncora segura quando
+    // ambos os pedidos têm o mesmo solicitante 'Ana Silva'.
+    expect(await screen.findByText(/Obra Norte/)).toBeInTheDocument();
+    // Ambos os pedidos exibem 'Ana Silva' como título da linha.
+    expect(screen.getAllByText('Ana Silva')).toHaveLength(2);
     expect(listarPedidosMock).toHaveBeenCalledWith(undefined);
     expect(screen.queryByText('Carregando pedidos...')).not.toBeInTheDocument();
   });
@@ -89,7 +99,7 @@ describe('MeusPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     const pendente = screen.getByText('Pendente');
     const aprovado = screen.getByText('Aprovado');
@@ -105,7 +115,7 @@ describe('MeusPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     listarPedidosMock.mockClear();
     listarPedidosMock.mockResolvedValue([PEDIDOS[1]]);
@@ -122,7 +132,7 @@ describe('MeusPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     listarPedidosMock.mockClear();
     act(() => {
@@ -132,7 +142,7 @@ describe('MeusPedidosSection', () => {
     await waitFor(() => expect(listarPedidosMock).toHaveBeenCalledTimes(1));
     expect(toastInfo).toHaveBeenCalledWith('Meus Pedidos atualizados.');
     // A tela não se desmontou: as linhas antigas continuam visíveis.
-    expect(screen.getByText('Obra Norte')).toBeInTheDocument();
+    expect(screen.getAllByText('Ana Silva').length).toBeGreaterThan(0);
   });
 
   it('um evento SSE de outro canal é ignorado', async () => {
@@ -140,7 +150,7 @@ describe('MeusPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     listarPedidosMock.mockClear();
     act(() => {
@@ -212,7 +222,7 @@ describe('MeusPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     const user = userEvent.setup();
     await user.click(
@@ -261,7 +271,7 @@ describe('MeusPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     const user = userEvent.setup();
     await user.click(
@@ -282,7 +292,7 @@ describe('MeusPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     const user = userEvent.setup();
     await user.click(
@@ -301,7 +311,7 @@ describe('MeusPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     const user = userEvent.setup();
     await user.click(
@@ -338,7 +348,7 @@ describe('MeusPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     const user = userEvent.setup();
     const botaoA = screen.getByRole('button', { name: /^Ver itens do pedido de Ana Silva — Obra Norte/ });
@@ -402,7 +412,7 @@ describe('MeusPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     const user = userEvent.setup();
     const botaoA = screen.getByRole('button', { name: /^Ver itens do pedido de Ana Silva — Obra Norte/ });
@@ -430,7 +440,7 @@ describe('MeusPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     listarPedidosMock.mockResolvedValue([]);
     const user = userEvent.setup();
@@ -446,7 +456,7 @@ describe('MeusPedidosSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     const user = userEvent.setup();
     await user.click(screen.getByRole('combobox', { name: 'Status' }));
@@ -475,7 +485,7 @@ describe('MeusPedidosSection — recibo (Story 7.6)', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     const user = userEvent.setup();
     await user.click(
@@ -501,7 +511,7 @@ describe('MeusPedidosSection — recibo (Story 7.6)', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     const user = userEvent.setup();
     await user.click(
@@ -526,7 +536,7 @@ describe('MeusPedidosSection — recibo (Story 7.6)', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     const user = userEvent.setup();
     await user.click(
@@ -547,7 +557,7 @@ describe('MeusPedidosSection — recibo (Story 7.6)', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/Obra Norte/);
 
     const user = userEvent.setup();
     await user.click(
@@ -560,5 +570,75 @@ describe('MeusPedidosSection — recibo (Story 7.6)', () => {
         'Não foi possível baixar o recibo agora. Tente novamente em instantes.',
       ),
     );
+  });
+});
+
+// --- Story 17.4: faixa de indicadores ---------------------------------------
+
+describe('MeusPedidosSection — faixa de indicadores (Story 17.4)', () => {
+  it('exibe os três rótulos da faixa sempre que a seção renderiza', async () => {
+    render(<MeusPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText(/Obra Norte/);
+
+    expect(screen.getByText('Pendentes')).toBeInTheDocument();
+    expect(screen.getByText('Aprovados no mês')).toBeInTheDocument();
+    expect(screen.getByText('Rejeitados no mês')).toBeInTheDocument();
+  });
+
+  it('faixa mostra valores numéricos quando buscarIndicadoresPedidos resolve', async () => {
+    buscarIndicadoresPedidosMock.mockResolvedValue({ pendentes: 5, aprovadosMes: 7, rejeitadosMes: 11 });
+    render(<MeusPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText(/Obra Norte/);
+    await waitFor(() => expect(buscarIndicadoresPedidosMock).toHaveBeenCalled());
+
+    expect(screen.getByText('5')).toBeInTheDocument();
+    expect(screen.getByText('7')).toBeInTheDocument();
+    expect(screen.getByText('11')).toBeInTheDocument();
+  });
+
+  it('/indicadores falha → faixa exibe "—" para os três valores, tela continua funcionando', async () => {
+    buscarIndicadoresPedidosMock.mockRejectedValue(new Error('rede indisponível'));
+    render(<MeusPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText(/Obra Norte/);
+    await waitFor(() => expect(buscarIndicadoresPedidosMock).toHaveBeenCalled());
+
+    expect(screen.getAllByText('—')).toHaveLength(3);
+    // A lista continua visível mesmo com indicadores indisponíveis.
+    expect(screen.getAllByText('Ana Silva').length).toBeGreaterThan(0);
+  });
+
+  it('SSE evento resource="pedidos" aciona carregarIndicadores além de carregar', async () => {
+    render(<MeusPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText(/Obra Norte/);
+
+    buscarIndicadoresPedidosMock.mockClear();
+    act(() => {
+      aoReceberEvento({ resource: 'pedidos', id: 'p-9', change: 'created' });
+    });
+
+    await waitFor(() => expect(buscarIndicadoresPedidosMock).toHaveBeenCalledTimes(1));
+    // Não deve ter sido chamado com 'todos' (escopo próprio).
+    expect(buscarIndicadoresPedidosMock).toHaveBeenCalledWith();
+  });
+
+  it('buscarIndicadoresPedidos é chamado sem argumento (escopo próprio)', async () => {
+    render(<MeusPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await waitFor(() => expect(buscarIndicadoresPedidosMock).toHaveBeenCalled());
+    expect(buscarIndicadoresPedidosMock).not.toHaveBeenCalledWith('todos');
   });
 });
