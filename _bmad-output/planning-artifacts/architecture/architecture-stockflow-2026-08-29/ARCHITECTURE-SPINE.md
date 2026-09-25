@@ -452,6 +452,12 @@ erDiagram
   - **Histórico:** tabela `produto_historico` (`id`, `empresa_id`, `produto_id`, `ator_id`, `acao` enum `nome_alterado | inativado | reativado`, `detalhe` jsonb — `{antes, depois}` para nome, `{motivo}` para inativar —, `criado_em`), escopada por `empresa_id` (AD-20), append-only, sem rota de escrita direta. `AtualizarProduto` e `AtualizarNomeProduto` gravam `nome_alterado` na MESMA transação quando o nome muda de fato. Leitura: `GET .../produtos/{id}/historico` para `almoxarife`+.
 - **Rationale:** coluna própria mantém a mesclagem (irreversível) e a inativação (reversível) sem se confundirem; a regra de saldo zero força o destino do material antes de sumir, e a trava `FOR SHARE`/`FOR UPDATE` fecha a corrida sem índice nem fila. Um único histórico por Produto serve às três ações que o usuário pediu para rastrear, no mesmo molde de `auditoria_seguranca` (AD-35).
 
+### AD-38 — Indicadores de página de lista: contados no servidor, com os mesmos filtros da listagem
+
+- **Binds:** UX-DR25 (Epic 17) — Catálogo, Pedidos, Movimentações, Locais, Usuários.
+- **Prevents:** indicador contado no navegador sobre a página visível (número errado com paginação); duas regras de filtro divergentes entre a lista e os números acima dela; indicador enxergando dado de outra Empresa ou Produto inativo.
+- **Rule:** cada lista com faixa de indicadores ganha uma rota `GET .../indicadores` irmã da listagem (ex. `GET /e/{slug}/api/produtos/indicadores`), com o **mesmo papel mínimo** e que aceita **exatamente os mesmos parâmetros de busca/filtro**. O service monta o `WHERE` pela **mesma função** usada na listagem, e o resultado sai escopado por `empresa_id` (AD-20), respeitando `inativado_em IS NULL` salvo filtro explícito de inativos (AD-37). "Sem foto" do Catálogo vem de uma única listagem do diretório de fotos por requisição (o nome `<produto_id>-*.jpg` é o vínculo, Story 3.5), nunca de uma chamada por Produto. As telas continuam funcionando se a rota de indicadores falhar: a faixa mostra "—".
+
 ## Deferred
 
 - **Códigos de recuperação de MFA impressos, exigência de MFA para `usuario`/`almoxarife` e propagação de mudanças do flag da Empresa real para o Treinamento (AD-35):** fora desta versão; o Treinamento herda só na criação.

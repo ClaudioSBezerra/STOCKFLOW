@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-29-2026 14:50
-last_updated: 09-25-2026 10:20
+last_updated: 09-25-2026 15:05
 project: stockflow
 project_key: NOKEY
 tracking_system: file-system
@@ -160,3 +160,11 @@ development_status:
   16-3-histórico-de-alterações-do-produto: done
   16-4-ean-13-único-entre-os-produtos-ativos-da-empresa: done
   epic-16-retrospective: optional
+
+  epic-17: backlog
+  17-1-menu-lateral-agrupado-e-topo-novo: backlog
+  17-2-páginas-próprias-para-cadastros-e-administração: backlog
+  17-3-padrão-de-página-de-lista-aplicado-ao-catálogo: backlog
+  17-4-pedidos-no-padrão-de-lista: backlog
+  17-5-locais-movimentações-e-usuários-no-padrão-de-lista: backlog
+  epic-17-retrospective: optional

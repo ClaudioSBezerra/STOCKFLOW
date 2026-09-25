@@ -178,6 +178,9 @@ UX-DR20: Padrão de relatório de importação — tabela criados/atualizados/re
 UX-DR21: Câmera do scanner exige contexto seguro (HTTPS) — funcionalidade indisponível em ambiente de desenvolvimento local sem HTTPS.
 UX-DR22: Tela de configuração de MFA (TOTP) — forçada e não pulável para `gestor`/`adm` autenticados por senha; opcional para `usuario`/`almoxarife`; nunca exibida no caminho de login via SSO.
 UX-DR23: Padrão de galeria/lightbox de fotos de Produto — toque abre lightbox em tela cheia, fechar retorna à posição exata da rolagem anterior; upload restrito a `almoxarife`+, visualização liberada a `usuario`.
+UX-DR24 *(2026-09-25, Epic 17 — substitui UX-DR3 rail/bottom nav/submenu, UX-DR7, UX-DR15 e UX-DR16)*: menu lateral azul-marinho (240px, recolhível a 64px) com os nomes das telas agrupados (Catálogo, Pedidos, Estoque, Qualidade dos dados, Cadastros, Administração; Meu perfil no rodapé); item ativo em negrito branco com barra vermelha FC à esquerda; cada item é rota própria; no celular o menu abre por ☰ como gaveta e a bottom nav deixa de existir (UX `DESIGN.md`/`EXPERIENCE.md`, revisão de 2026-09-25; referência `referencias/modelo-tela.png`).
+UX-DR25: Padrão de página de lista — título, barra de busca com "Adicionar filtro"/"Limpar filtros" e filtros ativos em pílulas, faixa de indicadores calculada no servidor (alerta em vermelho FC) com as ações da página à direita.
+UX-DR26: Padrão de tabela — linhas de 60px com divisor fino, sem card nem zebra; primeira coluna com ícone redondo + nome + subtítulo cinza ("Categoria • Estoque"); números à direita; status em pílula suave (inclui `status-inativo`); no celular vira lista de linhas.
 
 ### FR Coverage Map
 
@@ -321,6 +324,10 @@ Quem abre o stockflow sem `/e/{empresa}` entra só com e-mail e senha, e o siste
 ### Epic 16: Inativar Produto, EAN único e histórico do Produto
 Gestor e adm tiram de uso um Produto sem apagá-lo (só sem saldo) e o reativam depois; o EAN-13 deixa de poder repetir entre Produtos ativos; e toda troca de nome, inativação e reativação fica registrada. Feedback do treinamento da Ferreira Costa (Karla, 2026-09-25).
 **FRs covered:** FR55, FR56, FR45 (revisado)
+
+### Epic 17: Novo visual — menu lateral agrupado e páginas de lista
+O stockflow adota o padrão visual aprovado pelos sócios (`referencias/modelo-tela.png`): menu lateral escuro com os nomes das telas agrupados, cada tela com endereço próprio, e páginas de lista com busca, filtros, indicadores e tabela limpa. No celular, o menu abre pelo ☰. Pedido do usuário (2026-09-25).
+**UX covered:** UX-DR24, UX-DR25, UX-DR26 (substituem UX-DR3/7/15/16)
 
 ## Epic 1: Autenticação e Gestão de Acesso
 
@@ -2389,3 +2396,135 @@ So that o mesmo item não seja cadastrado duas vezes com códigos internos difer
 **Given** a edição de um Produto sem mudar o EAN e sem conflito
 **When** salva
 **Then** nada muda no comportamento de hoje
+
+## Epic 17: Novo visual — menu lateral agrupado e páginas de lista
+
+O usuário e os sócios aprovaram um novo padrão visual (`_bmad-output/planning-artifacts/ux-designs/ux-stockflow-2026-08-29/referencias/modelo-tela.png`): menu lateral azul-marinho com os nomes das telas agrupados e o item ativo marcado em vermelho FC; páginas de lista com título, busca, "Adicionar filtro", faixa de indicadores e tabela com ícone, nome, subtítulo e status em pílula. No celular, o menu abre pelo ☰. As regras estão na revisão de 2026-09-25 do `DESIGN.md` e do `EXPERIENCE.md`, que prevalecem sobre o rail de ícones, as abas por módulo e a bottom nav. Nenhuma regra de negócio muda: é só apresentação e navegação, com os mesmos papéis e as mesmas rotas de API.
+
+### Story 17.1: Menu lateral agrupado e topo novo
+
+As a qualquer pessoa que usa o stockflow,
+I want um menu lateral com os nomes das telas agrupados por assunto,
+So that eu encontre cada tela sem adivinhar o que cada ícone significa.
+
+**Acceptance Criteria:**
+
+**Given** a tela em desktop (≥768px)
+**When** carrega
+**Then** o menu lateral azul-marinho de 240px mostra a marca do ambiente e os grupos da tabela "Menu agrupado" do `EXPERIENCE.md` (revisão de 2026-09-25), com cada item visível conforme o papel mínimo; grupo sem item visível some inteiro; "Meu perfil" fica no rodapé
+
+**Given** um item do menu
+**When** a rota dele está aberta
+**Then** ele aparece em negrito branco com fundo destacado e barra vermelha FC à esquerda, com `aria-current="page"`, e o grupo dele está aberto
+
+**Given** as abas internas de hoje (Catálogo: Cadastro/Importação; Pedidos: Meus/Fila; Estoques: Locais/Lançar saldo/Movimentações; Normalização: Inconsistências/Duplicatas)
+**When** esta story entra
+**Then** cada aba vira uma rota própria (`/produtos/novo`, `/produtos/importar`, `/pedidos/fila`, `/estoques/lancar-saldo`, `/estoques/movimentacoes`, `/normalizacao/duplicatas`) que abre direto na tela certa por link, sem as abas
+
+**Given** o botão de recolher no topo do menu
+**When** acionado
+**Then** o menu fica com 64px só com ícones de grupo e tooltip, clicar num grupo abre os itens num painel flutuante, e a escolha (e o estado de cada grupo) é lembrada no navegador — sem `localStorage` disponível, tudo funciona com o padrão aberto
+
+**Given** o celular (<768px)
+**When** a tela carrega
+**Then** não há bottom nav nem menu fixo; o ☰ no topo abre a gaveta da esquerda com os mesmos grupos, que fecha ao escolher item, com `Esc` ou tocando fora, com o foco indo para a gaveta e voltando ao ☰; o `fab-scanner` continua onde estava nas telas de Catálogo e Carrinho
+
+**Given** o gate de MFA (AD-35) bloqueando a navegação
+**When** a pessoa usa o menu
+**Then** o menu continua visível e toda rota leva a `/configuracoes`, como hoje
+
+**Given** o topo (56px, branco)
+**When** carrega
+**Then** mostra à direita o indicador de Treinamento (quando for o caso), Ajuda e o menu da conta (Meu perfil, Sair); o `cart-badge` fica no item Carrinho do menu
+
+### Story 17.2: Páginas próprias para Cadastros e Administração
+
+As a adm ou gestor,
+I want que Categorias, Templates, Filiais, Centros de custo, Usuários, Convites, Promoções, Segurança, Log de acesso e LGPD tenham cada um sua página,
+So that eu não precise rolar uma tela de Configurações enorme para achar o que preciso.
+
+**Acceptance Criteria:**
+
+**Given** as seções administrativas que hoje se empilham em `/configuracoes`
+**When** esta story entra
+**Then** cada uma abre na sua rota (`/cadastros/categorias`, `/cadastros/templates`, `/cadastros/filiais`, `/cadastros/centros-custo`, `/admin/usuarios`, `/admin/convites`, `/admin/promocoes`, `/admin/seguranca`, `/admin/log-acesso`, `/admin/lgpd`) com título de página, reaproveitando os componentes de seção de hoje sem mudar comportamento
+
+**Given** uma dessas rotas aberta por quem não tem o papel mínimo
+**When** carrega
+**Then** mostra a mesma recusa de permissão que as páginas de hoje (o servidor continua sendo a autoridade)
+
+**Given** `/configuracoes`
+**When** aberta
+**Then** mostra só o que é da própria pessoa: dados da conta, minha dupla autenticação, solicitar promoção e privacidade
+
+**Given** um link antigo para `/configuracoes` vindo de e-mail ou favorito
+**When** aberto
+**Then** continua funcionando (nenhum link quebra)
+
+### Story 17.3: Padrão de página de lista aplicado ao Catálogo
+
+As a almoxarife,
+I want o Catálogo com busca, filtros, indicadores e uma tabela limpa,
+So that eu veja rápido o que tem, o que tem saldo e o que está sem foto.
+
+**Acceptance Criteria:**
+
+**Given** os componentes do padrão (título de página, barra de busca e filtros, faixa de indicadores, tabela com ícone+nome+subtítulo, pílula de status)
+**When** esta story entra
+**Then** eles existem como componentes reutilizáveis (usados pelas Stories 17.4 e 17.5), com testes próprios
+
+**Given** o Catálogo
+**When** carrega
+**Then** mostra o título "Produtos", a busca, o botão "Adicionar filtro" (categoria, estoque, disponibilidade e, para gestor/adm, inativos) com os filtros ativos em pílulas removíveis e "Limpar filtros", e a faixa de indicadores **Itens**, **Com saldo** e **Sem foto** (este em vermelho FC quando maior que zero), com Exportar e Cadastrar à direita conforme o papel
+
+**Given** os indicadores
+**When** a busca ou os filtros mudam
+**Then** eles vêm do servidor já com os filtros aplicados (`GET /api/produtos/indicadores`, escopado por Empresa, só Produtos ativos salvo filtro de inativos) — nunca contados só na página visível
+
+**Given** a tabela do Catálogo
+**When** lista os Produtos
+**Then** cada linha tem o ícone redondo, o nome, o subtítulo "Categoria • código", as colunas atuais (unidade, saldo por estoque/total) com números à direita e pílulas de status (disponível, sem saldo, inativo); no celular vira lista de linhas; a visualização em grade (FR-6) continua disponível como alternativa
+
+**Given** o `fab-scanner` e a busca por código
+**When** usados
+**Then** continuam funcionando como hoje
+
+### Story 17.4: Pedidos no padrão de lista
+
+As a almoxarife,
+I want Meus pedidos e a Fila de aprovação no mesmo padrão do Catálogo,
+So that eu veja de cara quantos pedidos estão pendentes.
+
+**Acceptance Criteria:**
+
+**Given** "Meus pedidos" e "Fila de aprovação"
+**When** carregam
+**Then** seguem o padrão de lista: título, busca, "Adicionar filtro" (status, período), faixa de indicadores **Pendentes** (vermelho FC quando maior que zero), **Aprovados no mês** e **Rejeitados no mês** calculada no servidor com os filtros, e tabela com número do pedido, solicitante, data, itens e pílula de status
+
+**Given** a aprovação item a item (UX-DR19) e o recibo em PDF
+**When** usados a partir da nova tabela
+**Then** funcionam exatamente como hoje
+
+### Story 17.5: Locais, Movimentações e Usuários no padrão de lista
+
+As a almoxarife ou gestor,
+I want Locais, Movimentações e Usuários no mesmo padrão,
+So that todas as telas de consulta sejam iguais de usar.
+
+**Acceptance Criteria:**
+
+**Given** Locais (`/estoques`)
+**When** carrega
+**Then** segue o padrão com os indicadores **Locais** e **Itens em estoque** e tabela com nome, filial e total de itens
+
+**Given** Movimentações (`/estoques/movimentacoes`)
+**When** carrega
+**Then** segue o padrão com filtro de período, tipo e estoque, indicadores **Baixas** e **Transferências** no período e tabela com Produto (ícone+nome+subtítulo), tipo em pílula, quantidade à direita, origem/destino, autor e data
+
+**Given** Usuários (`/admin/usuarios`)
+**When** carrega
+**Then** segue o padrão com busca por nome/e-mail, filtro por papel e situação, indicadores **Ativos** e **Sem MFA** (este em vermelho FC só se a Empresa exige MFA) e tabela com nome, e-mail, papel em pílula e ações de hoje
+
+**Given** todas as telas do Epic 17
+**When** o Epic termina
+**Then** nenhuma tela usa mais o rail de ícones, as abas por módulo ou a bottom nav, e os testes de navegação cobrem desktop, menu recolhido e celular

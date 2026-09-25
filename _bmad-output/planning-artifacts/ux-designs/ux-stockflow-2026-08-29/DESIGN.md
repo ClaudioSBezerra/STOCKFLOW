@@ -20,6 +20,11 @@ colors:
   text-on-tint-warning: '#92400E'
   text-on-tint-info: '#075985'
   text-on-tint-destructive: '#B91C1C'
+  sidebar: '#0F1729'
+  sidebar-foreground: '#CBD5E1'
+  sidebar-foreground-active: '#FFFFFF'
+  sidebar-item-active: '#1E293B'
+  sidebar-group-title: '#FFFFFF'
 typography:
   sans:
     fontFamily: 'Inter, system-ui, sans-serif'
@@ -64,6 +69,10 @@ spacing:
   fab-margin: 16px
   sidenav-width: 224px
   touch-target-min: 48px
+  sidebar-width: 240px
+  sidebar-width-collapsed: 64px
+  topbar-height: 56px
+  table-row-height: 60px
 components:
   button-primary:
     background: '{colors.primary}'
@@ -81,6 +90,17 @@ components:
   nav-item-active:
     background: '{colors.primary}/10'
     foreground: '{colors.primary}'
+  sidebar-item-active:
+    background: '{colors.sidebar-item-active}'
+    foreground: '{colors.sidebar-foreground-active}'
+    indicator: '3px {colors.primary} à esquerda'
+    fontWeight: '600'
+  kpi-alerta:
+    foreground: '{colors.primary}'
+  status-inativo:
+    background: '{colors.secondary}'
+    foreground: '{colors.foreground}/70'
+    radius: '{rounded.full}'
   status-pendente:
     background: '{colors.warning}/10'
     foreground: '{colors.text-on-tint-warning}'
@@ -99,7 +119,7 @@ components:
     radius: '{rounded.full}'
 status: final
 created: '2026-08-29'
-updated: '2026-08-29'
+updated: '2026-09-25'
 ---
 
 # stockflow — Design Spine
@@ -175,3 +195,21 @@ Herdados do `FB_APU02` sem alteração: `Button`, `Card`, `Table`, `Tabs`, `Dial
 | FAB do scanner só em telas de consulta/carrinho | FAB em toda tela (polui a interface administrativa de João) |
 | Alvo de toque de `{spacing.touch-target-min}` (48px) no fluxo de campo | Piso WCAG de 44px sem margem — insuficiente para uso com luvas |
 | Uma única cor de marca (`primary`) + acentos semânticos | Introduzir uma segunda cor "de marca" além do vermelho Ferreira Costa |
+
+## Revisão de 2026-09-25 — padrão visual "Modelo_tela" (Epic 17)
+
+Referência aprovada pelo usuário e pelos sócios: `referencias/modelo-tela.png` (tela "Transações" de um app financeiro). **Esta seção prevalece** sobre o rail de ícones, o submenu vertical, a bottom nav e o `nav-item-active` descritos acima, que deixam de valer quando o Epic 17 entra.
+
+- **Menu lateral** (`{spacing.sidebar-width}`, 240px): fundo `{colors.sidebar}` (azul-marinho, o mesmo tom do texto do produto). Os nomes das telas ficam escritos e agrupados. Cada grupo tem título com ícone em `{colors.sidebar-group-title}` e seta de recolher; os itens ficam recuados, em `{colors.sidebar-foreground}`. O **item ativo** usa `sidebar-item-active`: fundo `{colors.sidebar-item-active}`, texto branco em negrito e **barra de 3px vermelho FC (`{colors.primary}`) à esquerda** (decisão do usuário: vermelho da marca no ativo). No topo do menu, a marca do ambiente ("stockflow" ou "Suprimentos") e o botão de recolher, que reduz o menu a `{spacing.sidebar-width-collapsed}` só com ícones e tooltip.
+- **Topo** (`{spacing.topbar-height}`): fundo branco, sem título. À direita ficam, nesta ordem, o indicador de Treinamento (quando for o caso), a Ajuda e o menu da conta.
+- **Página de lista:**
+  - título `heading-lg` à esquerda;
+  - logo abaixo, a busca (campo largo com ícone de lupa), o botão contornado "Adicionar filtro" e o link "Limpar filtros" quando houver filtro ativo;
+  - depois, a **faixa de indicadores**: rótulo `label` cinza em cima e valor em `heading-md`; indicador de alerta (ex. "Sem foto", "Pendentes") com o valor em `kpi-alerta` (vermelho FC); os botões de ação da página (Exportar, Cadastrar) ficam à direita da faixa.
+- **Tabela:**
+  - linha de `{spacing.table-row-height}`, divisor fino `{colors.border}`, sem card envolvendo e sem zebra;
+  - coluna de seleção (checkbox) só onde houver ação em lote;
+  - **primeira coluna** com ícone redondo (32px, fundo `{colors.secondary}`, ícone da categoria), **nome** em `body` e **subtítulo** em `label` cinza com "Categoria • Estoque";
+  - números e datas alinhados à direita;
+  - status em pílula suave (`status-*`, incluindo o novo `status-inativo`).
+- **Celular (< 768px):** o menu lateral some e abre por **☰** no topo, como uma gaveta da esquerda com os mesmos grupos (decisão do usuário). A bottom nav deixa de existir. O `fab-scanner` continua no canto inferior direito com `{spacing.fab-margin}`. A tabela vira lista de linhas (ícone, nome, subtítulo e o principal número à direita), nunca cards pesados.

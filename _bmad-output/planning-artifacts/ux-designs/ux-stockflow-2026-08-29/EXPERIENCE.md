@@ -6,7 +6,7 @@ sources:
   - _bmad-output/planning-artifacts/prds/prd-stockflow-2026-08-29/addendum.md
   - _bmad-output/planning-artifacts/architecture/architecture-stockflow-2026-08-29/ARCHITECTURE-SPINE.md
 created: '2026-08-29'
-updated: '2026-08-29'
+updated: '2026-09-25'
 ---
 
 # stockflow — Experience Spine
@@ -205,3 +205,62 @@ Mais curtos que os UJs acima — sem narrativa completa, mas cada um precisa de 
 
 - **Espelhamento do `fab-scanner` para canhotos:** o FAB fica fixo no canto inferior direito (alcance de polegar padrão destro). Não há toggle de posição em v1 — revisitar se usuários canhotos relatarem dificuldade real de uso em campo.
 - **Estados fora dos 5 UJs nomeados:** superfícies administrativas menos críticas (Estoques, Relatórios, Log de Acesso, LGPD) têm IA e Component/State Patterns definidos, mas não um fluxo narrado completo — comportamento suficiente para implementação, mockup visual fica para quando/se o produto passar por uma rodada de mockups de telas-chave.
+
+## Revisão de 2026-09-25 — navegação e páginas no padrão "Modelo_tela" (Epic 17)
+
+Visual em `DESIGN.md` (seção de mesma data) e referência em `referencias/modelo-tela.png`. **Esta seção prevalece** sobre rail, abas por módulo, submenu vertical, bottom nav e "Mais" descritos em Information Architecture, Interaction Primitives e Responsive & Platform.
+
+### Menu agrupado — itens, rotas e papel mínimo
+
+Cada item é uma **rota própria**, que pode ser aberta por link direto e marca o item ativo. As abas internas de Catálogo, Pedidos, Estoques e Normalização viram itens do menu. As seções administrativas que hoje se empilham em Configurações ganham páginas próprias. Item sem permissão **some**, nunca aparece desabilitado; grupo sem nenhum item visível some inteiro.
+
+| Grupo | Item | Rota | Papel mínimo |
+|---|---|---|---|
+| Catálogo | Produtos | `/` | usuario |
+| | Cadastrar produto | `/produtos/novo` | almoxarife |
+| | Importar planilha | `/produtos/importar` | almoxarife |
+| | Carrinho (com `cart-badge`) | `/carrinho` | usuario |
+| Pedidos | Meus pedidos | `/pedidos` | usuario |
+| | Fila de aprovação | `/pedidos/fila` | almoxarife |
+| Estoque | Locais | `/estoques` | almoxarife |
+| | Lançar saldo | `/estoques/lancar-saldo` | almoxarife |
+| | Movimentações | `/estoques/movimentacoes` | almoxarife |
+| Qualidade dos dados | Inconsistências | `/normalizacao` | almoxarife |
+| | Duplicatas | `/normalizacao/duplicatas` | almoxarife |
+| Cadastros | Categorias | `/cadastros/categorias` | adm |
+| | Templates de nome | `/cadastros/templates` | adm |
+| | Filiais | `/cadastros/filiais` | adm |
+| | Centros de custo | `/cadastros/centros-custo` | adm |
+| Administração | Usuários | `/admin/usuarios` | gestor |
+| | Convites | `/admin/convites` | gestor |
+| | Promoções | `/admin/promocoes` | gestor |
+| | Segurança da empresa (MFA) | `/admin/seguranca` | adm |
+| | Log de acesso | `/admin/log-acesso` | adm |
+| | Solicitações LGPD | `/admin/lgpd` | adm |
+| (rodapé) | Meu perfil | `/configuracoes` | usuario |
+
+- **Meu perfil** fica só com o que é da própria pessoa: dados da conta, minha dupla autenticação, solicitar promoção e privacidade.
+- **Gate de MFA** (FR-37/AD-35): quando a navegação está bloqueada, o menu continua visível, e qualquer rota leva a `/configuracoes`, como hoje.
+- **Links antigos** (ex. `/configuracoes` com a seção de Categorias) continuam abrindo a tela; nenhum link de e-mail quebra.
+
+### Comportamento
+
+- **Grupos recolhíveis:** o grupo do item ativo abre sozinho. O estado aberto ou fechado de cada grupo e o menu recolhido ou expandido são lembrados no navegador, por pessoa (`localStorage`), o que é só conveniência: sem ele, a tela funciona igual.
+- **Menu recolhido (desktop):** só ícones de grupo, com tooltip; clicar abre um painel flutuante com os itens do grupo.
+- **Celular:** o **☰** no topo abre a gaveta da esquerda com os mesmos grupos. Ela fecha ao escolher um item, com o `Esc` ou tocando fora. O foco vai para a gaveta ao abrir e volta para o ☰ ao fechar.
+- **Teclado e leitor de tela:** o menu é `nav` com `aria-label="Menu principal"`, cada grupo é um botão com `aria-expanded` e o item ativo tem `aria-current="page"`.
+
+### Padrão de página de lista (Catálogo, Pedidos, Movimentações, Locais, Usuários)
+
+1. **Título** da página.
+2. **Barra de busca e filtros:** busca de texto, botão "Adicionar filtro" (abre os filtros da página: categoria, estoque, disponibilidade, status, período) e "Limpar filtros" quando algum estiver ativo. Os filtros ativos aparecem como pílulas removíveis.
+3. **Faixa de indicadores**, calculada no servidor com os filtros aplicados:
+   - **Catálogo:** Itens, Com saldo e **Sem foto** (alerta);
+   - **Pedidos:** Pendentes (alerta), Aprovados no mês e Rejeitados no mês;
+   - **Movimentações:** Baixas e Transferências no período;
+   - **Locais:** Locais e Itens em estoque.
+
+   As ações da página (Exportar, Cadastrar) ficam à direita.
+4. **Tabela** no padrão do `DESIGN.md`. No celular, lista de linhas.
+
+Estados de carregando, vazio e erro seguem as State Patterns já definidas.
