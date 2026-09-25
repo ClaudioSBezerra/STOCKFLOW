@@ -55,6 +55,11 @@ beforeEach(() => {
         return Promise.resolve({ ok: true, json: async () => ({ importacao: null }) });
       if (typeof url === 'string' && url.startsWith('/api/produtos/busca'))
         return Promise.resolve({ ok: true, json: async () => ({ produtos: [] }) });
+      if (typeof url === 'string' && url.startsWith('/api/produtos/catalogo/indicadores'))
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ itens: 0, comSaldo: 0, semFoto: 0 }),
+        });
       if (typeof url === 'string' && url.startsWith('/api/produtos/catalogo'))
         return Promise.resolve({
           ok: true,
@@ -191,5 +196,26 @@ describe('CatalogoPage — scanner de código (Story 4.5)', () => {
     await user.click(screen.getByRole('button', { name: 'Escanear código do produto' }));
 
     await waitFor(() => expect(campoBusca).toHaveFocus());
+  });
+});
+
+describe('CatalogoPage — podeCadastrar (Story 17.3)', () => {
+  it.each(['almoxarife', 'gestor', 'adm'])(
+    'papel %s recebe podeCadastrar=true → link Cadastrar presente',
+    async (papel) => {
+      authState.papel = papel;
+      render(<CatalogoPage />, { wrapper: MemoryRouter });
+
+      const link = await screen.findByRole('link', { name: 'Cadastrar' });
+      expect(link).toHaveAttribute('href', '/produtos/novo');
+    },
+  );
+
+  it('papel usuario recebe podeCadastrar=false → sem link Cadastrar', async () => {
+    authState.papel = 'usuario';
+    render(<CatalogoPage />, { wrapper: MemoryRouter });
+
+    await screen.findByText('Nenhum produto no catálogo.');
+    expect(screen.queryByRole('link', { name: 'Cadastrar' })).not.toBeInTheDocument();
   });
 });

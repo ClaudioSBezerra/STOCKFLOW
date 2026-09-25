@@ -671,6 +671,15 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	registrar("GET /e/{slug}/api/produtos/catalogo", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarCatalogoHandler(db)))
 
+	// Indicadores do Catálogo — Story 17.3 (AD-38). GET
+	// /api/produtos/catalogo/indicadores só leva RequireAuth (usuario+),
+	// mesmo mínimo de ListarCatalogoHandler — os indicadores refletem o
+	// mesmo conjunto filtrado que o usuário já vê na listagem. Segmento de
+	// 2 níveis — registrado ANTES de `catalogo/exportar` (mesmo critério de
+	// especificidade de `busca`/`catalogo`/`por-codigo`).
+	registrar("GET /e/{slug}/api/produtos/catalogo/indicadores", middleware.RequireAuth(db, jwtSecret)(
+		handlers.IndicadoresCatalogoHandler(db, fotosDir)))
+
 	// Exportação da tabela do Catálogo para Excel — Story 4.6 (FR-30).
 	// GET /api/produtos/catalogo/exportar fica atrás de
 	// RequireRole(almoxarife), mesmo mínimo de papel do cadastro/importação:

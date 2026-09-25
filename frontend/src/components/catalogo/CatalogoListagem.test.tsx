@@ -528,10 +528,10 @@ describe('CatalogoListagem — tabela agrupada (viewport ≥ 768px)', () => {
 
     // Valor fracionário formatado em pt-BR ("6,5", não "6.5") + rótulos.
     expect(await screen.findByText('C 6,5m · ⌀ 10cm')).toBeInTheDocument();
-    // Grupo sem nenhuma dimensão -> travessão na célula "Dimensões" (5ª coluna:
-    // expandir, código, produto, categoria, dimensões).
+    // Grupo sem nenhuma dimensão -> travessão na célula "Dimensões" (3ª coluna:
+    // expandir, produto+subtítulo, dimensões — após Story 17.3 que colapsou código/categoria).
     const linha = screen.getByText('Cimento CP-II').closest('tr') as HTMLElement;
-    expect(within(linha).getAllByRole('cell')[4]).toHaveTextContent('—');
+    expect(within(linha).getAllByRole('cell')[2]).toHaveTextContent('—');
   });
 
   it('encolher a viewport abaixo de 768px volta para grade e esconde o alternador', async () => {
@@ -754,12 +754,13 @@ describe('CatalogoListagem — filtros (Story 4.2)', () => {
 
     await user.click(screen.getByRole('combobox', { name: 'Categoria' }));
     await user.click(await screen.findByRole('option', { name: 'Materiais Civis' }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    // Story 17.3: cada mudança de filtro dispara 2 fetches — catálogo + indicadores.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     fetchMock.mockClear();
 
     await user.click(screen.getByRole('combobox', { name: 'Estoque' }));
     await user.click(await screen.findByRole('option', { name: 'Canteiro A' }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     fetchMock.mockClear();
 
     await user.click(screen.getByRole('checkbox', { name: 'Com estoque disponível' }));
@@ -1281,12 +1282,16 @@ describe('CatalogoListagem — colunas explícitas (Story 10.4)', () => {
     await screen.findByText('Parafuso');
     await user.click(screen.getByRole('button', { name: 'Tabela' }));
 
-    for (const nome of ['Código', 'Produto', 'Categoria', 'Embalagem/Unidade', 'Quantidade']) {
+    // Story 17.3: Código e Categoria colapsados no subtítulo da coluna Produto.
+    for (const nome of ['Produto', 'Dimensões', 'Embalagem/Unidade', 'Quantidade']) {
       expect(await screen.findByRole('columnheader', { name: nome })).toBeInTheDocument();
     }
+    expect(screen.queryByRole('columnheader', { name: 'Código' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('columnheader', { name: 'Categoria' })).not.toBeInTheDocument();
     const linha = screen.getByText('Tubo PVC').closest('tr') as HTMLElement;
-    expect(within(linha).getByText('TUB-001')).toBeInTheDocument();
-    expect(within(linha).getByText('Construção Civil')).toBeInTheDocument();
+    // Código e categoria agora no subtítulo "Construção Civil • TUB-001".
+    expect(within(linha).getByText(/TUB-001/)).toBeInTheDocument();
+    expect(within(linha).getByText(/Construção Civil/)).toBeInTheDocument();
     expect(within(linha).getByText('Caixa c/ 12 · un')).toBeInTheDocument();
     expect(within(linha).getByText('17')).toBeInTheDocument();
     // Nada expandido: a discriminação por Estoque não aparece.
@@ -1333,15 +1338,18 @@ describe('CatalogoListagem — colunas explícitas (Story 10.4)', () => {
     await user.click(screen.getByRole('button', { name: 'Tabela' }));
 
     const mult = (await screen.findByText('Grupo Divergente')).closest('tr') as HTMLElement;
-    expect(within(mult).getAllByText('Múltiplos')).toHaveLength(3);
+    // Story 17.3: categoria e código colapsados no subtítulo "Múltiplas • Múltiplos";
+    // embalagemUnidade permanece coluna separada com 'Múltiplos'.
+    expect(within(mult).getByText(/Múltiplas/)).toBeInTheDocument(); // parte do subtítulo
+    expect(within(mult).getAllByText('Múltiplos')).toHaveLength(1); // coluna Embalagem/Unidade
 
     const vazio = screen.getByText('Grupo Sem Embalagem').closest('tr') as HTMLElement;
     expect(within(vazio).queryByText('Múltiplos')).not.toBeInTheDocument();
-    // código, dimensões e embalagem/unidade ausentes -> travessão.
-    expect(within(vazio).getAllByText('—')).toHaveLength(3);
+    // código no subtítulo ("Construção Civil • —"), dimensões e embalagem/unidade em colunas separadas.
+    expect(within(vazio).getAllByText('—')).toHaveLength(2);
   });
 
-  it('a linha expandida ocupa todas as colunas (colSpan = 8)', async () => {
+  it('a linha expandida ocupa todas as colunas (colSpan = nColunas)', async () => {
     stubMatchMedia(true);
     stubFetch(
       [item('p1', 'Parafuso', {})],
@@ -1371,5 +1379,154 @@ describe('CatalogoListagem — colunas explícitas (Story 10.4)', () => {
     const linhaExpandida = screen.getByText('Almoxarifado Central').closest('td') as HTMLElement;
     const colunas = screen.getAllByRole('columnheader').length;
     expect(linhaExpandida).toHaveAttribute('colspan', String(colunas));
+  });
+});
+
+// --- Story 17.3: FaixaIndicadores e podeCadastrar ---------------------------
+
+function stubFetchComIndicadores(opts: {
+  indicadoresOk?: boolean;
+  indicadores?: { itens: number; comSaldo: number; semFoto: number };
+} = {}) {
+  const { indicadoresOk = true, indicadores = { itens: 10, comSaldo: 7, semFoto: 2 } } = opts;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((url: string) => {
+      const u = String(url);
+      if (u.includes('/catalogo/indicadores')) {
+        if (!indicadoresOk) return Promise.reject(new Error('rede'));
+        return Promise.resolve({
+          ok: true,
+          json: async () => indicadores,
+        });
+      }
+      // catalogo e outros endpoints
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          produtos: [],
+          categorias: [],
+          estoques: [],
+          paginacao: { pagina: 1, tamanho: 24, total: 0, totalPaginas: 0 },
+        }),
+      });
+    }),
+  );
+}
+
+describe('CatalogoListagem — FaixaIndicadores (Story 17.3)', () => {
+  it('exibe Itens, Com saldo e Sem foto buscados de /catalogo/indicadores', async () => {
+    stubFetchComIndicadores({ indicadores: { itens: 10, comSaldo: 7, semFoto: 0 } });
+    render(
+      <MemoryRouter>
+        <CatalogoListagem />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText('10')).toBeInTheDocument();
+    expect(screen.getByText('7')).toBeInTheDocument();
+    expect(screen.getByText('Itens')).toBeInTheDocument();
+    expect(screen.getByText('Com saldo')).toBeInTheDocument();
+    expect(screen.getByText('Sem foto')).toBeInTheDocument();
+  });
+
+  it('/catalogo/indicadores falha → faixa mostra "—" para todos os valores', async () => {
+    stubFetchComIndicadores({ indicadoresOk: false });
+    render(
+      <MemoryRouter>
+        <CatalogoListagem />
+      </MemoryRouter>,
+    );
+    // Aguarda o catálogo terminar de carregar para garantir que indicadores também tentou.
+    await screen.findByText('Nenhum produto no catálogo.');
+    const travessoes = screen.getAllByText('—');
+    // Há pelo menos 3 travessões (um por indicador).
+    expect(travessoes.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('podeCadastrar=false → botão Cadastrar não aparece', async () => {
+    stubFetchComIndicadores();
+    render(
+      <MemoryRouter>
+        <CatalogoListagem podeCadastrar={false} />
+      </MemoryRouter>,
+    );
+    await screen.findByText('Nenhum produto no catálogo.');
+    expect(screen.queryByRole('link', { name: 'Cadastrar' })).not.toBeInTheDocument();
+  });
+
+  it('podeCadastrar=true → link Cadastrar aparece apontando para /produtos/novo', async () => {
+    stubFetchComIndicadores();
+    render(
+      <MemoryRouter>
+        <CatalogoListagem podeCadastrar={true} />
+      </MemoryRouter>,
+    );
+    const link = await screen.findByRole('link', { name: 'Cadastrar' });
+    expect(link).toHaveAttribute('href', '/produtos/novo');
+  });
+
+  // Matriz row 5: filtro ativo → /indicadores é chamado com mesmo categoriaId
+  it('ao mudar categoria, /catalogo/indicadores é chamado com o mesmo categoriaId', async () => {
+    const fetchMock = vi.fn((url: string) => {
+      const u = String(url);
+      if (u.includes('/api/categorias'))
+        return Promise.resolve({ ok: true, json: async () => ({ categorias: [{ id: 'c1', codigo: '01', nome: 'Materiais' }] }) });
+      if (u.includes('/api/estoques'))
+        return Promise.resolve({ ok: true, json: async () => ({ estoques: [] }) });
+      return Promise.resolve({
+        ok: true,
+        json: async () =>
+          u.includes('/indicadores')
+            ? { itens: 0, comSaldo: 0, semFoto: 0 }
+            : { produtos: [], paginacao: { pagina: 1, tamanho: 24, total: 0, totalPaginas: 0 } },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const user = userEvent.setup();
+    render(<MemoryRouter><CatalogoListagem /></MemoryRouter>);
+    await screen.findByText('Nenhum produto no catálogo.');
+    fetchMock.mockClear();
+
+    await user.click(screen.getByRole('combobox', { name: 'Categoria' }));
+    await user.click(await screen.findByRole('option', { name: 'Materiais' }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/catalogo/indicadores?categoriaId=c1'),
+        expect.anything(),
+      ),
+    );
+  });
+
+  // Matriz row 6: gestor com inativos → /indicadores inclui inativos=1
+  it('ao ativar "Mostrar só inativos", /catalogo/indicadores é chamado com inativos=1', async () => {
+    const fetchMock = vi.fn((url: string) => {
+      const u = String(url);
+      if (u.includes('/api/categorias'))
+        return Promise.resolve({ ok: true, json: async () => ({ categorias: [] }) });
+      if (u.includes('/api/estoques'))
+        return Promise.resolve({ ok: true, json: async () => ({ estoques: [] }) });
+      return Promise.resolve({
+        ok: true,
+        json: async () =>
+          u.includes('/indicadores')
+            ? { itens: 0, comSaldo: 0, semFoto: 0 }
+            : { produtos: [], paginacao: { pagina: 1, tamanho: 24, total: 0, totalPaginas: 0 } },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const user = userEvent.setup();
+    render(<MemoryRouter><CatalogoListagem podeVerInativos /></MemoryRouter>);
+    await screen.findByText('Nenhum produto no catálogo.');
+    fetchMock.mockClear();
+
+    await user.click(screen.getByRole('checkbox', { name: 'Mostrar só inativos' }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/catalogo/indicadores?inativos=1'),
+        expect.anything(),
+      ),
+    );
   });
 });

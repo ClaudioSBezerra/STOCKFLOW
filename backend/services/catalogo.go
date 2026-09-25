@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -274,6 +275,99 @@ func montarFiltrosCatalogo(f FiltrosCatalogo, primeiroPlaceholder int) (string, 
 		return "", nil
 	}
 	return " WHERE " + strings.Join(condicoes, " AND "), args
+}
+
+// IndicadoresCatalogo é o conjunto de indicadores do painel do Catálogo —
+// totais calculados sobre o MESMO conjunto filtrado da listagem (Story 17.3).
+type IndicadoresCatalogo struct {
+	Itens    int `json:"itens"`
+	ComSaldo int `json:"comSaldo"`
+	SemFoto  int `json:"semFoto"`
+}
+
+// IndicadoresCatalogoProdutos calcula os indicadores do Catálogo:
+//   - Itens: total de Produtos que casam os filtros.
+//   - ComSaldo: quantos têm saldo total > 0 (sobre todos os Estoques).
+//   - SemFoto: quantos não têm foto (arquivo <id>*.jpg) em fotosDir.
+//
+// Reutiliza montarFiltrosCatalogo sem modificação — mesmos filtros/fronteira
+// de Empresa da listagem. Se fotosDir for "" ou a Glob falhar, SemFoto = Itens
+// (conservador). filtros.SomenteInativos é honrado pelo handler conforme o
+// mesmo critério de gestor+ de ListarCatalogoHandler (Story 16.2).
+func IndicadoresCatalogoProdutos(db *sql.DB, fotosDir string, filtros FiltrosCatalogo) (IndicadoresCatalogo, error) {
+	where, args := montarFiltrosCatalogo(filtros, 1)
+
+	// Uma query seleciona id + sinal de saldo por produto em uma passagem.
+	query := `
+		SELECT p.id, COALESCE(SUM(pe.quantidade), 0) > 0
+		FROM produtos p
+		JOIN categorias c ON c.id = p.categoria_id
+		LEFT JOIN saldo_produto_estoque pe ON pe.produto_id = p.id` +
+		where + `
+		GROUP BY p.id`
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		if filtroUUIDInvalido(err) {
+			return IndicadoresCatalogo{}, nil
+		}
+		return IndicadoresCatalogo{}, fmt.Errorf("falha ao calcular indicadores do catálogo: %w", err)
+	}
+	defer rows.Close()
+
+	var produtoIDs []string
+	comSaldo := 0
+	for rows.Next() {
+		var id string
+		var temSaldo bool
+		if err := rows.Scan(&id, &temSaldo); err != nil {
+			return IndicadoresCatalogo{}, fmt.Errorf("falha ao ler linha de indicadores do catálogo: %w", err)
+		}
+		produtoIDs = append(produtoIDs, id)
+		if temSaldo {
+			comSaldo++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return IndicadoresCatalogo{}, fmt.Errorf("falha ao iterar indicadores do catálogo: %w", err)
+	}
+
+	itens := len(produtoIDs)
+	semFoto := 0
+
+	if itens > 0 {
+		// Listagem de fotos uma única vez por requisição (Never: sem chamada por
+		// Produto). Padrão de arquivo: <produto_id>.jpg ou <produto_id>-sufixo.jpg.
+		if fotosDir == "" {
+			// Sem diretório configurado: todos sem foto.
+			semFoto = itens
+		} else {
+			fotos, globErr := filepath.Glob(fotosDir + "/*.jpg")
+			if globErr != nil {
+				// Padrão inválido (não deveria ocorrer com Glob simples): conservador.
+				semFoto = itens
+			} else {
+				// Construir conjunto de IDs com foto (stem do nome de arquivo).
+				// IDs são UUIDs (ex.: "550e8400-e29b-..."); o separador confiável
+				// é a extensão (".jpg"), não o primeiro '-' que está dentro do UUID.
+				comFoto := make(map[string]struct{}, len(fotos))
+				for _, f := range fotos {
+					base := filepath.Base(f)
+					ext := filepath.Ext(base)
+					if stem := base[:len(base)-len(ext)]; stem != "" {
+						comFoto[stem] = struct{}{}
+					}
+				}
+				for _, id := range produtoIDs {
+					if _, ok := comFoto[id]; !ok {
+						semFoto++
+					}
+				}
+			}
+		}
+	}
+
+	return IndicadoresCatalogo{Itens: itens, ComSaldo: comSaldo, SemFoto: semFoto}, nil
 }
 
 // catalogoGradeQueryBase é a parte fixa da grade (Story 4.3) — sem `WHERE`

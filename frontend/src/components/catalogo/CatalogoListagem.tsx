@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ChevronDown, ChevronRight, LayoutGrid, Table2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, LayoutGrid, Package, Table2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { apiUrl, authHeaders } from '@/lib/api';
+import { FaixaIndicadores } from '@/components/lista/FaixaIndicadores';
+import { PilhulaStatus } from '@/components/lista/PilhulaStatus';
 import {
   formatarEmbalagemUnidade,
   formatarQuantidade,
@@ -127,7 +129,8 @@ type Modo = 'grade' | 'tabela';
 const MEDIA_QUERY = '(min-width: 768px)';
 
 // COLUNAS_TABELA: nº de colunas do <thead> da tabela agrupada (expansão usa colSpan).
-const COLUNAS_TABELA = 8;
+// Story 17.3: reduzido de 8 para 6 — Código/Produto/Categoria colapsados na col1.
+const COLUNAS_TABELA = 6;
 
 const MENSAGEM_ERRO = 'Não foi possível carregar o catálogo. Tente novamente em instantes.';
 const MENSAGEM_VAZIO = 'Nenhum produto no catálogo.';
@@ -181,12 +184,15 @@ interface CatalogoListagemProps {
   podeExportar?: boolean;
   // Story 16.2: gestor+ vê o filtro "Mostrar só inativos" (o servidor é a autoridade).
   podeVerInativos?: boolean;
+  // Story 17.3: almoxarife+ vê o link "Cadastrar" na faixa de indicadores.
+  podeCadastrar?: boolean;
 }
 
 export function CatalogoListagem({
   termo = '',
   podeExportar = false,
   podeVerInativos = false,
+  podeCadastrar = false,
 }: CatalogoListagemProps = {}) {
   const [modo, setModo] = useState<Modo>('grade');
   // Estado inicial derivado direto do matchMedia (não de um setState no
@@ -220,6 +226,14 @@ export function CatalogoListagem({
   // exportação está em voo — desabilita o botão "Exportar" e troca seu
   // rótulo para "Exportando...".
   const [exportando, setExportando] = useState(false);
+
+  // indicadores (Story 17.3): resultado de GET /catalogo/indicadores.
+  // null = fetch ainda não completou ou falhou; a faixa mostra "—" para todos.
+  const [indicadores, setIndicadores] = useState<{
+    itens: number;
+    comSaldo: number;
+    semFoto: number;
+  } | null>(null);
 
   // Contador de sequência: respostas de uma busca antiga que chegam depois de
   // uma nova são descartadas (mesma guarda de LogAcessoSection/BuscaCatalogo).
@@ -315,6 +329,32 @@ export function CatalogoListagem({
       await carregar(modo, pagina, { categoriaId, estoqueId, comEstoque, termo, somenteInativos });
     })();
   }, [carregar, modo, pagina, categoriaId, estoqueId, comEstoque, termo, somenteInativos]);
+
+  // Fetch de indicadores (Story 17.3): disparado nos mesmos eventos de mudança
+  // de filtro que `carregar`, mas sem `pagina` nem `modo` (os indicadores são
+  // totais do conjunto filtrado, não da página visível). Se o fetch falhar
+  // (rede ou status não-OK), `indicadores` fica null e a faixa exibe "—".
+  useEffect(() => {
+    void (async () => {
+      try {
+        const extras = queryFiltros({ categoriaId, estoqueId, comEstoque, termo, somenteInativos });
+        const url = apiUrl(`/api/produtos/catalogo/indicadores${extras !== '' ? `?${extras}` : ''}`);
+        const res = await fetch(url, { headers: authHeaders() });
+        if (!res.ok) {
+          setIndicadores(null);
+          return;
+        }
+        const data = (await res.json()) as { itens?: number; comSaldo?: number; semFoto?: number };
+        setIndicadores({
+          itens: data.itens ?? 0,
+          comSaldo: data.comSaldo ?? 0,
+          semFoto: data.semFoto ?? 0,
+        });
+      } catch {
+        setIndicadores(null);
+      }
+    })();
+  }, [categoriaId, estoqueId, comEstoque, termo, somenteInativos]);
 
   // Carrega as listas de categoria/Estoque uma vez no mount para popular os
   // dois `<Select>` de filtro (mesmo padrão de
@@ -442,6 +482,29 @@ export function CatalogoListagem({
   const vazio = !carregando && !erro && total === 0;
   const mostrarPaginacao = !erro && !vazio && totalPaginas > 1;
 
+  // Ações da faixa de indicadores (Story 17.3): Exportar (podeExportar &&
+  // tabela) e link Cadastrar (podeCadastrar), à direita da faixa.
+  const acoesIndicadores = (
+    <>
+      {podeExportar && modo === 'tabela' && (
+        <Button
+          type="button"
+          variant="outline"
+          disabled={exportando}
+          onClick={() => void aoExportar()}
+          className="min-h-touch-target-min"
+        >
+          {exportando ? 'Exportando...' : 'Exportar'}
+        </Button>
+      )}
+      {podeCadastrar && (
+        <Button asChild variant="default" className="min-h-touch-target-min">
+          <Link to="/produtos/novo">Cadastrar</Link>
+        </Button>
+      )}
+    </>
+  );
+
   return (
     <section className="flex flex-col gap-4" aria-label="Catálogo de produtos">
       {podeAlternar && !somenteInativos && (
@@ -466,17 +529,6 @@ export function CatalogoListagem({
             <Table2 aria-hidden="true" className="h-4 w-4" />
             Tabela
           </Button>
-          {podeExportar && modo === 'tabela' && (
-            <Button
-              type="button"
-              variant="outline"
-              disabled={exportando}
-              onClick={() => void aoExportar()}
-              className="min-h-touch-target-min"
-            >
-              {exportando ? 'Exportando...' : 'Exportar'}
-            </Button>
-          )}
         </div>
       )}
 
@@ -540,6 +592,15 @@ export function CatalogoListagem({
         )}
       </div>
 
+      <FaixaIndicadores
+        indicadores={[
+          { rotulo: 'Itens', valor: indicadores?.itens ?? null },
+          { rotulo: 'Com saldo', valor: indicadores?.comSaldo ?? null },
+          { rotulo: 'Sem foto', valor: indicadores?.semFoto ?? null, alerta: true },
+        ]}
+        acoes={acoesIndicadores}
+      />
+
       {erro && (
         <p role="alert" className="text-body text-destructive">
           {MENSAGEM_ERRO}
@@ -570,8 +631,8 @@ export function CatalogoListagem({
                 <span className="text-body font-medium">
                   {item.nome}
                   {somenteInativos && (
-                    <span className="ml-2 rounded-full border border-border px-2 py-0.5 text-label text-muted-foreground">
-                      Inativo
+                    <span className="ml-2">
+                      <PilhulaStatus status="Inativo" />
                     </span>
                   )}
                 </span>
@@ -599,13 +660,7 @@ export function CatalogoListagem({
                   <span className="sr-only">Expandir</span>
                 </th>
                 <th className="py-2 pr-4 text-left font-medium" scope="col">
-                  Código
-                </th>
-                <th className="py-2 pr-4 text-left font-medium" scope="col">
                   Produto
-                </th>
-                <th className="py-2 pr-4 text-left font-medium" scope="col">
-                  Categoria
                 </th>
                 <th className="py-2 pr-4 text-left font-medium" scope="col">
                   Dimensões
@@ -677,10 +732,14 @@ function FragmentLinhaGrupo({
   aoAlternar: () => void;
 }) {
   const Chevron = expandido ? ChevronDown : ChevronRight;
+  // Story 17.3: `grupo.inativado` ainda não é retornado pelo backend nesta
+  // story — PilhulaStatus incluída desde já para uso futuro (Never: não alterar
+  // regras de negócio nem forçar chamada extra).
+  const grupoInativado = (grupo as CatalogoGrupo & { inativado?: boolean }).inativado;
   return (
     <>
-      <tr className="border-t border-border">
-        <td className="py-2 pr-4">
+      <tr className="border-b border-border">
+        <td className="py-0 pr-4">
           <button
             type="button"
             aria-expanded={expandido}
@@ -693,28 +752,40 @@ function FragmentLinhaGrupo({
             </span>
           </button>
         </td>
-        <td className={`py-2 pr-4 text-label ${grupo.codigo ? 'font-mono' : ''}`}>
-          {grupo.multiplos.codigo ? MULTIPLOS : (grupo.codigo || '—')}
+        <td className="py-0 pr-4" aria-label={grupo.nome}>
+          <div className="flex h-[60px] items-center gap-3">
+            <Package
+              aria-hidden="true"
+              className="h-8 w-8 shrink-0 rounded-full bg-muted p-1.5 text-muted-foreground"
+            />
+            <div className="flex flex-col">
+              <span className="text-body font-medium">{grupo.nome}</span>
+              <span className="text-label text-muted-foreground">
+                {grupo.multiplos.categoria ? 'Múltiplas' : (grupo.categoria?.nome ?? '—')}
+                {' • '}
+                {grupo.multiplos.codigo ? 'Múltiplos' : (grupo.codigo ?? '—')}
+              </span>
+            </div>
+          </div>
         </td>
-        <td className="py-2 pr-4 font-medium">{grupo.nome}</td>
-        <td className="py-2 pr-4">
-          {grupo.multiplos.categoria ? MULTIPLOS : (grupo.categoria?.nome || '—')}
-        </td>
-        <td className="py-2 pr-4 text-muted-foreground">{resumirDimensoes(grupo.dimensoes)}</td>
-        <td className="py-2 pr-4 text-muted-foreground">
+        <td className="py-0 pr-4 text-muted-foreground">{resumirDimensoes(grupo.dimensoes)}</td>
+        <td className="py-0 pr-4 text-muted-foreground">
           {grupo.multiplos.embalagemUnidade
             ? MULTIPLOS
             : formatarEmbalagemUnidade(grupo.embalagem, grupo.unidadeMedida)}
         </td>
-        <td className="py-2 pr-4 text-right tabular-nums">
+        <td className="py-0 pr-4 text-right tabular-nums">
           {formatarQuantidade(grupo.quantidadeTotal)}
         </td>
-        <td className="py-2">
-          <IndicadorDisponibilidade disponivel={grupo.disponivel} />
+        <td className="py-0">
+          <div className="flex items-center gap-2">
+            <IndicadorDisponibilidade disponivel={grupo.disponivel} />
+            {grupoInativado && <PilhulaStatus status="Inativo" />}
+          </div>
         </td>
       </tr>
       {expandido && (
-        <tr className="border-t border-border/50 bg-muted/40">
+        <tr className="border-b border-border/50 bg-muted/40">
           <td colSpan={COLUNAS_TABELA} className="py-2 pr-4 pl-10">
             {grupo.porEstoque.length === 0 ? (
               <span className="text-label text-muted-foreground">

@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -1614,4 +1616,90 @@ func TestObterProdutoDetalhe_TemplateEObservacoes(t *testing.T) {
 	if det.TemplateID != nil || det.Observacoes != nil {
 		t.Errorf("templateId = %v, observacoes = %v, want nil/nil", det.TemplateID, det.Observacoes)
 	}
+}
+
+// --- Story 17.3: Indicadores do Catálogo ------------------------------------
+
+// TestIndicadoresCatalogoProdutos prova: itens correto, comSaldo correto,
+// semFoto correto quando fotosDir vazio, semFoto correto com foto presente,
+// filtros propagados (categoriaId).
+func TestIndicadoresCatalogoProdutos(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Indicadores")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID1 := categoriaIDPorCodigo(t, db, "04.001")
+	categoriaID2 := categoriaIDPorCodigo(t, db, "04.002")
+
+	// Produto A: com saldo, categoria 1.
+	idA, _ := criarProdutoCatComSaldo(t, db, CriarProdutoInput{
+		UnidadeMedida: "un", Nome: "Produto Ind A", CategoriaID: categoriaID1,
+	}, estoque.ID, 5)
+
+	// Produto B: sem saldo (limpar estoque), categoria 1.
+	idB, _ := criarProdutoCatComSaldo(t, db, CriarProdutoInput{
+		UnidadeMedida: "un", Nome: "Produto Ind B", CategoriaID: categoriaID1,
+	}, estoque.ID, 0)
+	limparEstoqueDe(t, db, idB)
+
+	// Produto C: com saldo, categoria 2.
+	_, _ = criarProdutoCatComSaldo(t, db, CriarProdutoInput{
+		UnidadeMedida: "un", Nome: "Produto Ind C", CategoriaID: categoriaID2,
+	}, estoque.ID, 3)
+
+	t.Run("todos os produtos, fotosDir vazio", func(t *testing.T) {
+		ind, err := IndicadoresCatalogoProdutos(db, "", FiltrosCatalogo{EmpresaID: empresaTeste})
+		if err != nil {
+			t.Fatalf("IndicadoresCatalogoProdutos: %v", err)
+		}
+		if ind.Itens != 3 {
+			t.Errorf("itens = %d, want 3", ind.Itens)
+		}
+		if ind.ComSaldo != 2 {
+			t.Errorf("comSaldo = %d, want 2", ind.ComSaldo)
+		}
+		// fotosDir vazio -> semFoto = itens (conservador).
+		if ind.SemFoto != 3 {
+			t.Errorf("semFoto = %d, want 3 (fotosDir vazio)", ind.SemFoto)
+		}
+	})
+
+	t.Run("fotosDir com foto do produto A", func(t *testing.T) {
+		dir := t.TempDir()
+		// Criar arquivo de foto para o produto A (padrão <id>.jpg).
+		if err := os.WriteFile(filepath.Join(dir, idA+".jpg"), []byte("fake"), 0o644); err != nil {
+			t.Fatalf("criar foto: %v", err)
+		}
+		ind, err := IndicadoresCatalogoProdutos(db, dir, FiltrosCatalogo{EmpresaID: empresaTeste})
+		if err != nil {
+			t.Fatalf("IndicadoresCatalogoProdutos: %v", err)
+		}
+		if ind.Itens != 3 {
+			t.Errorf("itens = %d, want 3", ind.Itens)
+		}
+		// Produtos B e C sem foto.
+		if ind.SemFoto != 2 {
+			t.Errorf("semFoto = %d, want 2 (só A tem foto)", ind.SemFoto)
+		}
+	})
+
+	t.Run("filtros propagados — categoriaId", func(t *testing.T) {
+		ind, err := IndicadoresCatalogoProdutos(db, "", FiltrosCatalogo{
+			EmpresaID:   empresaTeste,
+			CategoriaID: categoriaID1,
+		})
+		if err != nil {
+			t.Fatalf("IndicadoresCatalogoProdutos: %v", err)
+		}
+		// Só A e B pertencem à categoria 1.
+		if ind.Itens != 2 {
+			t.Errorf("itens = %d, want 2 (filtrado por categoriaID)", ind.Itens)
+		}
+		if ind.ComSaldo != 1 {
+			t.Errorf("comSaldo = %d, want 1", ind.ComSaldo)
+		}
+	})
 }

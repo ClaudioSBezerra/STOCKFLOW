@@ -56,6 +56,11 @@ export function CatalogoPage() {
   // mesmo em chamada direta à API), este espelho é só de experiência.
   const podeExportar = rankPapel(usuario?.papel ?? '') >= rankPapel('almoxarife');
 
+  // Story 17.3: almoxarife+ vê o botão "Cadastrar" na faixa de indicadores.
+  // O servidor continua sendo a autoridade real (POST /api/produtos responde 403
+  // para papéis abaixo, mesmo em chamada direta à API); este espelho é de UX.
+  const podeCadastrar = rankPapel(usuario?.papel ?? '') >= rankPapel('almoxarife');
+
   // Story 16.2: filtro "Mostrar só inativos" é de gestor+ (o servidor ignora o parâmetro abaixo disso).
   const podeVerInativos = rankPapel(usuario?.papel ?? '') >= rankPapel('gestor');
 
@@ -86,7 +91,12 @@ export function CatalogoPage() {
     <div className="flex flex-col gap-6 p-6">
       <h1 className="text-heading-lg">Produtos</h1>
       <BuscaCatalogo onTermoChange={aoTermoDigitado} inputRef={buscaInputRef} />
-      <CatalogoListagem termo={termoFiltro} podeExportar={podeExportar} podeVerInativos={podeVerInativos} />
+      <CatalogoListagem
+        termo={termoFiltro}
+        podeExportar={podeExportar}
+        podeVerInativos={podeVerInativos}
+        podeCadastrar={podeCadastrar}
+      />
       <ScannerProdutoFab aoFalharLeitura={devolverFocoABusca} />
     </div>
   );

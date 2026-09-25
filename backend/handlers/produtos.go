@@ -580,6 +580,68 @@ func ExportarCatalogoHandler(db *sql.DB) http.HandlerFunc {
 	}
 }
 
+// IndicadoresCatalogoHandler expõe GET
+// /e/{slug}/api/produtos/catalogo/indicadores?q=<>&categoriaId=<>&estoqueId=<>&comEstoque=<>&inativos=<>
+// (Story 17.3): só RequireAuth, qualquer papel (`usuario`+) — sem
+// RequireRole, mesmo padrão de ListarCatalogoHandler. Devolve
+// `{"itens":N,"comSaldo":N,"semFoto":N}` calculados sobre o mesmo conjunto
+// filtrado da listagem. Mesmas validações de `q`/`comEstoque` de
+// ListarCatalogoHandler; `inativos=1` só honrado para gestor+ (mesma
+// regra de ListarCatalogoHandler, Story 16.2). Erro de banco -> 500
+// INTERNAL_ERROR + slog.
+func IndicadoresCatalogoHandler(db *sql.DB, fotosDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		usuario, ok := middleware.UsuarioDaSessao(r.Context())
+		if !ok {
+			slog.Error("IndicadoresCatalogoHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
+		termo := strings.TrimSpace(r.URL.Query().Get("q"))
+		if utf8.RuneCountInString(termo) > 255 {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "termo de busca muito longo")
+			return
+		}
+
+		filtros := services.FiltrosCatalogo{
+			EmpresaID:   empresa.ID,
+			Q:           termo,
+			CategoriaID: r.URL.Query().Get("categoriaId"),
+			EstoqueID:   r.URL.Query().Get("estoqueId"),
+		}
+		// Story 16.2: `inativos=1` só é honrado para gestor+; abaixo disso é ignorado.
+		if r.URL.Query().Get("inativos") == "1" && services.RankPapel(usuario.Papel) >= services.RankPapel(services.PapelGestor) {
+			filtros.SomenteInativos = true
+		}
+		switch r.URL.Query().Get("comEstoque") {
+		case "":
+			// ausente -> sem filtro (ComEstoque permanece nil).
+		case "true":
+			v := true
+			filtros.ComEstoque = &v
+		case "false":
+			v := false
+			filtros.ComEstoque = &v
+		default:
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "parâmetro comEstoque inválido")
+			return
+		}
+
+		ind, err := services.IndicadoresCatalogoProdutos(db, fotosDir, filtros)
+		if err != nil {
+			slog.Error("falha ao calcular indicadores do catálogo", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao calcular indicadores")
+			return
+		}
+		escreverJSON(w, http.StatusOK, ind)
+	}
+}
+
 // ObterProdutoHandler expõe GET /api/produtos/{id} (Story 4.4, spec-4-4):
 // só RequireAuth, qualquer papel (`usuario`+) — sem RequireRole, mesmo
 // padrão de GET /api/produtos/catalogo. `200 {"produto":<ProdutoDetalhe>}`

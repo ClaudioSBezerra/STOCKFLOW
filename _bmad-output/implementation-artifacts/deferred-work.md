@@ -741,3 +741,11 @@ source_spec: `spec-15-1-e-mail-unico-entre-as-empresas-reais.md`
 severity: low
 reason: Apontado durante a revisão da 15.1 (padrão `_ = db.QueryRow(...).Scan(...)`); já existia antes desta story.
 status: open
+
+### DW-93: Unreadable `deferred:` items in spec-17-3-padrao-de-pagina-de-lista-aplicado-ao-catalogo.md
+origin: spec-deferred-malformed 8b01d62df73d
+location: n/a
+source_spec: `spec-17-3-padrao-de-pagina-de-lista-aplicado-ao-catalogo.md`
+severity: low
+reason: The dev session recorded deferred findings the orchestrator could not parse, so they were NOT filed as entries: item 1: not a mapping (got str); item 2: not a mapping (got str); item 3: not a mapping (got str); item 4: not a mapping (got str). Read `spec-17-3-padrao-de-pagina-de-lista-aplicado-ao-catalogo.md`'s frontmatter and re-file them by hand.
+status: open
