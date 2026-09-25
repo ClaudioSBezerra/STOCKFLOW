@@ -154,8 +154,8 @@ development_status:
   15-4-domínio-de-um-cliente-só-abre-direto-a-empresa: awaiting-operator
   epic-15-retrospective: optional
 
-  epic-16: backlog
-  16-1-inativar-e-reativar-um-produto: backlog
+  epic-16: in-progress
+  16-1-inativar-e-reativar-um-produto: done
   16-2-produto-inativo-some-das-operações-filtro-inativos: backlog
   16-3-histórico-de-alterações-do-produto: backlog
   16-4-ean-13-único-entre-os-produtos-ativos-da-empresa: backlog

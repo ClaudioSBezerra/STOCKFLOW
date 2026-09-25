@@ -67,7 +67,7 @@ func testDB(t *testing.T) *sql.DB {
 
 const slugTeste = "estoques-filial-cli"
 
-const truncarEstoques = `TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, reservas_pedido_item, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`
+const truncarEstoques = `TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, produto_historico, mesclagens_duplicatas, carrinho_itens, pedido_itens, reservas_pedido_item, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`
 
 // semearEstoquesLegados cria uma Empresa própria (com a Filial padrão do
 // provisionamento) e um Estoque legado (`filial_id` NULL) por nome. O banco é

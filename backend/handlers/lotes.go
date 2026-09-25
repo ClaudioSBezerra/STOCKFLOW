@@ -67,6 +67,8 @@ func LancarSaldoHandler(db *sql.DB, registro *realtime.Registry) http.HandlerFun
 			escreverJSON(w, http.StatusCreated, map[string]any{"lote": lote})
 		case errors.As(err, &erroValidacao):
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
+		case errors.Is(err, services.ErrProdutoInativo):
+			escreverErro(w, http.StatusConflict, "PRODUTO_INATIVO", "O produto está inativo. Peça a um gestor para reativá-lo antes de lançar saldo.")
 		case errors.Is(err, services.ErrLoteAlvoNaoEncontrado):
 			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "produto ou estoque não encontrado")
 		default:

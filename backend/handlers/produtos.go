@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -624,4 +625,109 @@ func ListarNomenclaturaTemplatesHandler(db *sql.DB) http.HandlerFunc {
 
 		escreverJSON(w, http.StatusOK, map[string]any{"templates": templates})
 	}
+}
+
+// inativarProdutoRequest é o corpo (opcional) de POST .../inativacao.
+type inativarProdutoRequest struct {
+	Motivo *string `json:"motivo"`
+}
+
+// InativarProdutoHandler expõe POST /api/produtos/{id}/inativacao (Story
+// 16.1, FR-55), atrás de RequireRole(gestor). Corpo opcional `{"motivo"?}`
+// (vazio ou ausente = sem motivo). 200 `{"produto": <ProdutoDetalhe>}` e
+// publica `produtos`/`updated`; 400 VALIDATION_ERROR (payload/motivo); 404
+// NOT_FOUND; 409 PRODUTO_JA_INATIVO / PRODUTO_COM_SALDO.
+func InativarProdutoHandler(db *sql.DB, registro *realtime.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		usuario, ok := middleware.UsuarioDaSessao(r.Context())
+		if !ok {
+			slog.Error("InativarProdutoHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
+		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
+		var req inativarProdutoRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "payload inválido")
+			return
+		}
+		motivo := ""
+		if req.Motivo != nil {
+			motivo = *req.Motivo
+		}
+
+		produtoID := r.PathValue("id")
+		err := services.InativarProduto(db, empresa.ID, usuario.ID, produtoID, motivo)
+		var erroValidacao *services.ErroProdutoValidacaoInativacao
+		var erroSaldo *services.ErroProdutoComSaldo
+		switch {
+		case err == nil:
+			responderProdutoAlterado(w, db, registro, empresa.ID, produtoID)
+		case errors.As(err, &erroValidacao):
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
+		case errors.Is(err, services.ErrProdutoNaoEncontrado):
+			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "produto não encontrado")
+		case errors.Is(err, services.ErrProdutoJaInativo):
+			escreverErro(w, http.StatusConflict, "PRODUTO_JA_INATIVO", "o produto já está inativo")
+		case errors.As(err, &erroSaldo):
+			escreverErro(w, http.StatusConflict, "PRODUTO_COM_SALDO", erroSaldo.Error())
+		default:
+			slog.Error("falha ao inativar produto", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao inativar produto")
+		}
+	}
+}
+
+// ReativarProdutoHandler expõe POST /api/produtos/{id}/reativacao (Story
+// 16.1, FR-55), atrás de RequireRole(gestor). Sem corpo. 200
+// `{"produto": <ProdutoDetalhe>}` e publica `produtos`/`updated`; 404
+// NOT_FOUND; 409 PRODUTO_JA_ATIVO / EAN_EM_USO.
+func ReativarProdutoHandler(db *sql.DB, registro *realtime.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		usuario, ok := middleware.UsuarioDaSessao(r.Context())
+		if !ok {
+			slog.Error("ReativarProdutoHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
+		produtoID := r.PathValue("id")
+		err := services.ReativarProduto(db, empresa.ID, usuario.ID, produtoID)
+		var erroEAN *services.ErroEANEmUso
+		switch {
+		case err == nil:
+			responderProdutoAlterado(w, db, registro, empresa.ID, produtoID)
+		case errors.Is(err, services.ErrProdutoNaoEncontrado):
+			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "produto não encontrado")
+		case errors.Is(err, services.ErrProdutoJaAtivo):
+			escreverErro(w, http.StatusConflict, "PRODUTO_JA_ATIVO", "o produto já está ativo")
+		case errors.As(err, &erroEAN):
+			escreverErro(w, http.StatusConflict, "EAN_EM_USO", erroEAN.Error())
+		default:
+			slog.Error("falha ao reativar produto", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao reativar produto")
+		}
+	}
+}
+
+// responderProdutoAlterado publica `produtos`/`updated` e responde 200 com o
+// detalhe atualizado do Produto.
+func responderProdutoAlterado(w http.ResponseWriter, db *sql.DB, registro *realtime.Registry, empresaID, produtoID string) {
+	registro.Publish(empresaID, "produtos", realtime.Evento{ID: produtoID, Change: "updated"})
+	produto, err := services.ObterProdutoDetalhe(db, empresaID, produtoID)
+	if err != nil {
+		slog.Error("falha ao ler detalhe do produto alterado", "error", err)
+		escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao obter produto")
+		return
+	}
+	escreverJSON(w, http.StatusOK, map[string]any{"produto": produto})
 }

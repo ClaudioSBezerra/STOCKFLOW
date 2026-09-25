@@ -7,6 +7,7 @@ import {
   Dialog,
   DialogClose,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -221,6 +222,9 @@ interface ProdutoDetalhe {
   quantidadeDisponivel: number;
   disponivel: boolean;
   porEstoque: EstoqueQuantidade[];
+  // Story 16.1 (FR-55): o detalhe continua devolvendo o Produto inativo.
+  inativo?: boolean;
+  inativadoEm?: string | null;
 }
 
 interface FotoGaleria {
@@ -239,6 +243,10 @@ const MENSAGEM_ERRO_RESERVAS =
 const MENSAGEM_ERRO_BAIXA = 'Não foi possível registrar a baixa agora. Tente novamente em instantes.';
 const MENSAGEM_ERRO_TRANSFERENCIA =
   'Não foi possível registrar a transferência agora. Tente novamente em instantes.';
+const MENSAGEM_ERRO_INATIVACAO =
+  'Não foi possível inativar o produto agora. Tente novamente em instantes.';
+const MENSAGEM_ERRO_REATIVACAO =
+  'Não foi possível reativar o produto agora. Tente novamente em instantes.';
 const MENSAGEM_ERRO_LISTAR_ESTOQUES =
   'Não foi possível carregar a lista de estoques. Feche e tente novamente.';
 
@@ -268,7 +276,18 @@ export function ProdutoDetalhePage() {
 function ProdutoDetalheConteudo({ id }: { id: string }) {
   const { usuario } = useAuth();
   const podeRegistrarMovimentacao = rankPapel(usuario?.papel ?? '') >= rankPapel('almoxarife');
+  // Story 16.1: inativar/reativar é só `gestor`+ (o servidor responde 403
+  // para os demais; aqui os botões nem aparecem).
+  const podeInativar = rankPapel(usuario?.papel ?? '') >= rankPapel('gestor');
   const [editando, setEditando] = useState(false);
+
+  // Diálogo "Inativar produto" (Story 16.1): motivo opcional; o 409
+  // (PRODUTO_COM_SALDO etc.) é mostrado dentro do diálogo.
+  const [inativando, setInativando] = useState(false);
+  const [motivoInativacao, setMotivoInativacao] = useState('');
+  const [enviandoInativacao, setEnviandoInativacao] = useState(false);
+  const [erroInativacao, setErroInativacao] = useState<string | null>(null);
+  const [enviandoReativacao, setEnviandoReativacao] = useState(false);
 
   const [produto, setProduto] = useState<ProdutoDetalhe | null>(null);
   const [carregando, setCarregando] = useState(true);
@@ -525,6 +544,65 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
     }
   }
 
+  // confirmarInativacao envia POST /api/produtos/{id}/inativacao com o
+  // motivo opcional (vazio -> sem motivo). Sucesso -> toast + fecha + refetch
+  // (carregarDetalhe); falha mantém o diálogo aberto com a mensagem do
+  // servidor (ex.: 409 PRODUTO_COM_SALDO citando os Estoques).
+  async function confirmarInativacao() {
+    if (enviandoInativacao) {
+      return;
+    }
+    setEnviandoInativacao(true);
+    setErroInativacao(null);
+    try {
+      const motivo = motivoInativacao.trim();
+      const res = await fetch(apiUrl(`/api/produtos/${id}/inativacao`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify(motivo === '' ? {} : { motivo }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+        setErroInativacao(body.error?.message ?? MENSAGEM_ERRO_INATIVACAO);
+        return;
+      }
+      toast.success('Produto inativado.');
+      setInativando(false);
+      setMotivoInativacao('');
+      await carregarDetalhe();
+    } catch {
+      setErroInativacao(MENSAGEM_ERRO_INATIVACAO);
+    } finally {
+      setEnviandoInativacao(false);
+    }
+  }
+
+  // reativar envia POST /api/produtos/{id}/reativacao. Erro (ex.: 409
+  // EAN_EM_USO) vira toast com a mensagem do servidor.
+  async function reativar() {
+    if (enviandoReativacao) {
+      return;
+    }
+    setEnviandoReativacao(true);
+    try {
+      const res = await fetch(apiUrl(`/api/produtos/${id}/reativacao`), {
+        method: 'POST',
+        headers: authHeaders(),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+        toast.error(body.error?.message ?? MENSAGEM_ERRO_REATIVACAO);
+        return;
+      }
+      toast.success('Produto reativado.');
+      await carregarDetalhe();
+    } catch {
+      toast.error(MENSAGEM_ERRO_REATIVACAO);
+    } finally {
+      setEnviandoReativacao(false);
+    }
+  }
+
   // confirmarAdicionarCarrinho chama useCarrinho().adicionarItem para a
   // linha guardada em `carrinhoEstoque` (Story 7.1, spec-7-1) — molde de
   // confirmarBaixa, mas sem refetch de `carregarDetalhe()` no sucesso:
@@ -709,12 +787,44 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
       {produto && (
         <Card>
           <CardHeader className="flex flex-row items-start justify-between gap-4">
-            <h1 className="text-heading-lg">{produto.nome}</h1>
-            {podeRegistrarMovimentacao && (
-              <Button type="button" variant="outline" onClick={() => setEditando(true)}>
-                Editar
-              </Button>
-            )}
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-heading-lg">{produto.nome}</h1>
+              {produto.inativo && (
+                <span className="bg-warning/10 text-label rounded-full px-2 py-0.5 text-[color:var(--color-text-on-tint-warning)]">
+                  Inativo
+                </span>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {podeInativar &&
+                (produto.inativo ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={enviandoReativacao}
+                    onClick={() => void reativar()}
+                  >
+                    Reativar
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      setInativando(true);
+                      setMotivoInativacao('');
+                      setErroInativacao(null);
+                    }}
+                  >
+                    Inativar produto
+                  </Button>
+                ))}
+              {podeRegistrarMovimentacao && (
+                <Button type="button" variant="outline" onClick={() => setEditando(true)}>
+                  Editar
+                </Button>
+              )}
+            </div>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             <div className="flex flex-col gap-1">
@@ -767,21 +877,25 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
                               Saldo reservado: {formatarQuantidade(linha.reservada)}
                             </button>
                           )}
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            aria-label={`Adicionar ao Carrinho em ${linha.estoqueNome}`}
-                            disabled={linha.disponivel <= 0}
-                            onClick={() => {
-                              setCarrinhoEstoque(linha);
-                              setQuantidadeCarrinho('');
-                              setErroCarrinho(null);
-                            }}
-                          >
-                            Adicionar ao Carrinho
-                          </Button>
-                          {podeRegistrarMovimentacao && (
+                          {/* Story 16.1: Produto inativo não oferece
+                              operação de estoque (o servidor recusaria). */}
+                          {!produto.inativo && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              aria-label={`Adicionar ao Carrinho em ${linha.estoqueNome}`}
+                              disabled={linha.disponivel <= 0}
+                              onClick={() => {
+                                setCarrinhoEstoque(linha);
+                                setQuantidadeCarrinho('');
+                                setErroCarrinho(null);
+                              }}
+                            >
+                              Adicionar ao Carrinho
+                            </Button>
+                          )}
+                          {podeRegistrarMovimentacao && !produto.inativo && (
                             <>
                               <Button
                                 type="button"
@@ -1034,6 +1148,61 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
                 type="submit"
                 disabled={enviandoBaixa || quantidadeBaixa.trim() === ''}
               >
+                Confirmar
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Inativar produto (Story 16.1): motivo opcional + confirmar. Fechar
+          enquanto o envio está em voo é ignorado. */}
+      <Dialog
+        open={inativando}
+        onOpenChange={(open) => {
+          if (!open && !enviandoInativacao) {
+            setInativando(false);
+            setErroInativacao(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Inativar produto</DialogTitle>
+            <DialogDescription>
+              O produto sai de uso, mas o histórico é mantido. Só é possível inativar um produto
+              sem saldo em nenhum estoque e sem reserva de Pedido.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="flex flex-col gap-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void confirmarInativacao();
+            }}
+          >
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="inativacao-motivo">Motivo (opcional)</Label>
+              <textarea
+                id="inativacao-motivo"
+                className="min-h-16 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-2 text-base shadow-xs outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm dark:bg-input/30"
+                maxLength={500}
+                value={motivoInativacao}
+                onChange={(event) => setMotivoInativacao(event.target.value)}
+              />
+            </div>
+            {erroInativacao && (
+              <p role="alert" className="text-body text-destructive">
+                {erroInativacao}
+              </p>
+            )}
+            <DialogFooter>
+              <DialogClose asChild>
+                <Button type="button" variant="outline" disabled={enviandoInativacao}>
+                  Cancelar
+                </Button>
+              </DialogClose>
+              <Button type="submit" disabled={enviandoInativacao}>
                 Confirmar
               </Button>
             </DialogFooter>

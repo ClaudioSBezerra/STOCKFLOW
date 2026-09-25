@@ -25,7 +25,8 @@ vi.mock('@/lib/auth', () => ({
 
 const toastInfo = vi.hoisted(() => vi.fn());
 const toastSuccess = vi.hoisted(() => vi.fn());
-vi.mock('sonner', () => ({ toast: { info: toastInfo, success: toastSuccess } }));
+const toastError = vi.hoisted(() => vi.fn());
+vi.mock('sonner', () => ({ toast: { info: toastInfo, success: toastSuccess, error: toastError } }));
 
 // useCarrinho() fornece adicionarItem para o diálogo "Adicionar ao
 // Carrinho" (Story 7.1) — mock configurável por teste; o padrão resolve com
@@ -1369,5 +1370,175 @@ describe('ProdutoDetalhePage — Editar (spec-13-1)', () => {
     });
     await screen.findByRole('heading', { name: 'Cabo Flexível 4mm' });
     expect(screen.queryByRole('button', { name: 'Editar' })).not.toBeInTheDocument();
+  });
+});
+
+describe('ProdutoDetalhePage — Inativar/Reativar (Story 16.1)', () => {
+  function stubInativacao(opcoes: {
+    inicial: Record<string, unknown>;
+    respostaInativar?: { ok: boolean; status: number; body: unknown };
+    respostaReativar?: { ok: boolean; status: number; body: unknown };
+  }) {
+    let produtoAtual: Record<string, unknown> = opcoes.inicial;
+    return stubFetch((url, init) => {
+      if (url === '/api/produtos/p1') {
+        return jsonOk({ produto: produtoAtual });
+      }
+      if (url === '/api/produtos/p1/fotos') {
+        return jsonOk({ fotos: [] });
+      }
+      if (url === '/api/produtos/p1/inativacao' && init?.method === 'POST') {
+        const r = opcoes.respostaInativar ?? { ok: true, status: 200, body: {} };
+        if (r.ok) {
+          produtoAtual = { ...produtoAtual, inativo: true, inativadoEm: '2026-09-25T12:00:00Z' };
+        }
+        return Promise.resolve({ ok: r.ok, status: r.status, json: async () => r.body });
+      }
+      if (url === '/api/produtos/p1/reativacao' && init?.method === 'POST') {
+        const r = opcoes.respostaReativar ?? { ok: true, status: 200, body: {} };
+        if (r.ok) {
+          produtoAtual = { ...produtoAtual, inativo: false, inativadoEm: null };
+        }
+        return Promise.resolve({ ok: r.ok, status: r.status, json: async () => r.body });
+      }
+      throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
+    });
+  }
+
+  const SEM_SALDO = { ...PRODUTO_DETALHE, porEstoque: [], quantidadeTotal: 0, disponivel: false, inativo: false, inativadoEm: null };
+
+  it.each(['gestor', 'adm'])('%s inativa um produto ativo e vê a marca "Inativo" e o botão "Reativar"', async (papel) => {
+    authState.papel = papel;
+    const fetchFn = stubInativacao({ inicial: SEM_SALDO });
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByRole('heading', { name: 'Cabo Flexível 4mm' });
+    expect(screen.queryByText('Inativo')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reativar' })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Inativar produto' }));
+    await userEvent.type(await screen.findByLabelText('Motivo (opcional)'), 'fora de linha');
+    await userEvent.click(screen.getByRole('button', { name: 'Confirmar' }));
+
+    expect(await screen.findByText('Inativo')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Reativar' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Inativar produto' })).not.toBeInTheDocument();
+    const post = fetchFn.mock.calls.find(([u]) => u === '/api/produtos/p1/inativacao');
+    expect(JSON.parse(String(post?.[1]?.body))).toEqual({ motivo: 'fora de linha' });
+    expect(toastSuccess).toHaveBeenCalledWith('Produto inativado.');
+  });
+
+  it('sem motivo envia corpo vazio', async () => {
+    authState.papel = 'gestor';
+    const fetchFn = stubInativacao({ inicial: SEM_SALDO });
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByRole('heading', { name: 'Cabo Flexível 4mm' });
+    await userEvent.click(screen.getByRole('button', { name: 'Inativar produto' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Confirmar' }));
+    await screen.findByText('Inativo');
+    const post = fetchFn.mock.calls.find(([u]) => u === '/api/produtos/p1/inativacao');
+    expect(JSON.parse(String(post?.[1]?.body))).toEqual({});
+  });
+
+  it('produto com saldo: o 409 aparece no diálogo e nada muda', async () => {
+    authState.papel = 'gestor';
+    const mensagem =
+      'Não é possível inativar: o produto tem saldo em: Almoxarifado Central, Obra Norte. Transfira ou dê baixa no saldo (e decida os Pedidos pendentes) antes de inativar.';
+    stubInativacao({
+      inicial: { ...PRODUTO_DETALHE, inativo: false, inativadoEm: null },
+      respostaInativar: { ok: false, status: 409, body: { error: { code: 'PRODUTO_COM_SALDO', message: mensagem } } },
+    });
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByRole('heading', { name: 'Cabo Flexível 4mm' });
+    await userEvent.click(screen.getByRole('button', { name: 'Inativar produto' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Confirmar' }));
+
+    const dialogo = await screen.findByRole('dialog');
+    expect(await within(dialogo).findByRole('alert')).toHaveTextContent(mensagem);
+    expect(screen.queryByText('Inativo')).not.toBeInTheDocument();
+  });
+
+  it('produto inativo: marca "Inativo" e "Reativar" reativa', async () => {
+    authState.papel = 'gestor';
+    stubInativacao({ inicial: { ...SEM_SALDO, inativo: true, inativadoEm: '2026-09-25T12:00:00Z' } });
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByRole('heading', { name: 'Cabo Flexível 4mm' });
+    expect(screen.getByText('Inativo')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Inativar produto' })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Reativar' }));
+    expect(await screen.findByRole('button', { name: 'Inativar produto' })).toBeInTheDocument();
+    expect(screen.queryByText('Inativo')).not.toBeInTheDocument();
+    expect(toastSuccess).toHaveBeenCalledWith('Produto reativado.');
+  });
+
+  it('reativar com EAN em uso mostra a mensagem do servidor e continua inativo', async () => {
+    authState.papel = 'adm';
+    const mensagem = 'Este EAN já está no produto 000123 — Outro Cabo';
+    stubInativacao({
+      inicial: { ...SEM_SALDO, inativo: true, inativadoEm: '2026-09-25T12:00:00Z' },
+      respostaReativar: { ok: false, status: 409, body: { error: { code: 'EAN_EM_USO', message: mensagem } } },
+    });
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByRole('heading', { name: 'Cabo Flexível 4mm' });
+    await userEvent.click(screen.getByRole('button', { name: 'Reativar' }));
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith(mensagem));
+    expect(screen.getByText('Inativo')).toBeInTheDocument();
+  });
+
+  it('produto inativo não oferece Adicionar ao Carrinho, Registrar Baixa nem Transferir', async () => {
+    authState.papel = 'gestor';
+    stubInativacao({ inicial: { ...PRODUTO_DETALHE, inativo: true, inativadoEm: '2026-09-25T12:00:00Z' } });
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByRole('heading', { name: 'Cabo Flexível 4mm' });
+    expect(screen.getByText('Almoxarifado Central')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Adicionar ao Carrinho/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Registrar Baixa/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Transferir/ })).not.toBeInTheDocument();
+  });
+
+  it('produto ativo continua oferecendo as operações de estoque', async () => {
+    authState.papel = 'gestor';
+    stubInativacao({ inicial: { ...PRODUTO_DETALHE, inativo: false, inativadoEm: null } });
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByRole('heading', { name: 'Cabo Flexível 4mm' });
+    expect(screen.getAllByRole('button', { name: /Adicionar ao Carrinho/ })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: /Registrar Baixa/ })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: /Transferir/ })).toHaveLength(2);
+  });
+
+  it.each(['almoxarife', 'usuario'])('%s não vê "Inativar produto" nem "Reativar"', async (papel) => {
+    for (const inativo of [false, true]) {
+      authState.papel = papel;
+      stubInativacao({ inicial: { ...SEM_SALDO, inativo, inativadoEm: inativo ? '2026-09-25T12:00:00Z' : null } });
+      const { unmount } = renderPagina();
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+      await screen.findByRole('heading', { name: 'Cabo Flexível 4mm' });
+      expect(screen.queryByRole('button', { name: 'Inativar produto' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Reativar' })).not.toBeInTheDocument();
+      unmount();
+    }
   });
 });

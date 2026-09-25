@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { useState } from 'react';
 import { render, screen, waitFor, act } from '@testing-library/react';
 import { CarrinhoProvider, useCarrinho } from './carrinho';
 
@@ -219,6 +220,7 @@ describe('CarrinhoProvider — limpeza preguiçosa (AC2, spec-7-1)', () => {
           removidos: [
             { produtoId: 'p1', produtoNome: 'Cabo Mesclado', estoqueId: 'e1', estoqueNome: null, motivo: 'produto_removido' },
             { produtoId: 'p2', produtoNome: 'Cabo Sem Estoque', estoqueId: 'e2', estoqueNome: null, motivo: 'estoque_excluido' },
+            { produtoId: 'p3', produtoNome: 'Cabo Inativo', estoqueId: 'e3', estoqueNome: 'Almox', motivo: 'produto_inativo' },
           ],
         });
       }
@@ -227,11 +229,13 @@ describe('CarrinhoProvider — limpeza preguiçosa (AC2, spec-7-1)', () => {
 
     renderProvider();
 
-    await waitFor(() => expect(toastInfo).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(toastInfo).toHaveBeenCalledTimes(3));
     expect(toastInfo).toHaveBeenCalledWith('"Cabo Mesclado" foi removido do carrinho: o produto não existe mais.');
     expect(toastInfo).toHaveBeenCalledWith(
       '"Cabo Sem Estoque" foi removido do carrinho: o estoque selecionado foi excluído.',
     );
+    // Story 16.1: Produto inativado.
+    expect(toastInfo).toHaveBeenCalledWith('"Cabo Inativo" foi removido do carrinho: o produto foi inativado.');
   });
 });
 
@@ -443,6 +447,74 @@ describe('CarrinhoProvider — enviarPedido (Story 12.3)', () => {
       observacao: '',
       centro_custo_id: 'cc-1',
     });
+  });
+});
+
+describe('CarrinhoProvider — enviarPedido com 409 (Story 16.1)', () => {
+  function SondaEnvio409() {
+    const { enviarPedido, itens } = useCarrinho();
+    const [mensagem, setMensagem] = useState('');
+    return (
+      <div>
+        <span data-testid="qtd-itens">{itens.length}</span>
+        <span data-testid="mensagem">{mensagem}</span>
+        <button
+          type="button"
+          onClick={() =>
+            void enviarPedido('Fulano', 'Obra X', '').then((r) => setMensagem(r.ok ? 'ok' : r.mensagem))
+          }
+        >
+          enviar
+        </button>
+      </div>
+    );
+  }
+
+  it('409 PRODUTO_INATIVO: devolve a mensagem do servidor e recarrega o carrinho (item sai com aviso)', async () => {
+    const mensagem =
+      'Não é possível enviar o pedido: o produto Cabo Inativo foi inativado. Atualize o carrinho e tente novamente.';
+    let leituras = 0;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/carrinho' && (!init || !init.method)) {
+        leituras += 1;
+        if (leituras === 1) {
+          return jsonOk({
+            itens: [{ produtoId: 'p1', produtoNome: 'Cabo Inativo', estoqueId: 'e1', estoqueNome: 'Almox', quantidade: 1 }],
+            removidos: [],
+          });
+        }
+        return jsonOk({
+          itens: [],
+          removidos: [
+            { produtoId: 'p1', produtoNome: 'Cabo Inativo', estoqueId: 'e1', estoqueNome: 'Almox', motivo: 'produto_inativo' },
+          ],
+        });
+      }
+      if (url === '/api/pedidos' && init?.method === 'POST') {
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: async () => ({ error: { code: 'PRODUTO_INATIVO', message: mensagem } }),
+        });
+      }
+      throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
+    });
+    const user = await import('@testing-library/user-event').then((m) => m.default.setup());
+    render(
+      <CarrinhoProvider>
+        <SondaEnvio409 />
+      </CarrinhoProvider>,
+    );
+    await waitFor(() => expect(screen.getByTestId('qtd-itens')).toHaveTextContent('1'));
+
+    await act(async () => {
+      await user.click(screen.getByRole('button', { name: 'enviar' }));
+    });
+
+    await waitFor(() => expect(screen.getByTestId('mensagem')).toHaveTextContent(mensagem));
+    expect(leituras).toBe(2);
+    expect(screen.getByTestId('qtd-itens')).toHaveTextContent('0');
+    expect(toastInfo).toHaveBeenCalledWith('"Cabo Inativo" foi removido do carrinho: o produto foi inativado.');
   });
 });
 

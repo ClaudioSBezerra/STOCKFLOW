@@ -37,6 +37,10 @@ const (
 	// MotivoCarrinhoEstoqueExcluido: o Estoque do item foi excluído (Story
 	// 2.2) — hard-delete, a linha em `estoques` não existe mais.
 	MotivoCarrinhoEstoqueExcluido = "estoque_excluido"
+	// MotivoCarrinhoProdutoInativo (Story 16.1, FR-55): o Produto do item foi
+	// inativado — `produtos.inativado_em` preenchido. Remoção preguiçosa, como
+	// o Produto mesclado, para que o dono do carrinho veja o aviso.
+	MotivoCarrinhoProdutoInativo = "produto_inativo"
 )
 
 // ItemCarrinhoRemovido é a projeção de uma linha removida preguiçosamente
@@ -259,6 +263,7 @@ func AdicionarItemCarrinho(db *sql.DB, empresaID string, usuarioID, produtoID, e
 type linhaCarrinhoBruta struct {
 	produtoID, produtoNome, estoqueID string
 	produtoDeletedEm                  sql.NullTime
+	produtoInativadoEm                sql.NullTime
 	estoqueNome                       sql.NullString
 	quantidade                        float64
 }
@@ -266,7 +271,8 @@ type linhaCarrinhoBruta struct {
 // ListarCarrinho devolve os itens ATIVOS do carrinho do Usuário `usuarioID`
 // (Story 7.1, spec-7-1) mais os itens removidos preguiçosamente NESTA MESMA
 // chamada (Always): qualquer linha cujo Produto tenha `deleted_at`
-// preenchido (mesclado, Story 6.4) ou cujo `estoque_id` não exista mais em
+// preenchido (mesclado, Story 6.4), `inativado_em` preenchido (inativado,
+// Story 16.1) ou cujo `estoque_id` não exista mais em
 // `estoques` (excluído, Story 2.2) é apagada de `carrinho_itens` e
 // devolvida em `removidos` com o motivo — nunca na lista `itens`. Leitura +
 // limpeza acontecem na mesma transação; nem `itens` nem `removidos` são
@@ -286,7 +292,7 @@ func ListarCarrinho(db *sql.DB, empresaID string, usuarioID string) ([]ItemCarri
 	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
 
 	const q = `
-		SELECT ci.produto_id, p.nome, p.deleted_at, ci.estoque_id, e.nome, ci.quantidade
+		SELECT ci.produto_id, p.nome, p.deleted_at, p.inativado_em, ci.estoque_id, e.nome, ci.quantidade
 		FROM carrinho_itens ci
 		JOIN produtos p ON p.id = ci.produto_id AND p.empresa_id = $2
 		LEFT JOIN estoques e ON e.id = ci.estoque_id AND e.empresa_id = $2
@@ -301,7 +307,7 @@ func ListarCarrinho(db *sql.DB, empresaID string, usuarioID string) ([]ItemCarri
 	for rows.Next() {
 		var l linhaCarrinhoBruta
 		if err := rows.Scan(
-			&l.produtoID, &l.produtoNome, &l.produtoDeletedEm,
+			&l.produtoID, &l.produtoNome, &l.produtoDeletedEm, &l.produtoInativadoEm,
 			&l.estoqueID, &l.estoqueNome, &l.quantidade,
 		); err != nil {
 			rows.Close()
@@ -331,6 +337,20 @@ func ListarCarrinho(db *sql.DB, empresaID string, usuarioID string) ([]ItemCarri
 			})
 			if _, err := tx.Exec(deleteObsoleto, usuarioID, l.produtoID, l.estoqueID); err != nil {
 				return nil, nil, fmt.Errorf("falha ao limpar item de produto mesclado do carrinho: %w", err)
+			}
+		case l.produtoInativadoEm.Valid:
+			var estoqueNomePtr *string
+			if l.estoqueNome.Valid {
+				n := l.estoqueNome.String
+				estoqueNomePtr = &n
+			}
+			removidos = append(removidos, ItemCarrinhoRemovido{
+				ProdutoID: l.produtoID, ProdutoNome: l.produtoNome,
+				EstoqueID: l.estoqueID, EstoqueNome: estoqueNomePtr,
+				Motivo: MotivoCarrinhoProdutoInativo,
+			})
+			if _, err := tx.Exec(deleteObsoleto, usuarioID, l.produtoID, l.estoqueID); err != nil {
+				return nil, nil, fmt.Errorf("falha ao limpar item de produto inativo do carrinho: %w", err)
 			}
 		case !l.estoqueNome.Valid:
 			removidos = append(removidos, ItemCarrinhoRemovido{

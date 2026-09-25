@@ -76,7 +76,7 @@ const slugTeste = "saldo-lotes-cli"
 func semearSaldo(t *testing.T, db *sql.DB, quantidades ...float64) (empresaID string, produtos []string) {
 	t.Helper()
 	limpar := func() {
-		if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, reservas_pedido_item, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
+		if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, produto_historico, mesclagens_duplicatas, carrinho_itens, pedido_itens, reservas_pedido_item, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
 			t.Fatalf("limpar saldo: %v", err)
 		}
 	}

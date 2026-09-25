@@ -41,7 +41,7 @@ export interface ItemCarrinho {
   quantidade: number;
 }
 
-export type MotivoItemCarrinhoRemovido = 'produto_removido' | 'estoque_excluido';
+export type MotivoItemCarrinhoRemovido = 'produto_removido' | 'estoque_excluido' | 'produto_inativo';
 
 export interface ItemCarrinhoRemovido {
   produtoId: string;
@@ -117,6 +117,8 @@ export function mensagemItemCarrinhoRemovido(item: ItemCarrinhoRemovido): string
       return `"${item.produtoNome}" foi removido do carrinho: o produto não existe mais.`;
     case 'estoque_excluido':
       return `"${item.produtoNome}" foi removido do carrinho: o estoque selecionado foi excluído.`;
+    case 'produto_inativo':
+      return `"${item.produtoNome}" foi removido do carrinho: o produto foi inativado.`;
     default:
       return `"${item.produtoNome}" foi removido do carrinho.`;
   }
@@ -258,6 +260,12 @@ export function CarrinhoProvider({ children }: { children: ReactNode }) {
         });
         if (!res.ok) {
           const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+          // 409 (ex.: PRODUTO_INATIVO, Story 16.1; indisponibilidade): o
+          // carrinho mudou no servidor — recarrega para a limpeza preguiçosa
+          // remover o item e mostrar o aviso correspondente.
+          if (res.status === 409) {
+            await refresh();
+          }
           return { ok: false, mensagem: body.error?.message ?? MENSAGEM_ERRO_ENVIAR };
         }
         await refresh();

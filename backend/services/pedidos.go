@@ -234,6 +234,14 @@ func SubmeterPedidoComCentroCusto(db *sql.DB, empresaID string, usuarioID, solic
 	}
 	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
 
+	// Story 16.1 (FR-55): trava (FOR SHARE) as linhas de `produtos` dos
+	// Produtos distintos, em ordem de id, ANTES de produto_estoque/lotes —
+	// serializa com InativarProduto (FOR UPDATE) na mesma ordem de locks.
+	// Algum inativo (inativado depois da leitura do carrinho) -> recusa.
+	if err := recusarProdutosInativosTx(tx, empresaID, itensOrdenados); err != nil {
+		return Pedido{}, err
+	}
+
 	// Story 11.3 (AD-25): trava produto_estoque e lotes dos pares (ordem
 	// canônica, AD-10) e SÓ ENTÃO lê o saldo DISPONÍVEL (físico − reservas
 	// ativas) — a mesma função que o carrinho usa. Par sem saldo em nenhuma
@@ -322,6 +330,33 @@ func SubmeterPedidoComCentroCusto(db *sql.DB, empresaID string, usuarioID, solic
 	}
 
 	return pedido, nil
+}
+
+// recusarProdutosInativosTx trava FOR SHARE, em ordem ascendente de id, a
+// linha de `produtos` de cada Produto distinto dos itens (já ordenados por
+// produto_id) e devolve &ErroPedidoProdutoInativo com os nomes dos inativos.
+func recusarProdutosInativosTx(tx *sql.Tx, empresaID string, itensOrdenados []ItemCarrinho) error {
+	var inativos []string
+	for i, item := range itensOrdenados {
+		if i > 0 && item.ProdutoID == itensOrdenados[i-1].ProdutoID {
+			continue
+		}
+		var inativo bool
+		err := tx.QueryRow(
+			`SELECT inativado_em IS NOT NULL FROM produtos WHERE id = $1 AND empresa_id = $2 FOR SHARE`,
+			item.ProdutoID, empresaID,
+		).Scan(&inativo)
+		if err != nil {
+			return fmt.Errorf("falha ao travar produto no envio do pedido: %w", err)
+		}
+		if inativo {
+			inativos = append(inativos, item.ProdutoNome)
+		}
+	}
+	if len(inativos) > 0 {
+		return &ErroPedidoProdutoInativo{Itens: inativos}
+	}
+	return nil
 }
 
 // ListarPedidosProprios devolve os Pedidos cujo `usuario_id` é `usuarioID`

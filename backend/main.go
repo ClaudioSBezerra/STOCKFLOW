@@ -592,6 +592,14 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	registrar("PUT /e/{slug}/api/produtos/{id}", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.AtualizarProdutoHandler(db, registro))))
+	// Inativar e reativar um Produto — Story 16.1 (FR-55, AD-37): só
+	// `gestor`+ (o 403 é decidido por RequireRole).
+	registrar("POST /e/{slug}/api/produtos/{id}/inativacao", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelGestor)(
+			handlers.InativarProdutoHandler(db, registro))))
+	registrar("POST /e/{slug}/api/produtos/{id}/reativacao", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelGestor)(
+			handlers.ReativarProdutoHandler(db, registro))))
 
 	// Importação em massa via planilha padronizada — Story 3.3 (FR-10). Os 3
 	// endpoints ficam atrás de RequireRole(almoxarife), mesmo mínimo de papel

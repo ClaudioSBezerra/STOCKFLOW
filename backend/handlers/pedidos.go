@@ -80,6 +80,7 @@ func SubmeterPedidoHandler(db *sql.DB, registro *realtime.Registry) http.Handler
 		pedido, err := services.SubmeterPedidoComCentroCusto(db, empresa.ID, usuario.ID, req.Solicitante, req.ObraCentroCusto, req.Observacao, centroCustoID)
 		var erroValidacao *services.ErroPedidoValidacao
 		var erroIndisponivel *services.ErroPedidoIndisponivel
+		var erroInativo *services.ErroPedidoProdutoInativo
 		switch {
 		case err == nil:
 			registro.Publish(empresa.ID, "pedidos", realtime.Evento{ID: pedido.ID, Change: "created"})
@@ -94,6 +95,8 @@ func SubmeterPedidoHandler(db *sql.DB, registro *realtime.Registry) http.Handler
 			escreverErro(w, http.StatusConflict, "CONFLICT", services.ErrPedidoCarrinhoVazio.Error())
 		case errors.As(err, &erroIndisponivel):
 			escreverErro(w, http.StatusConflict, "CONFLICT", erroIndisponivel.Error())
+		case errors.As(err, &erroInativo):
+			escreverErro(w, http.StatusConflict, "PRODUTO_INATIVO", erroInativo.Error())
 		default:
 			slog.Error("falha ao submeter pedido", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao enviar pedido")

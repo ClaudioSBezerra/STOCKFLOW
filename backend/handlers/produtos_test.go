@@ -36,7 +36,7 @@ func limparProdutosHandler(t *testing.T, db *sql.DB) {
 	// `carrinho_itens` entra pelo mesmo motivo (Story 7.1):
 	// carrinho_itens.produto_id -> produtos(id), sem CASCADE.
 	// `categorias` NUNCA é truncada aqui — seed fixo da migração 000010.
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, mesclagens_duplicatas, carrinho_itens, pedido_itens, reservas_pedido_item, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, produto_historico, mesclagens_duplicatas, carrinho_itens, pedido_itens, reservas_pedido_item, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("falha ao limpar produtos/produto_estoque/estoques: %v", err)
 	}
 }
@@ -2386,5 +2386,259 @@ func TestAtualizarProdutoHandler_MapeiaCamposELimpaOpcionais(t *testing.T) {
 		l.compV.Valid || l.largV.Valid || l.diamV.Valid || l.altV.Valid || l.espV.Valid ||
 		l.compU.Valid || l.largU.Valid || l.diamU.Valid || l.altU.Valid || l.espU.Valid {
 		t.Errorf("opcionais omitidos deveriam virar NULL; got %+v", l)
+	}
+}
+
+// --- Story 16.1: inativar e reativar um Produto ------------------------------
+//
+// POST /api/produtos/{id}/inativacao e .../reativacao ->
+// RequireAuth -> RequireRole(gestor) -> handler (mesma composição de newMux).
+
+func postInativacaoProduto(db *sql.DB, registro *realtime.Registry, authHeader, produtoID, acao, body string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /e/{slug}/api/produtos/{id}/inativacao",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelGestor)(
+					InativarProdutoHandler(db, registro)))))
+	mux.HandleFunc("POST /e/{slug}/api/produtos/{id}/reativacao",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelGestor)(
+					ReativarProdutoHandler(db, registro)))))
+	var r *http.Request
+	url := prefixoEmpresaTeste + "/api/produtos/" + produtoID + "/" + acao
+	if body != "" {
+		r = httptest.NewRequest(http.MethodPost, url, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+	} else {
+		r = httptest.NewRequest(http.MethodPost, url, nil)
+	}
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+func codigoErroResposta(t *testing.T, w *httptest.ResponseRecorder) (string, string) {
+	t.Helper()
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("resposta de erro inválida: %s", w.Body.String())
+	}
+	return resp.Error.Code, resp.Error.Message
+}
+
+func TestInativacaoProdutoHandler_FluxoCompleto(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Gestora Inat H", "inat-h-gestor@empresa.com", "senha-123456", "gestor")
+	token := "Bearer " + tokenDeLogin(t, db, "inat-h-gestor@empresa.com", "senha-123456")
+	produtoID, _ := seedProdutoComSaldoHandler(t, db, "Canteiro Inat H", 0)
+
+	registro := realtime.NewRegistry()
+	eventos, cancelar := registro.Subscribe(empresaTeste)
+	defer cancelar()
+
+	// Inativar com motivo (o caso sem corpo vem no fim deste teste).
+	w := postInativacaoProduto(db, registro, token, produtoID, "inativacao", `{"motivo":"fora de linha"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("inativar: status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Produto map[string]any `json:"produto"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Produto["inativo"] != true || resp.Produto["inativadoEm"] == nil || resp.Produto["id"] != produtoID {
+		t.Errorf("produto = %v", resp.Produto)
+	}
+	select {
+	case ev := <-eventos:
+		if ev.Resource != "produtos" || ev.ID != produtoID || ev.Change != "updated" {
+			t.Errorf("evento = %+v", ev)
+		}
+	case <-time.After(time.Second):
+		t.Error("evento produtos/updated não publicado")
+	}
+
+	// GET detalhe devolve o inativo.
+	det, err := services.ObterProdutoDetalhe(db, empresaTeste, produtoID)
+	if err != nil || !det.Inativo {
+		t.Errorf("detalhe = %+v err=%v", det, err)
+	}
+
+	// Já inativo.
+	w = postInativacaoProduto(db, registro, token, produtoID, "inativacao", "")
+	if code, _ := codigoErroResposta(t, w); w.Code != http.StatusConflict || code != "PRODUTO_JA_INATIVO" {
+		t.Errorf("já inativo: status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// Reativar.
+	w = postInativacaoProduto(db, registro, token, produtoID, "reativacao", "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"inativo":false`) || !strings.Contains(w.Body.String(), `"inativadoEm":null`) {
+		t.Errorf("reativar: status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// Já ativo.
+	w = postInativacaoProduto(db, registro, token, produtoID, "reativacao", "")
+	if code, _ := codigoErroResposta(t, w); w.Code != http.StatusConflict || code != "PRODUTO_JA_ATIVO" {
+		t.Errorf("já ativo: status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// Inativar sem corpo nenhum grava motivo null.
+	w = postInativacaoProduto(db, registro, token, produtoID, "inativacao", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("inativar sem corpo: status=%d body=%s", w.Code, w.Body.String())
+	}
+	var detalhe string
+	if err := db.QueryRow(`SELECT detalhe::text FROM produto_historico WHERE produto_id = $1 ORDER BY criado_em DESC, id DESC LIMIT 1`, produtoID).Scan(&detalhe); err != nil {
+		t.Fatal(err)
+	}
+	if detalhe != `{"motivo": null}` {
+		t.Errorf("detalhe = %s, want motivo null", detalhe)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM produto_historico WHERE produto_id = $1`, produtoID).Scan(&n); err != nil || n != 3 {
+		t.Errorf("histórico = %d linhas (err %v), want 3", n, err)
+	}
+}
+
+func TestInativacaoProdutoHandler_ComSaldo409(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Gestora Saldo H", "saldo-h-gestor@empresa.com", "senha-123456", "gestor")
+	token := "Bearer " + tokenDeLogin(t, db, "saldo-h-gestor@empresa.com", "senha-123456")
+	produtoID, _ := seedProdutoComSaldoHandler(t, db, "Almox A", 5)
+
+	w := postInativacaoProduto(db, realtime.NewRegistry(), token, produtoID, "inativacao", `{"motivo":"x"}`)
+	code, msg := codigoErroResposta(t, w)
+	if w.Code != http.StatusConflict || code != "PRODUTO_COM_SALDO" || !strings.Contains(msg, "Almox A") {
+		t.Errorf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var inativo bool
+	if err := db.QueryRow(`SELECT inativado_em IS NOT NULL FROM produtos WHERE id = $1`, produtoID).Scan(&inativo); err != nil || inativo {
+		t.Errorf("inativo = %v (err %v), want false", inativo, err)
+	}
+}
+
+func TestInativacaoProdutoHandler_ValidacaoE404(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Adm Inat H", "inat-h-adm@empresa.com", "senha-123456", "adm")
+	token := "Bearer " + tokenDeLogin(t, db, "inat-h-adm@empresa.com", "senha-123456")
+	produtoID, _ := seedProdutoComSaldoHandler(t, db, "Canteiro Val H", 0)
+
+	longo := `{"motivo":"` + strings.Repeat("a", 501) + `"}`
+	for _, corpo := range []string{longo, `{"motivo":`, `[]`} {
+		w := postInativacaoProduto(db, realtime.NewRegistry(), token, produtoID, "inativacao", corpo)
+		if code, _ := codigoErroResposta(t, w); w.Code != http.StatusBadRequest || code != "VALIDATION_ERROR" {
+			t.Errorf("corpo %.20s: status=%d body=%s", corpo, w.Code, w.Body.String())
+		}
+	}
+
+	// Produto de outra Empresa.
+	outra := outraEmpresaRealHandlers(t, db)
+	var catID, tplID string
+	if err := db.QueryRow(`SELECT id FROM categorias WHERE empresa_id = $1 LIMIT 1`, outra).Scan(&catID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT id FROM nomenclatura_templates WHERE empresa_id = $1 AND subtipo = 'Genérico'`, outra).Scan(&tplID); err != nil {
+		t.Fatal(err)
+	}
+	alheio, err := services.CriarProduto(db, outra, services.CriarProdutoInput{UnidadeMedida: "un", Nome: "Alheio Inat H", CategoriaID: catID, TemplateID: tplID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, id := range []string{alheio.ID, "nao-e-uuid", "00000000-0000-0000-0000-000000000000"} {
+		for _, acao := range []string{"inativacao", "reativacao"} {
+			w := postInativacaoProduto(db, realtime.NewRegistry(), token, id, acao, "")
+			if code, _ := codigoErroResposta(t, w); w.Code != http.StatusNotFound || code != "NOT_FOUND" {
+				t.Errorf("%s %s: status=%d body=%s", acao, id, w.Code, w.Body.String())
+			}
+		}
+	}
+	// Adm também pode (gestor+).
+	w := postInativacaoProduto(db, realtime.NewRegistry(), token, produtoID, "inativacao", `{}`)
+	if w.Code != http.StatusOK {
+		t.Errorf("adm inativar: status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestInativacaoProdutoHandler_PapelInsuficiente403(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	produtoID, _ := seedProdutoComSaldoHandler(t, db, "Canteiro 403 H", 0)
+	for _, papel := range []string{"almoxarife", "usuario"} {
+		email := "inat-403-" + papel + "@empresa.com"
+		criarContaComPapel(t, db, "Conta "+papel, email, "senha-123456", papel)
+		token := "Bearer " + tokenDeLogin(t, db, email, "senha-123456")
+		for _, acao := range []string{"inativacao", "reativacao"} {
+			w := postInativacaoProduto(db, realtime.NewRegistry(), token, produtoID, acao, "")
+			if w.Code != http.StatusForbidden {
+				t.Errorf("%s %s: status=%d, want 403", papel, acao, w.Code)
+			}
+		}
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM produto_historico`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("histórico = %d, want 0", n)
+	}
+}
+
+func TestInativacaoProdutoHandler_ReativarEANEmUso409(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Gestora EAN H", "ean-h-gestor@empresa.com", "senha-123456", "gestor")
+	token := "Bearer " + tokenDeLogin(t, db, "ean-h-gestor@empresa.com", "senha-123456")
+	criar := func(nome string) services.Produto {
+		p, err := services.CriarProduto(db, empresaTeste, services.CriarProdutoInput{
+			UnidadeMedida: "un", Nome: nome, EAN13: "7891000000014",
+			CategoriaID: categoriaIDPorCodigoHandler(t, db, "04.001"),
+			TemplateID:  templateIDPorSubtipoHandler(t, db, "Genérico"),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	antigo := criar("EAN H Antigo")
+	if w := postInativacaoProduto(db, realtime.NewRegistry(), token, antigo.ID, "inativacao", ""); w.Code != http.StatusOK {
+		t.Fatalf("inativar: %d %s", w.Code, w.Body.String())
+	}
+	novo := criar("EAN H Novo")
+	w := postInativacaoProduto(db, realtime.NewRegistry(), token, antigo.ID, "reativacao", "")
+	code, msg := codigoErroResposta(t, w)
+	if w.Code != http.StatusConflict || code != "EAN_EM_USO" || msg != "Este EAN já está no produto "+novo.Codigo+" — EAN H Novo" {
+		t.Errorf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestLancarSaldoHandler_ProdutoInativo409(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Almox Inat H", "lote-inat-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "lote-inat-almox@empresa.com", "senha-123456")
+	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, "Canteiro Lote Inat", 0)
+	if _, err := db.Exec(`UPDATE produtos SET inativado_em = now() WHERE id = $1`, produtoID); err != nil {
+		t.Fatal(err)
+	}
+	w := postLote(db, realtime.NewRegistry(), "Bearer "+token,
+		`{"produtoId":"`+produtoID+`","estoqueId":"`+estoqueID+`","quantidade":1}`)
+	if code, msg := codigoErroResposta(t, w); w.Code != http.StatusConflict || code != "PRODUTO_INATIVO" ||
+		msg != "O produto está inativo. Peça a um gestor para reativá-lo antes de lançar saldo." {
+		t.Errorf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if n := contarLotesHandler(t, db); n != 0 {
+		t.Errorf("lotes = %d, want 0", n)
 	}
 }

@@ -72,6 +72,9 @@ func validarDataValidade(valor string) (string, error) {
 // ANTES de abrir a transação. O INSERT em `lotes` é um `INSERT ... SELECT`
 // que filtra `produtos`/`estoques` por `empresa_id` (e o Produto por
 // `deleted_at IS NULL`): zero linhas ou SQLSTATE 22P02 -> ErrLoteAlvoNaoEncontrado.
+// Story 16.1: o `FOR SHARE OF p` também exige `inativado_em IS NULL` —
+// serializa com InativarProduto (FOR UPDATE) e recusa Produto inativo com
+// ErrProdutoInativo (409 PRODUTO_INATIVO).
 // A FK `lotes.estoque_id` toma KEY SHARE na linha de `estoques`, o que
 // serializa com ExcluirEstoque (FOR UPDATE).
 func LancarSaldo(db *sql.DB, empresaID, usuarioID, produtoID, estoqueID string, quantidade float64, dataValidade string) (LoteLancado, error) {
@@ -104,7 +107,7 @@ func LancarSaldo(db *sql.DB, empresaID, usuarioID, produtoID, estoqueID string, 
 		INSERT INTO lotes (produto_id, estoque_id, quantidade, data_validade, empresa_id)
 		SELECT p.id, e.id, $3::numeric, $4::date, p.empresa_id
 		FROM produtos p, estoques e
-		WHERE p.id = $1 AND p.empresa_id = $5 AND p.deleted_at IS NULL
+		WHERE p.id = $1 AND p.empresa_id = $5 AND p.deleted_at IS NULL AND p.inativado_em IS NULL
 		  AND e.id = $2 AND e.empresa_id = $5
 		FOR SHARE OF p, e
 		RETURNING id, produto_id, estoque_id, quantidade, to_char(data_validade, 'YYYY-MM-DD'),
@@ -113,7 +116,26 @@ func LancarSaldo(db *sql.DB, empresaID, usuarioID, produtoID, estoqueID string, 
 		&lote.ID, &lote.ProdutoID, &lote.EstoqueID, &lote.Quantidade, &validade, &lote.Vencido, &lote.CriadoEm,
 	); err != nil {
 		var pqErr *pq.Error
-		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && (pqErr.Code == pqInvalidTextRepresentation || pqErr.Code == pqForeignKeyViolation)) {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Story 16.1: zero linhas pode ser Produto inativo (existe, é da
+			// Empresa, não mesclado, Estoque válido) -> ErrProdutoInativo;
+			// qualquer outro caso segue 404.
+			var inativo bool
+			errInativo := tx.QueryRow(`
+				SELECT p.inativado_em IS NOT NULL
+				FROM produtos p, estoques e
+				WHERE p.id = $1 AND p.empresa_id = $3 AND p.deleted_at IS NULL
+				  AND e.id = $2 AND e.empresa_id = $3`,
+				produtoID, estoqueID, empresaID).Scan(&inativo)
+			if errInativo == nil && inativo {
+				return LoteLancado{}, ErrProdutoInativo
+			}
+			if errInativo != nil && !errors.Is(errInativo, sql.ErrNoRows) {
+				return LoteLancado{}, fmt.Errorf("falha ao verificar produto do lançamento: %w", errInativo)
+			}
+			return LoteLancado{}, ErrLoteAlvoNaoEncontrado
+		}
+		if errors.As(err, &pqErr) && (pqErr.Code == pqInvalidTextRepresentation || pqErr.Code == pqForeignKeyViolation) {
 			return LoteLancado{}, ErrLoteAlvoNaoEncontrado
 		}
 		return LoteLancado{}, fmt.Errorf("falha ao inserir lote: %w", err)

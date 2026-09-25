@@ -7,6 +7,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/lib/pq"
 )
@@ -784,6 +785,10 @@ type ProdutoDetalhe struct {
 	// TemplateID/Observacoes (spec-13-1): pré-preenchem o diálogo de edição.
 	TemplateID  *string `json:"templateId"`
 	Observacoes *string `json:"observacoes"`
+	// Inativo/InativadoEm (Story 16.1, FR-55): o detalhe continua devolvendo
+	// o Produto inativo, marcado.
+	Inativo     bool       `json:"inativo"`
+	InativadoEm *time.Time `json:"inativadoEm"`
 }
 
 // produtoDetalheQuery devolve um único Produto por `id` — mesmas colunas de
@@ -801,7 +806,7 @@ const produtoDetalheQuery = `
 		p.espessura_valor, p.espessura_unidade,
 		COALESCE(pe.total, 0) AS quantidade_total,
 		p.unidade_medida, p.embalagem, p.codigo_fornecedor, p.ean13,
-		p.template_id, p.observacoes
+		p.template_id, p.observacoes, p.inativado_em
 	FROM produtos p
 	JOIN categorias c ON c.id = p.categoria_id
 	LEFT JOIN (
@@ -832,6 +837,7 @@ func ObterProdutoDetalhe(db *sql.DB, empresaID string, id string) (ProdutoDetalh
 		unidadeMedida, embalagem   sql.NullString
 		codigoFornecedor, ean13    sql.NullString
 		templateID, observacoes    sql.NullString
+		inativadoEm                sql.NullTime
 	)
 	err := db.QueryRow(produtoDetalheQuery, id, empresaID).Scan(
 		&det.ID, &det.Nome, &codigo,
@@ -843,7 +849,7 @@ func ObterProdutoDetalhe(db *sql.DB, empresaID string, id string) (ProdutoDetalh
 		&esp.valor, &esp.unidade,
 		&quantidade,
 		&unidadeMedida, &embalagem, &codigoFornecedor, &ean13,
-		&templateID, &observacoes,
+		&templateID, &observacoes, &inativadoEm,
 	)
 	if err != nil {
 		var pqErr *pq.Error
@@ -851,6 +857,11 @@ func ObterProdutoDetalhe(db *sql.DB, empresaID string, id string) (ProdutoDetalh
 			return ProdutoDetalhe{}, ErrProdutoNaoEncontrado
 		}
 		return ProdutoDetalhe{}, fmt.Errorf("falha ao buscar detalhe do produto: %w", err)
+	}
+	if inativadoEm.Valid {
+		t := inativadoEm.Time
+		det.Inativo = true
+		det.InativadoEm = &t
 	}
 	if templateID.Valid {
 		t := templateID.String
