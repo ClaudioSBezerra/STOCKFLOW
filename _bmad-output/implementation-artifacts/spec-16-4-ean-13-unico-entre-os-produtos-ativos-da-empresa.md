@@ -62,3 +62,11 @@ deferred: []
 ## Auto Run Result
 
 Status: done. Testes de serviços (filtrados) e handlers completos verdes; suíte completa não rodou inteira por exceder 10 min.
+
+## Conferência manual (fechamento do Epic 16)
+
+O `bmad-loop` fechou esta story com `review×0`, sem Review Triage Log; a conferência foi feita à mão no fechamento do épico:
+- `CriarProduto` e `AtualizarProduto` chamam `garantirEANLivreTx` na transação da escrita. É a mesma função da reativação (16.1), com advisory lock por Empresa+EAN. Produto inativo não é checado nem disputa o EAN.
+- A edição checa mesmo sem o EAN mudar, então uma duplicata antiga só salva depois de corrigida, como pede o AC.
+- Os handlers de criar, editar e reativar mapeiam `ErroEANEmUso` para 409 `EAN_EM_USO` com "Este EAN já está no produto {código} — {nome}".
+- Suíte Go completa e `vitest` (878) verdes.
