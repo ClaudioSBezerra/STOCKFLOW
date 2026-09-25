@@ -284,6 +284,57 @@ describe('FilaPedidosSection', () => {
     ).toBeInTheDocument();
   });
 
+  it('marca "Inativo" só no item cujo Produto foi inativado (Story 16.2)', async () => {
+    buscarPedidoMock.mockResolvedValue({
+      ...PEDIDOS[0],
+      itens: [
+        {
+          produtoId: 'pr-1',
+          produtoNome: 'Cabo Flexível 4mm',
+          categoriaNome: 'Fios e Cabos',
+          estoqueId: 'e-1',
+          estoqueNome: 'Almoxarifado Central',
+          quantidade: 5,
+          inativo: true,
+        },
+        {
+          produtoId: 'pr-2',
+          produtoNome: 'Fita Isolante',
+          categoriaNome: 'Fios e Cabos',
+          estoqueId: 'e-1',
+          estoqueNome: 'Almoxarifado Central',
+          quantidade: 2,
+          inativo: false,
+        },
+        {
+          produtoId: 'pr-3',
+          produtoNome: 'Conector Simples',
+          categoriaNome: 'Fios e Cabos',
+          estoqueId: 'e-1',
+          estoqueNome: 'Almoxarifado Central',
+          quantidade: 1,
+        },
+      ],
+    });
+
+    render(<FilaPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText('Obra Norte');
+
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole('button', { name: /^Ver itens do pedido de Ana Silva — Obra Norte/ }),
+    );
+
+    const dialogo = await screen.findByRole('dialog');
+    expect(await within(dialogo).findByText('Fita Isolante')).toBeInTheDocument();
+    expect(within(dialogo).getAllByText('Inativo')).toHaveLength(1);
+    const linhaInativa = within(dialogo).getByText('Cabo Flexível 4mm').closest('li') as HTMLElement;
+    expect(within(linhaInativa).getByText('Inativo')).toBeInTheDocument();
+  });
+
   it('mostra a mensagem de erro do servidor (role="alert") no diálogo quando buscarPedido falha', async () => {
     buscarPedidoMock.mockRejectedValue(new Error('pedido não encontrado'));
 

@@ -107,6 +107,21 @@ describe('CatalogoPage — gate de papel', () => {
   );
 });
 
+describe('CatalogoPage — filtro "Mostrar só inativos" (Story 16.2)', () => {
+  it.each(['gestor', 'adm'])('papel %s vê o filtro', async (papel) => {
+    authState.papel = papel;
+    render(<CatalogoPage />, { wrapper: MemoryRouter });
+    expect(await screen.findByRole('checkbox', { name: 'Mostrar só inativos' })).toBeInTheDocument();
+  });
+
+  it.each(['usuario', 'almoxarife'])('papel %s não vê o filtro', async (papel) => {
+    authState.papel = papel;
+    render(<CatalogoPage />, { wrapper: MemoryRouter });
+    await screen.findByText('Nenhum produto no catálogo.');
+    expect(screen.queryByRole('checkbox', { name: 'Mostrar só inativos' })).not.toBeInTheDocument();
+  });
+});
+
 describe('CatalogoPage — abas Cadastro/Importação (Story 3.3)', () => {
   it('almoxarife+ vê as abas "Cadastro"/"Importação", com Cadastro ativa por padrão', async () => {
     authState.papel = 'almoxarife';

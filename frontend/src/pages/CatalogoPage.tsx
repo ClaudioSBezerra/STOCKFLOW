@@ -62,6 +62,9 @@ export function CatalogoPage() {
   // mesmo em chamada direta à API), este espelho é só de experiência.
   const podeExportar = rankPapel(usuario?.papel ?? '') >= rankPapel('almoxarife');
 
+  // Story 16.2: filtro "Mostrar só inativos" é de gestor+ (o servidor ignora o parâmetro abaixo disso).
+  const podeVerInativos = rankPapel(usuario?.papel ?? '') >= rankPapel('gestor');
+
   const [termoFiltro, setTermoFiltro] = useState('');
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const buscaInputRef = useRef<HTMLInputElement>(null);
@@ -88,7 +91,7 @@ export function CatalogoPage() {
   return (
     <div className="flex flex-col gap-6 p-6">
       <BuscaCatalogo onTermoChange={aoTermoDigitado} inputRef={buscaInputRef} />
-      <CatalogoListagem termo={termoFiltro} podeExportar={podeExportar} />
+      <CatalogoListagem termo={termoFiltro} podeExportar={podeExportar} podeVerInativos={podeVerInativos} />
       {podeCadastrar && (
         <Tabs defaultValue="cadastro">
           <TabsList>

@@ -527,11 +527,14 @@ func processarProximaLinha(db *sql.DB, empresaID string, importacaoID string) (b
 	// graças ao índice único parcial `idx_produtos_codigo` (migration
 	// 000017): no máximo uma linha em `produtos` pode ter esse `código`.
 	if validada.codigo.Valid {
-		produtoExistenteID, produtoExistenteTemplateID, encontrado, err := buscarProdutoPorCodigo(tx, empresaID, validada.codigo.String)
+		produtoExistenteID, produtoExistenteTemplateID, produtoInativo, encontrado, err := buscarProdutoPorCodigo(tx, empresaID, validada.codigo.String)
 		if err != nil {
 			return false, fmt.Errorf("falha ao buscar produto existente por código da linha %d: %w", numeroLinha, err)
 		}
 		if encontrado {
+			if produtoInativo {
+				return true, rejeitarECommitar(tx, linhaID, numeroLinha, motivoProdutoInativoImportacao)
+			}
 			return processarLinhaDeAtualizacao(tx, empresaID, linhaID, numeroLinha, validada, categoriaID, produtoExistenteID, produtoExistenteTemplateID)
 		}
 	}
@@ -592,7 +595,7 @@ func processarProximaLinha(db *sql.DB, empresaID string, importacaoID string) (b
 			if _, errRollback := tx.Exec(`ROLLBACK TO SAVEPOINT sp_insert_produto`); errRollback != nil {
 				return false, fmt.Errorf("falha ao reverter savepoint da linha %d: %w", numeroLinha, errRollback)
 			}
-			produtoExistenteID, produtoExistenteTemplateID, encontrado, errBusca := buscarProdutoPorCodigo(tx, empresaID, validada.codigo.String)
+			produtoExistenteID, produtoExistenteTemplateID, produtoInativo, encontrado, errBusca := buscarProdutoPorCodigo(tx, empresaID, validada.codigo.String)
 			if errBusca != nil {
 				return false, fmt.Errorf("falha ao buscar produto após corrida de código na linha %d: %w", numeroLinha, errBusca)
 			}
@@ -601,6 +604,9 @@ func processarProximaLinha(db *sql.DB, empresaID string, importacaoID string) (b
 				// prova que já existe uma linha commitada com esse código.
 				// Defesa em profundidade contra um estado inconsistente.
 				return false, fmt.Errorf("violação de unicidade de código na linha %d, mas produto não encontrado na re-busca", numeroLinha)
+			}
+			if produtoInativo {
+				return true, rejeitarECommitar(tx, linhaID, numeroLinha, motivoProdutoInativoImportacao)
 			}
 			return processarLinhaDeAtualizacao(tx, empresaID, linhaID, numeroLinha, validada, categoriaID, produtoExistenteID, produtoExistenteTemplateID)
 		}
@@ -633,19 +639,25 @@ func processarProximaLinha(db *sql.DB, empresaID string, importacaoID string) (b
 // processarProximaLinha). `encontrado=false` (sql.ErrNoRows) nunca é erro —
 // significa "nenhum Produto com esse código ainda", que o chamador trata
 // como sinal para seguir o caminho de criação.
-func buscarProdutoPorCodigo(tx *sql.Tx, empresaID string, codigo string) (id string, templateID sql.NullString, encontrado bool, err error) {
+//
+// Story 16.2: `inativo` sinaliza Produto inativado (encontrado, mas a linha
+// deve ser rejeitada).
+func buscarProdutoPorCodigo(tx *sql.Tx, empresaID string, codigo string) (id string, templateID sql.NullString, inativo bool, encontrado bool, err error) {
 	const selectProdutoPorCodigo = `
-		SELECT id, template_id FROM produtos
+		SELECT id, template_id, inativado_em IS NOT NULL FROM produtos
 		WHERE codigo = $1 AND deleted_at IS NULL AND empresa_id = $2`
-	err = tx.QueryRow(selectProdutoPorCodigo, codigo, empresaID).Scan(&id, &templateID)
+	err = tx.QueryRow(selectProdutoPorCodigo, codigo, empresaID).Scan(&id, &templateID, &inativo)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", sql.NullString{}, false, nil
+		return "", sql.NullString{}, false, false, nil
 	}
 	if err != nil {
-		return "", sql.NullString{}, false, err
+		return "", sql.NullString{}, false, false, err
 	}
-	return id, templateID, true, nil
+	return id, templateID, inativo, true, nil
 }
+
+// motivoProdutoInativoImportacao é o motivo da linha rejeitada por Produto inativo (Story 16.2).
+const motivoProdutoInativoImportacao = "Produto inativo — reative antes de importar"
 
 // processarLinhaDeAtualizacao é o ramo de UPDATE de processarProximaLinha
 // (Story 3.4, FR-11): chamado quando o `código` da linha já casou com um

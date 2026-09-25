@@ -166,13 +166,19 @@ func AdicionarItemCarrinho(db *sql.DB, empresaID string, usuarioID, produtoID, e
 	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
 
 	var produtoNome string
-	const selectProduto = `SELECT nome FROM produtos WHERE id = $1 AND deleted_at IS NULL AND empresa_id = $2`
-	if err := tx.QueryRow(selectProduto, produtoID, empresaID).Scan(&produtoNome); err != nil {
+	var produtoInativo bool
+	const selectProduto = `SELECT nome, inativado_em IS NOT NULL FROM produtos WHERE id = $1 AND deleted_at IS NULL AND empresa_id = $2`
+	if err := tx.QueryRow(selectProduto, produtoID, empresaID).Scan(&produtoNome, &produtoInativo); err != nil {
 		var pqErr *pq.Error
 		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
 			return ItemCarrinho{}, ErrCarrinhoProdutoNaoEncontrado
 		}
 		return ItemCarrinho{}, fmt.Errorf("falha ao verificar produto do carrinho: %w", err)
+	}
+
+	// Story 16.2: Produto inativo não entra no Carrinho.
+	if produtoInativo {
+		return ItemCarrinho{}, ErrProdutoInativo
 	}
 
 	// O Estoque precisa existir de verdade ANTES de tratar a ausência de

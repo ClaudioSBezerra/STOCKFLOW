@@ -701,7 +701,7 @@ func TestListarMovimentacoesHandler_200ComCampos(t *testing.T) {
 		"id": true, "produtoId": true, "produtoNome": true, "tipo": true,
 		"estoqueOrigemId": true, "estoqueOrigemNome": true,
 		"estoqueDestinoId": true, "estoqueDestinoNome": true,
-		"quantidade": true, "usuarioId": true, "usuarioNome": true, "criadoEm": true,
+		"quantidade": true, "usuarioId": true, "usuarioNome": true, "criadoEm": true, "inativo": true,
 	}
 	for k := range cru.Movimentacoes[0] {
 		if !querChaves[k] {

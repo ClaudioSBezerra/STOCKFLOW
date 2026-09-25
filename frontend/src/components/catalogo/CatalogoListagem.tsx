@@ -131,6 +131,7 @@ const COLUNAS_TABELA = 8;
 
 const MENSAGEM_ERRO = 'Não foi possível carregar o catálogo. Tente novamente em instantes.';
 const MENSAGEM_VAZIO = 'Nenhum produto no catálogo.';
+const MENSAGEM_VAZIO_INATIVOS = 'Nenhum produto inativo.';
 const MENSAGEM_SEM_ESTOQUE_REGISTRADO = 'Sem quantidade registrada por estoque.';
 
 // SEM_CATEGORIA/SEM_ESTOQUE são os valores sentinela das opções "Todas as
@@ -144,6 +145,7 @@ interface FiltrosAtivos {
   estoqueId: string;
   comEstoque: boolean;
   termo: string;
+  somenteInativos?: boolean;
 }
 
 // queryFiltros monta a fatia comum de query string dos 4 filtros
@@ -168,15 +170,24 @@ function queryFiltros(filtros: FiltrosAtivos): string {
   if (filtros.comEstoque) {
     partes.push('comEstoque=true');
   }
+  if (filtros.somenteInativos) {
+    partes.push('inativos=1');
+  }
   return partes.join('&');
 }
 
 interface CatalogoListagemProps {
   termo?: string;
   podeExportar?: boolean;
+  // Story 16.2: gestor+ vê o filtro "Mostrar só inativos" (o servidor é a autoridade).
+  podeVerInativos?: boolean;
 }
 
-export function CatalogoListagem({ termo = '', podeExportar = false }: CatalogoListagemProps = {}) {
+export function CatalogoListagem({
+  termo = '',
+  podeExportar = false,
+  podeVerInativos = false,
+}: CatalogoListagemProps = {}) {
   const [modo, setModo] = useState<Modo>('grade');
   // Estado inicial derivado direto do matchMedia (não de um setState no
   // efeito): o alternador só existe em >=768px. O efeito abaixo só mantém
@@ -194,6 +205,7 @@ export function CatalogoListagem({ termo = '', podeExportar = false }: CatalogoL
   const [categoriaId, setCategoriaId] = useState('');
   const [estoqueId, setEstoqueId] = useState('');
   const [comEstoque, setComEstoque] = useState(false);
+  const [somenteInativos, setSomenteInativos] = useState(false);
   const [categorias, setCategorias] = useState<CategoriaCatalogo[]>([]);
   const [estoques, setEstoques] = useState<EstoqueFiltro[]>([]);
 
@@ -300,9 +312,9 @@ export function CatalogoListagem({ termo = '', podeExportar = false }: CatalogoL
 
   useEffect(() => {
     void (async () => {
-      await carregar(modo, pagina, { categoriaId, estoqueId, comEstoque, termo });
+      await carregar(modo, pagina, { categoriaId, estoqueId, comEstoque, termo, somenteInativos });
     })();
-  }, [carregar, modo, pagina, categoriaId, estoqueId, comEstoque, termo]);
+  }, [carregar, modo, pagina, categoriaId, estoqueId, comEstoque, termo, somenteInativos]);
 
   // Carrega as listas de categoria/Estoque uma vez no mount para popular os
   // dois `<Select>` de filtro (mesmo padrão de
@@ -403,6 +415,16 @@ export function CatalogoListagem({ termo = '', podeExportar = false }: CatalogoL
     setPagina(1);
   }
 
+  // Story 16.2: só inativos sempre em grade — cada card abre o detalhe (onde reativar).
+  function aoMudarSomenteInativos(estado: boolean | 'indeterminate') {
+    const ligado = estado === true;
+    setSomenteInativos(ligado);
+    if (ligado) {
+      setModo('grade');
+    }
+    setPagina(1);
+  }
+
   function alternarExpandido(chave: string) {
     setExpandidos((atual) => {
       const proximo = new Set(atual);
@@ -422,7 +444,7 @@ export function CatalogoListagem({ termo = '', podeExportar = false }: CatalogoL
 
   return (
     <section className="flex flex-col gap-4" aria-label="Catálogo de produtos">
-      {podeAlternar && (
+      {podeAlternar && !somenteInativos && (
         <div className="flex gap-2">
           <Button
             type="button"
@@ -505,6 +527,17 @@ export function CatalogoListagem({ termo = '', podeExportar = false }: CatalogoL
           />
           <Label htmlFor="catalogo-filtro-com-estoque">Com estoque disponível</Label>
         </div>
+
+        {podeVerInativos && (
+          <div className="flex min-h-touch-target-min items-center gap-2">
+            <Checkbox
+              id="catalogo-filtro-inativos"
+              checked={somenteInativos}
+              onCheckedChange={aoMudarSomenteInativos}
+            />
+            <Label htmlFor="catalogo-filtro-inativos">Mostrar só inativos</Label>
+          </div>
+        )}
       </div>
 
       {erro && (
@@ -517,7 +550,11 @@ export function CatalogoListagem({ termo = '', podeExportar = false }: CatalogoL
         <output className="text-body text-muted-foreground">Carregando catálogo...</output>
       )}
 
-      {vazio && <p className="text-body text-muted-foreground">{MENSAGEM_VAZIO}</p>}
+      {vazio && (
+        <p className="text-body text-muted-foreground">
+          {somenteInativos ? MENSAGEM_VAZIO_INATIVOS : MENSAGEM_VAZIO}
+        </p>
+      )}
 
       {!carregando && !erro && !vazio && modo === 'grade' && (
         <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -530,7 +567,14 @@ export function CatalogoListagem({ termo = '', podeExportar = false }: CatalogoL
                 {item.codigo && (
                   <span className="text-label text-muted-foreground font-mono">{item.codigo}</span>
                 )}
-                <span className="text-body font-medium">{item.nome}</span>
+                <span className="text-body font-medium">
+                  {item.nome}
+                  {somenteInativos && (
+                    <span className="ml-2 rounded-full border border-border px-2 py-0.5 text-label text-muted-foreground">
+                      Inativo
+                    </span>
+                  )}
+                </span>
                 <span className="text-label text-muted-foreground">{item.categoria.nome}</span>
                 <span className="text-label">
                   <span className="text-muted-foreground">Estoque total </span>

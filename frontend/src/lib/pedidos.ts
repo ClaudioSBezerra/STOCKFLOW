@@ -62,6 +62,8 @@ export interface PedidoItem {
   // permanece `pendente`; a partir da decisão, um valor concreto de 0 até
   // `quantidade` — o quanto de fato foi aprovado/debitado deste item.
   quantidadeAprovada: number | null;
+  // inativo (Story 16.2): o Produto foi inativado depois do envio.
+  inativo?: boolean;
 }
 
 export interface PedidoDetalhe extends PedidoCabecalho {

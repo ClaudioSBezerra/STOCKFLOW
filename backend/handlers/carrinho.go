@@ -66,6 +66,8 @@ func AdicionarItemCarrinhoHandler(db *sql.DB) http.HandlerFunc {
 			escreverJSON(w, http.StatusCreated, map[string]any{"item": item})
 		case errors.As(err, &erroValidacao):
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
+		case errors.Is(err, services.ErrProdutoInativo):
+			escreverErro(w, http.StatusConflict, "PRODUTO_INATIVO", "O produto está inativo e não pode ser adicionado ao carrinho.")
 		case errors.Is(err, services.ErrCarrinhoProdutoNaoEncontrado):
 			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "produto não encontrado")
 		case errors.Is(err, services.ErrCarrinhoEstoqueNaoEncontrado):

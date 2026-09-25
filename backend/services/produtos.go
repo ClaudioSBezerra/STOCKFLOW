@@ -792,7 +792,7 @@ const buscarProdutosQuery = `
 		END AS rank
 	FROM produtos p
 	JOIN categorias c ON c.id = p.categoria_id
-	WHERE p.deleted_at IS NULL
+	WHERE p.deleted_at IS NULL AND p.inativado_em IS NULL
 	  AND p.empresa_id = $4
 	  AND (p.nome ILIKE $3 ESCAPE '\' OR p.codigo ILIKE $3 ESCAPE '\' OR c.nome ILIKE $3 ESCAPE '\')
 	ORDER BY rank ASC, p.nome ASC, p.id ASC
@@ -850,7 +850,7 @@ const buscarProdutoPorCodigoQuery = `
 	SELECT p.id, p.nome, p.codigo, c.id, c.codigo, c.nome
 	FROM produtos p
 	JOIN categorias c ON c.id = p.categoria_id
-	WHERE p.codigo = $1 AND p.deleted_at IS NULL AND p.empresa_id = $2`
+	WHERE p.codigo = $1 AND p.deleted_at IS NULL AND p.inativado_em IS NULL AND p.empresa_id = $2`
 
 // BuscarProdutoPorCodigo devolve o Produto cujo `codigo` é EXATAMENTE igual a
 // `codigo` (Story 4.5, spec-4-5, FR-35) — a resolução do valor lido de um

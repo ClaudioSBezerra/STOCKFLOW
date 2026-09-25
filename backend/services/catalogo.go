@@ -183,6 +183,9 @@ type FiltrosCatalogo struct {
 	CategoriaID string
 	EstoqueID   string
 	ComEstoque  *bool
+	// SomenteInativos (Story 16.2): false (padrão) -> só ativos; true -> só
+	// Produtos inativados (`inativado_em IS NOT NULL`).
+	SomenteInativos bool
 }
 
 // filtroUUIDInvalido reconhece o SQLSTATE 22P02 (invalid_text_representation)
@@ -219,6 +222,11 @@ func montarFiltrosCatalogo(f FiltrosCatalogo, primeiroPlaceholder int) (string, 
 	// placeholder (comparação com uma constante SQL, não com input do
 	// usuário).
 	condicoes := []string{"p.deleted_at IS NULL"}
+	if f.SomenteInativos {
+		condicoes = append(condicoes, "p.inativado_em IS NOT NULL")
+	} else {
+		condicoes = append(condicoes, "p.inativado_em IS NULL")
+	}
 	var args []any
 	n := primeiroPlaceholder
 

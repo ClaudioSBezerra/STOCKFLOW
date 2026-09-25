@@ -71,6 +71,9 @@ type PedidoItem struct {
 	// `Quantidade - *QuantidadeAprovada` é a pendência não atendida, sempre
 	// visível (nunca escondida, nunca descartada).
 	QuantidadeAprovada *float64 `json:"quantidadeAprovada"`
+	// Inativo (Story 16.2): o Produto foi inativado depois do envio. Lido ao
+	// vivo por LEFT JOIN; nome/quantidade continuam vindo do snapshot (AD-17).
+	Inativo bool `json:"inativo"`
 }
 
 // PedidoDetalhe é o cabeçalho do Pedido (struct Pedido, reaproveitado) mais
@@ -557,8 +560,11 @@ func BuscarPedidoProprio(db *sql.DB, empresaID string, pedidoID, usuarioID, pape
 	}
 
 	const selectItens = `
-		SELECT produto_id, produto_nome, categoria_nome, estoque_id, estoque_nome, quantidade, quantidade_aprovada
-		FROM pedido_itens WHERE pedido_id = $1 AND empresa_id = $2 ORDER BY produto_nome`
+		SELECT pi.produto_id, pi.produto_nome, pi.categoria_nome, pi.estoque_id, pi.estoque_nome, pi.quantidade, pi.quantidade_aprovada,
+		       COALESCE(pr.inativado_em IS NOT NULL, false)
+		FROM pedido_itens pi
+		LEFT JOIN produtos pr ON pr.id = pi.produto_id AND pr.empresa_id = pi.empresa_id
+		WHERE pi.pedido_id = $1 AND pi.empresa_id = $2 ORDER BY pi.produto_nome`
 	rows, err := db.Query(selectItens, pedidoID, empresaID)
 	if err != nil {
 		return PedidoDetalhe{}, fmt.Errorf("falha ao listar itens do pedido: %w", err)
@@ -571,7 +577,7 @@ func BuscarPedidoProprio(db *sql.DB, empresaID string, pedidoID, usuarioID, pape
 		var quantidadeAprovada sql.NullFloat64
 		if err := rows.Scan(
 			&it.ProdutoID, &it.ProdutoNome, &it.CategoriaNome,
-			&it.EstoqueID, &it.EstoqueNome, &it.Quantidade, &quantidadeAprovada,
+			&it.EstoqueID, &it.EstoqueNome, &it.Quantidade, &quantidadeAprovada, &it.Inativo,
 		); err != nil {
 			return PedidoDetalhe{}, fmt.Errorf("falha ao ler item do pedido: %w", err)
 		}
@@ -898,6 +904,7 @@ type ReciboPedidoItem struct {
 	EstoqueNome        string
 	Quantidade         float64
 	QuantidadeAprovada float64
+	Inativo            bool // Story 16.2
 }
 
 // ReciboPedidoConteudo é o conteúdo já resolvido/formatado do recibo — um
@@ -970,6 +977,7 @@ func MontarReciboPedidoConteudo(db *sql.DB, empresaID string, pedidoID, usuarioI
 			EstoqueNome:        it.EstoqueNome,
 			Quantidade:         it.Quantidade,
 			QuantidadeAprovada: aprovada,
+			Inativo:            it.Inativo,
 		})
 	}
 
@@ -1076,6 +1084,9 @@ func RenderizarReciboPedidoPDF(conteudo ReciboPedidoConteudo) ([]byte, error) {
 
 	for _, item := range conteudo.Itens {
 		linha := fmt.Sprintf("%s — %s · %s", item.ProdutoNome, item.CategoriaNome, item.EstoqueNome)
+		if item.Inativo {
+			linha += " (Inativo)"
+		}
 		if err := escreverLinha(linha, 10); err != nil {
 			return nil, err
 		}

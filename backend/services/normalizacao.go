@@ -233,7 +233,7 @@ func AnalisarInconsistencias(db *sql.DB, empresaID string) ([]Sugestao, error) {
 		       espessura_valor, espessura_unidade,
 		       dimensoes_pendentes_revisao
 		FROM produtos
-		WHERE deleted_at IS NULL AND empresa_id = $1
+		WHERE deleted_at IS NULL AND inativado_em IS NULL AND empresa_id = $1
 		ORDER BY nome, id`
 
 	rows, err := db.Query(q, empresaID)
@@ -888,7 +888,7 @@ func DetectarDuplicatas(db *sql.DB, empresaID string) ([]GrupoDuplicata, error) 
 		       altura_valor, altura_unidade,
 		       espessura_valor, espessura_unidade
 		FROM produtos
-		WHERE deleted_at IS NULL AND empresa_id = $1
+		WHERE deleted_at IS NULL AND inativado_em IS NULL AND empresa_id = $1
 		ORDER BY nome, id`
 
 	rows, err := db.Query(q, empresaID)

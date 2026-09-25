@@ -40,6 +40,7 @@ interface Movimentacao {
   usuarioId: string;
   usuarioNome: string;
   criadoEm: string;
+  inativo?: boolean;
 }
 
 const MENSAGEM_ERRO_CARREGAR =
@@ -170,7 +171,12 @@ export function MovimentacoesSection() {
               <tbody>
                 {movimentacoes.map((mov) => (
                   <tr key={mov.id} className="border-t border-border">
-                    <td className="py-2 pr-4">{mov.produtoNome}</td>
+                    <td className="py-2 pr-4">
+                      {mov.produtoNome}
+                      {mov.inativo && (
+                        <span className="ml-2 rounded-full border border-border px-2 py-0.5 text-label text-muted-foreground">Inativo</span>
+                      )}
+                    </td>
                     <td className="py-2 pr-4">{ROTULO_TIPO[mov.tipo] ?? mov.tipo}</td>
                     <td className="py-2 pr-4">{mov.estoqueOrigemNome ?? '—'}</td>
                     <td className="py-2 pr-4">{mov.estoqueDestinoNome ?? '—'}</td>

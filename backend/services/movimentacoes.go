@@ -58,6 +58,8 @@ type MovimentacaoHistorico struct {
 	UsuarioID          string    `json:"usuarioId"`
 	UsuarioNome        string    `json:"usuarioNome"`
 	CriadoEm           time.Time `json:"criadoEm"`
+	// Inativo (Story 16.2): o Produto foi inativado depois; a linha continua listada.
+	Inativo bool `json:"inativo"`
 }
 
 // ListarMovimentacoes devolve a trilha de Movimentações DA EMPRESA
@@ -75,7 +77,7 @@ func ListarMovimentacoes(db *sql.DB, empresaID string) ([]MovimentacaoHistorico,
 	q := fmt.Sprintf(`
 		SELECT m.id, m.produto_id, p.nome, m.tipo,
 		       m.estoque_origem_id, eo.nome, m.estoque_destino_id, ed.nome,
-		       m.quantidade, m.usuario_id, u.nome, m.criado_em
+		       m.quantidade, m.usuario_id, u.nome, m.criado_em, p.inativado_em IS NOT NULL
 		FROM movimentacoes m
 		JOIN produtos p ON p.id = m.produto_id
 		JOIN usuarios u ON u.id = m.usuario_id
@@ -98,7 +100,7 @@ func ListarMovimentacoes(db *sql.DB, empresaID string) ([]MovimentacaoHistorico,
 		if err := rows.Scan(
 			&m.ID, &m.ProdutoID, &m.ProdutoNome, &m.Tipo,
 			&origemID, &origemNome, &destinoID, &destinoNome,
-			&m.Quantidade, &m.UsuarioID, &m.UsuarioNome, &m.CriadoEm,
+			&m.Quantidade, &m.UsuarioID, &m.UsuarioNome, &m.CriadoEm, &m.Inativo,
 		); err != nil {
 			return nil, fmt.Errorf("falha ao ler linha de movimentação: %w", err)
 		}
@@ -136,7 +138,7 @@ func ListarMovimentacoesDoUsuario(db *sql.DB, empresaID string, usuarioID string
 	const q = `
 		SELECT m.id, m.produto_id, p.nome, m.tipo,
 		       m.estoque_origem_id, eo.nome, m.estoque_destino_id, ed.nome,
-		       m.quantidade, m.usuario_id, u.nome, m.criado_em
+		       m.quantidade, m.usuario_id, u.nome, m.criado_em, p.inativado_em IS NOT NULL
 		FROM movimentacoes m
 		JOIN produtos p ON p.id = m.produto_id
 		JOIN usuarios u ON u.id = m.usuario_id
@@ -158,7 +160,7 @@ func ListarMovimentacoesDoUsuario(db *sql.DB, empresaID string, usuarioID string
 		if err := rows.Scan(
 			&m.ID, &m.ProdutoID, &m.ProdutoNome, &m.Tipo,
 			&origemID, &origemNome, &destinoID, &destinoNome,
-			&m.Quantidade, &m.UsuarioID, &m.UsuarioNome, &m.CriadoEm,
+			&m.Quantidade, &m.UsuarioID, &m.UsuarioNome, &m.CriadoEm, &m.Inativo,
 		); err != nil {
 			return nil, fmt.Errorf("falha ao ler linha de movimentação do usuário: %w", err)
 		}

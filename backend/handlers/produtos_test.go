@@ -2642,3 +2642,101 @@ func TestLancarSaldoHandler_ProdutoInativo409(t *testing.T) {
 		t.Errorf("lotes = %d, want 0", n)
 	}
 }
+
+// --- Story 16.2: Catálogo esconde inativos; filtro só para gestor+ ----------
+
+func TestListarCatalogoHandler_InativosSoParaGestor(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	criarContaComPapel(t, db, "Cat Inat Gestor", "cat-inat-gestor@empresa.com", "senha-123456", "gestor")
+	criarContaComPapel(t, db, "Cat Inat Almox", "cat-inat-almox@empresa.com", "senha-123456", "almoxarife")
+	tokenGestor := tokenDeLogin(t, db, "cat-inat-gestor@empresa.com", "senha-123456")
+	tokenAlmox := tokenDeLogin(t, db, "cat-inat-almox@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Cat Inativo 162")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedProdutoCatalogoHandler(t, db, estoque.ID, "Produto Ativo Um Catalogo", categoriaID, 0)
+	inativoID := seedProdutoCatalogoHandler(t, db, estoque.ID, "Produto Inativo Um Catalogo", categoriaID, 0)
+	if _, err := db.Exec(`UPDATE produtos SET inativado_em = now() WHERE id = $1`, inativoID); err != nil {
+		t.Fatal(err)
+	}
+
+	nomes := func(w *httptest.ResponseRecorder) []string {
+		t.Helper()
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d (body=%s)", w.Code, w.Body.String())
+		}
+		var resp struct {
+			Produtos []struct {
+				Nome string `json:"nome"`
+			} `json:"produtos"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, p := range resp.Produtos {
+			out = append(out, p.Nome)
+		}
+		return out
+	}
+
+	if got := nomes(getProdutosCatalogo(db, "Bearer "+tokenGestor, "")); len(got) != 1 || !strings.Contains(got[0], "Produto Ativo Um Catalogo") {
+		t.Errorf("padrão = %v, want só o ativo", got)
+	}
+	if got := nomes(getProdutosCatalogo(db, "Bearer "+tokenGestor, "inativos=1")); len(got) != 1 || !strings.Contains(got[0], "Produto Inativo Um Catalogo") {
+		t.Errorf("gestor inativos=1 = %v, want só o inativo", got)
+	}
+	if got := nomes(getProdutosCatalogo(db, "Bearer "+tokenAlmox, "inativos=1")); len(got) != 1 || !strings.Contains(got[0], "Produto Ativo Um Catalogo") {
+		t.Errorf("almoxarife inativos=1 = %v, want parâmetro ignorado (só ativos)", got)
+	}
+}
+
+func TestAdicionarItemCarrinhoHandler_409ProdutoInativo(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	_, token := seedContaComumECarrinho(t, db, "Usuario Carrinho Inativo", "carrinho-inativo162@empresa.com")
+	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, "Canteiro Carrinho Inativo 162", 10)
+	if _, err := db.Exec(`UPDATE produtos SET inativado_em = now() WHERE id = $1`, produtoID); err != nil {
+		t.Fatal(err)
+	}
+	corpo := `{"produtoId":"` + produtoID + `","estoqueId":"` + estoqueID + `","quantidade":1}`
+	w := postItemCarrinho(db, "Bearer "+token, corpo)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (body=%s)", w.Code, w.Body.String())
+	}
+	if code, _ := codigoErroResposta(t, w); code != "PRODUTO_INATIVO" {
+		t.Errorf("code = %q, want PRODUTO_INATIVO", code)
+	}
+}
+
+func TestBuscarProdutoPorCodigoHandler_404ProdutoInativo(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	criarContaComPapel(t, db, "PorCodigo Inativo", "porcodigo-inativo162@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "porcodigo-inativo162@empresa.com", "senha-123456")
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro PorCodigo Inativo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	produto, err := criarProdutoComSaldo(db, empresaTeste, services.CriarProdutoInput{
+		UnidadeMedida: "un",
+		TemplateID:    templateIDPorSubtipoHandler(t, db, "Genérico"),
+		Nome:          "Cabo Flexível Inativo",
+		CategoriaID:   categoriaID,
+	}, estoque.ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE produtos SET inativado_em = now() WHERE id = $1`, produto.ID); err != nil {
+		t.Fatal(err)
+	}
+	w := getProdutoPorCodigo(db, "Bearer "+token, produto.Codigo)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (body=%s)", w.Code, w.Body.String())
+	}
+}

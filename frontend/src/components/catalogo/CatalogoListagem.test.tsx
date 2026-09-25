@@ -675,6 +675,75 @@ describe('CatalogoListagem — filtros (Story 4.2)', () => {
     );
   });
 
+  it('"Mostrar só inativos" envia inativos=1 e marca os cards como Inativo (Story 16.2)', async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url === '/api/categorias') return Promise.resolve({ ok: true, json: async () => ({ categorias: [] }) });
+      if (url === '/api/estoques') return Promise.resolve({ ok: true, json: async () => ({ estoques: [] }) });
+      const inativos = url.includes('inativos=1');
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          produtos: inativos
+            ? [
+                {
+                  id: 'pi',
+                  nome: 'Produto Desativado',
+                  codigo: null,
+                  categoria: { id: 'c1', codigo: '04.001', nome: 'Construção Civil' },
+                  dimensoes: DIMENSOES_NULAS,
+                  quantidadeTotal: 0,
+                  disponivel: false,
+                  ...COLUNAS_ITEM_PADRAO,
+                },
+              ]
+            : [],
+          paginacao: { pagina: 1, tamanho: 24, total: inativos ? 1 : 0, totalPaginas: inativos ? 1 : 0 },
+        }),
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <CatalogoListagem podeVerInativos />
+      </MemoryRouter>,
+    );
+    await screen.findByText('Nenhum produto no catálogo.');
+
+    await user.click(screen.getByRole('checkbox', { name: 'Mostrar só inativos' }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/produtos/catalogo?agrupar=false&pagina=1&inativos=1',
+        expect.anything(),
+      ),
+    );
+    const link = await screen.findByRole('link', { name: /Produto Desativado/ });
+    expect(link).toHaveAttribute('href', '/produtos/pi');
+    expect(within(link).getByText('Inativo')).toBeInTheDocument();
+  });
+
+  it('"Mostrar só inativos" sem resultados mostra "Nenhum produto inativo." (Story 16.2)', async () => {
+    stubFetchComFiltros();
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <CatalogoListagem podeVerInativos />
+      </MemoryRouter>,
+    );
+    await screen.findByText('Nenhum produto no catálogo.');
+    await user.click(screen.getByRole('checkbox', { name: 'Mostrar só inativos' }));
+    expect(await screen.findByText('Nenhum produto inativo.')).toBeInTheDocument();
+    expect(screen.queryByText('Nenhum produto no catálogo.')).not.toBeInTheDocument();
+  });
+
+  it('sem podeVerInativos o filtro não existe (Story 16.2)', async () => {
+    stubFetchComFiltros();
+    renderCatalogo();
+    await screen.findByText('Nenhum produto no catálogo.');
+    expect(screen.queryByRole('checkbox', { name: 'Mostrar só inativos' })).not.toBeInTheDocument();
+  });
+
   it('categoria + Estoque + "Com estoque" + termo combinados aparecem juntos numa única chamada', async () => {
     const fetchMock = stubFetchComFiltros();
     const user = userEvent.setup();

@@ -420,7 +420,8 @@ func BuscarProdutoPorCodigoHandler(db *sql.DB) http.HandlerFunc {
 // colapsados). Erro de banco -> `500 INTERNAL_ERROR` + slog.
 func ListarCatalogoHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := middleware.UsuarioDaSessao(r.Context()); !ok {
+		usuario, ok := middleware.UsuarioDaSessao(r.Context())
+		if !ok {
 			slog.Error("ListarCatalogoHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
@@ -462,6 +463,10 @@ func ListarCatalogoHandler(db *sql.DB) http.HandlerFunc {
 			Q:           termo,
 			CategoriaID: r.URL.Query().Get("categoriaId"),
 			EstoqueID:   r.URL.Query().Get("estoqueId"),
+		}
+		// Story 16.2: `inativos=1` só é honrado para gestor+; abaixo disso é ignorado.
+		if r.URL.Query().Get("inativos") == "1" && services.RankPapel(usuario.Papel) >= services.RankPapel(services.PapelGestor) {
+			filtros.SomenteInativos = true
 		}
 		switch r.URL.Query().Get("comEstoque") {
 		case "":

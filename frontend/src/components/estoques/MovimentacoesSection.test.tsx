@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import { MovimentacoesSection } from './MovimentacoesSection';
 import type { EventoRealtime, StatusRealtime } from '@/lib/realtime/client';
 
@@ -84,6 +84,27 @@ afterEach(() => {
 });
 
 describe('MovimentacoesSection', () => {
+  it('marca "Inativo" só nas linhas de Produto inativo (Story 16.2)', async () => {
+    stubFetch((url) => {
+      if (url === '/api/movimentacoes')
+        return jsonOk({
+          movimentacoes: [
+            { ...MOVIMENTACOES[0], produtoNome: 'Produto Desativado', inativo: true },
+            { ...MOVIMENTACOES[1], produtoNome: 'Produto Vivo', inativo: false },
+            { ...MOVIMENTACOES[1], id: 'm-3', produtoNome: 'Produto Sem Campo' },
+          ],
+        });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    render(<MovimentacoesSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    const celula = (await screen.findByText(/Produto Desativado/)).closest('td') as HTMLElement;
+    expect(within(celula).getByText('Inativo')).toBeInTheDocument();
+    expect(screen.getAllByText('Inativo')).toHaveLength(1);
+  });
+
   it('carrega a tabela SÓ quando conectarRealtime chama aoMudarStatus("conectado")', async () => {
     const fetchMock = stubFetch((url) => {
       if (url === '/api/movimentacoes') return jsonOk({ movimentacoes: MOVIMENTACOES });
