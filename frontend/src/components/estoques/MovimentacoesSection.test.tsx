@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { act, render, screen, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MovimentacoesSection } from './MovimentacoesSection';
 import type { EventoRealtime, StatusRealtime } from '@/lib/realtime/client';
 
@@ -32,6 +33,11 @@ function stubFetch(impl: FetchImpl) {
   vi.stubGlobal('fetch', fn);
   return fn;
 }
+
+// Só a listagem (`/api/movimentacoes` com ou sem querystring), nunca os indicadores.
+const ehLista = (url: string) => /^\/api\/movimentacoes(\?|$)/.test(url);
+const chamadasLista = (fn: ReturnType<typeof vi.fn>) =>
+  fn.mock.calls.filter(([u]) => ehLista(String(u))).length;
 
 function jsonOk(body: unknown) {
   return Promise.resolve({ ok: true, json: async () => body });
@@ -86,7 +92,7 @@ afterEach(() => {
 describe('MovimentacoesSection', () => {
   it('marca "Inativo" só nas linhas de Produto inativo (Story 16.2)', async () => {
     stubFetch((url) => {
-      if (url === '/api/movimentacoes')
+      if (ehLista(url))
         return jsonOk({
           movimentacoes: [
             { ...MOVIMENTACOES[0], produtoNome: 'Produto Desativado', inativo: true },
@@ -100,14 +106,14 @@ describe('MovimentacoesSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    const celula = (await screen.findByText(/Produto Desativado/)).closest('td') as HTMLElement;
-    expect(within(celula).getByText('Inativo')).toBeInTheDocument();
+    const linha = (await screen.findByText(/Produto Desativado/)).closest('li') as HTMLElement;
+    expect(within(linha).getByText('Inativo')).toBeInTheDocument();
     expect(screen.getAllByText('Inativo')).toHaveLength(1);
   });
 
   it('carrega a tabela SÓ quando conectarRealtime chama aoMudarStatus("conectado")', async () => {
     const fetchMock = stubFetch((url) => {
-      if (url === '/api/movimentacoes') return jsonOk({ movimentacoes: MOVIMENTACOES });
+      if (ehLista(url)) return jsonOk({ movimentacoes: MOVIMENTACOES });
       throw new Error(`URL inesperada: ${url}`);
     });
 
@@ -115,30 +121,31 @@ describe('MovimentacoesSection', () => {
 
     // Antes de "conectado", nenhum GET ainda foi disparado — mas há um
     // indicador de carregamento (não uma tela em branco).
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(chamadasLista(fetchMock)).toBe(0);
     expect(screen.getByText('Carregando movimentações...')).toBeInTheDocument();
 
     act(() => {
       aoMudarStatus('conectado');
     });
 
-    expect(await screen.findByText('Obra Norte')).toBeInTheDocument();
+    expect(await screen.findByText(/→ Obra Norte/)).toBeInTheDocument();
     // O indicador de carregamento some depois que as linhas chegam.
     expect(screen.queryByText('Carregando movimentações...')).not.toBeInTheDocument();
-    for (const coluna of ['Produto', 'Tipo', 'Origem', 'Destino', 'Quantidade', 'Autor', 'Data']) {
-      expect(screen.getByRole('columnheader', { name: coluna })).toBeInTheDocument();
-    }
-    // Transferência: origem e destino preenchidos, tipo traduzido.
-    expect(screen.getByText('Transferência')).toBeInTheDocument();
-    expect(screen.getByText('Obra Norte')).toBeInTheDocument();
+    // Transferência: subtítulo "origem → destino", tipo em pílula (o rótulo
+    // também existe como opção do filtro, por isso o escopo na linha).
+    const linhas = screen.getAllByRole('listitem');
+    expect(linhas).toHaveLength(2);
+    expect(linhas[0]).toHaveTextContent('Almoxarifado Central → Obra Norte');
+    expect(within(linhas[0]).getByText('Transferência')).toBeInTheDocument();
+    expect(linhas[0]).toHaveTextContent('Ana Almoxarife');
     // Baixa: tipo traduzido e destino como "—".
-    expect(screen.getByText('Baixa')).toBeInTheDocument();
-    expect(screen.getByText('—')).toBeInTheDocument();
+    expect(within(linhas[1]).getByText('Baixa')).toBeInTheDocument();
+    expect(linhas[1]).toHaveTextContent('Almoxarifado Central → —');
   });
 
   it('traduz o tipo "entrada" para "Entrada"', async () => {
     stubFetch((url) => {
-      if (url === '/api/movimentacoes') {
+      if (ehLista(url)) {
         return jsonOk({
           movimentacoes: [
             {
@@ -159,12 +166,13 @@ describe('MovimentacoesSection', () => {
       aoMudarStatus('conectado');
     });
 
-    expect(await screen.findByText('Entrada')).toBeInTheDocument();
+    const linha = (await screen.findByRole('listitem')) as HTMLElement;
+    expect(within(linha).getByText('Entrada')).toBeInTheDocument();
   });
 
   it('não tem nenhum botão de ação em nenhuma linha', async () => {
     stubFetch((url) => {
-      if (url === '/api/movimentacoes') return jsonOk({ movimentacoes: MOVIMENTACOES });
+      if (ehLista(url)) return jsonOk({ movimentacoes: MOVIMENTACOES });
       throw new Error(`URL inesperada: ${url}`);
     });
 
@@ -172,15 +180,17 @@ describe('MovimentacoesSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/→ Obra Norte/);
 
-    expect(screen.queryAllByRole('button')).toHaveLength(0);
+    // Único botão: "Limpar filtros" — nenhuma ação por linha.
+    expect(within(screen.getAllByRole('listitem')[0]).queryAllByRole('button')).toHaveLength(0);
+    expect(screen.getAllByRole('button')).toHaveLength(1);
   });
 
   it('um evento SSE resource="movimentacoes" dispara toast + refetch, sem recarregar a tela', async () => {
     let chamada = 0;
     const fetchMock = stubFetch((url) => {
-      if (url !== '/api/movimentacoes') throw new Error(`URL inesperada: ${url}`);
+      if (!ehLista(url)) throw new Error(`URL inesperada: ${url}`);
       chamada += 1;
       if (chamada === 1) return jsonOk({ movimentacoes: MOVIMENTACOES });
       return jsonOk({
@@ -195,8 +205,8 @@ describe('MovimentacoesSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await screen.findByText(/→ Obra Norte/);
+    expect(chamadasLista(fetchMock)).toBe(1);
 
     act(() => {
       aoReceberEvento({ resource: 'movimentacoes', id: 'm-nova', change: 'created' });
@@ -204,12 +214,12 @@ describe('MovimentacoesSection', () => {
 
     expect(toastInfo).toHaveBeenCalledWith('Movimentações atualizada.');
     expect(await screen.findByText('Produto Novo')).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(chamadasLista(fetchMock)).toBe(2);
   });
 
   it('um evento SSE de outro resource é ignorado (sem toast, sem refetch)', async () => {
     const fetchMock = stubFetch((url) => {
-      if (url === '/api/movimentacoes') return jsonOk({ movimentacoes: MOVIMENTACOES });
+      if (ehLista(url)) return jsonOk({ movimentacoes: MOVIMENTACOES });
       throw new Error(`URL inesperada: ${url}`);
     });
 
@@ -217,19 +227,19 @@ describe('MovimentacoesSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/→ Obra Norte/);
 
     act(() => {
       aoReceberEvento({ resource: 'produtos', id: 'p-1', change: 'updated' });
     });
 
     expect(toastInfo).not.toHaveBeenCalled();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(chamadasLista(fetchMock)).toBe(1);
   });
 
   it('status "reconectando" mostra o indicador persistente aria-live', async () => {
     stubFetch((url) => {
-      if (url === '/api/movimentacoes') return jsonOk({ movimentacoes: MOVIMENTACOES });
+      if (ehLista(url)) return jsonOk({ movimentacoes: MOVIMENTACOES });
       throw new Error(`URL inesperada: ${url}`);
     });
 
@@ -237,7 +247,7 @@ describe('MovimentacoesSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/→ Obra Norte/);
 
     expect(screen.queryByText('Reconectando...')).not.toBeInTheDocument();
 
@@ -248,12 +258,12 @@ describe('MovimentacoesSection', () => {
     const indicador = screen.getByText('Reconectando...');
     expect(indicador).toHaveAttribute('aria-live', 'polite');
     // Dado antigo permanece visível durante a reconexão.
-    expect(screen.getByText('Obra Norte')).toBeInTheDocument();
+    expect(screen.getByText(/→ Obra Norte/)).toBeInTheDocument();
   });
 
   it('lista vazia mostra "Nenhuma movimentação registrada."', async () => {
     stubFetch((url) => {
-      if (url === '/api/movimentacoes') return jsonOk({ movimentacoes: [] });
+      if (ehLista(url)) return jsonOk({ movimentacoes: [] });
       throw new Error(`URL inesperada: ${url}`);
     });
 
@@ -270,7 +280,7 @@ describe('MovimentacoesSection', () => {
   it('res.ok === false mostra um role="alert" e mantém o dado anterior', async () => {
     let chamada = 0;
     stubFetch((url) => {
-      if (url !== '/api/movimentacoes') throw new Error(`URL inesperada: ${url}`);
+      if (!ehLista(url)) throw new Error(`URL inesperada: ${url}`);
       chamada += 1;
       if (chamada === 1) return jsonOk({ movimentacoes: MOVIMENTACOES });
       return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
@@ -280,7 +290,7 @@ describe('MovimentacoesSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/→ Obra Norte/);
 
     act(() => {
       aoReceberEvento({ resource: 'movimentacoes', id: 'x', change: 'created' });
@@ -290,12 +300,12 @@ describe('MovimentacoesSection', () => {
       'Não foi possível carregar as movimentações. Tente novamente em instantes.',
     );
     // Dado anterior mantido.
-    expect(screen.getByText('Obra Norte')).toBeInTheDocument();
+    expect(screen.getByText(/→ Obra Norte/)).toBeInTheDocument();
   });
 
   it('rejeição de rede no fetch mostra um role="alert"', async () => {
     stubFetch((url) => {
-      if (url !== '/api/movimentacoes') throw new Error(`URL inesperada: ${url}`);
+      if (!ehLista(url)) throw new Error(`URL inesperada: ${url}`);
       return Promise.reject(new Error('rede'));
     });
 
@@ -317,7 +327,7 @@ describe('MovimentacoesSection', () => {
       id: `m-${i}`,
     }));
     stubFetch((url) => {
-      if (url === '/api/movimentacoes') return jsonOk({ movimentacoes: movs500 });
+      if (ehLista(url)) return jsonOk({ movimentacoes: movs500 });
       throw new Error(`URL inesperada: ${url}`);
     });
 
@@ -333,7 +343,7 @@ describe('MovimentacoesSection', () => {
 
   it('resultado abaixo de 500 NÃO mostra o aviso de resultado capado', async () => {
     stubFetch((url) => {
-      if (url === '/api/movimentacoes') return jsonOk({ movimentacoes: MOVIMENTACOES });
+      if (ehLista(url)) return jsonOk({ movimentacoes: MOVIMENTACOES });
       throw new Error(`URL inesperada: ${url}`);
     });
 
@@ -341,7 +351,7 @@ describe('MovimentacoesSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/→ Obra Norte/);
 
     expect(
       screen.queryByText(/Cada consulta mostra no máximo 500 movimentações/),
@@ -350,7 +360,7 @@ describe('MovimentacoesSection', () => {
 
   it('desconecta a SSE no unmount', async () => {
     stubFetch((url) => {
-      if (url === '/api/movimentacoes') return jsonOk({ movimentacoes: MOVIMENTACOES });
+      if (ehLista(url)) return jsonOk({ movimentacoes: MOVIMENTACOES });
       throw new Error(`URL inesperada: ${url}`);
     });
 
@@ -358,9 +368,121 @@ describe('MovimentacoesSection', () => {
     act(() => {
       aoMudarStatus('conectado');
     });
-    await screen.findByText('Obra Norte');
+    await screen.findByText(/→ Obra Norte/);
 
     unmount();
     expect(desconectarMock).toHaveBeenCalled();
+  });
+
+  it('faixa mostra Baixas e Transferências de /api/movimentacoes/indicadores; falha mostra "—"', async () => {
+    stubFetch((url) => {
+      if (ehLista(url)) return jsonOk({ movimentacoes: MOVIMENTACOES });
+      if (url.startsWith('/api/movimentacoes/indicadores'))
+        return jsonOk({ baixas: 17, transferencias: 23 });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    const { unmount } = render(<MovimentacoesSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    expect(await screen.findByText('17')).toBeInTheDocument();
+    expect(screen.getByText('23')).toBeInTheDocument();
+    unmount();
+
+    stubFetch((url) => {
+      if (ehLista(url)) return jsonOk({ movimentacoes: MOVIMENTACOES });
+      return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
+    });
+    render(<MovimentacoesSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText(/→ Obra Norte/);
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('filtros de período/tipo/estoque vão ao servidor (lista e indicadores) e "Limpar filtros" volta ao padrão', async () => {
+    const fetchMock = stubFetch((url) => {
+      if (url === '/api/estoques')
+        return jsonOk({ estoques: [{ id: 'e-1', nome: 'Almoxarifado Central' }] });
+      if (ehLista(url)) return jsonOk({ movimentacoes: MOVIMENTACOES });
+      if (url.startsWith('/api/movimentacoes/indicadores'))
+        return jsonOk({ baixas: 1, transferencias: 1 });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    const user = userEvent.setup();
+    render(<MovimentacoesSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText(/→ Obra Norte/);
+    const urls = () => fetchMock.mock.calls.map(([u]) => String(u));
+    // Padrão: Últimos 30 dias => `de` presente, sem tipo/estoque.
+    expect(urls().some((u) => /^\/api\/movimentacoes\?de=\d{4}-\d{2}-\d{2}$/.test(u))).toBe(true);
+
+    await user.selectOptions(screen.getByLabelText('Tipo'), 'baixa');
+    await user.selectOptions(await screen.findByRole('combobox', { name: 'Estoque' }), 'e-1');
+    await waitFor(() =>
+      expect(
+        urls().some((u) => /^\/api\/movimentacoes\?.*tipo=baixa.*estoque=e-1/.test(u)),
+      ).toBe(true),
+    );
+    expect(
+      urls().some((u) => /^\/api\/movimentacoes\/indicadores\?.*tipo=baixa.*estoque=e-1/.test(u)),
+    ).toBe(true);
+
+    await user.selectOptions(screen.getByLabelText('Período'), 'todo');
+    await waitFor(() =>
+      expect(urls().some((u) => /^\/api\/movimentacoes\?tipo=baixa&estoque=e-1$/.test(u))).toBe(true),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Limpar filtros' }));
+    expect(screen.getByLabelText('Tipo')).toHaveValue('');
+    expect(screen.getByLabelText('Período')).toHaveValue('30');
+    expect(screen.getByLabelText('Estoque')).toHaveValue('');
+  });
+
+  it('resposta de indicadores fora de ordem é descartada', async () => {
+    type Resp = { ok: boolean; status?: number; json: () => Promise<unknown> };
+    const resolvers: Array<(v: Resp) => void> = [];
+    stubFetch((url) => {
+      if (url === '/api/estoques') return jsonOk({ estoques: [] });
+      if (ehLista(url)) return jsonOk({ movimentacoes: MOVIMENTACOES });
+      if (url.startsWith('/api/movimentacoes/indicadores'))
+        return new Promise<Resp>((resolve) => resolvers.push(resolve));
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    const user = userEvent.setup();
+    render(<MovimentacoesSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await waitFor(() => expect(resolvers).toHaveLength(1));
+    await user.selectOptions(screen.getByLabelText('Tipo'), 'baixa');
+    await waitFor(() => expect(resolvers).toHaveLength(2));
+    resolvers[1]({ ok: true, json: async () => ({ baixas: 55, transferencias: 66 }) });
+    expect(await screen.findByText('55')).toBeInTheDocument();
+    resolvers[0]({ ok: true, json: async () => ({ baixas: 11, transferencias: 22 }) });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByText('55')).toBeInTheDocument();
+    expect(screen.queryByText('11')).not.toBeInTheDocument();
+  });
+
+  it('lista vazia com filtro fora do padrão mostra "Nenhuma movimentação encontrada com esses filtros."', async () => {
+    stubFetch((url) => {
+      if (ehLista(url)) return jsonOk({ movimentacoes: [] });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    const user = userEvent.setup();
+    render(<MovimentacoesSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    expect(await screen.findByText('Nenhuma movimentação registrada.')).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText('Tipo'), 'baixa');
+    expect(
+      await screen.findByText('Nenhuma movimentação encontrada com esses filtros.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Nenhuma movimentação registrada.')).not.toBeInTheDocument();
   });
 });

@@ -1,18 +1,20 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/card';
+import { MapPin } from 'lucide-react';
+import { FaixaIndicadores } from '@/components/lista/FaixaIndicadores';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { apiUrl, authHeaders } from '@/lib/api';
 
 /**
- * Seção "Locais" da página `/estoques` (Stories 2.1 e 2.2, spec-2-1 /
- * spec-2-2). Um `Card` com (a) um formulário `<Input>` + `<Button>` "Adicionar
- * estoque" que faz `POST /api/estoques` com `{ nome }`, e (b) a lista de
- * Estoques de `GET /api/estoques`, carregada no `useEffect` de mount, cada
- * linha com um botão "Excluir".
+ * Seção "Locais" da página `/estoques` (Stories 2.1 e 2.2; padrão de lista na
+ * 17.5, sem `Card`): título, faixa de indicadores (`/api/estoques/indicadores`,
+ * "—" se falhar; `seqIndRef` descarta respostas fora de ordem), formulário
+ * `<Input>` + `<Button>` "Adicionar estoque" que faz `POST /api/estoques`, e a
+ * lista de Estoques de `GET /api/estoques` (linhas de 60px com `totalItens`),
+ * cada uma com um botão "Excluir".
  *
  * Sucesso do cadastro: `toast.success('Estoque criado.')`, limpa o input e
  * refaz o `GET`. `409` -> `<p role="alert">` específico ("Já existe um estoque
@@ -50,6 +52,12 @@ interface Estoque {
   nome: string;
   filial_id?: string | null;
   filial_nome?: string | null;
+  totalItens?: number;
+}
+
+interface IndicadoresLocais {
+  locais: number;
+  itensEmEstoque: number;
 }
 
 interface Filial {
@@ -59,8 +67,7 @@ interface Filial {
 
 const MENSAGEM_ERRO_CARREGAR =
   'Não foi possível carregar a lista de estoques. Recarregue a página.';
-const MENSAGEM_ERRO_CARREGAR_FILIAIS =
-  'Não foi possível carregar as filiais. Recarregue a página.';
+const MENSAGEM_ERRO_CARREGAR_FILIAIS = 'Não foi possível carregar as filiais. Recarregue a página.';
 const MENSAGEM_SEM_FILIAIS =
   'Nenhuma filial cadastrada. Peça a um administrador para cadastrar uma filial antes de criar estoques.';
 const MENSAGEM_ERRO_CADASTRO =
@@ -79,14 +86,18 @@ export function LocaisEstoqueSection() {
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [erroCarregar, setErroCarregar] = useState<string | null>(null);
-  const [exclusaoPendente, setExclusaoPendente] = useState<{ id: string; nome: string } | null>(
-    null,
-  );
+  const [exclusaoPendente, setExclusaoPendente] = useState<{
+    id: string;
+    nome: string;
+  } | null>(null);
   const [excluindo, setExcluindo] = useState(false);
+  const [indicadores, setIndicadores] = useState<IndicadoresLocais | null>(null);
 
   const carregar = useCallback(async () => {
     try {
-      const res = await fetch(apiUrl('/api/estoques'), { headers: authHeaders() });
+      const res = await fetch(apiUrl('/api/estoques'), {
+        headers: authHeaders(),
+      });
       if (!res.ok) {
         setErroCarregar(MENSAGEM_ERRO_CARREGAR);
         return;
@@ -99,9 +110,33 @@ export function LocaisEstoqueSection() {
     }
   }, []);
 
+  // Indicadores (Story 17.5): null até carregar ou se a rota falhar — a faixa
+  // mostra "—" e a tela segue funcionando.
+  const seqIndRef = useRef(0);
+  const carregarIndicadores = useCallback(async () => {
+    const seq = ++seqIndRef.current;
+    try {
+      const res = await fetch(apiUrl('/api/estoques/indicadores'), {
+        headers: authHeaders(),
+      });
+      if (seq !== seqIndRef.current) return;
+      if (!res.ok) {
+        setIndicadores(null);
+        return;
+      }
+      const corpo = (await res.json()) as IndicadoresLocais;
+      if (seq !== seqIndRef.current) return;
+      setIndicadores(corpo);
+    } catch {
+      if (seq === seqIndRef.current) setIndicadores(null);
+    }
+  }, []);
+
   const carregarFiliais = useCallback(async () => {
     try {
-      const res = await fetch(apiUrl('/api/filiais'), { headers: authHeaders() });
+      const res = await fetch(apiUrl('/api/filiais'), {
+        headers: authHeaders(),
+      });
       if (!res.ok) {
         setErroFiliais(MENSAGEM_ERRO_CARREGAR_FILIAIS);
         return;
@@ -122,9 +157,9 @@ export function LocaisEstoqueSection() {
 
   useEffect(() => {
     void (async () => {
-      await Promise.all([carregar(), carregarFiliais()]);
+      await Promise.all([carregar(), carregarFiliais(), carregarIndicadores()]);
     })();
-  }, [carregar, carregarFiliais]);
+  }, [carregar, carregarFiliais, carregarIndicadores]);
 
   async function enviar(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -147,7 +182,9 @@ export function LocaisEstoqueSection() {
       }
       if (res.status === 400) {
         // Validação do servidor (nome/Filial inválidos): mostra a mensagem dele.
-        const corpo = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+        const corpo = (await res.json().catch(() => ({}))) as {
+          error?: { message?: string };
+        };
         setErro(corpo.error?.message || MENSAGEM_ERRO_CADASTRO);
         return;
       }
@@ -157,7 +194,7 @@ export function LocaisEstoqueSection() {
       }
       toast.success('Estoque criado.');
       setNome('');
-      await carregar();
+      await Promise.all([carregar(), carregarIndicadores()]);
     } catch {
       setErro(MENSAGEM_ERRO_CADASTRO);
     } finally {
@@ -183,7 +220,9 @@ export function LocaisEstoqueSection() {
         // Guard de quantidade residual (Story 3.1): a mensagem do servidor já
         // cita os Produtos com resíduo — não é um texto fixo como o 409 de
         // nome duplicado do cadastro, porque varia por Estoque.
-        const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+        const body = (await res.json().catch(() => ({}))) as {
+          error?: { message?: string };
+        };
         setErro(body.error?.message ?? MENSAGEM_ERRO_EXCLUIR);
       } else {
         setErro(MENSAGEM_ERRO_EXCLUIR);
@@ -195,7 +234,7 @@ export function LocaisEstoqueSection() {
       // linha obsoleta cair após um 404 de corrida).
       setExcluindo(false);
       setExclusaoPendente(null);
-      await carregar();
+      await Promise.all([carregar(), carregarIndicadores()]);
     }
   }
 
@@ -209,93 +248,104 @@ export function LocaisEstoqueSection() {
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <h1 className="text-heading-lg">Locais</h1>
-        <CardDescription>Cadastre e consulte os locais de estoque.</CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        <form onSubmit={enviar} className="flex flex-col gap-2" noValidate>
-          <Label htmlFor="estoque-filial">Filial</Label>
-          <select
-            id="estoque-filial"
-            required
-            value={filialId}
-            onChange={(event) => setFilialId(event.target.value)}
-            className="text-body min-h-touch-target-min rounded-md border border-border bg-background px-3"
-          >
-            <option value="">Selecione a filial</option>
-            {filiais.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.nome}
-              </option>
-            ))}
-          </select>
-          {erroFiliais && (
-            <p role="alert" className="text-body text-destructive">
-              {erroFiliais}
-            </p>
-          )}
-          {!erroFiliais && filiaisCarregadas && filiais.length === 0 && (
-            <p role="alert" className="text-body text-destructive">
-              {MENSAGEM_SEM_FILIAIS}
-            </p>
-          )}
-          <Label htmlFor="estoque-nome">Nome do estoque</Label>
-          <div className="flex gap-2">
-            <Input
-              id="estoque-nome"
-              value={nome}
-              onChange={(event) => setNome(event.target.value)}
-            />
-            <Button type="submit" disabled={enviando || nome.trim() === '' || filialId === ''}>
-              {enviando ? 'Adicionando...' : 'Adicionar estoque'}
-            </Button>
-          </div>
-          {erro && (
-            <p role="alert" className="text-body text-destructive">
-              {erro}
-            </p>
-          )}
-        </form>
+    <div className="flex flex-col gap-4">
+      <h1 className="text-heading-lg">Locais</h1>
 
-        {erroCarregar && (
+      <FaixaIndicadores
+        indicadores={[
+          { rotulo: 'Locais', valor: indicadores?.locais ?? null },
+          {
+            rotulo: 'Itens em estoque',
+            valor: indicadores?.itensEmEstoque ?? null,
+          },
+        ]}
+      />
+
+      <form onSubmit={enviar} className="flex flex-col gap-2" noValidate>
+        <Label htmlFor="estoque-filial">Filial</Label>
+        <select
+          id="estoque-filial"
+          required
+          value={filialId}
+          onChange={(event) => setFilialId(event.target.value)}
+          className="text-body min-h-touch-target-min rounded-md border border-border bg-background px-3"
+        >
+          <option value="">Selecione a filial</option>
+          {filiais.map((f) => (
+            <option key={f.id} value={f.id}>
+              {f.nome}
+            </option>
+          ))}
+        </select>
+        {erroFiliais && (
           <p role="alert" className="text-body text-destructive">
-            {erroCarregar}
+            {erroFiliais}
           </p>
         )}
-        {!erroCarregar && estoques.length === 0 && (
-          <p className="text-body text-muted-foreground">Nenhum estoque cadastrado ainda.</p>
+        {!erroFiliais && filiaisCarregadas && filiais.length === 0 && (
+          <p role="alert" className="text-body text-destructive">
+            {MENSAGEM_SEM_FILIAIS}
+          </p>
         )}
-        {!erroCarregar && estoques.length > 0 && (
-          <ul className="flex flex-col gap-2">
-            {estoques.map((e) => (
-              <li
-                key={e.id}
-                className="text-body flex items-center justify-between gap-2 border-b border-border pb-2 last:border-b-0 last:pb-0"
+        <Label htmlFor="estoque-nome">Nome do estoque</Label>
+        <div className="flex gap-2">
+          <Input id="estoque-nome" value={nome} onChange={(event) => setNome(event.target.value)} />
+          <Button type="submit" disabled={enviando || nome.trim() === '' || filialId === ''}>
+            {enviando ? 'Adicionando...' : 'Adicionar estoque'}
+          </Button>
+        </div>
+        {erro && (
+          <p role="alert" className="text-body text-destructive">
+            {erro}
+          </p>
+        )}
+      </form>
+
+      {erroCarregar && (
+        <p role="alert" className="text-body text-destructive">
+          {erroCarregar}
+        </p>
+      )}
+      {!erroCarregar && estoques.length === 0 && (
+        <p className="text-body text-muted-foreground">Nenhum estoque cadastrado ainda.</p>
+      )}
+      {!erroCarregar && estoques.length > 0 && (
+        <ul className="flex flex-col">
+          {estoques.map((e) => (
+            <li
+              key={e.id}
+              className="text-body flex min-h-[60px] flex-wrap items-center gap-3 border-b border-border"
+            >
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted">
+                <MapPin aria-hidden="true" className="h-4 w-4 text-muted-foreground" />
+              </div>
+              <div className="flex min-w-0 flex-1 flex-col">
+                <span className="min-w-0 break-words font-medium">{e.nome}</span>
+                <span className="text-label text-muted-foreground">
+                  Filial: {e.filial_nome ?? '—'}
+                </span>
+              </div>
+              <span
+                className="shrink-0 text-body tabular-nums"
+                aria-label={`${e.totalItens ?? 0} itens`}
               >
-                <div className="flex min-w-0 flex-col">
-                  <span className="min-w-0 break-words">{e.nome}</span>
-                  <span className="text-muted-foreground text-sm">
-                    Filial: {e.filial_nome ?? '—'}
-                  </span>
-                </div>
-                <Button
-                  type="button"
-                  variant="destructive"
-                  size="sm"
-                  className="shrink-0"
-                  aria-label={`Excluir estoque ${e.nome}`}
-                  onClick={() => setExclusaoPendente({ id: e.id, nome: e.nome })}
-                  disabled={excluindo}
-                >
-                  Excluir
-                </Button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </CardContent>
+                {e.totalItens ?? 0}
+              </span>
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                className="shrink-0"
+                aria-label={`Excluir estoque ${e.nome}`}
+                onClick={() => setExclusaoPendente({ id: e.id, nome: e.nome })}
+                disabled={excluindo}
+              >
+                Excluir
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
 
       <ConfirmDialog
         open={exclusaoPendente !== null}
@@ -309,7 +359,7 @@ export function LocaisEstoqueSection() {
         description="O local é removido da lista. Esta ação não pode ser desfeita."
         confirmLabel="Excluir"
       />
-    </Card>
+    </div>
   );
 }
 

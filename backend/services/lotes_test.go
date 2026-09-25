@@ -527,7 +527,7 @@ func TestListarMovimentacoes_EntradaSemOrigem(t *testing.T) {
 		}
 		t.Errorf("%s: movimentação de entrada %s ausente em %+v", nome, lote.MovimentacaoID, lista)
 	}
-	trilha, err := ListarMovimentacoes(db, empresaTeste)
+	trilha, err := ListarMovimentacoes(db, empresaTeste, FiltroMovimentacoes{})
 	confere("ListarMovimentacoes", trilha, err)
 	doUsuario, err := ListarMovimentacoesDoUsuario(db, empresaTeste, usuarioID)
 	confere("ListarMovimentacoesDoUsuario", doUsuario, err)

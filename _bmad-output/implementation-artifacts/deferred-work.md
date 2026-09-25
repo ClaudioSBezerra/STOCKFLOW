@@ -749,3 +749,19 @@ source_spec: `spec-17-3-padrao-de-pagina-de-lista-aplicado-ao-catalogo.md`
 severity: low
 reason: The dev session recorded deferred findings the orchestrator could not parse, so they were NOT filed as entries: item 1: not a mapping (got str); item 2: not a mapping (got str); item 3: not a mapping (got str); item 4: not a mapping (got str). Read `spec-17-3-padrao-de-pagina-de-lista-aplicado-ao-catalogo.md`'s frontmatter and re-file them by hand.
 status: open
+
+### DW-94: Filtro de período compara datas do navegador com `criado_em` no fuso da sessão do banco; perto da meia-noite a borda pode divergir em até um dia.
+origin: spec-deferred 28b4b9daf693
+location: backend/services/movimentacoes.go (whereMovimentacoes)
+source_spec: `spec-17-5-locais-movimentacoes-e-usuarios-no-padrao-de-lista.md`
+severity: low
+reason: `whereMovimentacoes` usa `$n::date` sem fuso; o front envia a data local. A UI só envia `de`.
+status: open
+
+### DW-95: `de` posterior a `ate` devolve lista vazia em vez de 400 (a UI não envia `ate`).
+origin: spec-deferred a61bba9d0c73
+location: backend/services/movimentacoes.go (whereMovimentacoes)
+source_spec: `spec-17-5-locais-movimentacoes-e-usuarios-no-padrao-de-lista.md`
+severity: low
+reason: Sem validação cruzada dos dois parâmetros.
+status: open

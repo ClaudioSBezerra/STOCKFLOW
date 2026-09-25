@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lib/pq"
 )
@@ -310,7 +311,7 @@ func TestListarMovimentacoes_MaisRecentePrimeiroComNomesResolvidos(t *testing.T)
 		t.Fatalf("RegistrarTransferencia: %v", err)
 	}
 
-	lista, err := ListarMovimentacoes(db, empresaTeste)
+	lista, err := ListarMovimentacoes(db, empresaTeste, FiltroMovimentacoes{})
 	if err != nil {
 		t.Fatalf("ListarMovimentacoes erro inesperado: %v", err)
 	}
@@ -387,7 +388,7 @@ func TestListarMovimentacoes_ListaVaziaNaoEErro(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
-	lista, err := ListarMovimentacoes(db, empresaTeste)
+	lista, err := ListarMovimentacoes(db, empresaTeste, FiltroMovimentacoes{})
 	if err != nil {
 		t.Fatalf("ListarMovimentacoes erro inesperado: %v", err)
 	}
@@ -418,7 +419,7 @@ func TestListarMovimentacoes_TetoDe500(t *testing.T) {
 		}
 	}
 
-	lista, err := ListarMovimentacoes(db, empresaTeste)
+	lista, err := ListarMovimentacoes(db, empresaTeste, FiltroMovimentacoes{})
 	if err != nil {
 		t.Fatalf("ListarMovimentacoes erro inesperado: %v", err)
 	}
@@ -458,7 +459,7 @@ func TestListarMovimentacoes_DesempatePorIDQuandoCriadoEmIgual(t *testing.T) {
 		t.Fatalf("insert movimentação 2: %v", err)
 	}
 
-	lista, err := ListarMovimentacoes(db, empresaTeste)
+	lista, err := ListarMovimentacoes(db, empresaTeste, FiltroMovimentacoes{})
 	if err != nil {
 		t.Fatalf("ListarMovimentacoes erro inesperado: %v", err)
 	}
@@ -929,5 +930,77 @@ func TestRegistrarTransferencia_ConcorrenciaMesmaOrigemNuncaFicaNegativo(t *test
 	}
 	if n := contarMovimentacoes(t, db, produtoID); n != 1 {
 		t.Errorf("Movimentacoes criadas = %d, want 1 (só a transferência vencedora)", n)
+	}
+}
+
+// --- Story 17.5: filtros e indicadores ---------------------------------------
+
+func TestListarMovimentacoes_FiltrosEIndicadores(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	produtoID, origemID, usuarioID := seedProdutoComSaldo(t, db, "Filtro Mov Origem", 20)
+	destino, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Filtro Mov Destino")
+	if err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+	outro, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Filtro Mov Outro")
+	if err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+	if _, err := RegistrarBaixa(db, empresaTeste, produtoID, origemID, usuarioID, 1); err != nil {
+		t.Fatalf("baixa: %v", err)
+	}
+	if _, err := RegistrarTransferencia(db, empresaTeste, produtoID, origemID, destino.ID, usuarioID, 2); err != nil {
+		t.Fatalf("transferencia: %v", err)
+	}
+
+	casos := []struct {
+		nome         string
+		f            FiltroMovimentacoes
+		total, b, tr int
+	}{
+		{"sem filtro", FiltroMovimentacoes{}, 2, 1, 1},
+		{"tipo baixa", FiltroMovimentacoes{Tipo: "baixa"}, 1, 1, 0},
+		{"tipo transferencia", FiltroMovimentacoes{Tipo: "transferencia"}, 1, 0, 1},
+		{"tipo ajuste zera", FiltroMovimentacoes{Tipo: "ajuste"}, 0, 0, 0},
+		{"estoque destino casa destino", FiltroMovimentacoes{EstoqueID: destino.ID}, 1, 0, 1},
+		{"estoque origem casa ambos", FiltroMovimentacoes{EstoqueID: origemID}, 2, 1, 1},
+		{"estoque sem movimentos", FiltroMovimentacoes{EstoqueID: outro.ID}, 0, 0, 0},
+		{"ate hoje inclusivo", FiltroMovimentacoes{De: "2000-01-01", Ate: time.Now().Format("2006-01-02")}, 2, 1, 1},
+		{"de futuro", FiltroMovimentacoes{De: time.Now().AddDate(0, 0, 2).Format("2006-01-02")}, 0, 0, 0},
+		{"ate passado", FiltroMovimentacoes{Ate: "2000-01-01"}, 0, 0, 0},
+	}
+	for _, c := range casos {
+		lista, err := ListarMovimentacoes(db, empresaTeste, c.f)
+		if err != nil {
+			t.Fatalf("%s: ListarMovimentacoes: %v", c.nome, err)
+		}
+		if len(lista) != c.total {
+			t.Errorf("%s: len = %d, want %d", c.nome, len(lista), c.total)
+		}
+		ind, err := IndicadoresMovimentacoes(db, empresaTeste, c.f)
+		if err != nil {
+			t.Fatalf("%s: Indicadores: %v", c.nome, err)
+		}
+		if ind.Baixas != c.b || ind.Transferencias != c.tr {
+			t.Errorf("%s: indicadores = %+v, want baixas=%d transf=%d", c.nome, ind, c.b, c.tr)
+		}
+	}
+}
+
+func TestListarMovimentacoes_FiltroInvalido(t *testing.T) {
+	db := testDB(t)
+	invalidos := []FiltroMovimentacoes{
+		{De: "ontem"}, {Ate: "2026-13-40"}, {Tipo: "roubo"}, {EstoqueID: "nao-e-uuid"},
+	}
+	for _, f := range invalidos {
+		var ev *ErroMovimentacaoValidacao
+		if _, err := ListarMovimentacoes(db, empresaTeste, f); !errors.As(err, &ev) {
+			t.Errorf("Listar %+v: err = %v, want ErroMovimentacaoValidacao", f, err)
+		}
+		if _, err := IndicadoresMovimentacoes(db, empresaTeste, f); !errors.As(err, &ev) {
+			t.Errorf("Indicadores %+v: err = %v, want ErroMovimentacaoValidacao", f, err)
+		}
 	}
 }

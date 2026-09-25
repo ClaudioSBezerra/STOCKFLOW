@@ -803,3 +803,85 @@ func TestListarMovimentacoesHandler_500FalhaDeBanco(t *testing.T) {
 		t.Errorf("code = %q, want INTERNAL_ERROR", env.Error.Code)
 	}
 }
+
+// --- Story 17.5: filtros e indicadores de Movimentações --------------------
+
+func getMovimentacoesRota(db *sql.DB, authHeader, caminho string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /e/{slug}/api/movimentacoes",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					ListarMovimentacoesHandler(db)))))
+	mux.HandleFunc("GET /e/{slug}/api/movimentacoes/indicadores",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					IndicadoresMovimentacoesHandler(db)))))
+	r := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+caminho, nil)
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+func TestMovimentacoesHandler_FiltroInvalido400(t *testing.T) {
+	db := testDB(t)
+	criarContaComPapel(t, db, "Almox Filtro 400", "filtro-400-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "filtro-400-almox@empresa.com", "senha-123456")
+
+	for _, caminho := range []string{
+		"/api/movimentacoes?tipo=xyz",
+		"/api/movimentacoes/indicadores?de=ontem",
+		"/api/movimentacoes?estoque=nao-uuid",
+	} {
+		w := getMovimentacoesRota(db, "Bearer "+token, caminho)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400 (body=%s)", caminho, w.Code, w.Body.String())
+			continue
+		}
+		var resp struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || resp.Error.Code != "VALIDATION_ERROR" {
+			t.Errorf("%s: corpo = %s, want error.code VALIDATION_ERROR", caminho, w.Body.String())
+		}
+	}
+}
+
+func TestIndicadoresMovimentacoesHandler_200Forma_403Usuario(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	usuarioID := criarContaComPapel(t, db, "Almox Ind 175", "ind-175-almox@empresa.com", "senha-123456", "almoxarife")
+	criarContaComPapel(t, db, "Comum Ind 175", "ind-175-comum@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "ind-175-almox@empresa.com", "senha-123456")
+	tokenComum := tokenDeLogin(t, db, "ind-175-comum@empresa.com", "senha-123456")
+
+	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, "Canteiro Ind 175", 10)
+	if _, err := services.RegistrarBaixa(db, empresaTeste, produtoID, estoqueID, usuarioID, 2); err != nil {
+		t.Fatalf("RegistrarBaixa: %v", err)
+	}
+
+	w := getMovimentacoesRota(db, "Bearer "+token, "/api/movimentacoes/indicadores")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var cru map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &cru); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(cru) != 2 || cru["baixas"] != float64(1) || cru["transferencias"] != float64(0) {
+		t.Errorf("corpo = %v, want exatamente {baixas:1, transferencias:0}", cru)
+	}
+
+	if w := getMovimentacoesRota(db, "Bearer "+tokenComum, "/api/movimentacoes/indicadores"); w.Code != http.StatusForbidden {
+		t.Errorf("usuario: status = %d, want 403", w.Code)
+	}
+	if w := getMovimentacoesRota(db, "", "/api/movimentacoes/indicadores"); w.Code != http.StatusUnauthorized {
+		t.Errorf("sem token: status = %d, want 401", w.Code)
+	}
+}

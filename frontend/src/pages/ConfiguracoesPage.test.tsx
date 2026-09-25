@@ -233,9 +233,9 @@ describe('ConfiguracoesPage — Meu Perfil', () => {
 
     const { unmount } = render(<UsuariosPage />);
     expect(screen.getByRole('heading', { level: 1, name: 'Usuários' })).toBeInTheDocument();
-    expect(
-      await screen.findByRole('heading', { name: 'Gestão de Usuários' }),
-    ).toBeInTheDocument();
+    // Sem h2 interno (Story 17.5): a seção mostra a busca e a faixa de indicadores.
+    expect(await screen.findByLabelText('Buscar por nome ou e-mail')).toBeInTheDocument();
+    expect(screen.getByText('Ativos')).toBeInTheDocument();
     unmount();
 
     authState.papel = 'usuario';

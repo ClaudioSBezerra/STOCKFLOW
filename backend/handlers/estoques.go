@@ -104,6 +104,29 @@ func ListarEstoquesHandler(db *sql.DB) http.HandlerFunc {
 	}
 }
 
+// IndicadoresEstoquesHandler expõe GET /api/estoques/indicadores (Story 17.5):
+// RequireAuth apenas, como a listagem. 200 `{"locais":N,"itensEmEstoque":N}`.
+func IndicadoresEstoquesHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := middleware.UsuarioDaSessao(r.Context()); !ok {
+			slog.Error("IndicadoresEstoquesHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+		ind, err := services.IndicadoresEstoques(db, empresa.ID)
+		if err != nil {
+			slog.Error("falha ao calcular indicadores de estoques", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao calcular indicadores de estoques")
+			return
+		}
+		escreverJSON(w, http.StatusOK, ind)
+	}
+}
+
 // ExcluirEstoqueHandler expõe DELETE /api/estoques/{id}: remove um local de
 // estoque. `204 No Content` **sem corpo** no sucesso (molde de LogoutHandler);
 // `404 NOT_FOUND` com o envelope de erro para `id` inexistente ou malformado

@@ -218,7 +218,7 @@ func TestIsolamentoPorEmpresa_LeituraNuncaCruza(t *testing.T) {
 	})
 
 	t.Run("movimentações", func(t *testing.T) {
-		lista, err := ListarMovimentacoes(db, alfa.empresa.ID)
+		lista, err := ListarMovimentacoes(db, alfa.empresa.ID, FiltroMovimentacoes{})
 		if err != nil {
 			t.Fatalf("ListarMovimentacoes: %v", err)
 		}
@@ -514,4 +514,54 @@ func TestIsolamentoPorEmpresa_EscritaPorIdAlheioFalhaSemEfeito(t *testing.T) {
 			t.Errorf("papel da conta da Beta = %q, want %q (promoção não podia ser aprovada de fora)", papel, PapelUsuario)
 		}
 	})
+}
+
+// Story 17.5 (revisão): indicadores, totalItens e filtros de Movimentações
+// nunca cruzam Empresas.
+func TestIsolamentoPorEmpresa_IndicadoresEFiltros175(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	alfa := montarAmbienteIsolamento(t, db, "iso-alfa", "334455660001", "Alfa")
+	beta := montarAmbienteIsolamento(t, db, "iso-beta", "445566770001", "Beta")
+
+	indE, err := IndicadoresEstoques(db, alfa.empresa.ID)
+	if err != nil {
+		t.Fatalf("IndicadoresEstoques: %v", err)
+	}
+	if indE.Locais != 1 || indE.ItensEmEstoque != 1 {
+		t.Errorf("IndicadoresEstoques(alfa) = %+v, want 1/1 (nada da Beta)", indE)
+	}
+	lista, err := ListarEstoques(db, alfa.empresa.ID)
+	if err != nil {
+		t.Fatalf("ListarEstoques: %v", err)
+	}
+	if len(lista) != 1 || lista[0].TotalItens != 1 {
+		t.Errorf("ListarEstoques(alfa) = %+v, want 1 estoque com totalItens=1", lista)
+	}
+
+	indM, err := IndicadoresMovimentacoes(db, alfa.empresa.ID, FiltroMovimentacoes{})
+	if err != nil {
+		t.Fatalf("IndicadoresMovimentacoes: %v", err)
+	}
+	if indM.Baixas != 1 || indM.Transferencias != 0 {
+		t.Errorf("IndicadoresMovimentacoes(alfa) = %+v, want baixas=1", indM)
+	}
+
+	// EstoqueID de OUTRA Empresa: nada volta, nem lista nem contadores.
+	f := FiltroMovimentacoes{EstoqueID: beta.estoque.ID}
+	movs, err := ListarMovimentacoes(db, alfa.empresa.ID, f)
+	if err != nil {
+		t.Fatalf("ListarMovimentacoes: %v", err)
+	}
+	if len(movs) != 0 {
+		t.Errorf("ListarMovimentacoes(alfa, estoque da beta) = %d linhas, want 0", len(movs))
+	}
+	indM, err = IndicadoresMovimentacoes(db, alfa.empresa.ID, f)
+	if err != nil {
+		t.Fatalf("IndicadoresMovimentacoes filtrado: %v", err)
+	}
+	if indM.Baixas != 0 || indM.Transferencias != 0 {
+		t.Errorf("IndicadoresMovimentacoes(alfa, estoque da beta) = %+v, want 0/0", indM)
+	}
 }

@@ -115,7 +115,10 @@ describe('MovimentacoesPage (/estoques/movimentacoes)', () => {
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Movimentações' })).toBeInTheDocument();
     expect(await screen.findByText('Nenhuma movimentação registrada.')).toBeInTheDocument();
-    expect(fetch).toHaveBeenCalledWith('/api/movimentacoes', expect.anything());
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/api\/movimentacoes\?de=/),
+      expect.anything(),
+    );
     expect(screen.queryByRole('tab')).not.toBeInTheDocument();
   });
 

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lib/pq"
 )
@@ -546,5 +547,93 @@ func TestListarEstoques_OrdenadoPorNomeNormalizado(t *testing.T) {
 	want := []string{"abc", "Manga", "Zinco"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("ordem = %v, want %v", got, want)
+	}
+}
+
+// --- Story 17.5: totalItens e IndicadoresEstoques ---------------------------
+
+func TestListarEstoques_TotalItensEIndicadores_IgnoraInativos(t *testing.T) {
+	db := testDB(t)
+	limparEstoques(t, db)
+	limparProdutos(t, db)
+
+	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Ind Locais A", 5)
+	if _, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Ind Locais Vazio"); err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+
+	lista, err := ListarEstoques(db, empresaTeste)
+	if err != nil {
+		t.Fatalf("ListarEstoques: %v", err)
+	}
+	totais := map[string]int{}
+	for _, e := range lista {
+		totais[e.Nome] = e.TotalItens
+	}
+	if totais["Ind Locais A"] != 1 || totais["Ind Locais Vazio"] != 0 {
+		t.Errorf("totalItens = %v, want A=1 Vazio=0", totais)
+	}
+	ind, err := IndicadoresEstoques(db, empresaTeste)
+	if err != nil {
+		t.Fatalf("IndicadoresEstoques: %v", err)
+	}
+	if ind.Locais != 2 || ind.ItensEmEstoque != 1 {
+		t.Errorf("indicadores = %+v, want Locais=2 Itens=1", ind)
+	}
+
+	if _, err := db.Exec(`UPDATE produtos SET inativado_em = now() WHERE id = $1`, produtoID); err != nil {
+		t.Fatalf("inativar: %v", err)
+	}
+	ind, err = IndicadoresEstoques(db, empresaTeste)
+	if err != nil {
+		t.Fatalf("IndicadoresEstoques: %v", err)
+	}
+	if ind.ItensEmEstoque != 0 {
+		t.Errorf("ItensEmEstoque com produto inativo = %d, want 0", ind.ItensEmEstoque)
+	}
+	lista, _ = ListarEstoques(db, empresaTeste)
+	for _, e := range lista {
+		if e.ID == estoqueID && e.TotalItens != 0 {
+			t.Errorf("totalItens com produto inativo = %d, want 0", e.TotalItens)
+		}
+	}
+}
+
+// Story 17.5 (revisão): saldo em `lotes` conta; lote zerado não; produto nos
+// dois lados (produto_estoque + lotes) conta uma vez só.
+func TestEstoques_TotalItensEIndicadores_ConsideraLotes(t *testing.T) {
+	db := testDB(t)
+	limparEstoques(t, db)
+	limparProdutos(t, db)
+
+	agora := time.Now()
+	// Só lote (produto_estoque zerado): conta.
+	pSoLote, eSoLote, _ := seedProdutoComSaldo(t, db, "Lote Somente", 0)
+	seedLote(t, db, pSoLote, eSoLote, 4, "", agora)
+	// Lote com quantidade 0 e sem produto_estoque: não conta.
+	pZero, eZero, _ := seedProdutoComSaldo(t, db, "Lote Zerado", 0)
+	seedLote(t, db, pZero, eZero, 0, "", agora)
+	// Dois lados: produto_estoque > 0 E dois lotes no mesmo par: conta uma vez.
+	pAmbos, eAmbos, _ := seedProdutoComSaldo(t, db, "Lote Ambos", 5)
+	seedLote(t, db, pAmbos, eAmbos, 2, "", agora)
+	seedLote(t, db, pAmbos, eAmbos, 3, "", agora.Add(time.Second))
+
+	lista, err := ListarEstoques(db, empresaTeste)
+	if err != nil {
+		t.Fatalf("ListarEstoques: %v", err)
+	}
+	totais := map[string]int{}
+	for _, e := range lista {
+		totais[e.ID] = e.TotalItens
+	}
+	if totais[eSoLote] != 1 || totais[eZero] != 0 || totais[eAmbos] != 1 {
+		t.Errorf("totalItens só-lote=%d zerado=%d ambos=%d, want 1/0/1", totais[eSoLote], totais[eZero], totais[eAmbos])
+	}
+	ind, err := IndicadoresEstoques(db, empresaTeste)
+	if err != nil {
+		t.Fatalf("IndicadoresEstoques: %v", err)
+	}
+	if ind.Locais != 3 || ind.ItensEmEstoque != 2 {
+		t.Errorf("indicadores = %+v, want Locais=3 Itens=2", ind)
 	}
 }

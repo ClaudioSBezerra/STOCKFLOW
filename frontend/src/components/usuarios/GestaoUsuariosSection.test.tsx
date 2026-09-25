@@ -7,12 +7,13 @@ import { GestaoUsuariosSection } from './GestaoUsuariosSection';
 const authState = vi.hoisted(() => ({
   id: 'ator-1' as string,
   papel: 'gestor' as string,
+  mfaObrigatorio: false as boolean,
 }));
 
 vi.mock('@/lib/auth', () => ({
   useAuth: () => ({
     estado: 'autenticado',
-    usuario: { id: authState.id, nome: 'Ator', email: 'ator@empresa.com', papel: authState.papel },
+    usuario: { id: authState.id, nome: 'Ator', email: 'ator@empresa.com', papel: authState.papel, empresa: { mfaObrigatorio: authState.mfaObrigatorio } },
     definirSessao: vi.fn(),
     logout: vi.fn(),
   }),
@@ -45,12 +46,16 @@ const CONTAS = [
 beforeEach(() => {
   authState.id = 'ator-1';
   authState.papel = 'gestor';
+  authState.mfaObrigatorio = false;
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.clearAllMocks();
 });
+
+const valorDe = (rotulo: string) =>
+  screen.getByText(rotulo).parentElement?.lastElementChild as HTMLElement;
 
 describe('GestaoUsuariosSection', () => {
   it('lista as contas recebidas de GET /api/usuarios', async () => {
@@ -366,5 +371,106 @@ describe('GestaoUsuariosSection', () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
       expect(fetchMock.mock.calls.some(([u]) => String(u).includes('mfa-reset'))).toBe(false);
     });
+  });
+
+  it('faixa: Ativos e Sem MFA sobre a lista completa; alerta só se a Empresa exige MFA', async () => {
+    const contas = [
+      { id: 'u-1', nome: 'Ana Usuária', email: 'ana@empresa.com', papel: 'usuario', ativo: true, mfaHabilitado: false },
+      { id: 'u-2', nome: 'Caio Sem', email: 'caio@empresa.com', papel: 'usuario', ativo: true },
+      { id: 'a-1', nome: 'Bruno Almox', email: 'bruno@empresa.com', papel: 'almoxarife', ativo: true, mfaHabilitado: true },
+      { id: 'u-3', nome: 'Duda Inativa', email: 'duda@empresa.com', papel: 'usuario', ativo: false, mfaHabilitado: false },
+    ];
+    stubFetch(() => jsonOk({ usuarios: contas }));
+    const { unmount } = render(<GestaoUsuariosSection />);
+    await screen.findByText('Ana Usuária');
+    expect(valorDe('Ativos')).toHaveTextContent('3');
+    expect(valorDe('Sem MFA')).toHaveTextContent('2');
+    expect(valorDe('Sem MFA')).not.toHaveClass('text-destructive');
+
+    // Filtrar não muda os indicadores.
+    await userEvent.setup().type(screen.getByLabelText('Buscar por nome ou e-mail'), 'ana');
+    expect(screen.queryByText('Bruno Almox')).not.toBeInTheDocument();
+    expect(valorDe('Ativos')).toHaveTextContent('3');
+    unmount();
+
+    authState.mfaObrigatorio = true;
+    stubFetch(() => jsonOk({ usuarios: contas }));
+    render(<GestaoUsuariosSection />);
+    await screen.findByText('Ana Usuária');
+    expect(valorDe('Sem MFA')).toHaveClass('text-destructive');
+  });
+
+  it('filtros por papel e situação e "Limpar filtros"', async () => {
+    const contas = [
+      { id: 'u-1', nome: 'Ana Usuária', email: 'ana@empresa.com', papel: 'usuario', ativo: true },
+      { id: 'a-1', nome: 'Bruno Almox', email: 'bruno@empresa.com', papel: 'almoxarife', ativo: true },
+      { id: 'u-3', nome: 'Duda Inativa', email: 'duda@empresa.com', papel: 'usuario', ativo: false },
+    ];
+    stubFetch(() => jsonOk({ usuarios: contas }));
+    const user = userEvent.setup();
+    render(<GestaoUsuariosSection />);
+    await screen.findByText('Ana Usuária');
+
+    // Só os papéis presentes aparecem no filtro.
+    expect(within(screen.getByLabelText('Papel')).queryByRole('option', { name: 'Gestor' })).toBeNull();
+
+    await user.selectOptions(screen.getByLabelText('Papel'), 'almoxarife');
+    expect(screen.queryByText('Ana Usuária')).not.toBeInTheDocument();
+    expect(screen.getByText('Bruno Almox')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Limpar filtros' }));
+    await user.selectOptions(screen.getByLabelText('Situação'), 'inativas');
+    expect(screen.getByText('Duda Inativa')).toBeInTheDocument();
+    expect(screen.queryByText('Ana Usuária')).not.toBeInTheDocument();
+    expect(screen.getByText('Inativa')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Limpar filtros' }));
+    expect(screen.getByText('Ana Usuária')).toBeInTheDocument();
+    expect(screen.getByText('Bruno Almox')).toBeInTheDocument();
+  });
+
+  it('antes da carga (e em erro) a faixa mostra "—" e não mostra o vazio', async () => {
+    const resolvers: Array<(v: { ok: boolean; status?: number; json: () => Promise<unknown> }) => void> = [];
+    stubFetch(
+      () =>
+        new Promise<{ ok: boolean; status?: number; json: () => Promise<unknown> }>((resolve) => {
+          resolvers.push(resolve);
+        }),
+    );
+    const { unmount } = render(<GestaoUsuariosSection />);
+    expect(valorDe('Ativos')).toHaveTextContent('—');
+    expect(valorDe('Sem MFA')).toHaveTextContent('—');
+    expect(screen.queryByText('Nenhuma conta para gerir.')).not.toBeInTheDocument();
+    resolvers[0]({ ok: true, json: async () => ({ usuarios: [] }) });
+    expect(await screen.findByText('Nenhuma conta para gerir.')).toBeInTheDocument();
+    expect(valorDe('Ativos')).toHaveTextContent('0');
+    unmount();
+
+    stubFetch(() => Promise.resolve({ ok: false, status: 500, json: async () => ({}) }));
+    render(<GestaoUsuariosSection />);
+    await screen.findByRole('alert');
+    expect(valorDe('Ativos')).toHaveTextContent('—');
+  });
+
+  it('papel filtrado que some da lista após recarga volta a "todos"', async () => {
+    let contas = [
+      { id: 'u-1', nome: 'Ana Usuária', email: 'ana@empresa.com', papel: 'usuario', ativo: true },
+      { id: 'a-1', nome: 'Bruno Almox', email: 'bruno@empresa.com', papel: 'almoxarife', ativo: true },
+    ];
+    stubFetch((_url, init) => {
+      if (init?.method === 'POST') return jsonOk({});
+      return jsonOk({ usuarios: contas });
+    });
+    const user = userEvent.setup();
+    render(<GestaoUsuariosSection />);
+    await screen.findByText('Ana Usuária');
+    await user.selectOptions(screen.getByLabelText('Papel'), 'almoxarife');
+    expect(screen.queryByText('Ana Usuária')).not.toBeInTheDocument();
+
+    contas = [contas[0]];
+    await user.click(screen.getByRole('button', { name: 'Desativar conta de Bruno Almox' }));
+    await user.click(await screen.findByRole('button', { name: 'Desativar' }));
+    expect(await screen.findByText('Ana Usuária')).toBeInTheDocument();
+    expect(screen.getByLabelText('Papel')).toHaveValue('');
   });
 });

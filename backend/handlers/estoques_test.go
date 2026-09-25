@@ -85,7 +85,7 @@ func deleteEstoques(db *sql.DB, authHeader, id string) *httptest.ResponseRecorde
 }
 
 // decodeEstoquesFio decodifica o corpo de GET /api/estoques travando o
-// conjunto de chaves de fio: cada elemento tem exatamente `id`, `nome`,
+// conjunto de chaves de fio: cada elemento tem exatamente `id`, `nome`, `totalItens` (Story 17.5),
 // `filial_id` e `filial_nome` (Story 12.1; os dois últimos podem ser null).
 func decodeEstoquesFio(t *testing.T, body []byte) []map[string]any {
 	t.Helper()
@@ -96,8 +96,8 @@ func decodeEstoquesFio(t *testing.T, body []byte) []map[string]any {
 		t.Fatalf("falha ao decodificar estoques: %v (body=%s)", err, body)
 	}
 	for i, e := range resp.Estoques {
-		if len(e) != 4 {
-			t.Errorf("estoque[%d] tem chaves %v, want exatamente {id, nome, filial_id, filial_nome}", i, chaves(e))
+		if len(e) != 5 {
+			t.Errorf("estoque[%d] tem chaves %v, want exatamente {id, nome, filial_id, filial_nome, totalItens}", i, chaves(e))
 		}
 		if _, ok := e["id"].(string); !ok {
 			t.Errorf("estoque[%d].id ausente ou não-string: %v", i, e["id"])
@@ -602,5 +602,37 @@ func TestEstoquesHandler_FilialEMesmoNomeEmFiliaisDistintas(t *testing.T) {
 				t.Errorf("%v: filial_nome = %v, want %q", e["nome"], e["filial_nome"], nomeDaFilial)
 			}
 		}
+	}
+}
+
+// Story 17.5: GET /api/estoques/indicadores (RequireAuth apenas) devolve
+// exatamente {locais, itensEmEstoque}.
+func TestIndicadoresEstoquesHandler_200Forma(t *testing.T) {
+	db := testDB(t)
+	limparEstoquesHandler(t, db)
+	criarContaComPapel(t, db, "Comum Ind Est", "ind-est-comum@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "ind-est-comum@empresa.com", "senha-123456")
+	if _, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Local Ind 175"); err != nil {
+		t.Fatalf("CriarEstoque: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /e/{slug}/api/estoques/indicadores",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				IndicadoresEstoquesHandler(db))))
+	r := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/estoques/indicadores", nil)
+	r.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var cru map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &cru); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(cru) != 2 || cru["locais"] != float64(1) || cru["itensEmEstoque"] != float64(0) {
+		t.Errorf("corpo = %v, want exatamente {locais:1, itensEmEstoque:0}", cru)
 	}
 }

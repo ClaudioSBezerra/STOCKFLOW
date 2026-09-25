@@ -165,7 +165,7 @@ func TestHistoricos_ProdutoInativoContinuaComMarca(t *testing.T) {
 	}
 	inativarDireto(t, db, produtoID)
 
-	movs, err := ListarMovimentacoes(db, empresaTeste)
+	movs, err := ListarMovimentacoes(db, empresaTeste, FiltroMovimentacoes{})
 	if err != nil || len(movs) != 1 || !movs[0].Inativo {
 		t.Errorf("movimentações = %+v err=%v, want 1 com Inativo", movs, err)
 	}

@@ -515,6 +515,8 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 			handlers.CriarEstoqueHandler(db))))
 	registrar("GET /e/{slug}/api/estoques", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarEstoquesHandler(db)))
+	registrar("GET /e/{slug}/api/estoques/indicadores", middleware.RequireAuth(db, jwtSecret)(
+		handlers.IndicadoresEstoquesHandler(db)))
 	registrar("DELETE /e/{slug}/api/estoques/{id}", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.ExcluirEstoqueHandler(db))))
@@ -774,6 +776,9 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	registrar("GET /e/{slug}/api/movimentacoes", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.ListarMovimentacoesHandler(db))))
+	registrar("GET /e/{slug}/api/movimentacoes/indicadores", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAlmoxarife)(
+			handlers.IndicadoresMovimentacoesHandler(db))))
 
 	// Detecção de inconsistências dimensionais — Story 6.1 (Epic 6,
 	// Normalização de Dados). GET /api/normalizacao/inconsistencias fica

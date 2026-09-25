@@ -21,6 +21,42 @@ type Estoque struct {
 	Nome       string  `json:"nome"`
 	FilialID   *string `json:"filial_id"`
 	FilialNome *string `json:"filial_nome"`
+	// TotalItens (Story 17.5): nº de Produtos ativos distintos com saldo > 0 no Estoque.
+	TotalItens int `json:"totalItens"`
+}
+
+// saldoPositivoSQL lista os pares (produto, estoque) com saldo físico > 0:
+// `produto_estoque` (saldo legado) OU `lotes` (fonte de saldo desde o Epic 11).
+// O escopo de Empresa é aplicado pelos JOINs de quem o usa (`produto_estoque`
+// não tem `empresa_id`).
+const saldoPositivoSQL = `(
+		SELECT produto_id, estoque_id FROM produto_estoque WHERE quantidade > 0
+		UNION
+		SELECT produto_id, estoque_id FROM lotes WHERE quantidade > 0
+	)`
+
+// IndicadoresEstoquesResultado alimenta a faixa de indicadores de Locais (Story 17.5).
+type IndicadoresEstoquesResultado struct {
+	Locais         int `json:"locais"`
+	ItensEmEstoque int `json:"itensEmEstoque"`
+}
+
+// IndicadoresEstoques conta os Estoques da Empresa e os Produtos ativos
+// distintos com quantidade > 0 em qualquer Estoque dela.
+func IndicadoresEstoques(db *sql.DB, empresaID string) (IndicadoresEstoquesResultado, error) {
+	var r IndicadoresEstoquesResultado
+	err := db.QueryRow(`
+		SELECT
+		  (SELECT COUNT(*) FROM estoques WHERE empresa_id = $1),
+		  (SELECT COUNT(DISTINCT s.produto_id)
+		     FROM `+saldoPositivoSQL+` s
+		     JOIN produtos p ON p.id = s.produto_id AND p.inativado_em IS NULL AND p.empresa_id = $1
+		     JOIN estoques e ON e.id = s.estoque_id AND e.empresa_id = $1)`,
+		empresaID).Scan(&r.Locais, &r.ItensEmEstoque)
+	if err != nil {
+		return IndicadoresEstoquesResultado{}, fmt.Errorf("falha ao calcular indicadores de estoques: %w", err)
+	}
+	return r, nil
 }
 
 var (
@@ -95,9 +131,15 @@ func CriarEstoque(db *sql.DB, empresaID string, filialID string, nome string) (E
 // não é erro — devolve um slice vazio, nunca nil.
 func ListarEstoques(db *sql.DB, empresaID string) ([]Estoque, error) {
 	rows, err := db.Query(
-		`SELECT e.id, e.nome, e.filial_id, f.nome
+		`SELECT e.id, e.nome, e.filial_id, f.nome, COALESCE(t.total, 0)
 		 FROM estoques e
 		 LEFT JOIN filiais f ON f.id = e.filial_id
+		 LEFT JOIN (
+		   SELECT s.estoque_id, COUNT(DISTINCT s.produto_id) AS total
+		   FROM `+saldoPositivoSQL+` s
+		   JOIN produtos p ON p.id = s.produto_id AND p.inativado_em IS NULL AND p.empresa_id = $1
+		   GROUP BY s.estoque_id
+		 ) t ON t.estoque_id = e.id
 		 WHERE e.empresa_id = $1
 		 ORDER BY e.nome_normalizado ASC, f.nome_normalizado ASC NULLS FIRST, e.id`,
 		empresaID)
@@ -110,7 +152,7 @@ func ListarEstoques(db *sql.DB, empresaID string) ([]Estoque, error) {
 	for rows.Next() {
 		var e Estoque
 		var filialID, filialNome sql.NullString
-		if err := rows.Scan(&e.ID, &e.Nome, &filialID, &filialNome); err != nil {
+		if err := rows.Scan(&e.ID, &e.Nome, &filialID, &filialNome, &e.TotalItens); err != nil {
 			return nil, fmt.Errorf("falha ao ler linha de estoque: %w", err)
 		}
 		if filialID.Valid {

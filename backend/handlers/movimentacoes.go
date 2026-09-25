@@ -110,7 +110,12 @@ func ListarMovimentacoesHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		movimentacoes, err := services.ListarMovimentacoes(db, empresa.ID)
+		movimentacoes, err := services.ListarMovimentacoes(db, empresa.ID, filtroMovimentacoesDaRequisicao(r))
+		var erroValidacao *services.ErroMovimentacaoValidacao
+		if errors.As(err, &erroValidacao) {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
+			return
+		}
 		if err != nil {
 			slog.Error("falha ao listar movimentações", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao listar movimentações")
@@ -118,6 +123,45 @@ func ListarMovimentacoesHandler(db *sql.DB) http.HandlerFunc {
 		}
 
 		escreverJSON(w, http.StatusOK, map[string]any{"movimentacoes": movimentacoes})
+	}
+}
+
+// filtroMovimentacoesDaRequisicao lê `de`, `ate`, `tipo` e `estoque` (Story 17.5).
+func filtroMovimentacoesDaRequisicao(r *http.Request) services.FiltroMovimentacoes {
+	q := r.URL.Query()
+	return services.FiltroMovimentacoes{
+		De:        q.Get("de"),
+		Ate:       q.Get("ate"),
+		Tipo:      q.Get("tipo"),
+		EstoqueID: q.Get("estoque"),
+	}
+}
+
+// IndicadoresMovimentacoesHandler expõe GET /api/movimentacoes/indicadores
+// (Story 17.5): mesmo gate e mesmos filtros da listagem. 200
+// `{"baixas":N,"transferencias":N}`; filtro inválido -> 400 VALIDATION_ERROR.
+func IndicadoresMovimentacoesHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := middleware.UsuarioDaSessao(r.Context()); !ok {
+			slog.Error("IndicadoresMovimentacoesHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+		ind, err := services.IndicadoresMovimentacoes(db, empresa.ID, filtroMovimentacoesDaRequisicao(r))
+		var erroValidacao *services.ErroMovimentacaoValidacao
+		switch {
+		case err == nil:
+			escreverJSON(w, http.StatusOK, ind)
+		case errors.As(err, &erroValidacao):
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
+		default:
+			slog.Error("falha ao calcular indicadores de movimentações", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao calcular indicadores de movimentações")
+		}
 	}
 }
 

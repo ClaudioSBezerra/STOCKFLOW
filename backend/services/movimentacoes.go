@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -62,18 +63,91 @@ type MovimentacaoHistorico struct {
 	Inativo bool `json:"inativo"`
 }
 
+// FiltroMovimentacoes reúne os filtros opcionais (Story 17.5) de
+// ListarMovimentacoes/IndicadoresMovimentacoes. Strings vazias = sem filtro.
+// `De`/`Ate` são `YYYY-MM-DD` (Ate inclusivo); `Tipo` é baixa|transferencia|
+// ajuste|entrada; `EstoqueID` casa origem OU destino.
+type FiltroMovimentacoes struct {
+	De        string
+	Ate       string
+	Tipo      string
+	EstoqueID string
+}
+
+var uuidMovimentacaoRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// whereMovimentacoes valida o filtro e monta o WHERE (compartilhado pela
+// listagem e pelos indicadores). `$1` é sempre a Empresa.
+func whereMovimentacoes(empresaID string, f FiltroMovimentacoes) (string, []any, error) {
+	where := "m.empresa_id = $1"
+	args := []any{empresaID}
+	if f.De != "" {
+		if _, err := time.Parse("2006-01-02", f.De); err != nil {
+			return "", nil, &ErroMovimentacaoValidacao{Mensagem: "data inicial inválida (use AAAA-MM-DD)"}
+		}
+		args = append(args, f.De)
+		where += fmt.Sprintf(" AND m.criado_em >= $%d::date", len(args))
+	}
+	if f.Ate != "" {
+		if _, err := time.Parse("2006-01-02", f.Ate); err != nil {
+			return "", nil, &ErroMovimentacaoValidacao{Mensagem: "data final inválida (use AAAA-MM-DD)"}
+		}
+		args = append(args, f.Ate)
+		where += fmt.Sprintf(" AND m.criado_em < ($%d::date + 1)", len(args))
+	}
+	if f.Tipo != "" {
+		switch f.Tipo {
+		case "baixa", "transferencia", "ajuste", "entrada":
+		default:
+			return "", nil, &ErroMovimentacaoValidacao{Mensagem: "tipo de movimentação inválido"}
+		}
+		args = append(args, f.Tipo)
+		where += fmt.Sprintf(" AND m.tipo = $%d", len(args))
+	}
+	if f.EstoqueID != "" {
+		if !uuidMovimentacaoRe.MatchString(f.EstoqueID) {
+			return "", nil, &ErroMovimentacaoValidacao{Mensagem: "estoque inválido"}
+		}
+		args = append(args, f.EstoqueID)
+		where += fmt.Sprintf(" AND (m.estoque_origem_id = $%d OR m.estoque_destino_id = $%d)", len(args), len(args))
+	}
+	return where, args, nil
+}
+
+// IndicadoresMovimentacoesResultado alimenta a faixa de Movimentações (Story 17.5).
+type IndicadoresMovimentacoesResultado struct {
+	Baixas         int `json:"baixas"`
+	Transferencias int `json:"transferencias"`
+}
+
+// IndicadoresMovimentacoes conta Baixas e Transferências sob o MESMO filtro
+// da listagem (um `Tipo` filtrado a outro valor zera o outro contador).
+func IndicadoresMovimentacoes(db *sql.DB, empresaID string, f FiltroMovimentacoes) (IndicadoresMovimentacoesResultado, error) {
+	where, args, err := whereMovimentacoes(empresaID, f)
+	if err != nil {
+		return IndicadoresMovimentacoesResultado{}, err
+	}
+	var r IndicadoresMovimentacoesResultado
+	q := `SELECT COUNT(*) FILTER (WHERE m.tipo = 'baixa'),
+	             COUNT(*) FILTER (WHERE m.tipo = 'transferencia')
+	      FROM movimentacoes m WHERE ` + where
+	if err := db.QueryRow(q, args...).Scan(&r.Baixas, &r.Transferencias); err != nil {
+		return IndicadoresMovimentacoesResultado{}, fmt.Errorf("falha ao calcular indicadores de movimentações: %w", err)
+	}
+	return r, nil
+}
+
 // ListarMovimentacoes devolve a trilha de Movimentações DA EMPRESA
 // `empresaID` (Story 9.1, AD-20) — Baixas da Story 5.1, Transferências da
-// Story 5.2 — do mais recente ao mais antigo,
-// limitada a maxMovimentacoesPorConsulta. Lista vazia não é erro. Molde de
-// ListarLogsAcesso (logs_acesso.go): `JOIN` simples para as colunas NOT
-// NULL (`produto_id`, `usuario_id`), `LEFT JOIN` + `sql.NullString` para as
-// anuláveis (`estoque_origem_id`, `estoque_destino_id`),
-// `ORDER BY criado_em DESC, id DESC` (mesmo desempate determinístico —
-// duas Movimentações no mesmo instante compartilham `criado_em` e sem o
-// `id` a fronteira do LIMIT ordenaria de forma não-determinística), sem
-// parâmetro runtime nem filtro. SQL explícito, sem ORM.
-func ListarMovimentacoes(db *sql.DB, empresaID string) ([]MovimentacaoHistorico, error) {
+// Story 5.2 — do mais recente ao mais antigo, limitada a
+// maxMovimentacoesPorConsulta, com filtros opcionais (Story 17.5). Lista vazia
+// não é erro. `JOIN` simples para as colunas NOT NULL, `LEFT JOIN` para as
+// anuláveis, `ORDER BY criado_em DESC, id DESC` (desempate determinístico).
+func ListarMovimentacoes(db *sql.DB, empresaID string, filtro FiltroMovimentacoes) ([]MovimentacaoHistorico, error) {
+	where, args, err := whereMovimentacoes(empresaID, filtro)
+	if err != nil {
+		return nil, err
+	}
 	q := fmt.Sprintf(`
 		SELECT m.id, m.produto_id, p.nome, m.tipo,
 		       m.estoque_origem_id, eo.nome, m.estoque_destino_id, ed.nome,
@@ -83,11 +157,11 @@ func ListarMovimentacoes(db *sql.DB, empresaID string) ([]MovimentacaoHistorico,
 		JOIN usuarios u ON u.id = m.usuario_id
 		LEFT JOIN estoques eo ON eo.id = m.estoque_origem_id
 		LEFT JOIN estoques ed ON ed.id = m.estoque_destino_id
-		WHERE m.empresa_id = $1
+		WHERE %s
 		ORDER BY m.criado_em DESC, m.id DESC
-		LIMIT %d`, maxMovimentacoesPorConsulta)
+		LIMIT %d`, where, maxMovimentacoesPorConsulta)
 
-	rows, err := db.Query(q, empresaID)
+	rows, err := db.Query(q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao listar movimentações: %w", err)
 	}

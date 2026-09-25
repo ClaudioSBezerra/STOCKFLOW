@@ -441,4 +441,62 @@ describe('LocaisEstoqueSection', () => {
       ),
     );
   });
+
+  it('faixa mostra Locais/Itens em estoque e cada linha o totalItens; falha do indicador mostra "—"', async () => {
+    stubFetch((url) => {
+      if (url === '/api/estoques')
+        return jsonOk({
+          estoques: [
+            { ...ESTOQUES[0], totalItens: 12 },
+            { ...ESTOQUES[1], totalItens: 0 },
+          ],
+        });
+      if (url === '/api/estoques/indicadores') return jsonOk({ locais: 2, itensEmEstoque: 9 });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    const { unmount } = render(<LocaisEstoqueSection />);
+    expect(await screen.findByText('Itens em estoque')).toBeInTheDocument();
+    expect(await screen.findByText('9')).toBeInTheDocument();
+    expect(screen.getByText('Locais', { selector: 'span' })).toBeInTheDocument();
+    expect(screen.getByLabelText('12 itens')).toHaveTextContent('12');
+    expect(screen.getByLabelText('0 itens')).toBeInTheDocument();
+    expect(screen.getByText('Filial: Matriz')).toBeInTheDocument();
+    unmount();
+
+    stubFetch((url) => {
+      if (url === '/api/estoques') return jsonOk({ estoques: ESTOQUES });
+      return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
+    });
+    render(<LocaisEstoqueSection />);
+    expect(await screen.findByText('Almoxarifado Central')).toBeInTheDocument();
+    expect(screen.getAllByText('—')).toHaveLength(2);
+  });
+
+  it('resposta de indicadores fora de ordem é descartada', async () => {
+    const resolvers: Array<(v: { ok: boolean; status?: number; json: () => Promise<unknown> }) => void> = [];
+    let chamadasInd = 0;
+    stubFetch((url, init) => {
+      if (url === '/api/estoques/indicadores') {
+        chamadasInd += 1;
+        return new Promise<{ ok: boolean; status?: number; json: () => Promise<unknown> }>((resolve) => resolvers.push(resolve));
+      }
+      if (url === '/api/estoques' && init?.method === 'POST')
+        return Promise.resolve({ ok: true, status: 201, json: async () => ({}) });
+      if (url === '/api/estoques') return jsonOk({ estoques: [] });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    const user = userEvent.setup();
+    render(<LocaisEstoqueSection />);
+    await user.type(screen.getByLabelText('Nome do estoque'), 'Novo');
+    await user.selectOptions(await screen.findByLabelText('Filial'), 'f-1');
+    await user.click(screen.getByRole('button', { name: 'Adicionar estoque' }));
+    await waitFor(() => expect(chamadasInd).toBe(2));
+    // A 2ª (mais nova) responde primeiro; a 1ª (antiga) chega depois e é ignorada.
+    resolvers[1]({ ok: true, json: async () => ({ locais: 55, itensEmEstoque: 66 }) });
+    expect(await screen.findByText('55')).toBeInTheDocument();
+    resolvers[0]({ ok: true, json: async () => ({ locais: 11, itensEmEstoque: 22 }) });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByText('55')).toBeInTheDocument();
+    expect(screen.queryByText('11')).not.toBeInTheDocument();
+  });
 });
