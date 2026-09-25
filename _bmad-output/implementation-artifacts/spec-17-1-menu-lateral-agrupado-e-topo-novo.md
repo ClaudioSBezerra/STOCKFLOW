@@ -104,3 +104,10 @@ Status: done.
 **Verificação:** `tsc -b` limpo; `oxlint` limpo nos arquivos do shell; `vitest run` 922 testes verdes (64 arquivos).
 
 **Riscos residuais:** visual (cores, barra vermelha, gaveta, fab no canto, rolagem interna do `<main>` no desktop e moldura de Treinamento) só verificado por classes em jsdom — conferir a olho em 1280px e 390px; alguns títulos ficam duplicados (`h1` da página + `h2` da seção) até as Stories 17.3–17.5; no menu recolhido o item ativo do painel flutuante só tem negrito e `aria-current`; grupos Cadastros/Administração entram na 17.2.
+
+## Conferência manual (fechamento do Epic 17)
+
+O `bmad-loop` fechou esta story sem Review Triage Log (`review×0`); a conferência foi feita à mão no fechamento do épico:
+- Suíte Go completa e `vitest` completo (985 testes) verdes; `tsc -b` limpo.
+- Indicadores (AD-38): Catálogo e Movimentações usam a MESMA função de filtro na lista e nos indicadores (`montarFiltrosCatalogo`, `whereMovimentacoes`). Pedidos seguem o mesmo escopo da lista (próprios ou todos, por papel). Todos são escopados por Empresa. `inativos=1` só vale para gestor+.
+- Um teste da 17.4 (`TestIndicadoresPedidos_EmpresaIsolada`) não limpava a Empresa, os pedidos e as contas que criava e falhava na segunda execução no mesmo banco; corrigido no fechamento.

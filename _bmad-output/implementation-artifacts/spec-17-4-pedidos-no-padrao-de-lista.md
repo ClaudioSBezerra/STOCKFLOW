@@ -140,3 +140,10 @@ Status: done
 _Appended by the bmad-loop orchestrator (missing-marker repair, #224): the session finalized this spec's frontmatter without its `## Auto Run Result` marker, so the orchestrator synthesized the result from the frontmatter and appended this section._
 
 Synthesized by the bmad-loop orchestrator from frontmatter status `done` for story `17-4-pedidos-no-padrão-de-lista` (session finalized the spec without appending its marker).
+
+## Conferência manual (fechamento do Epic 17)
+
+O `bmad-loop` fechou esta story sem Review Triage Log (`review×0`); a conferência foi feita à mão no fechamento do épico:
+- Suíte Go completa e `vitest` completo (985 testes) verdes; `tsc -b` limpo.
+- Indicadores (AD-38): Catálogo e Movimentações usam a MESMA função de filtro na lista e nos indicadores (`montarFiltrosCatalogo`, `whereMovimentacoes`). Pedidos seguem o mesmo escopo da lista (próprios ou todos, por papel). Todos são escopados por Empresa. `inativos=1` só vale para gestor+.
+- Um teste da 17.4 (`TestIndicadoresPedidos_EmpresaIsolada`) não limpava a Empresa, os pedidos e as contas que criava e falhava na segunda execução no mesmo banco; corrigido no fechamento.

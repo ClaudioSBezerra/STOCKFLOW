@@ -2251,9 +2251,25 @@ func TestIndicadoresPedidos_AprovadosERejeitadosNoMes(t *testing.T) {
 
 func TestIndicadoresPedidos_EmpresaIsolada(t *testing.T) {
 	db := testDB(t)
-	// Cria uma segunda Empresa e insere um pedido nela.
+	// Cria uma segunda Empresa e insere um pedido nela. removerEmpresaDeTeste
+	// não apaga pedidos nem contas, então este teste limpa os que ele mesmo
+	// cria — antes (sobra de execução interrompida) e depois — senão a
+	// Empresa não sai e a próxima execução no mesmo banco falha no slug.
+	limparOutraEmpresa := func() {
+		for _, stmt := range []string{
+			`DELETE FROM pedido_itens WHERE pedido_id IN (SELECT p.id FROM pedidos p JOIN empresas e ON e.id = p.empresa_id WHERE e.slug = 'outra-empresa-ind-174')`,
+			`DELETE FROM pedidos WHERE empresa_id IN (SELECT id FROM empresas WHERE slug = 'outra-empresa-ind-174')`,
+			`DELETE FROM usuarios WHERE empresa_id IN (SELECT id FROM empresas WHERE slug = 'outra-empresa-ind-174')`,
+		} {
+			if _, err := db.Exec(stmt); err != nil {
+				t.Fatalf("limpar outra empresa: %v", err)
+			}
+		}
+		removerEmpresaDeTeste(t, db, "outra-empresa-ind-174")
+	}
+	limparOutraEmpresa()
 	outraEmpresa := criarEmpresaDeTeste(t, db, "outra-empresa-ind-174", "777888990001", "Outra Empresa Ind 174")
-	defer removerEmpresaDeTeste(t, db, "outra-empresa-ind-174")
+	t.Cleanup(limparOutraEmpresa)
 	usuarioOutra := semearContaNaEmpresa(t, db, outraEmpresa.ID, "Ind Outra Empresa", "ind-outra-174@outra.com", PapelUsuario)
 	inserirPedidoDireto(t, db, outraEmpresa.ID, usuarioOutra, "pendente")
 
