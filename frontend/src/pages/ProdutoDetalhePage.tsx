@@ -166,6 +166,33 @@ interface ReservaSaldo {
   criadoEm: string;
 }
 
+interface HistoricoItem {
+  id: string;
+  acao: string;
+  autor: string;
+  detalhe: Record<string, unknown>;
+  criadoEm: string;
+}
+
+function descreverHistorico(item: HistoricoItem): string {
+  switch (item.acao) {
+    case 'nome_alterado':
+      return `«${String(item.detalhe.antes ?? '')}» → «${String(item.detalhe.depois ?? '')}»`;
+    case 'inativado':
+      return 'Inativado';
+    case 'reativado':
+      return 'Reativado';
+    default:
+      return item.acao;
+  }
+}
+
+function formatarDataHora(iso: string): string {
+  const data = new Date(iso);
+  if (Number.isNaN(data.getTime())) return iso;
+  return data.toLocaleString('pt-BR');
+}
+
 // formatarDataValidade converte "YYYY-MM-DD" em "DD/MM/YYYY" sem passar por
 // `Date` (evita deslocamento de fuso).
 function formatarDataValidade(iso: string): string {
@@ -295,6 +322,10 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
   const [statusConexao, setStatusConexao] = useState<StatusRealtime | null>(null);
 
   const [fotos, setFotos] = useState<FotoGaleria[]>([]);
+  // Histórico do produto (Story 16.3): só `almoxarife`+ (o `usuario` nem faz o fetch).
+  const podeVerHistorico = rankPapel(usuario?.papel ?? '') >= rankPapel('almoxarife');
+  const [historico, setHistorico] = useState<HistoricoItem[] | null>(null);
+  const [erroHistorico, setErroHistorico] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const objectUrlCacheRef = useRef<Map<string, string>>(new Map());
 
@@ -399,6 +430,28 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
     }
   }, []);
 
+  // carregarHistorico busca o histórico do Produto; falha mostra só uma
+  // mensagem discreta, sem quebrar o detalhe.
+  const carregarHistorico = useCallback(
+    async (produtoId: string, seq: number) => {
+      try {
+        const res = await fetch(apiUrl(`/api/produtos/${produtoId}/historico`), { headers: authHeaders() });
+        if (seq !== seqRef.current) return;
+        if (!res.ok) {
+          setErroHistorico(true);
+          return;
+        }
+        const body = (await res.json()) as { historico: HistoricoItem[] };
+        if (seq !== seqRef.current) return;
+        setHistorico((body.historico ?? []).map((h) => ({ ...h, detalhe: h.detalhe ?? {} })));
+        setErroHistorico(false);
+      } catch {
+        if (seq === seqRef.current) setErroHistorico(true);
+      }
+    },
+    [],
+  );
+
   // carregarReservas busca a lista de Pedidos pendentes com reserva do par
   // (Story 11.3, FR-50). Só a chamada MAIS RECENTE aplica resultado ou erro —
   // uma resposta lenta de um Estoque anterior nunca sobrescreve o estado novo.
@@ -473,6 +526,7 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
       setProduto(data.produto);
       sincronizarReservas(data.produto);
       await carregarFotos(id, seq);
+      if (podeVerHistorico) await carregarHistorico(id, seq);
     } catch {
       if (seq === seqRef.current) {
         setErro('generico');
@@ -482,7 +536,7 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
         setCarregando(false);
       }
     }
-  }, [id, carregarFotos, sincronizarReservas]);
+  }, [id, carregarFotos, carregarHistorico, podeVerHistorico, sincronizarReservas]);
 
   function abrirReservas(linha: EstoqueQuantidade) {
     reservasAbertaRef.current = linha.estoqueId;
@@ -953,6 +1007,32 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
                     </button>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {podeVerHistorico && (
+              <div className="flex flex-col gap-2" data-testid="historico-produto">
+                <h2 className="text-heading-md">Histórico do produto</h2>
+                {erroHistorico ? (
+                  <p className="text-body-sm text-text-muted">Não foi possível carregar o histórico.</p>
+                ) : historico === null ? null : historico.length === 0 ? (
+                  <p className="text-body-sm text-text-muted">Nenhuma alteração registrada.</p>
+                ) : (
+                  <ul className="flex flex-col gap-2">
+                    {historico.map((item) => (
+                      <li key={item.id} className="text-body-sm">
+                        <p>{descreverHistorico(item)}</p>
+                        {item.acao === 'inativado' && typeof item.detalhe.motivo === 'string' && item.detalhe.motivo !== '' && (
+                          <p>Motivo: {item.detalhe.motivo}</p>
+                        )}
+                        <p className="text-text-muted">
+                          {item.autor !== '' ? `${item.autor} — ` : ''}
+                          {formatarDataHora(item.criadoEm)}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             )}
           </CardContent>

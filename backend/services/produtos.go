@@ -529,7 +529,7 @@ func CriarProduto(db *sql.DB, empresaID string, input CriarProdutoInput) (Produt
 // permanece o anterior (nenhum UPDATE roda). Produto sem template
 // (`template_id IS NULL`) aceita qualquer texto que passe na validação
 // básica acima.
-func AtualizarNomeProduto(db *sql.DB, empresaID string, id string, novoNome string) (Produto, error) {
+func AtualizarNomeProduto(db *sql.DB, empresaID string, atorID string, id string, novoNome string) (Produto, error) {
 	nomeTrimado := strings.TrimSpace(novoNome)
 	if n := utf8.RuneCountInString(nomeTrimado); n < 10 || n > 255 {
 		return Produto{}, &ErroProdutoValidacao{
@@ -537,10 +537,18 @@ func AtualizarNomeProduto(db *sql.DB, empresaID string, id string, novoNome stri
 		}
 	}
 
+	tx, err := db.Begin()
+	if err != nil {
+		return Produto{}, fmt.Errorf("falha ao iniciar transação: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var nomeAtual string
 	var templateID sql.NullString
-	err := db.QueryRow(
-		`SELECT template_id FROM produtos WHERE id = $1 AND empresa_id = $2`, id, empresaID,
-	).Scan(&templateID)
+	err = tx.QueryRow(
+		`SELECT nome, template_id FROM produtos
+		 WHERE id = $1 AND empresa_id = $2 AND deleted_at IS NULL FOR UPDATE`, id, empresaID,
+	).Scan(&nomeAtual, &templateID)
 	if err != nil {
 		var pqErr *pq.Error
 		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
@@ -551,7 +559,7 @@ func AtualizarNomeProduto(db *sql.DB, empresaID string, id string, novoNome stri
 
 	if templateID.Valid {
 		var templateTexto string
-		if err := db.QueryRow(
+		if err := tx.QueryRow(
 			`SELECT template FROM nomenclatura_templates WHERE id = $1`, templateID.String,
 		).Scan(&templateTexto); err != nil {
 			return Produto{}, fmt.Errorf("falha ao buscar template aplicado ao produto: %w", err)
@@ -564,17 +572,23 @@ func AtualizarNomeProduto(db *sql.DB, empresaID string, id string, novoNome stri
 	}
 
 	var p Produto
-	if err := db.QueryRow(
-		`UPDATE produtos SET nome = $1 WHERE id = $2 AND empresa_id = $3 RETURNING id, nome`,
+	if err := tx.QueryRow(
+		`UPDATE produtos SET nome = $1 WHERE id = $2 AND empresa_id = $3 AND deleted_at IS NULL RETURNING id, nome`,
 		nomeTrimado, id, empresaID,
 	).Scan(&p.ID, &p.Nome); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			// Inalcançável na prática: o SELECT acima já provou que a linha
-			// existe. Mantido como defesa em profundidade contra uma
-			// exclusão concorrente entre o SELECT e o UPDATE.
 			return Produto{}, ErrProdutoNaoEncontrado
 		}
 		return Produto{}, fmt.Errorf("falha ao atualizar nome do produto: %w", err)
+	}
+	if nomeAtual != nomeTrimado {
+		if err := registrarHistoricoProdutoTx(tx, empresaID, id, atorID, AcaoProdutoNomeAlterado,
+			map[string]any{"antes": nomeAtual, "depois": nomeTrimado}); err != nil {
+			return Produto{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return Produto{}, fmt.Errorf("falha ao commitar renomear produto: %w", err)
 	}
 	return p, nil
 }
@@ -592,7 +606,7 @@ func AtualizarNomeProduto(db *sql.DB, empresaID string, id string, novoNome stri
 // `UnidadeMedida` vazia só é aceita para Produto cuja unidade atual é NULL.
 // Produto inexistente/malformado/excluído/de outra Empresa ->
 // ErrProdutoNaoEncontrado.
-func AtualizarProduto(db *sql.DB, empresaID string, id string, input CriarProdutoInput) (Produto, error) {
+func AtualizarProduto(db *sql.DB, empresaID string, atorID string, id string, input CriarProdutoInput) (Produto, error) {
 	nomeTrimado := strings.TrimSpace(input.Nome)
 	if n := utf8.RuneCountInString(nomeTrimado); n < 10 || n > 255 {
 		return Produto{}, &ErroProdutoValidacao{
@@ -648,12 +662,13 @@ func AtualizarProduto(db *sql.DB, empresaID string, id string, input CriarProdut
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	var nomeAtual string
 	var templateAtual, unidadeAtual sql.NullString
 	err = tx.QueryRow(
-		`SELECT template_id, unidade_medida FROM produtos
+		`SELECT nome, template_id, unidade_medida FROM produtos
 		 WHERE id = $1 AND empresa_id = $2 AND deleted_at IS NULL FOR UPDATE`,
 		id, empresaID,
-	).Scan(&templateAtual, &unidadeAtual)
+	).Scan(&nomeAtual, &templateAtual, &unidadeAtual)
 	if err != nil {
 		var pqErr *pq.Error
 		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
@@ -738,6 +753,12 @@ func AtualizarProduto(db *sql.DB, empresaID string, id string, input CriarProdut
 		return Produto{}, fmt.Errorf("falha ao atualizar produto: %w", err)
 	}
 	p.Codigo = codigo.String
+	if nomeAtual != nomeTrimado {
+		if err := registrarHistoricoProdutoTx(tx, empresaID, id, atorID, AcaoProdutoNomeAlterado,
+			map[string]any{"antes": nomeAtual, "depois": nomeTrimado}); err != nil {
+			return Produto{}, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return Produto{}, fmt.Errorf("falha ao commitar edição de produto: %w", err)
 	}

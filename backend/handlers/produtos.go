@@ -208,7 +208,8 @@ type renomearProdutoRequest struct {
 // razão de CriarProdutoHandler acima).
 func AtualizarNomeProdutoHandler(db *sql.DB, registro *realtime.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := middleware.UsuarioDaSessao(r.Context()); !ok {
+		usuario, ok := middleware.UsuarioDaSessao(r.Context())
+		if !ok {
 			slog.Error("AtualizarNomeProdutoHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
@@ -225,7 +226,7 @@ func AtualizarNomeProdutoHandler(db *sql.DB, registro *realtime.Registry) http.H
 			return
 		}
 
-		produto, err := services.AtualizarNomeProduto(db, empresa.ID, r.PathValue("id"), req.Nome)
+		produto, err := services.AtualizarNomeProduto(db, empresa.ID, usuario.ID, r.PathValue("id"), req.Nome)
 		var erroValidacao *services.ErroProdutoValidacao
 		switch {
 		case err == nil:
@@ -249,7 +250,8 @@ func AtualizarNomeProdutoHandler(db *sql.DB, registro *realtime.Registry) http.H
 // Sucesso publica `produtos`/`updated`.
 func AtualizarProdutoHandler(db *sql.DB, registro *realtime.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := middleware.UsuarioDaSessao(r.Context()); !ok {
+		usuario, ok := middleware.UsuarioDaSessao(r.Context())
+		if !ok {
 			slog.Error("AtualizarProdutoHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
 			return
@@ -282,7 +284,7 @@ func AtualizarProdutoHandler(db *sql.DB, registro *realtime.Registry) http.Handl
 			Embalagem:        req.Embalagem,
 		}
 
-		produto, err := services.AtualizarProduto(db, empresa.ID, r.PathValue("id"), input)
+		produto, err := services.AtualizarProduto(db, empresa.ID, usuario.ID, r.PathValue("id"), input)
 		var erroValidacao *services.ErroProdutoValidacao
 		switch {
 		case err == nil:
@@ -735,4 +737,31 @@ func responderProdutoAlterado(w http.ResponseWriter, db *sql.DB, registro *realt
 		return
 	}
 	escreverJSON(w, http.StatusOK, map[string]any{"produto": produto})
+}
+
+// ListarHistoricoProdutoHandler expõe GET /api/produtos/{id}/historico
+// (Story 16.3): `200 {"historico":[...]}`; 404 se o Produto não existe na
+// Empresa. O papel mínimo (almoxarife) é decidido por RequireRole.
+func ListarHistoricoProdutoHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := middleware.UsuarioDaSessao(r.Context()); !ok {
+			slog.Error("ListarHistoricoProdutoHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+		itens, err := services.ListarHistoricoProduto(db, empresa.ID, r.PathValue("id"))
+		switch {
+		case err == nil:
+			escreverJSON(w, http.StatusOK, map[string]any{"historico": itens})
+		case errors.Is(err, services.ErrProdutoNaoEncontrado):
+			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "produto não encontrado")
+		default:
+			slog.Error("falha ao listar histórico do produto", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao listar histórico do produto")
+		}
+	}
 }

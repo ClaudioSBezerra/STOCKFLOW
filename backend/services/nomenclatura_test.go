@@ -425,10 +425,10 @@ func TestAtualizarNomenclaturaTemplate_EmUsoNaoRetroativo(t *testing.T) {
 
 	// A próxima renomeação valida contra o texto NOVO.
 	var ev *ErroProdutoValidacao
-	if _, err := AtualizarNomeProduto(db, empresaTeste, p.ID, "TUBO PVC 75MM"); !errors.As(err, &ev) {
+	if _, err := AtualizarNomeProduto(db, empresaTeste, atorHistorico(t, db), p.ID, "TUBO PVC 75MM"); !errors.As(err, &ev) {
 		t.Errorf("renomear pelo padrão antigo: erro = %v, want ErroProdutoValidacao", err)
 	}
-	if _, err := AtualizarNomeProduto(db, empresaTeste, p.ID, "FITA AZUL 50MM"); err != nil {
+	if _, err := AtualizarNomeProduto(db, empresaTeste, atorHistorico(t, db), p.ID, "FITA AZUL 50MM"); err != nil {
 		t.Errorf("renomear pelo padrão novo: %v", err)
 	}
 }

@@ -125,6 +125,7 @@ function stubPadrao(overrides?: {
   fotos?: { nome: string; url: string }[];
   produtoOk?: boolean;
   reservas?: { pedidoId: string; solicitante: string; quantidade: number; criadoEm: string }[];
+  historico?: unknown[];
 }) {
   const fotos = overrides?.fotos ?? [];
   return stubFetch((url, init) => {
@@ -136,6 +137,9 @@ function stubPadrao(overrides?: {
         return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
       }
       return jsonOk({ produto: overrides?.produto ?? PRODUTO_DETALHE });
+    }
+    if (url === '/api/produtos/p1/historico') {
+      return jsonOk({ historico: overrides?.historico ?? [] });
     }
     if (url === '/api/produtos/p1/fotos' && (!init?.method || init.method === 'GET')) {
       return jsonOk({ fotos });
@@ -304,6 +308,60 @@ describe('ProdutoDetalhePage', () => {
 
     expect(await screen.findByText('Sem quantidade registrada por estoque.')).toBeInTheDocument();
     expect(screen.getByText('Sem estoque')).toBeInTheDocument();
+  });
+
+  it('almoxarife+ vê o histórico do produto (nome, inativação com motivo, reativação)', async () => {
+    stubPadrao({
+      historico: [
+        { id: 'h3', acao: 'reativado', autor: 'Gestora', detalhe: {}, criadoEm: '2026-09-25T12:00:00Z' },
+        { id: 'h2', acao: 'inativado', autor: 'Gestora', detalhe: { motivo: 'fora de linha' }, criadoEm: '2026-09-24T12:00:00Z' },
+        { id: 'h1', acao: 'nome_alterado', autor: 'Almox', detalhe: { antes: 'Nome Antigo', depois: 'Nome Novo' }, criadoEm: '2026-09-23T12:00:00Z' },
+      ],
+    });
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    expect(await screen.findByText('Histórico do produto')).toBeInTheDocument();
+    expect(await screen.findByText('«Nome Antigo» → «Nome Novo»')).toBeInTheDocument();
+    expect(screen.getByText('Inativado')).toBeInTheDocument();
+    expect(screen.getByText('Motivo: fora de linha')).toBeInTheDocument();
+    expect(screen.getByText('Reativado')).toBeInTheDocument();
+  });
+
+  it('histórico vazio mostra "Nenhuma alteração registrada."', async () => {
+    stubPadrao({ historico: [] });
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    expect(await screen.findByText('Nenhuma alteração registrada.')).toBeInTheDocument();
+  });
+
+  it('falha ao carregar o histórico mostra mensagem discreta sem quebrar o detalhe', async () => {
+    stubFetch((url) => {
+      if (url === '/api/produtos/p1/historico') return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
+      if (url === '/api/produtos/p1/fotos') return jsonOk({ fotos: [] });
+      return jsonOk({ produto: PRODUTO_DETALHE });
+    });
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    expect(await screen.findByText('Não foi possível carregar o histórico.')).toBeInTheDocument();
+    expect(screen.getByText(/Almoxarifado Central/)).toBeInTheDocument();
+  });
+
+  it('papel usuario não vê a seção nem faz o fetch do histórico', async () => {
+    authState.papel = 'usuario';
+    const fetchMock = stubPadrao();
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText(/Almoxarifado Central/);
+    expect(screen.queryByText('Histórico do produto')).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith('/historico'))).toBe(false);
   });
 
   it('0 fotos: nenhuma seção de fotos aparece, sem erro', async () => {

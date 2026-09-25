@@ -2740,3 +2740,87 @@ func TestBuscarProdutoPorCodigoHandler_404ProdutoInativo(t *testing.T) {
 		t.Fatalf("status = %d, want 404 (body=%s)", w.Code, w.Body.String())
 	}
 }
+
+func getHistoricoProduto(db *sql.DB, authHeader, produtoID string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /e/{slug}/api/produtos/{id}/historico",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelAlmoxarife)(
+					ListarHistoricoProdutoHandler(db)))))
+	r := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/produtos/"+produtoID+"/historico", nil)
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+func TestHistoricoProdutoHandler(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Almox Hist H", "hist-h-almox@empresa.com", "senha-123456", "almoxarife")
+	criarContaComPapel(t, db, "Usuario Hist H", "hist-h-user@empresa.com", "senha-123456", "usuario")
+	tokAlmox := "Bearer " + tokenDeLogin(t, db, "hist-h-almox@empresa.com", "senha-123456")
+	tokUser := "Bearer " + tokenDeLogin(t, db, "hist-h-user@empresa.com", "senha-123456")
+	produtoID, _ := seedProdutoComSaldoHandler(t, db, "Canteiro Hist H", 0)
+
+	if w := getHistoricoProduto(db, tokUser, produtoID); w.Code != http.StatusForbidden {
+		t.Errorf("usuario: status=%d", w.Code)
+	}
+	if w := getHistoricoProduto(db, tokAlmox, "00000000-0000-4000-8000-000000000001"); w.Code != http.StatusNotFound {
+		t.Errorf("inexistente: status=%d", w.Code)
+	}
+	w := getHistoricoProduto(db, tokAlmox, produtoID)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"historico":[]`) {
+		t.Fatalf("vazio: status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// Renomear via handler grava nome_alterado com o autor.
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /e/{slug}/api/produtos/{id}/renomear",
+		comEmpresa(db, middleware.RequireAuth(db, testJWTSecret)(
+			middleware.RequireRole(services.PapelAlmoxarife)(
+				AtualizarNomeProdutoHandler(db, realtime.NewRegistry())))))
+	r := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/produtos/"+produtoID+"/renomear",
+		strings.NewReader(`{"nome":"Nome Totalmente Novo"}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", tokAlmox)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, r)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("renomear: status=%d body=%s", rw.Code, rw.Body.String())
+	}
+	w = getHistoricoProduto(db, tokAlmox, produtoID)
+	var resp struct {
+		Historico []struct {
+			Acao    string         `json:"acao"`
+			Autor   string         `json:"autor"`
+			Detalhe map[string]any `json:"detalhe"`
+		} `json:"historico"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || len(resp.Historico) != 1 {
+		t.Fatalf("body=%s err=%v", w.Body.String(), err)
+	}
+	h := resp.Historico[0]
+	if h.Acao != "nome_alterado" || h.Autor != "Almox Hist H" || h.Detalhe["depois"] != "Nome Totalmente Novo" {
+		t.Errorf("item = %+v", h)
+	}
+
+	// PUT (edição completa) que muda o nome também grava com o autor logado.
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.002")
+	wp := putProduto(db, tokAlmox, produtoID, `{"nome":"Nome Editado Via Put","categoria_id":"`+categoriaID+`","unidade_medida":"un"}`)
+	if wp.Code != http.StatusOK {
+		t.Fatalf("PUT: status=%d body=%s", wp.Code, wp.Body.String())
+	}
+	w = getHistoricoProduto(db, tokAlmox, produtoID)
+	resp.Historico = nil
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || len(resp.Historico) != 2 {
+		t.Fatalf("após PUT: body=%s err=%v", w.Body.String(), err)
+	}
+	h = resp.Historico[0]
+	if h.Acao != "nome_alterado" || h.Autor != "Almox Hist H" || h.Detalhe["antes"] != "Nome Totalmente Novo" || h.Detalhe["depois"] != "Nome Editado Via Put" {
+		t.Errorf("item PUT = %+v", h)
+	}
+}

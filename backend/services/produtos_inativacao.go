@@ -28,8 +28,9 @@ const motivoInativacaoMaxRunas = 500
 
 // Ações gravadas em `produto_historico` por esta story.
 const (
-	AcaoProdutoInativado = "inativado"
-	AcaoProdutoReativado = "reativado"
+	AcaoProdutoInativado    = "inativado"
+	AcaoProdutoReativado    = "reativado"
+	AcaoProdutoNomeAlterado = "nome_alterado"
 )
 
 // ErrProdutoJaInativo: inativar um Produto que já está inativo. 409.

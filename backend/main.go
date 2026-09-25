@@ -592,6 +592,10 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	registrar("PUT /e/{slug}/api/produtos/{id}", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.AtualizarProdutoHandler(db, registro))))
+	// Histórico do Produto — Story 16.3: `almoxarife`+.
+	registrar("GET /e/{slug}/api/produtos/{id}/historico", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAlmoxarife)(
+			handlers.ListarHistoricoProdutoHandler(db))))
 	// Inativar e reativar um Produto — Story 16.1 (FR-55, AD-37): só
 	// `gestor`+ (o 403 é decidido por RequireRole).
 	registrar("POST /e/{slug}/api/produtos/{id}/inativacao", middleware.RequireAuth(db, jwtSecret)(

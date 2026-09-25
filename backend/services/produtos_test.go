@@ -1006,7 +1006,7 @@ func TestAtualizarNomeProduto_NomeAbaixoDoMinimoRejeitado(t *testing.T) {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
 
-	_, err = AtualizarNomeProduto(db, empresaTeste, p.ID, "123456789")
+	_, err = AtualizarNomeProduto(db, empresaTeste, atorHistorico(t, db), p.ID, "123456789")
 	var erroValidacaoCurto *ErroProdutoValidacao
 	if !errors.As(err, &erroValidacaoCurto) {
 		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
@@ -1042,7 +1042,7 @@ func TestAtualizarNomeProduto_NomeNoMinimoExatoAceito(t *testing.T) {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
 
-	atualizado, err := AtualizarNomeProduto(db, empresaTeste, p.ID, "1234567890")
+	atualizado, err := AtualizarNomeProduto(db, empresaTeste, atorHistorico(t, db), p.ID, "1234567890")
 	if err != nil {
 		t.Fatalf("nome de 10 caracteres deveria ser válido, got %v", err)
 	}
@@ -1287,7 +1287,7 @@ func TestAtualizarNomeProduto_SemTemplateAceitaQualquerNome(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.005")
 	produtoID := seedProdutoLegadoSemTemplate(t, db, "Nome Original Legado", categoriaID, estoque.ID)
 
-	atualizado, err := AtualizarNomeProduto(db, empresaTeste, produtoID, "Qualquer Nome Novo Sem Estrutura")
+	atualizado, err := AtualizarNomeProduto(db, empresaTeste, atorHistorico(t, db), produtoID, "Qualquer Nome Novo Sem Estrutura")
 	if err != nil {
 		t.Fatalf("AtualizarNomeProduto erro inesperado: %v", err)
 	}
@@ -1319,7 +1319,7 @@ func TestAtualizarNomeProduto_SemTemplateNomeCurtoRejeitado(t *testing.T) {
 	categoriaID := categoriaIDPorCodigo(t, db, "04.005")
 	produtoID := seedProdutoLegadoSemTemplate(t, db, "Nome Original Legado", categoriaID, estoque.ID)
 
-	_, err = AtualizarNomeProduto(db, empresaTeste, produtoID, "curto")
+	_, err = AtualizarNomeProduto(db, empresaTeste, atorHistorico(t, db), produtoID, "curto")
 	var erroValidacao *ErroProdutoValidacao
 	if !errors.As(err, &erroValidacao) {
 		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
@@ -1352,7 +1352,7 @@ func TestAtualizarNomeProduto_ComTemplateRevalida(t *testing.T) {
 	}
 
 	// Nome inválido contra o mesmo template -> erro, nome antigo preservado.
-	_, err = AtualizarNomeProduto(db, empresaTeste, p.ID, "TUBO PEAD PN80")
+	_, err = AtualizarNomeProduto(db, empresaTeste, atorHistorico(t, db), p.ID, "TUBO PEAD PN80")
 	var erroValidacao *ErroProdutoValidacao
 	if !errors.As(err, &erroValidacao) {
 		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
@@ -1369,7 +1369,7 @@ func TestAtualizarNomeProduto_ComTemplateRevalida(t *testing.T) {
 	}
 
 	// Nome válido contra o mesmo template -> sucesso.
-	atualizado, err := AtualizarNomeProduto(db, empresaTeste, p.ID, "TUBO PEAD PN100 DN75")
+	atualizado, err := AtualizarNomeProduto(db, empresaTeste, atorHistorico(t, db), p.ID, "TUBO PEAD PN100 DN75")
 	if err != nil {
 		t.Fatalf("AtualizarNomeProduto erro inesperado: %v", err)
 	}
@@ -1389,11 +1389,36 @@ func TestAtualizarNomeProduto_IDInexistente(t *testing.T) {
 	}
 	for nome, id := range casos {
 		t.Run(nome, func(t *testing.T) {
-			_, err := AtualizarNomeProduto(db, empresaTeste, id, "Nome Qualquer")
+			_, err := AtualizarNomeProduto(db, empresaTeste, atorHistorico(t, db), id, "Nome Qualquer")
 			if !errors.Is(err, ErrProdutoNaoEncontrado) {
 				t.Fatalf("erro = %v, want ErrProdutoNaoEncontrado", err)
 			}
 		})
+	}
+}
+
+// TestAtualizarNomeProduto_ExcluidoNaoEncontrado prova que renomear um
+// Produto mesclado/excluído (`deleted_at`) -> ErrProdutoNaoEncontrado, sem
+// alterar o nome nem gravar histórico.
+func TestAtualizarNomeProduto_ExcluidoNaoEncontrado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	p, err := CriarProduto(db, empresaTeste, criarProdutoInputValido(t, db, "Produto Excluido Renomear", "04.001"))
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE produtos SET deleted_at = now() WHERE id = $1`, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AtualizarNomeProduto(db, empresaTeste, atorHistorico(t, db), p.ID, "Nome Novo Para Excluido"); !errors.Is(err, ErrProdutoNaoEncontrado) {
+		t.Fatalf("err = %v, want ErrProdutoNaoEncontrado", err)
+	}
+	var nome string
+	var n int
+	_ = db.QueryRow(`SELECT nome FROM produtos WHERE id = $1`, p.ID).Scan(&nome)
+	_ = db.QueryRow(`SELECT count(*) FROM produto_historico WHERE produto_id = $1`, p.ID).Scan(&n)
+	if nome != "Produto Excluido Renomear" || n != 0 {
+		t.Errorf("nome=%q historico=%d, nada deveria ter sido gravado", nome, n)
 	}
 }
 
@@ -1418,7 +1443,7 @@ func TestAtualizarNomeProduto_NomeInvalido(t *testing.T) {
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
 
-	_, err = AtualizarNomeProduto(db, empresaTeste, p.ID, "   ")
+	_, err = AtualizarNomeProduto(db, empresaTeste, atorHistorico(t, db), p.ID, "   ")
 	var erroValidacao *ErroProdutoValidacao
 	if !errors.As(err, &erroValidacao) {
 		t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
@@ -2047,7 +2072,7 @@ func TestAtualizarProduto_SucessoPreservaCodigo(t *testing.T) {
 	novo.Observacoes = "obs nova"
 	novo.Comprimento = &DimensaoInput{Valor: ptrFloat(2.5), Unidade: ptrStr("m")}
 	novo.UnidadeMedida = "kg"
-	got, err := AtualizarProduto(db, empresaTeste, p.ID, novo)
+	got, err := AtualizarProduto(db, empresaTeste, atorHistorico(t, db), p.ID, novo)
 	if err != nil {
 		t.Fatalf("AtualizarProduto: %v", err)
 	}
@@ -2081,7 +2106,7 @@ func TestAtualizarProduto_InvalidosNaoGravam(t *testing.T) {
 	for nome, mut := range casos {
 		in := criarProdutoInputValido(t, db, "Nome Que Nao Deve Gravar", "04.001")
 		mut(&in)
-		_, err := AtualizarProduto(db, empresaTeste, p.ID, in)
+		_, err := AtualizarProduto(db, empresaTeste, atorHistorico(t, db), p.ID, in)
 		var ev *ErroProdutoValidacao
 		if !errors.As(err, &ev) {
 			t.Errorf("%s: err = %v, want ErroProdutoValidacao", nome, err)
@@ -2107,7 +2132,7 @@ func TestAtualizarProduto_NomeForaDoTemplateMostraFormato(t *testing.T) {
 	// template omitido: mantém o atual e revalida
 	in.TemplateID = ""
 	in.Nome = "TUBO PEAD PN80"
-	_, err = AtualizarProduto(db, empresaTeste, p.ID, in)
+	_, err = AtualizarProduto(db, empresaTeste, atorHistorico(t, db), p.ID, in)
 	var ev *ErroProdutoValidacao
 	if !errors.As(err, &ev) || !strings.Contains(ev.Mensagem, tplTexto) {
 		t.Fatalf("err = %v, want formato %q", err, tplTexto)
@@ -2126,7 +2151,7 @@ func TestAtualizarProduto_LegadoSemTemplateEUnidade(t *testing.T) {
 	}
 	in := criarProdutoInputValido(t, db, "Produto Legado Editado", "04.001")
 	in.TemplateID, in.UnidadeMedida = "", ""
-	if _, err := AtualizarProduto(db, empresaTeste, p.ID, in); err != nil {
+	if _, err := AtualizarProduto(db, empresaTeste, atorHistorico(t, db), p.ID, in); err != nil {
 		t.Fatalf("AtualizarProduto: %v", err)
 	}
 	var tpl, un sql.NullString
@@ -2141,7 +2166,7 @@ func TestAtualizarProduto_NaoEncontrado(t *testing.T) {
 	limparProdutos(t, db)
 	in := criarProdutoInputValido(t, db, "Produto Qualquer Um", "04.001")
 	for _, id := range []string{"00000000-0000-4000-8000-000000000000", "nao-uuid"} {
-		if _, err := AtualizarProduto(db, empresaTeste, id, in); !errors.Is(err, ErrProdutoNaoEncontrado) {
+		if _, err := AtualizarProduto(db, empresaTeste, atorHistorico(t, db), id, in); !errors.Is(err, ErrProdutoNaoEncontrado) {
 			t.Errorf("id %s: err = %v", id, err)
 		}
 	}
@@ -2150,7 +2175,7 @@ func TestAtualizarProduto_NaoEncontrado(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := AtualizarProduto(db, "00000000-0000-4000-8000-000000000001", p.ID, in); !errors.Is(err, ErrProdutoNaoEncontrado) {
+	if _, err := AtualizarProduto(db, "00000000-0000-4000-8000-000000000001", atorHistorico(t, db), p.ID, in); !errors.Is(err, ErrProdutoNaoEncontrado) {
 		t.Errorf("outra empresa: err = %v", err)
 	}
 }
@@ -2177,7 +2202,7 @@ func TestAtualizarProduto_TemplateECategoriaExplicitos(t *testing.T) {
 	for nome, mut := range casos {
 		in := criarProdutoInputValido(t, db, "Nome Que Nao Deve Gravar", "04.001")
 		mut(&in)
-		_, err := AtualizarProduto(db, empresaTeste, p.ID, in)
+		_, err := AtualizarProduto(db, empresaTeste, atorHistorico(t, db), p.ID, in)
 		var ev *ErroProdutoValidacao
 		if !errors.As(err, &ev) {
 			t.Errorf("%s: err = %v, want ErroProdutoValidacao", nome, err)
@@ -2195,7 +2220,7 @@ func TestAtualizarProduto_TemplateECategoriaExplicitos(t *testing.T) {
 
 	in := criarProdutoInputValido(t, db, "TUBO PEAD PN80 DN50", "04.003")
 	in.TemplateID = tplID
-	if _, err := AtualizarProduto(db, empresaTeste, p.ID, in); err != nil {
+	if _, err := AtualizarProduto(db, empresaTeste, atorHistorico(t, db), p.ID, in); err != nil {
 		t.Fatalf("troca válida: %v", err)
 	}
 	var tpl string
@@ -2230,7 +2255,7 @@ func TestAtualizarProduto_CategoriaTemplateDeOutraEmpresaEExcluido(t *testing.T)
 	for nome, mut := range casos {
 		in := criarProdutoInputValido(t, db, "Nome Que Nao Deve Gravar", "04.002")
 		mut(&in)
-		_, err := AtualizarProduto(db, empresaTeste, p.ID, in)
+		_, err := AtualizarProduto(db, empresaTeste, atorHistorico(t, db), p.ID, in)
 		var ev *ErroProdutoValidacao
 		if !errors.As(err, &ev) {
 			t.Errorf("%s: err = %v, want ErroProdutoValidacao", nome, err)
@@ -2246,7 +2271,7 @@ func TestAtualizarProduto_CategoriaTemplateDeOutraEmpresaEExcluido(t *testing.T)
 		t.Fatal(err)
 	}
 	in := criarProdutoInputValido(t, db, "Produto Editado Tres", "04.001")
-	if _, err := AtualizarProduto(db, empresaTeste, p.ID, in); !errors.Is(err, ErrProdutoNaoEncontrado) {
+	if _, err := AtualizarProduto(db, empresaTeste, atorHistorico(t, db), p.ID, in); !errors.Is(err, ErrProdutoNaoEncontrado) {
 		t.Errorf("excluído: err = %v, want ErrProdutoNaoEncontrado", err)
 	}
 }

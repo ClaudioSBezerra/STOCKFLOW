@@ -157,6 +157,6 @@ development_status:
   epic-16: in-progress
   16-1-inativar-e-reativar-um-produto: done
   16-2-produto-inativo-some-das-operações-filtro-inativos: done
-  16-3-histórico-de-alterações-do-produto: backlog
+  16-3-histórico-de-alterações-do-produto: done
   16-4-ean-13-único-entre-os-produtos-ativos-da-empresa: backlog
   epic-16-retrospective: optional

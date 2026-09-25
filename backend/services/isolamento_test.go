@@ -436,7 +436,7 @@ func TestIsolamentoPorEmpresa_EscritaPorIdAlheioFalhaSemEfeito(t *testing.T) {
 	})
 
 	t.Run("renomear Produto alheio", func(t *testing.T) {
-		if _, err := AtualizarNomeProduto(db, alfa.empresa.ID, beta.produto.ID, "Nome Invadido"); !errors.Is(err, ErrProdutoNaoEncontrado) {
+		if _, err := AtualizarNomeProduto(db, alfa.empresa.ID, atorHistorico(t, db), beta.produto.ID, "Nome Invadido"); !errors.Is(err, ErrProdutoNaoEncontrado) {
 			t.Fatalf("AtualizarNomeProduto = %v, want ErrProdutoNaoEncontrado", err)
 		}
 		var nome string
