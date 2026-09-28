@@ -213,3 +213,16 @@ Referência aprovada pelo usuário e pelos sócios: `referencias/modelo-tela.png
   - números e datas alinhados à direita;
   - status em pílula suave (`status-*`, incluindo o novo `status-inativo`).
 - **Celular (< 768px):** o menu lateral some e abre por **☰** no topo, como uma gaveta da esquerda com os mesmos grupos (decisão do usuário). A bottom nav deixa de existir. O `fab-scanner` continua no canto inferior direito com `{spacing.fab-margin}`. A tabela vira lista de linhas (ícone, nome, subtítulo e o principal número à direita), nunca cards pesados.
+
+## Revisão de 2026-09-28 — densidade no computador
+
+A pedido do usuário, com o Epic 17 no ar, as letras e as caixas da área de conteúdo estavam grandes demais no computador. A partir de 768px, onde o menu lateral fica fixo:
+
+| Token | Celular | Computador |
+|---|---|---|
+| `heading-lg` | 30px | 24px |
+| `heading-md` | 24px | 20px |
+| `body` | 14px | 13px |
+| `touch-target-min` | 48px | 40px |
+
+No celular nada muda: o alvo de toque de 48px (UX-DR12) continua valendo para o uso em campo.

@@ -89,6 +89,21 @@
   --spacing-topbar-height: 56px;
 }
 
+/*
+ * Densidade no computador (>= 768px, onde o menu lateral fica fixo) —
+ * feedback do usuário em 2026-09-28: letras e caixas da área de conteúdo
+ * estavam grandes demais. Os tokens encolhem só aqui; no celular continuam
+ * como estão, e o alvo de toque de 48px (UX-DR12, uso em campo) é mantido.
+ */
+@media (min-width: 768px) {
+  :root {
+    --text-heading-lg: 24px;
+    --text-heading-md: 20px;
+    --text-body: 13px;
+    --spacing-touch-target-min: 40px;
+  }
+}
+
 @layer base {
   body {
     @apply bg-background text-foreground font-sans;
