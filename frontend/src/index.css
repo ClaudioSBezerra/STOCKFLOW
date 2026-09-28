@@ -106,4 +106,31 @@
     font-weight: 600;
     box-shadow: inset 3px 0 0 var(--color-primary);
   }
+
+  /*
+   * Rolagem do menu lateral: quando os grupos não cabem na altura da tela, a
+   * barra de rolagem padrão do navegador (clara e larga) aparecia sobre o
+   * fundo azul-marinho e parecia "invadir" o menu. Barra fina e escura, no
+   * tom do próprio menu, que só se destaca ao passar o mouse.
+   */
+  .sidebar-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-sidebar-item-active) transparent;
+  }
+  .sidebar-scroll:hover {
+    scrollbar-color: color-mix(in oklab, var(--color-sidebar-foreground) 45%, transparent) transparent;
+  }
+  .sidebar-scroll::-webkit-scrollbar {
+    width: 6px;
+  }
+  .sidebar-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .sidebar-scroll::-webkit-scrollbar-thumb {
+    background-color: var(--color-sidebar-item-active);
+    border-radius: 9999px;
+  }
+  .sidebar-scroll:hover::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklab, var(--color-sidebar-foreground) 45%, transparent);
+  }
 }

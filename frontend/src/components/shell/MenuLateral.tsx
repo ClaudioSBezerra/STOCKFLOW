@@ -241,7 +241,7 @@ export function MenuLateral({
         ) : null}
       </div>
 
-      <nav aria-label="Menu principal" className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+      <nav aria-label="Menu principal" className="sidebar-scroll min-h-0 flex-1 overflow-y-auto px-2 py-2">
         <ul className="flex flex-col gap-2">
           {grupos.map((grupo) =>
             recolhido ? (
