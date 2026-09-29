@@ -33,6 +33,7 @@ import { SegurancaEmpresaPage } from '@/pages/admin/SegurancaEmpresaPage';
 import { LogAcessoPage } from '@/pages/admin/LogAcessoPage';
 import { LgpdPage } from '@/pages/admin/LgpdPage';
 import { AuthCallbackPage } from '@/pages/AuthCallbackPage';
+import { TrialExpiradoPage } from '@/pages/TrialExpiradoPage';
 
 /**
  * Rota raiz usa `AppShell` como layout. A raiz (`/`) deixou de ser
@@ -96,8 +97,17 @@ import { AuthCallbackPage } from '@/pages/AuthCallbackPage';
  * `mfaSetupPendente` (lib/auth), compartilhada com Configurações → Segurança.
  */
 export function RotaProtegida() {
-  const { estado, usuario } = useAuth();
+  const { estado, usuario, trialExpirado } = useAuth();
   const location = useLocation();
+
+  // Story 18.2 (Epic 18): trial vencido vence QUALQUER outro estado —
+  // `carregando` (o bootstrap ainda pode estar transicionando quando o
+  // interceptor global de fetch dispara) e `autenticado`/`mfaPendente`. Sem
+  // carência: o servidor já bloqueou com 402 TRIAL_EXPIRADO no primeiro
+  // request seguinte ao vencimento, sessão aberta ou não.
+  if (trialExpirado) {
+    return <TrialExpiradoPage />;
+  }
 
   if (estado === 'carregando') {
     return (

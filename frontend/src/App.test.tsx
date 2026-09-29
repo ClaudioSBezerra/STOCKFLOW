@@ -81,6 +81,7 @@ describe('RotaProtegida (unidade)', () => {
       definirSessao: vi.fn(),
       atualizarUsuario: vi.fn(),
       logout: vi.fn(),
+      trialExpirado: false,
     });
     renderRota();
 
@@ -97,6 +98,7 @@ describe('RotaProtegida (unidade)', () => {
       definirSessao: vi.fn(),
       atualizarUsuario: vi.fn(),
       logout: vi.fn(),
+      trialExpirado: false,
     });
     renderRota();
 
@@ -120,6 +122,7 @@ describe('RotaProtegida (unidade)', () => {
       definirSessao: vi.fn(),
       atualizarUsuario: vi.fn(),
       logout: vi.fn(),
+      trialExpirado: false,
     });
     renderRota();
 
@@ -144,6 +147,7 @@ describe('RotaProtegida (unidade)', () => {
       definirSessao: vi.fn(),
       atualizarUsuario: vi.fn(),
       logout: vi.fn(),
+      trialExpirado: false,
     });
     renderRota();
 
@@ -169,6 +173,7 @@ describe('RotaProtegida (unidade)', () => {
       definirSessao: vi.fn(),
       atualizarUsuario: vi.fn(),
       logout: vi.fn(),
+      trialExpirado: false,
     });
     renderRota();
 
@@ -196,6 +201,7 @@ describe('RotaProtegida (unidade)', () => {
       definirSessao: vi.fn(),
       atualizarUsuario: vi.fn(),
       logout: vi.fn(),
+      trialExpirado: false,
     });
     renderRota();
 
@@ -218,6 +224,7 @@ describe('RotaProtegida (unidade)', () => {
       definirSessao: vi.fn(),
       atualizarUsuario: vi.fn(),
       logout: vi.fn(),
+      trialExpirado: false,
     });
     render(
       <MemoryRouter initialEntries={['/configuracoes']}>
@@ -241,12 +248,37 @@ describe('RotaProtegida (unidade)', () => {
       definirSessao: vi.fn(),
       atualizarUsuario: vi.fn(),
       logout: vi.fn(),
+      trialExpirado: false,
     });
     renderRota();
 
     expect(screen.getByText('tela de login')).toBeInTheDocument();
     expect(screen.queryByText('árvore protegida')).not.toBeInTheDocument();
   });
+
+  it.each([
+    ['carregando', null],
+    ['anonimo', null],
+    ['autenticado', { id: '1', nome: 'Teste', email: 'teste@empresa.com', papel: 'usuario', mfaHabilitado: false, origem: 'senha' }],
+  ] as const)(
+    'trialExpirado=true renderiza a tela dedicada independente do estado (%s) (Story 18.2)',
+    (estado, usuario) => {
+      useAuthMock.mockReturnValue({
+        estado,
+        usuario,
+        definirSessao: vi.fn(),
+        atualizarUsuario: vi.fn(),
+        logout: vi.fn(),
+        trialExpirado: true,
+      });
+      renderRota();
+
+      expect(screen.getByText('Seu período de teste acabou')).toBeInTheDocument();
+      expect(screen.queryByText('árvore protegida')).not.toBeInTheDocument();
+      expect(screen.queryByText('tela de login')).not.toBeInTheDocument();
+      expect(screen.queryByText('Carregando...')).not.toBeInTheDocument();
+    },
+  );
 });
 
 describe('<App /> — wiring real de AuthProvider + RotaProtegida', () => {

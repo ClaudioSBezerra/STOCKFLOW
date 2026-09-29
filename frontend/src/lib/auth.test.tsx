@@ -6,12 +6,13 @@ import { clearAccessToken, getAccessToken } from './session';
 import { resetSSOConfigCache } from '@/lib/keycloak/config';
 
 function Sonda() {
-  const { estado, usuario, definirSessao, logout } = useAuth();
+  const { estado, usuario, definirSessao, logout, trialExpirado } = useAuth();
   return (
     <div>
       <span data-testid="estado">{estado}</span>
       <span data-testid="papel">{usuario?.papel ?? '—'}</span>
       <span data-testid="nome">{usuario?.nome ?? '—'}</span>
+      <span data-testid="trial-expirado">{String(trialExpirado)}</span>
       <button
         type="button"
         onClick={() =>
@@ -345,6 +346,84 @@ describe('AuthProvider — logout (Story 1.9)', () => {
     });
 
     await waitFor(() => expect(assignMock).toHaveBeenCalledWith('/login'));
+  });
+});
+
+// Fábrica de uma resposta mock com `.clone()` — as respostas simples usadas
+// no resto deste arquivo (`{ ok, json }`) não implementam `Response.clone`,
+// mas o interceptor (lib/httpTrial.ts) chama `res.clone().json()` em toda
+// resposta 402, então só o caso 402/TRIAL_EXPIRADO precisa desse formato.
+function respostaComClone(status: number, corpo: unknown) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => corpo,
+    clone() {
+      return { json: async () => corpo };
+    },
+  };
+}
+
+describe('AuthProvider — interceptor global de TRIAL_EXPIRADO (Story 18.2)', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', fetchMock);
+    fetchMock.mockReset();
+    clearAccessToken();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    clearAccessToken();
+  });
+
+  it('detecta TRIAL_EXPIRADO já no bootstrap (POST /api/auth/refresh) e expõe trialExpirado=true', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/api/auth/refresh') {
+        return Promise.resolve(
+          respostaComClone(402, { error: { code: 'TRIAL_EXPIRADO', message: 'período de teste encerrado' } }),
+        );
+      }
+      throw new Error(`não deveria chamar ${url}`);
+    });
+
+    renderProvider();
+
+    await waitFor(() => expect(screen.getByTestId('trial-expirado')).toHaveTextContent('true'));
+    // O bootstrap ainda cai em anonimo (refresh não-ok) — trialExpirado é
+    // independente do `estado` e é quem manda em RotaProtegida (App.tsx).
+    await waitFor(() => expect(screen.getByTestId('estado')).toHaveTextContent('anonimo'));
+  });
+
+  it('detecta TRIAL_EXPIRADO em GET /api/auth/me quando o refresh teve sucesso', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/api/auth/refresh') {
+        return Promise.resolve({ ok: true, json: async () => ({ token: 'access-abc' }) });
+      }
+      if (url === '/api/auth/me') {
+        return Promise.resolve(
+          respostaComClone(402, { error: { code: 'TRIAL_EXPIRADO', message: 'período de teste encerrado' } }),
+        );
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    renderProvider();
+
+    await waitFor(() => expect(screen.getByTestId('trial-expirado')).toHaveTextContent('true'));
+  });
+
+  it('ignora silenciosamente um 402 cujo corpo não é TRIAL_EXPIRADO', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/api/auth/refresh') {
+        return Promise.resolve(respostaComClone(402, { error: { code: 'OUTRO_CODIGO' } }));
+      }
+      throw new Error(`não deveria chamar ${url}`);
+    });
+
+    renderProvider();
+
+    await waitFor(() => expect(screen.getByTestId('estado')).toHaveTextContent('anonimo'));
+    expect(screen.getByTestId('trial-expirado')).toHaveTextContent('false');
   });
 });
 

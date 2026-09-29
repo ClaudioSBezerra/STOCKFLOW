@@ -12,6 +12,7 @@ import { clearAccessToken, setAccessToken } from '@/lib/session';
 import { fetchSSOConfig } from '@/lib/keycloak/config';
 import { apiUrl } from '@/lib/api';
 import { rankPapel } from '@/components/shell/nav-items';
+import { instalarInterceptorDeTrialExpirado, ouvirTrialExpirado } from '@/lib/httpTrial';
 
 // Marca gravada pelo callback de SSO (Story 1.9): decide se "Sair" dispara o
 // RP-initiated logout do Keycloak ou só volta para /login local.
@@ -116,6 +117,15 @@ interface AuthContextValue {
    * direto para `/login` sem tocar no Keycloak.
    */
   logout: () => void;
+  /**
+   * `true` assim que o interceptor global de `fetch` (lib/httpTrial.ts)
+   * detecta `TRIAL_EXPIRADO` em qualquer resposta — Story 18.2 (Epic 18).
+   * `RotaProtegida` (App.tsx) troca o app inteiro pela tela dedicada de
+   * trial vencido quando este campo vira `true`, independente do `estado`
+   * de sessão (a checagem do servidor não dá carência para sessão já
+   * autenticada).
+   */
+  trialExpirado: boolean;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -123,6 +133,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [estado, setEstado] = useState<EstadoAuth>('carregando');
   const [usuario, setUsuario] = useState<UsuarioSessao | null>(null);
+  const [trialExpirado, setTrialExpirado] = useState(false);
 
   // `bootstrapIniciado` sobrevive ao unmount/remount da mesma fiber que o
   // StrictMode provoca em dev — sem isso o efeito dispararia DOIS
@@ -206,6 +217,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    // Instalado como a PRIMEIRA linha do efeito, antes do guard de
+    // bootstrapIniciado abaixo (chamar de novo é barato — é um no-op contra
+    // o `window.fetch` ATUAL): garante que o próprio bootstrap silencioso
+    // logo abaixo (`/api/auth/refresh`/`/api/auth/me`, o primeiro fetch que
+    // o app faz) já está coberto pelo interceptor.
+    instalarInterceptorDeTrialExpirado();
+
     if (bootstrapIniciado.current) {
       return;
     }
@@ -253,9 +271,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void bootstrap();
   }, []);
 
+  useEffect(() => ouvirTrialExpirado(() => setTrialExpirado(true)), []);
+
   const value = useMemo<AuthContextValue>(
-    () => ({ estado, usuario, definirSessao, atualizarUsuario, logout }),
-    [estado, usuario, definirSessao, atualizarUsuario, logout],
+    () => ({ estado, usuario, definirSessao, atualizarUsuario, logout, trialExpirado }),
+    [estado, usuario, definirSessao, atualizarUsuario, logout, trialExpirado],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

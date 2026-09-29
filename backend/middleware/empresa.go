@@ -19,6 +19,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"stockflow/backend/services"
 )
@@ -51,6 +52,11 @@ func RequireEmpresa(db *sql.DB) func(http.HandlerFunc) http.HandlerFunc {
 				}
 				slog.Error("falha ao resolver empresa do slug", "slug", slug, "error", err)
 				escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver empresa da requisição")
+				return
+			}
+
+			if empresa.TrialTerminaEm != nil && empresa.TrialTerminaEm.Before(time.Now()) {
+				escreverErro(w, http.StatusPaymentRequired, "TRIAL_EXPIRADO", "período de teste encerrado")
 				return
 			}
 

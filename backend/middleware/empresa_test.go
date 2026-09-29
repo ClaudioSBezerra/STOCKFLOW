@@ -172,6 +172,101 @@ func TestRequireEmpresa_FalhasColapsamEm404(t *testing.T) {
 	}
 }
 
+// TestRequireEmpresa_TrialExpiradoBloqueiaComPagamentoRequerido prova o
+// bloqueio da Story 18.2: Empresa com `trial_termina_em` no passado devolve
+// 402 PAYMENT_REQUIRED/TRIAL_EXPIRADO e o handler protegido nunca roda;
+// `trial_termina_em` NULL ou no futuro passa normalmente (caminho feliz
+// idêntico a TestRequireEmpresa_SlugValidoInjetaEmpresa); e uma sessão já
+// autenticada de uma Empresa com trial vencido também recebe 402, sem
+// carência.
+func TestRequireEmpresa_TrialExpiradoBloqueiaComPagamentoRequerido(t *testing.T) {
+	db := testDB(t)
+
+	t.Run("trial no passado bloqueia com 402", func(t *testing.T) {
+		empresa := criarEmpresaMiddleware(t, db, "mw-trial-vencido", "98765432000198", "MW Trial Vencido")
+		passado := time.Now().Add(-24 * time.Hour)
+		if _, err := db.Exec(`UPDATE empresas SET trial_termina_em = $1 WHERE id = $2`, passado, empresa.ID); err != nil {
+			t.Fatalf("vencer trial: %v", err)
+		}
+
+		chamou := false
+		w := servirRotaDeEmpresa(db, "mw-trial-vencido", func(w http.ResponseWriter, r *http.Request) {
+			chamou = true
+			w.WriteHeader(http.StatusOK)
+		}, "")
+
+		if w.Code != http.StatusPaymentRequired {
+			t.Fatalf("status = %d, want 402 (body=%s)", w.Code, w.Body.String())
+		}
+		if code := codigoDoErro(t, w.Body.Bytes()); code != "TRIAL_EXPIRADO" {
+			t.Errorf("code = %q, want TRIAL_EXPIRADO", code)
+		}
+		if chamou {
+			t.Error("handler protegido rodou — RequireEmpresa deveria ter cortado antes")
+		}
+	})
+
+	t.Run("trial NULL passa normalmente", func(t *testing.T) {
+		empresa := criarEmpresaMiddleware(t, db, "mw-trial-nulo", "87654321000198", "MW Trial Nulo")
+		if _, err := db.Exec(`UPDATE empresas SET trial_termina_em = NULL WHERE id = $1`, empresa.ID); err != nil {
+			t.Fatalf("zerar trial: %v", err)
+		}
+
+		w := servirRotaDeEmpresa(db, "mw-trial-nulo", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}, "")
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("trial no futuro passa normalmente", func(t *testing.T) {
+		empresa := criarEmpresaMiddleware(t, db, "mw-trial-futuro", "76543210000198", "MW Trial Futuro")
+		futuro := time.Now().Add(24 * time.Hour)
+		if _, err := db.Exec(`UPDATE empresas SET trial_termina_em = $1 WHERE id = $2`, futuro, empresa.ID); err != nil {
+			t.Fatalf("agendar trial futuro: %v", err)
+		}
+
+		w := servirRotaDeEmpresa(db, "mw-trial-futuro", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}, "")
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("sessão autenticada de empresa com trial vencido também recebe 402", func(t *testing.T) {
+		empresa := criarEmpresaMiddleware(t, db, "mw-trial-vencido-auth", "65432100000132", "MW Trial Vencido Auth")
+		passado := time.Now().Add(-24 * time.Hour)
+		if _, err := db.Exec(`UPDATE empresas SET trial_termina_em = $1 WHERE id = $2`, passado, empresa.ID); err != nil {
+			t.Fatalf("vencer trial: %v", err)
+		}
+
+		idUsuario := criarUsuarioNaEmpresa(t, db, "conta-trial-vencido@empresa.com", empresa.ID)
+		token := gerarAccessTokenTeste(t, testJWTSecret, idUsuario, time.Now().Add(30*time.Minute))
+
+		chamou := false
+		protegido := RequireAuth(db, testJWTSecret)(func(w http.ResponseWriter, r *http.Request) {
+			chamou = true
+			w.WriteHeader(http.StatusOK)
+		})
+
+		w := servirRotaDeEmpresa(db, "mw-trial-vencido-auth", protegido, "Bearer "+token)
+
+		if w.Code != http.StatusPaymentRequired {
+			t.Fatalf("status = %d, want 402 (body=%s)", w.Code, w.Body.String())
+		}
+		if code := codigoDoErro(t, w.Body.Bytes()); code != "TRIAL_EXPIRADO" {
+			t.Errorf("code = %q, want TRIAL_EXPIRADO", code)
+		}
+		if chamou {
+			t.Error("handler protegido rodou (RequireAuth incluído) — RequireEmpresa deveria ter cortado antes, sem carência")
+		}
+	})
+}
+
 // TestRequireEmpresa_ComRequireAuth prova a fronteira que impede um token
 // perfeitamente válido de operar sob o slug de outra Empresa: a sessão da
 // Empresa A é aceita sob o slug da A e recusada com 401 SESSION_REVOKED sob o
