@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/lib/pq"
@@ -87,6 +88,11 @@ type Empresa struct {
 	// `gestor`/`adm` autenticados por senha. Lido só por
 	// middleware.RequireRole (gate único) e espelhado em /api/auth/me.
 	MFAObrigatorio bool `json:"mfaObrigatorio"`
+	// TrialTerminaEm (Story 18.1, AD-39): fim do prazo de teste, gravado só
+	// por CriarEmpresaComTreinamento. `nil` = sem prazo (isenta) — toda
+	// Empresa já existente e todo provisionamento fora dele (ex.
+	// cmd/migrar-multi-empresa).
+	TrialTerminaEm *time.Time `json:"trialTerminaEm"`
 }
 
 // DadosEmpresa é o insumo de ProvisionarEmpresa. `CNPJ` e `Slug` podem chegar
@@ -103,6 +109,13 @@ type DadosEmpresa struct {
 	// autenticação?" do cadastro. Zero value `false` = não exige — o padrão
 	// de todo chamador que não pergunta (ex.: cmd/migrar-multi-empresa).
 	MFAObrigatorio bool
+	// TrialTerminaEm (Story 18.1, AD-39): o prazo de teste a gravar, se
+	// houver. `nil` (zero value) = sem prazo — o padrão de todo chamador que
+	// não inicia trial (ex.: cmd/migrar-multi-empresa). Escrito só por
+	// CriarEmpresaComTreinamento (Empresa real, valor calculado) e por
+	// ProvisionarTreinamento (Treinamento, copiando o valor JÁ GRAVADO na
+	// Empresa real — nunca recalcula).
+	TrialTerminaEm *time.Time
 }
 
 // NormalizarCNPJ remove tudo que não é dígito ("12.345.678/0001-95" ->
@@ -199,7 +212,7 @@ func slugCanonico(s string) bool {
 // ProvisionarEmpresa (RETURNING), na ordem de scanEmpresa.
 const colunasEmpresa = `id, nome_fantasia, razao_social, cnpj,
 	logradouro, numero, complemento, bairro, cidade, cep, uf,
-	slug, status, empresa_origem_id, mfa_obrigatorio`
+	slug, status, empresa_origem_id, mfa_obrigatorio, trial_termina_em`
 
 // linhaEmpresa abstrai *sql.Row para scanEmpresa.
 type linhaEmpresa interface {
@@ -209,17 +222,21 @@ type linhaEmpresa interface {
 func scanEmpresa(l linhaEmpresa) (Empresa, error) {
 	var e Empresa
 	var complemento, origem sql.NullString
+	var trialTerminaEm sql.NullTime
 	if err := l.Scan(
 		&e.ID, &e.NomeFantasia, &e.RazaoSocial, &e.CNPJ,
 		&e.Endereco.Logradouro, &e.Endereco.Numero, &complemento, &e.Endereco.Bairro,
 		&e.Endereco.Cidade, &e.Endereco.CEP, &e.Endereco.UF,
-		&e.Slug, &e.Status, &origem, &e.MFAObrigatorio,
+		&e.Slug, &e.Status, &origem, &e.MFAObrigatorio, &trialTerminaEm,
 	); err != nil {
 		return Empresa{}, err
 	}
 	e.Endereco.Complemento = complemento.String
 	if origem.Valid {
 		e.EmpresaOrigemID = &origem.String
+	}
+	if trialTerminaEm.Valid {
+		e.TrialTerminaEm = &trialTerminaEm.Time
 	}
 	return e, nil
 }
@@ -263,6 +280,7 @@ type dadosEmpresaValidados struct {
 	complemento                                 sql.NullString
 	empresaOrigemID                             sql.NullString
 	mfaObrigatorio                              bool
+	trialTerminaEm                              sql.NullTime
 }
 
 // validarDadosEmpresa normaliza e valida todos os campos de DadosEmpresa
@@ -313,6 +331,9 @@ func validarDadosEmpresa(d DadosEmpresa) (dadosEmpresaValidados, error) {
 		v.empresaOrigemID = sql.NullString{String: *d.EmpresaOrigemID, Valid: true}
 	}
 	v.mfaObrigatorio = d.MFAObrigatorio
+	if d.TrialTerminaEm != nil {
+		v.trialTerminaEm = sql.NullTime{Time: *d.TrialTerminaEm, Valid: true}
+	}
 	return v, nil
 }
 
@@ -343,13 +364,13 @@ func InserirEmpresa(tx *sql.Tx, dados DadosEmpresa) (Empresa, error) {
 		INSERT INTO empresas (
 			nome_fantasia, razao_social, cnpj,
 			logradouro, numero, complemento, bairro, cidade, cep, uf,
-			slug, empresa_origem_id, mfa_obrigatorio
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			slug, empresa_origem_id, mfa_obrigatorio, trial_termina_em
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		RETURNING ` + colunasEmpresa
 	e, err := scanEmpresa(tx.QueryRow(insertEmpresa,
 		v.nomeFantasia, v.razaoSocial, v.cnpj,
 		v.logradouro, v.numero, v.complemento, v.bairro, v.cidade, v.cep, v.uf,
-		v.slug, v.empresaOrigemID, v.mfaObrigatorio,
+		v.slug, v.empresaOrigemID, v.mfaObrigatorio, v.trialTerminaEm,
 	))
 	if err != nil {
 		var pqErr *pq.Error

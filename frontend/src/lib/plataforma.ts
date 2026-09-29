@@ -71,6 +71,8 @@ export interface EmpresaResumo {
   mfaObrigatorio: boolean;
   /** O `mfaObrigatorio` do Treinamento é o gravado nele — independente do da real. */
   treinamento: { id: string; slug: string; status: string; mfaObrigatorio: boolean } | null;
+  /** Story 18.1: fim do prazo de teste da Empresa real. `null` = sem prazo (isenta). */
+  trialTerminaEm: string | null;
 }
 
 /** Payload de criação. `slug` vazio -> o servidor deriva do nome fantasia. */

@@ -501,6 +501,11 @@ func TestEmpresasPlataforma_MFAObrigatorio(t *testing.T) {
 		if mfaGravadoHandlers(t, db, slug) != want || mfaGravadoHandlers(t, db, slug+"-treinamento") != want {
 			t.Errorf("%s: banco diverge de %v", slug, want)
 		}
+		// Story 18.1 (AD-39): a resposta HTTP de criação já carrega o prazo de
+		// teste gravado, e o Treinamento herda o MESMO valor.
+		if c.Empresa.TrialTerminaEm == nil || c.Treinamento.TrialTerminaEm == nil || !c.Treinamento.TrialTerminaEm.Equal(*c.Empresa.TrialTerminaEm) {
+			t.Errorf("%s: trialTerminaEm real=%v treino=%v, want ambos gravados e iguais", slug, c.Empresa.TrialTerminaEm, c.Treinamento.TrialTerminaEm)
+		}
 		return c
 	}
 
@@ -547,6 +552,9 @@ func TestEmpresasPlataforma_MFAObrigatorio(t *testing.T) {
 		_ = json.Unmarshal(e["treinamento"], &treino)
 		if string(e["mfaObrigatorio"]) != "true" || string(treino["mfaObrigatorio"]) != "true" {
 			t.Errorf("listagem: mfaObrigatorio real=%s treino=%s, want true/true", e["mfaObrigatorio"], treino["mfaObrigatorio"])
+		}
+		if len(e["trialTerminaEm"]) == 0 || string(e["trialTerminaEm"]) == "null" {
+			t.Errorf("listagem: trialTerminaEm ausente ou nulo, want um prazo gravado")
 		}
 	}
 	if !achou {

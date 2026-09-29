@@ -43,6 +43,11 @@ const (
 	// recuperação (os 30min de redefinição da Story 1.6). Expirado, o
 	// "Esqueci minha senha" da tela de login cobre sem ação do Dono.
 	tokenPrimeiroAcessoExpiracao = 7 * 24 * time.Hour
+
+	// duracaoTrialInicial (Story 18.1, AD-39): prazo de teste que
+	// CriarEmpresaComTreinamento grava na Empresa real (e o Treinamento
+	// herda) a partir de agora.
+	duracaoTrialInicial = 14 * 24 * time.Hour
 )
 
 // ErrSlugTreinamentoDuplicado indica que o slug da Empresa real está livre,
@@ -101,6 +106,9 @@ type EmpresaResumo struct {
 	// MFAObrigatorio (Story 14.2): se a Empresa exige MFA — metadado
 	// administrativo, não dado operacional.
 	MFAObrigatorio bool `json:"mfaObrigatorio"`
+	// TrialTerminaEm (Story 18.1, AD-39): fim do prazo de teste da Empresa
+	// real. `nil` = sem prazo (isenta).
+	TrialTerminaEm *time.Time `json:"trialTerminaEm"`
 }
 
 // produtoExemplo é um Produto dos dados de exemplo do Treinamento.
@@ -190,6 +198,10 @@ func ValidarDadosNovaEmpresa(input NovaEmpresaInput) (DadosEmpresa, string, stri
 // pelo Treinamento SÓ aqui, na criação, dentro desta transação. Depois disso
 // as duas são independentes: nada propaga uma alteração posterior.
 //
+// `trial_termina_em` (Story 18.1, AD-39) = agora + duracaoTrialInicial,
+// gravado na Empresa real e herdado pelo Treinamento SÓ aqui, na criação —
+// mesmo padrão do MFA acima. Depois disso as duas são independentes.
+//
 // Validação -> *ErroEmpresaValidacao, antes de abrir a transação. CNPJ de
 // outra Empresa real -> ErrCNPJDuplicado; slug em uso -> ErrSlugDuplicado;
 // `{slug}-treinamento` em uso -> ErrSlugTreinamentoDuplicado; e-mail do `adm`
@@ -202,6 +214,8 @@ func CriarEmpresaComTreinamento(db *sql.DB, emailCfg EmailConfig, input NovaEmpr
 	if err != nil {
 		return Empresa{}, Empresa{}, err
 	}
+	trialTerminaEm := time.Now().UTC().Add(duracaoTrialInicial)
+	dadosReal.TrialTerminaEm = &trialTerminaEm
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -243,12 +257,15 @@ func CriarEmpresaComTreinamento(db *sql.DB, emailCfg EmailConfig, input NovaEmpr
 // `{slug}-treinamento` já em uso -> ErrSlugTreinamentoDuplicado (que embrulha
 // ErrSlugDuplicado: errors.Is casa com qualquer um dos dois).
 //
-// O Treinamento herda `MFAObrigatorio` do valor GRAVADO na Empresa real
-// (`real`, Story 14.2), não de `dadosReal` — só na criação; não há
-// propagação posterior.
+// O Treinamento herda `MFAObrigatorio` e `TrialTerminaEm` do valor GRAVADO
+// na Empresa real (`real`, Stories 14.2 e 18.1), não de `dadosReal` — só na
+// criação; não há propagação posterior. Quando `real` nasce fora de
+// CriarEmpresaComTreinamento (ex. AdotarEmpresaFundadora), `real.TrialTerminaEm`
+// é `nil` e o Treinamento também nasce sem prazo.
 func ProvisionarTreinamento(tx *sql.Tx, emailCfg EmailConfig, real Empresa, dadosReal DadosEmpresa, admNome, admEmail string) (Empresa, error) {
 	dadosTreino := dadosReal
 	dadosTreino.MFAObrigatorio = real.MFAObrigatorio
+	dadosTreino.TrialTerminaEm = real.TrialTerminaEm
 	dadosTreino.NomeFantasia = dadosReal.NomeFantasia + sufixoNomeTreinamento
 	dadosTreino.Slug = dadosReal.Slug + sufixoSlugTreinamento
 	dadosTreino.EmpresaOrigemID = &real.ID
@@ -357,7 +374,7 @@ func ListarEmpresasPlataforma(db *sql.DB) ([]EmpresaResumo, error) {
 	const q = `
 		SELECT e.id, e.nome_fantasia, e.razao_social, e.cnpj,
 		       e.logradouro, e.numero, e.complemento, e.bairro, e.cidade, e.cep, e.uf,
-		       e.slug, e.status, e.criado_em, e.mfa_obrigatorio,
+		       e.slug, e.status, e.criado_em, e.mfa_obrigatorio, e.trial_termina_em,
 		       t.id, t.slug, t.status, t.mfa_obrigatorio,
 		       a.nome, a.email
 		FROM empresas e
@@ -382,17 +399,21 @@ func ListarEmpresasPlataforma(db *sql.DB) ([]EmpresaResumo, error) {
 		var e EmpresaResumo
 		var complemento, treinoID, treinoSlug, treinoStatus, admNome, admEmail sql.NullString
 		var treinoMFA sql.NullBool // LEFT JOIN: nulo quando não há Treinamento
+		var trialTerminaEm sql.NullTime
 		if err := rows.Scan(
 			&e.ID, &e.NomeFantasia, &e.RazaoSocial, &e.CNPJ,
 			&e.Endereco.Logradouro, &e.Endereco.Numero, &complemento, &e.Endereco.Bairro,
 			&e.Endereco.Cidade, &e.Endereco.CEP, &e.Endereco.UF,
-			&e.Slug, &e.Status, &e.CriadoEm, &e.MFAObrigatorio,
+			&e.Slug, &e.Status, &e.CriadoEm, &e.MFAObrigatorio, &trialTerminaEm,
 			&treinoID, &treinoSlug, &treinoStatus, &treinoMFA,
 			&admNome, &admEmail,
 		); err != nil {
 			return nil, fmt.Errorf("falha ao ler empresa da listagem: %w", err)
 		}
 		e.Endereco.Complemento = complemento.String
+		if trialTerminaEm.Valid {
+			e.TrialTerminaEm = &trialTerminaEm.Time
+		}
 		if treinoID.Valid {
 			e.Treinamento = &TreinamentoResumo{
 				ID: treinoID.String, Slug: treinoSlug.String, Status: treinoStatus.String,

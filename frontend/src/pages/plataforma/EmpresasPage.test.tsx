@@ -38,6 +38,7 @@ const EMPRESA: EmpresaResumo = {
   adm: { nome: 'Ana Adm', email: 'ana@acme.com' },
   mfaObrigatorio: true,
   treinamento: { id: 'emp-1-t', slug: 'acme-obras-treinamento', status: 'ativa', mfaObrigatorio: false },
+  trialTerminaEm: null,
 };
 
 let empresas: EmpresaResumo[];
@@ -226,6 +227,29 @@ describe('EmpresasPage (Story 9.2)', () => {
     expect(
       screen.getByText('Dupla autenticação: Exigida · Treinamento: Não exigida'),
     ).toBeInTheDocument();
+  });
+
+  it('Story 18.1: mostra o prazo de teste — dias restantes, vencido há N dias, ou sem prazo', async () => {
+    const emCincoDias = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString();
+    const haTresDias = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+    empresas = [
+      { ...EMPRESA, id: 'emp-futuro', nomeFantasia: 'Cliente Em Teste', trialTerminaEm: emCincoDias },
+      { ...EMPRESA, id: 'emp-vencido', nomeFantasia: 'Cliente Vencido', trialTerminaEm: haTresDias },
+      { ...EMPRESA, id: 'emp-isento', nomeFantasia: 'Cliente Isento', trialTerminaEm: null },
+    ];
+    renderPage();
+
+    expect(await screen.findByText('Teste: 5 dias restantes')).toBeInTheDocument();
+    expect(screen.getByText('Teste: Vencido há 3 dias')).toBeInTheDocument();
+    expect(screen.getByText('Teste: Sem prazo')).toBeInTheDocument();
+  });
+
+  it('Story 18.1: prazo vencido há poucas horas conta como vencido, não como "0 dias restantes"', async () => {
+    const haPoucasHoras = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    empresas = [{ ...EMPRESA, trialTerminaEm: haPoucasHoras }];
+    renderPage();
+
+    expect(await screen.findByText('Teste: Vencido há 1 dia')).toBeInTheDocument();
   });
 
   it('409 mostra a mensagem do servidor num alerta, sem toast de sucesso', async () => {

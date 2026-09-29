@@ -115,6 +115,27 @@ function textoMFA(exigida: boolean): string {
   return exigida ? 'Exigida' : 'Não exigida';
 }
 
+/** Story 18.1: "Sem prazo" (isenta), "Vencido há N dias" ou "N dias restantes". */
+function textoTrial(trialTerminaEm: string | null): string {
+  if (!trialTerminaEm) {
+    return 'Sem prazo';
+  }
+  const prazo = new Date(trialTerminaEm);
+  if (Number.isNaN(prazo.getTime())) {
+    return 'Sem prazo';
+  }
+  const diferencaMs = prazo.getTime() - Date.now();
+  const dias = Math.ceil(diferencaMs / (24 * 60 * 60 * 1000));
+  // `diferencaMs` (não `dias`) decide se já venceu: entre 0 e -1 dia, o
+  // arredondamento de `dias` dá `-0` (que não é `< 0`), e um prazo vencido há
+  // poucas horas apareceria como "0 dias restantes" em vez de vencido.
+  if (diferencaMs <= 0) {
+    const diasVencido = Math.max(1, Math.abs(dias));
+    return `Vencido há ${diasVencido} dia${diasVencido === 1 ? '' : 's'}`;
+  }
+  return `${dias} dia${dias === 1 ? '' : 's'} restante${dias === 1 ? '' : 's'}`;
+}
+
 function BadgeStatus({ status }: { status: string }) {
   const ativa = status === 'ativa';
   return (
@@ -511,6 +532,7 @@ export function EmpresasPage() {
                             ? ` · Treinamento: ${textoMFA(empresa.treinamento.mfaObrigatorio)}`
                             : null}
                         </span>
+                        <span>Teste: {textoTrial(empresa.trialTerminaEm)}</span>
                         <span className="text-muted-foreground">
                           Criada em {formatarData(empresa.criadoEm)}
                         </span>

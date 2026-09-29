@@ -111,6 +111,10 @@ func TestAdotarEmpresaFundadora_CriaParSemAdmNaReal(t *testing.T) {
 	if treino.Slug != slug+"-treinamento" || treino.EmpresaOrigemID == nil || *treino.EmpresaOrigemID != real.ID {
 		t.Errorf("treinamento = slug %q origem %v, want %q apontando para a real", treino.Slug, treino.EmpresaOrigemID, slug+"-treinamento")
 	}
+	// Story 18.1: este caminho (fora da tela do Dono) nunca inicia um trial.
+	if real.TrialTerminaEm != nil || treino.TrialTerminaEm != nil {
+		t.Errorf("trial_termina_em = real %v, treino %v, want nil/nil (Empresa fundadora nunca tem prazo)", real.TrialTerminaEm, treino.TrialTerminaEm)
+	}
 
 	// A Empresa real: nenhuma lista copiada e nenhum `adm` criado.
 	if n := contarLinhas94(t, db, `SELECT count(*) FROM categorias WHERE empresa_id = $1`, real.ID); n != 0 {

@@ -438,7 +438,7 @@ func TestListarEmpresasPlataforma_SoMetadado(t *testing.T) {
 		chaves = append(chaves, k)
 	}
 	sort.Strings(chaves)
-	want := "adm,cnpj,criadoEm,endereco,id,mfaObrigatorio,nomeFantasia,razaoSocial,slug,status,treinamento"
+	want := "adm,cnpj,criadoEm,endereco,id,mfaObrigatorio,nomeFantasia,razaoSocial,slug,status,treinamento,trialTerminaEm"
 	if got := strings.Join(chaves, ","); got != want {
 		t.Errorf("chaves do resumo = %s, want %s", got, want)
 	}
@@ -517,6 +517,47 @@ func TestMFAObrigatorio_HerancaSoNaCriacao(t *testing.T) {
 	}
 	if achada.MFAObrigatorio || !achada.Treinamento.MFAObrigatorio {
 		t.Errorf("listagem: real=%v treino=%v, want false/true", achada.MFAObrigatorio, achada.Treinamento.MFAObrigatorio)
+	}
+}
+
+// TestCriarEmpresaComTreinamento_Trial prova a Story 18.1 (AD-39): a Empresa
+// real nasce com `trial_termina_em` ~14 dias corridos à frente, e o
+// Treinamento herda EXATAMENTE o mesmo valor gravado (nunca recalcula).
+func TestCriarEmpresaComTreinamento_Trial(t *testing.T) {
+	db := testDB(t)
+	comParLimpo(t, db, "plat-trial")
+
+	antes := time.Now().UTC()
+	empresa, treino, err := CriarEmpresaComTreinamento(db, testEmailCfg, novaEmpresaTeste("plat-trial", "971112220014", "Cliente Trial"))
+	depois := time.Now().UTC()
+	if err != nil {
+		t.Fatalf("CriarEmpresaComTreinamento: %v", err)
+	}
+
+	if empresa.TrialTerminaEm == nil {
+		t.Fatal("empresa.TrialTerminaEm = nil, want um prazo gravado")
+	}
+	minEsperado := antes.Add(14 * 24 * time.Hour)
+	maxEsperado := depois.Add(14 * 24 * time.Hour)
+	if empresa.TrialTerminaEm.Before(minEsperado) || empresa.TrialTerminaEm.After(maxEsperado) {
+		t.Errorf("empresa.TrialTerminaEm = %v, want entre %v e %v", empresa.TrialTerminaEm, minEsperado, maxEsperado)
+	}
+	if treino.TrialTerminaEm == nil || !treino.TrialTerminaEm.Equal(*empresa.TrialTerminaEm) {
+		t.Errorf("treino.TrialTerminaEm = %v, want igual a empresa.TrialTerminaEm (%v)", treino.TrialTerminaEm, empresa.TrialTerminaEm)
+	}
+
+	lista, err := ListarEmpresasPlataforma(db)
+	if err != nil {
+		t.Fatalf("ListarEmpresasPlataforma: %v", err)
+	}
+	var achada *EmpresaResumo
+	for i := range lista {
+		if lista[i].ID == empresa.ID {
+			achada = &lista[i]
+		}
+	}
+	if achada == nil || achada.TrialTerminaEm == nil || !achada.TrialTerminaEm.Equal(*empresa.TrialTerminaEm) {
+		t.Errorf("listagem: trialTerminaEm = %+v, want igual ao gravado", achada)
 	}
 }
 
