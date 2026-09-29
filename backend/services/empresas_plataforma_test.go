@@ -675,8 +675,10 @@ func TestAlterarStatusEmpresa_DesativaEReativaOPar(t *testing.T) {
 	if n := contar(t, db, `SELECT count(*) FROM produtos WHERE empresa_id = $1`, treino.ID); n != 5 {
 		t.Errorf("produtos do treino após desativar = %d, want 5 (nada é apagado)", n)
 	}
-	if n := contar(t, db, `SELECT count(*) FROM usuarios WHERE empresa_id IN ($1, $2)`, empresa.ID, treino.ID); n != 2 {
-		t.Errorf("contas do par após desativar = %d, want 2", n)
+	// 1 adm (real) + 1 adm + 3 contas de teste usuario/almoxarife/gestor
+	// (Treinamento, Story 18) = 5 — nenhuma é apagada ao desativar.
+	if n := contar(t, db, `SELECT count(*) FROM usuarios WHERE empresa_id IN ($1, $2)`, empresa.ID, treino.ID); n != 5 {
+		t.Errorf("contas do par após desativar = %d, want 5", n)
 	}
 
 	if err := AlterarStatusEmpresa(db, empresa.ID, StatusEmpresaAtiva); err != nil {
