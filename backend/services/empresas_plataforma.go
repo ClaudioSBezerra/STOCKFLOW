@@ -23,6 +23,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/lib/pq"
+	"golang.org/x/crypto/bcrypt"
 )
 
 const (
@@ -287,7 +288,57 @@ func ProvisionarTreinamento(tx *sql.Tx, emailCfg EmailConfig, real Empresa, dado
 	if err := provisionarAdmPrimeiroAcesso(tx, emailCfg, treino, admNome, admEmail); err != nil {
 		return Empresa{}, err
 	}
+	if err := provisionarContasDeTesteTreinamento(tx, treino); err != nil {
+		return Empresa{}, err
+	}
 	return treino, nil
+}
+
+// senhaContasDeTesteTreinamento é a senha fixa das contas de teste por papel
+// (provisionarContasDeTesteTreinamento) — combinada com um e-mail
+// `@{slug-do-treinamento}.local`, nunca alcançável de verdade, então não há
+// fluxo de "esqueci a senha" nem de primeiro acesso por e-mail a proteger
+// aqui: a senha PRECISA ser conhecida de antemão para a conta servir de
+// login de demonstração. Documentada também no `_bmad-output` da story.
+const senhaContasDeTesteTreinamento = "Treinamento123!"
+
+// papeisContasDeTesteTreinamento define, nesta ordem, os papéis com conta de
+// teste automática no Treinamento — `adm` fica de fora porque já é coberto
+// por provisionarAdmPrimeiroAcesso (mesmo e-mail do `adm` real).
+var papeisContasDeTesteTreinamento = []struct {
+	papel string
+	nome  string
+}{
+	{PapelUsuario, "Usuário (teste)"},
+	{PapelAlmoxarife, "Almoxarife (teste)"},
+	{PapelGestor, "Gestor (teste)"},
+}
+
+// provisionarContasDeTesteTreinamento cria, na Empresa de Treinamento
+// `treino`, uma conta JÁ COM SENHA (nunca first-access) por papel de
+// papeisContasDeTesteTreinamento — usuário/almoxarife/gestor, cada um vendo
+// exatamente as restrições do próprio papel, para quem for testar o produto
+// sem precisar que o `adm` real convide ninguém. O e-mail
+// `{papel}.treinamento@{treino.Slug}.local` é único por construção (o slug
+// já é único na plataforma, Story 9.1) — nunca colide com o de outra Empresa,
+// mesmo com a restrição de e-mail único entre Empresas reais (Story 15.1,
+// que não olha para dentro de Treinamentos).
+func provisionarContasDeTesteTreinamento(tx *sql.Tx, treino Empresa) error {
+	hash, err := bcrypt.GenerateFromPassword([]byte(senhaContasDeTesteTreinamento), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("falha ao gerar hash das contas de teste do treinamento: %w", err)
+	}
+
+	const insert = `
+		INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, empresa_id)
+		VALUES ($1, $2, $3, $4, true, true, $5)`
+	for _, p := range papeisContasDeTesteTreinamento {
+		email := p.papel + ".treinamento@" + treino.Slug + ".local"
+		if _, err := tx.Exec(insert, p.nome, email, hash, p.papel, treino.ID); err != nil {
+			return fmt.Errorf("falha ao criar conta de teste (%s) do treinamento: %w", p.papel, err)
+		}
+	}
+	return nil
 }
 
 // provisionarAdmPrimeiroAcesso cria o `adm` de `empresa` sem senha

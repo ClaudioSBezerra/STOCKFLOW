@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // Testes da gestão de Empresas pelo Dono — Story 9.2, spec-9-2 (AC 2, 3, 4 e
@@ -129,12 +131,15 @@ type admPrimeiroAcesso struct {
 
 func lerAdmPrimeiroAcesso(t *testing.T, db *sql.DB, empresaID string) admPrimeiroAcesso {
 	t.Helper()
-	if n := contar(t, db, `SELECT count(*) FROM usuarios WHERE empresa_id = $1`, empresaID); n != 1 {
-		t.Fatalf("usuarios da empresa %s = %d, want 1 (só o adm)", empresaID, n)
+	// Filtra por papel = 'adm' (não conta todos os usuarios da Empresa):
+	// desde a Story 18 (contas de teste automáticas), o Treinamento também
+	// carrega usuario/almoxarife/gestor de demonstração ao lado do adm.
+	if n := contar(t, db, `SELECT count(*) FROM usuarios WHERE empresa_id = $1 AND papel = 'adm'`, empresaID); n != 1 {
+		t.Fatalf("adms da empresa %s = %d, want 1", empresaID, n)
 	}
 	var a admPrimeiroAcesso
 	if err := db.QueryRow(
-		`SELECT id, nome, email, papel, senha_hash IS NULL, email_verificado FROM usuarios WHERE empresa_id = $1`, empresaID,
+		`SELECT id, nome, email, papel, senha_hash IS NULL, email_verificado FROM usuarios WHERE empresa_id = $1 AND papel = 'adm'`, empresaID,
 	).Scan(&a.id, &a.nome, &a.email, &a.papel, &a.semSenha, &a.verificado); err != nil {
 		t.Fatalf("ler adm: %v", err)
 	}
@@ -558,6 +563,62 @@ func TestCriarEmpresaComTreinamento_Trial(t *testing.T) {
 	}
 	if achada == nil || achada.TrialTerminaEm == nil || !achada.TrialTerminaEm.Equal(*empresa.TrialTerminaEm) {
 		t.Errorf("listagem: trialTerminaEm = %+v, want igual ao gravado", achada)
+	}
+}
+
+// TestCriarEmpresaComTreinamento_ContasDeTesteSoNoTreinamento prova que o
+// Treinamento (e só ele) ganha uma conta com senha já definida por papel
+// (usuario/almoxarife/gestor), com e-mail único por Empresa e a senha fixa
+// documentada — nunca a Empresa real, que continua só com o `adm`.
+func TestCriarEmpresaComTreinamento_ContasDeTesteSoNoTreinamento(t *testing.T) {
+	db := testDB(t)
+	comParLimpo(t, db, "plat-contas-teste")
+
+	empresa, treino, err := CriarEmpresaComTreinamento(db, testEmailCfg, novaEmpresaTeste("plat-contas-teste", "901234560003", "Cliente Contas Teste"))
+	if err != nil {
+		t.Fatalf("CriarEmpresaComTreinamento: %v", err)
+	}
+
+	if n := contar(t, db, `SELECT count(*) FROM usuarios WHERE empresa_id = $1`, empresa.ID); n != 1 {
+		t.Errorf("usuarios da empresa real = %d, want 1 (só o adm, sem conta de teste)", n)
+	}
+
+	linhas, err := db.Query(
+		`SELECT email, papel, senha_hash, email_verificado, ativo FROM usuarios
+		 WHERE empresa_id = $1 AND papel <> 'adm' ORDER BY papel`, treino.ID,
+	)
+	if err != nil {
+		t.Fatalf("query contas de teste: %v", err)
+	}
+	defer linhas.Close()
+
+	esperados := map[string]string{
+		PapelAlmoxarife: "almoxarife.treinamento@plat-contas-teste-treinamento.local",
+		PapelGestor:     "gestor.treinamento@plat-contas-teste-treinamento.local",
+		PapelUsuario:    "usuario.treinamento@plat-contas-teste-treinamento.local",
+	}
+	vistos := map[string]bool{}
+	for linhas.Next() {
+		var email, papel, senhaHash string
+		var verificado, ativo bool
+		if err := linhas.Scan(&email, &papel, &senhaHash, &verificado, &ativo); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if esperados[papel] != email {
+			t.Errorf("papel %s: email = %q, want %q", papel, email, esperados[papel])
+		}
+		if !verificado || !ativo {
+			t.Errorf("papel %s: verificado=%v ativo=%v, want true/true", papel, verificado, ativo)
+		}
+		if bcrypt.CompareHashAndPassword([]byte(senhaHash), []byte(senhaContasDeTesteTreinamento)) != nil {
+			t.Errorf("papel %s: senha_hash não confere com a senha fixa documentada", papel)
+		}
+		vistos[papel] = true
+	}
+	for papel := range esperados {
+		if !vistos[papel] {
+			t.Errorf("conta de teste do papel %s não foi criada", papel)
+		}
 	}
 }
 

@@ -135,11 +135,14 @@ func TestAdotarEmpresaFundadora_CriaParSemAdmNaReal(t *testing.T) {
 		t.Errorf("produtos de exemplo do treinamento = %d, want 5", n)
 	}
 
+	// Filtra por papel = 'adm' (não conta todos os usuarios do Treinamento):
+	// desde a Story 18 (contas de teste automáticas), ele também carrega
+	// usuario/almoxarife/gestor de demonstração ao lado do adm.
 	var senhaHash sql.NullString
 	var papel string
 	var verificado bool
 	if err := db.QueryRow(
-		`SELECT senha_hash, papel, email_verificado FROM usuarios WHERE empresa_id = $1`, treino.ID,
+		`SELECT senha_hash, papel, email_verificado FROM usuarios WHERE empresa_id = $1 AND papel = 'adm'`, treino.ID,
 	).Scan(&senhaHash, &papel, &verificado); err != nil {
 		t.Fatalf("ler adm do treinamento: %v", err)
 	}
