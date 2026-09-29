@@ -765,3 +765,11 @@ source_spec: `spec-17-5-locais-movimentacoes-e-usuarios-no-padrao-de-lista.md`
 severity: low
 reason: Sem validação cruzada dos dois parâmetros.
 status: open
+
+### DW-96: `alterarTrial` (EmpresasPage.tsx) chama `recarregar()` dentro do mesmo `try` da escrita — se a escrita tiver sucesso mas o `recarregar()` (GET) falhar por motivo transitório, o usuário vê erro mesmo c
+origin: spec-deferred 21efd4a9dc7f
+location: frontend/src/pages/plataforma/EmpresasPage.tsx (alterarTrial/alterarStatus)
+source_spec: `spec-18-3-dono-da-plataforma-estende-ou-isenta-o-trial.md`
+severity: low
+reason: Mesmo padrão já existente em `alterarStatus` (não introduzido por esta story) — risco pré-existente no arquivo, não causado pela Story 18.3, só reaproveitado por ela.
+status: open

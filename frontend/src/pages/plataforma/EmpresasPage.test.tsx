@@ -37,12 +37,19 @@ const EMPRESA: EmpresaResumo = {
   criadoEm: '2026-09-10T12:00:00Z',
   adm: { nome: 'Ana Adm', email: 'ana@acme.com' },
   mfaObrigatorio: true,
-  treinamento: { id: 'emp-1-t', slug: 'acme-obras-treinamento', status: 'ativa', mfaObrigatorio: false },
+  treinamento: {
+    id: 'emp-1-t',
+    slug: 'acme-obras-treinamento',
+    status: 'ativa',
+    mfaObrigatorio: false,
+    trialTerminaEm: null,
+  },
   trialTerminaEm: null,
 };
 
 let empresas: EmpresaResumo[];
 let criarResp: () => Promise<unknown>;
+let trialResp: (url: string, corpo: string) => Promise<unknown>;
 const fetchMock = vi.fn();
 
 function ok(body: unknown, status = 200) {
@@ -97,6 +104,7 @@ describe('EmpresasPage (Story 9.2)', () => {
     setTokenPlataforma('tk-dono');
     empresas = [EMPRESA];
     criarResp = () => ok({ empresa: { id: 'nova' }, treinamento: { id: 'nova-t' } }, 201);
+    trialResp = (url) => ok({ empresa: { id: url.split('/')[4] } });
     fetchMock.mockReset();
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       const metodo = init?.method ?? 'GET';
@@ -111,6 +119,9 @@ describe('EmpresasPage (Story 9.2)', () => {
           { ...EMPRESA, status: 'inativa', treinamento: { ...EMPRESA.treinamento!, status: 'inativa' } },
         ];
         return ok({ empresa: { id: 'emp-1', status: 'inativa' } });
+      }
+      if (url.includes('/trial/extensao') || url.includes('/trial/isencao')) {
+        return trialResp(url, (init?.body as string) ?? '');
       }
       if (url === '/api/plataforma/auth/logout') {
         return ok({}, 204);
@@ -233,9 +244,9 @@ describe('EmpresasPage (Story 9.2)', () => {
     const emCincoDias = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString();
     const haTresDias = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
     empresas = [
-      { ...EMPRESA, id: 'emp-futuro', nomeFantasia: 'Cliente Em Teste', trialTerminaEm: emCincoDias },
-      { ...EMPRESA, id: 'emp-vencido', nomeFantasia: 'Cliente Vencido', trialTerminaEm: haTresDias },
-      { ...EMPRESA, id: 'emp-isento', nomeFantasia: 'Cliente Isento', trialTerminaEm: null },
+      { ...EMPRESA, id: 'emp-futuro', nomeFantasia: 'Cliente Em Teste', trialTerminaEm: emCincoDias, treinamento: null },
+      { ...EMPRESA, id: 'emp-vencido', nomeFantasia: 'Cliente Vencido', trialTerminaEm: haTresDias, treinamento: null },
+      { ...EMPRESA, id: 'emp-isento', nomeFantasia: 'Cliente Isento', trialTerminaEm: null, treinamento: null },
     ];
     renderPage();
 
@@ -246,10 +257,113 @@ describe('EmpresasPage (Story 9.2)', () => {
 
   it('Story 18.1: prazo vencido há poucas horas conta como vencido, não como "0 dias restantes"', async () => {
     const haPoucasHoras = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-    empresas = [{ ...EMPRESA, trialTerminaEm: haPoucasHoras }];
+    empresas = [{ ...EMPRESA, trialTerminaEm: haPoucasHoras, treinamento: null }];
     renderPage();
 
     expect(await screen.findByText('Teste: Vencido há 1 dia')).toBeInTheDocument();
+  });
+
+  it('Story 18.3: mostra o prazo de teste do Treinamento na mesma linha da Empresa', async () => {
+    const emCincoDias = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString();
+    const haTresDias = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+    empresas = [
+      {
+        ...EMPRESA,
+        trialTerminaEm: emCincoDias,
+        treinamento: { ...EMPRESA.treinamento!, trialTerminaEm: haTresDias },
+      },
+    ];
+    renderPage();
+
+    expect(
+      await screen.findByText('Teste: 5 dias restantes · Treinamento: Vencido há 3 dias'),
+    ).toBeInTheDocument();
+  });
+
+  it('Story 18.3: estende o teste da Empresa — abre o diálogo, envia os dias certos e recarrega', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('Acme Obras');
+
+    await user.click(screen.getByRole('button', { name: 'Estender teste de Acme Obras' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent('Estender teste de Acme Obras');
+
+    await user.clear(within(dialog).getByLabelText('Dias a somar a partir de agora'));
+    await user.type(within(dialog).getByLabelText('Dias a somar a partir de agora'), '45');
+    await user.click(within(dialog).getByRole('button', { name: 'Estender' }));
+
+    await waitFor(() =>
+      expect(chamadas('POST', '/api/plataforma/empresas/emp-1/trial/extensao')).toHaveLength(1),
+    );
+    const [, init] = chamadas('POST', '/api/plataforma/empresas/emp-1/trial/extensao')[0];
+    expect(JSON.parse(init.body as string)).toEqual({ dias: 45 });
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('Story 18.3: estende o teste do Treinamento isoladamente (seu próprio id)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('Acme Obras');
+
+    await user.click(
+      screen.getByRole('button', { name: 'Estender teste do Treinamento de Acme Obras' }),
+    );
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Estender' }));
+
+    await waitFor(() =>
+      expect(chamadas('POST', '/api/plataforma/empresas/emp-1-t/trial/extensao')).toHaveLength(1),
+    );
+    expect(chamadas('POST', '/api/plataforma/empresas/emp-1/trial/extensao')).toHaveLength(0);
+  });
+
+  it('Story 18.3: isentar o teste exige confirmação e envia a rota de isenção', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('Acme Obras');
+
+    await user.click(screen.getByRole('button', { name: 'Isentar teste de Acme Obras' }));
+    const dialog = await screen.findByRole('alertdialog');
+    expect(chamadas('POST', '/api/plataforma/empresas/emp-1/trial/isencao')).toHaveLength(0);
+
+    await user.click(within(dialog).getByRole('button', { name: 'Isentar' }));
+
+    await waitFor(() =>
+      expect(chamadas('POST', '/api/plataforma/empresas/emp-1/trial/isencao')).toHaveLength(1),
+    );
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
+  });
+
+  it('Story 18.3: 400 ao estender aparece como erro no diálogo, sem toast de sucesso', async () => {
+    const user = userEvent.setup();
+    trialResp = () => erro(400, 'VALIDATION_ERROR', 'dias deve ser um número inteiro positivo');
+    renderPage();
+    await screen.findByText('Acme Obras');
+
+    await user.click(screen.getByRole('button', { name: 'Estender teste de Acme Obras' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Estender' }));
+
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+      'Dias deve ser um número inteiro positivo',
+    );
+    expect(toastSuccess).not.toHaveBeenCalled();
+  });
+
+  it('Story 18.3: 404 ao isentar aparece como erro (toast), sem toast de sucesso', async () => {
+    const user = userEvent.setup();
+    trialResp = () => erro(404, 'NOT_FOUND', 'empresa não encontrada');
+    renderPage();
+    await screen.findByText('Acme Obras');
+
+    await user.click(screen.getByRole('button', { name: 'Isentar teste de Acme Obras' }));
+    const dialog = await screen.findByRole('alertdialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Isentar' }));
+
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(toastSuccess).not.toHaveBeenCalled();
   });
 
   it('409 mostra a mensagem do servidor num alerta, sem toast de sucesso', async () => {

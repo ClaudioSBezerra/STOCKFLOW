@@ -70,7 +70,14 @@ export interface EmpresaResumo {
   /** Story 14.2: se a Empresa exige dupla autenticação (valor gravado). */
   mfaObrigatorio: boolean;
   /** O `mfaObrigatorio` do Treinamento é o gravado nele — independente do da real. */
-  treinamento: { id: string; slug: string; status: string; mfaObrigatorio: boolean } | null;
+  treinamento: {
+    id: string;
+    slug: string;
+    status: string;
+    mfaObrigatorio: boolean;
+    /** Story 18.3: prazo de teste GRAVADO no Treinamento — independente do da real. */
+    trialTerminaEm: string | null;
+  } | null;
   /** Story 18.1: fim do prazo de teste da Empresa real. `null` = sem prazo (isenta). */
   trialTerminaEm: string | null;
 }
@@ -229,6 +236,33 @@ export function desativarEmpresa(id: string): Promise<void> {
 /** Reativa a Empresa real e o Treinamento dela. */
 export function reativarEmpresa(id: string): Promise<void> {
   return acaoDeStatus(id, 'reativacao');
+}
+
+/**
+ * Estende ou isenta o prazo de teste de `id` — a Empresa real OU o
+ * Treinamento dela, tratados independentemente (Story 18.3): a ação nunca
+ * afeta o outro lado do par. `dias` só é enviado para `'extensao'`.
+ */
+async function acaoDeTrial(id: string, acao: 'extensao' | 'isencao', dias?: number): Promise<void> {
+  const res = await requisitar(`/api/plataforma/empresas/${encodeURIComponent(id)}/trial/${acao}`, {
+    method: 'POST',
+    ...(dias === undefined
+      ? {}
+      : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dias }) }),
+  });
+  if (!res.ok) {
+    throw await erroDaResposta(res);
+  }
+}
+
+/** Estende o prazo de teste de `id` em `dias` a partir de agora (nunca do prazo antigo). */
+export function estenderTrial(id: string, dias: number): Promise<void> {
+  return acaoDeTrial(id, 'extensao', dias);
+}
+
+/** Isenta `id` do prazo de teste (`trial_termina_em = NULL`), sem guardar o valor anterior. */
+export function isentarTrial(id: string): Promise<void> {
+  return acaoDeTrial(id, 'isencao');
 }
 
 /**

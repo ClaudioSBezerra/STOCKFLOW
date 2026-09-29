@@ -10,8 +10,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"stockflow/backend/services"
 )
@@ -183,6 +185,97 @@ func alterarStatusEmpresaHandler(db *sql.DB, status, mensagemAuditoria string) h
 		default:
 			slog.Error("falha ao alterar status da empresa", "dono_id", dono.ID, "empresa_id", id, "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao alterar status da empresa")
+		}
+	}
+}
+
+// estenderTrialRequestMaxBytes limita o corpo de POST .../trial/extensao.
+const estenderTrialRequestMaxBytes = 4 * 1024
+
+// diasEstensaoTrialMax (100 anos) é o teto de `dias` aceito por
+// EstenderTrialHandler: sem ele, `time.Duration(dias) * 24 * time.Hour`
+// pode estourar o int64 de nanossegundos de time.Duration para um `dias`
+// absurdamente grande, envolvendo (wrap) e gravando um `trial_termina_em`
+// sem sentido (possivelmente no passado) em vez de recusar com 400.
+const diasEstensaoTrialMax = 36500
+
+// estenderTrialRequest é o payload de POST .../trial/extensao: `dias` deve
+// ser um inteiro positivo, somado a `time.Now()` (nunca ao prazo antigo).
+type estenderTrialRequest struct {
+	Dias int `json:"dias"`
+}
+
+// EstenderTrialHandler expõe POST /api/plataforma/empresas/{id}/trial/extensao
+// (Story 18.3): grava `trial_termina_em = time.Now() + dias` só na linha de
+// `{id}` — a mesma rota serve tanto a Empresa real quanto o seu Treinamento,
+// sem sincronizar os dois. `dias` ausente, <=0 ou não-inteiro -> 400
+// VALIDATION_ERROR, nada é gravado; `{id}` inexistente ou malformado -> 404
+// NOT_FOUND.
+func EstenderTrialHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		dono, ok := donoDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+		id := r.PathValue("id")
+
+		r.Body = http.MaxBytesReader(w, r.Body, estenderTrialRequestMaxBytes)
+		var req estenderTrialRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "payload inválido")
+			return
+		}
+		if req.Dias <= 0 {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "dias deve ser um número inteiro positivo")
+			return
+		}
+		if req.Dias > diasEstensaoTrialMax {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR",
+				fmt.Sprintf("dias deve ser no máximo %d", diasEstensaoTrialMax))
+			return
+		}
+
+		novoPrazo := time.Now().UTC().Add(time.Duration(req.Dias) * 24 * time.Hour)
+		err := services.AtualizarTrialEmpresa(db, id, &novoPrazo)
+		switch {
+		case err == nil:
+			slog.Info("trial estendido pelo dono da plataforma", "dono_id", dono.ID, "empresa_id", id, "dias", req.Dias)
+			escreverJSON(w, http.StatusOK, map[string]any{
+				"empresa": map[string]any{"id": id, "trialTerminaEm": novoPrazo},
+			})
+		case errors.Is(err, services.ErrEmpresaNaoEncontrada):
+			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "empresa não encontrada")
+		default:
+			slog.Error("falha ao estender o prazo de teste da empresa", "dono_id", dono.ID, "empresa_id", id, "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao estender o prazo de teste da empresa")
+		}
+	}
+}
+
+// IsentarTrialHandler expõe POST /api/plataforma/empresas/{id}/trial/isencao
+// (Story 18.3): grava `trial_termina_em = NULL` só na linha de `{id}`, sem
+// corpo e sem guardar o valor anterior. `{id}` inexistente ou malformado ->
+// 404 NOT_FOUND.
+func IsentarTrialHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		dono, ok := donoDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+		id := r.PathValue("id")
+
+		err := services.AtualizarTrialEmpresa(db, id, nil)
+		switch {
+		case err == nil:
+			slog.Info("trial isentado pelo dono da plataforma", "dono_id", dono.ID, "empresa_id", id)
+			escreverJSON(w, http.StatusOK, map[string]any{
+				"empresa": map[string]any{"id": id, "trialTerminaEm": nil},
+			})
+		case errors.Is(err, services.ErrEmpresaNaoEncontrada):
+			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "empresa não encontrada")
+		default:
+			slog.Error("falha ao isentar o prazo de teste da empresa", "dono_id", dono.ID, "empresa_id", id, "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao isentar o prazo de teste da empresa")
 		}
 	}
 }

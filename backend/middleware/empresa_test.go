@@ -265,6 +265,42 @@ func TestRequireEmpresa_TrialExpiradoBloqueiaComPagamentoRequerido(t *testing.T)
 			t.Error("handler protegido rodou (RequireAuth incluído) — RequireEmpresa deveria ter cortado antes, sem carência")
 		}
 	})
+
+	t.Run("estender ou isentar libera empresa antes bloqueada (Story 18.3)", func(t *testing.T) {
+		empresa := criarEmpresaMiddleware(t, db, "mw-trial-liberado", "54321098000108", "MW Trial Liberado")
+		passado := time.Now().Add(-24 * time.Hour)
+		if _, err := db.Exec(`UPDATE empresas SET trial_termina_em = $1 WHERE id = $2`, passado, empresa.ID); err != nil {
+			t.Fatalf("vencer trial: %v", err)
+		}
+		if w := servirRotaDeEmpresa(db, "mw-trial-liberado", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}, ""); w.Code != http.StatusPaymentRequired {
+			t.Fatalf("pré-condição: status = %d, want 402 (body=%s)", w.Code, w.Body.String())
+		}
+
+		futuro := time.Now().Add(30 * 24 * time.Hour)
+		if err := services.AtualizarTrialEmpresa(db, empresa.ID, &futuro); err != nil {
+			t.Fatalf("AtualizarTrialEmpresa (estender): %v", err)
+		}
+		if w := servirRotaDeEmpresa(db, "mw-trial-liberado", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}, ""); w.Code != http.StatusOK {
+			t.Fatalf("após estender: status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+		}
+
+		// Vence de novo, depois isenta (NULL) em vez de estender: também libera.
+		if _, err := db.Exec(`UPDATE empresas SET trial_termina_em = $1 WHERE id = $2`, passado, empresa.ID); err != nil {
+			t.Fatalf("vencer trial de novo: %v", err)
+		}
+		if err := services.AtualizarTrialEmpresa(db, empresa.ID, nil); err != nil {
+			t.Fatalf("AtualizarTrialEmpresa (isentar): %v", err)
+		}
+		if w := servirRotaDeEmpresa(db, "mw-trial-liberado", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}, ""); w.Code != http.StatusOK {
+			t.Fatalf("após isentar: status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+		}
+	})
 }
 
 // TestRequireEmpresa_ComRequireAuth prova a fronteira que impede um token

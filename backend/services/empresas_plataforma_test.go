@@ -646,6 +646,117 @@ func TestAlterarStatusEmpresa_IdNaoEncontrado(t *testing.T) {
 	}
 }
 
+// trialGravado lê `empresas.trial_termina_em` por `id`.
+func trialGravado(t *testing.T, db *sql.DB, id string) *time.Time {
+	t.Helper()
+	var v sql.NullTime
+	if err := db.QueryRow(`SELECT trial_termina_em FROM empresas WHERE id = $1`, id).Scan(&v); err != nil {
+		t.Fatalf("ler trial_termina_em de %s: %v", id, err)
+	}
+	if !v.Valid {
+		return nil
+	}
+	return &v.Time
+}
+
+// tempoQuaseIgual compara um time.Time em memória (nanossegundo) com um lido
+// de volta do Postgres (`timestamptz`, precisão de microssegundo, com
+// arredondamento): `time.Equal` falharia por uma diferença de sub-
+// microssegundo que não é uma mudança de valor.
+func tempoQuaseIgual(a, b time.Time) bool {
+	d := a.Sub(b)
+	if d < 0 {
+		d = -d
+	}
+	return d < time.Microsecond
+}
+
+// TestAtualizarTrialEmpresa_EstendeSoAEmpresa prova a AC central da Story
+// 18.3: a Empresa real e o seu Treinamento têm `id`s distintos, e estender
+// (ou isentar) um dos dois nunca muda o outro — ao contrário de
+// AlterarStatusEmpresa, que sempre afeta o par junto.
+func TestAtualizarTrialEmpresa_EstendeSoAEmpresa(t *testing.T) {
+	db := testDB(t)
+	comParLimpo(t, db, "plat-trial-independente")
+
+	empresa, treino, err := CriarEmpresaComTreinamento(db, testEmailCfg, novaEmpresaTeste("plat-trial-independente", "901234570002", "Cliente Trial Independente"))
+	if err != nil {
+		t.Fatalf("CriarEmpresaComTreinamento: %v", err)
+	}
+	prazoOriginalTreino := treino.TrialTerminaEm
+
+	antes := time.Now().UTC()
+	novoPrazo := antes.Add(30 * 24 * time.Hour)
+	if err := AtualizarTrialEmpresa(db, empresa.ID, &novoPrazo); err != nil {
+		t.Fatalf("estender empresa real: %v", err)
+	}
+
+	if v := trialGravado(t, db, empresa.ID); v == nil || !tempoQuaseIgual(*v, novoPrazo) {
+		t.Errorf("trial da empresa real = %v, want %v", v, novoPrazo)
+	}
+	if v := trialGravado(t, db, treino.ID); v == nil || prazoOriginalTreino == nil || !tempoQuaseIgual(*v, *prazoOriginalTreino) {
+		t.Errorf("trial do treinamento mudou: %v, want inalterado (%v)", v, prazoOriginalTreino)
+	}
+
+	// Estender agora o Treinamento, isoladamente: a Empresa real permanece com
+	// o prazo já gravado acima.
+	novoPrazoTreino := time.Now().UTC().Add(10 * 24 * time.Hour)
+	if err := AtualizarTrialEmpresa(db, treino.ID, &novoPrazoTreino); err != nil {
+		t.Fatalf("estender treinamento: %v", err)
+	}
+	if v := trialGravado(t, db, treino.ID); v == nil || !tempoQuaseIgual(*v, novoPrazoTreino) {
+		t.Errorf("trial do treinamento = %v, want %v", v, novoPrazoTreino)
+	}
+	if v := trialGravado(t, db, empresa.ID); v == nil || !tempoQuaseIgual(*v, novoPrazo) {
+		t.Errorf("trial da empresa real mudou: %v, want inalterado (%v)", v, novoPrazo)
+	}
+}
+
+// TestAtualizarTrialEmpresa_Isenta prova que isentar grava NULL sem guardar
+// o valor anterior, e sem afetar o outro lado do par.
+func TestAtualizarTrialEmpresa_Isenta(t *testing.T) {
+	db := testDB(t)
+	comParLimpo(t, db, "plat-trial-isenta")
+
+	empresa, treino, err := CriarEmpresaComTreinamento(db, testEmailCfg, novaEmpresaTeste("plat-trial-isenta", "901234580002", "Cliente Trial Isenta"))
+	if err != nil {
+		t.Fatalf("CriarEmpresaComTreinamento: %v", err)
+	}
+
+	if err := AtualizarTrialEmpresa(db, empresa.ID, nil); err != nil {
+		t.Fatalf("isentar: %v", err)
+	}
+	if v := trialGravado(t, db, empresa.ID); v != nil {
+		t.Errorf("trial da empresa real = %v, want nil (isenta)", v)
+	}
+	if v := trialGravado(t, db, treino.ID); v == nil || treino.TrialTerminaEm == nil || !v.Equal(*treino.TrialTerminaEm) {
+		t.Errorf("trial do treinamento mudou ao isentar a real: %v, want inalterado (%v)", v, treino.TrialTerminaEm)
+	}
+}
+
+// TestAtualizarTrialEmpresa_IdNaoEncontrado prova a mesma colisão em
+// ErrEmpresaNaoEncontrada de AlterarStatusEmpresa, e que nada é gravado.
+func TestAtualizarTrialEmpresa_IdNaoEncontrado(t *testing.T) {
+	db := testDB(t)
+	comParLimpo(t, db, "plat-trial-404")
+
+	empresa, _, err := CriarEmpresaComTreinamento(db, testEmailCfg, novaEmpresaTeste("plat-trial-404", "901234590002", "Cliente Trial 404"))
+	if err != nil {
+		t.Fatalf("CriarEmpresaComTreinamento: %v", err)
+	}
+	prazoOriginal := empresa.TrialTerminaEm
+
+	novoPrazo := time.Now().UTC().Add(5 * 24 * time.Hour)
+	for _, id := range []string{"00000000-0000-4000-8000-000000000000", "nao-e-uuid", ""} {
+		if err := AtualizarTrialEmpresa(db, id, &novoPrazo); !errors.Is(err, ErrEmpresaNaoEncontrada) {
+			t.Errorf("AtualizarTrialEmpresa(%q): erro = %v, want ErrEmpresaNaoEncontrada", id, err)
+		}
+	}
+	if v := trialGravado(t, db, empresa.ID); v == nil || prazoOriginal == nil || !v.Equal(*prazoOriginal) {
+		t.Errorf("trial da empresa real mudou por um id recusado: %v, want %v", v, prazoOriginal)
+	}
+}
+
 func TestRenderizarTemplate_PrimeiroAcesso(t *testing.T) {
 	tpl, err := renderizarTemplate("primeiro_acesso", map[string]any{
 		"nome":    "<Ana>",

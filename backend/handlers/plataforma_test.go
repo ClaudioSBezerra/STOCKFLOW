@@ -78,6 +78,8 @@ func muxPlataformaTeste(db *sql.DB) *http.ServeMux {
 	mux.HandleFunc("POST /api/plataforma/empresas", requireDono(CriarEmpresaHandler(db, testEmailCfg, fotosDirPlataformaTeste)))
 	mux.HandleFunc("POST /api/plataforma/empresas/{id}/desativacao", requireDono(DesativarEmpresaHandler(db)))
 	mux.HandleFunc("POST /api/plataforma/empresas/{id}/reativacao", requireDono(ReativarEmpresaHandler(db)))
+	mux.HandleFunc("POST /api/plataforma/empresas/{id}/trial/extensao", requireDono(EstenderTrialHandler(db)))
+	mux.HandleFunc("POST /api/plataforma/empresas/{id}/trial/isencao", requireDono(IsentarTrialHandler(db)))
 	return mux
 }
 
@@ -316,6 +318,8 @@ func TestEmpresasPlataforma_SemTokenOuComTokenDeUsuario(t *testing.T) {
 		{http.MethodPost, "/api/plataforma/empresas"},
 		{http.MethodPost, "/api/plataforma/empresas/qualquer-id/desativacao"},
 		{http.MethodPost, "/api/plataforma/empresas/qualquer-id/reativacao"},
+		{http.MethodPost, "/api/plataforma/empresas/qualquer-id/trial/extensao"},
+		{http.MethodPost, "/api/plataforma/empresas/qualquer-id/trial/isencao"},
 	}
 	for _, r := range rotas {
 		for _, token := range []string{"", tokenUsuario} {
@@ -447,6 +451,143 @@ func TestEmpresasPlataforma_CriarListarDesativarReativar(t *testing.T) {
 	var status string
 	if err := db.QueryRow(`SELECT status FROM empresas WHERE id = $1`, criada.Treinamento.ID).Scan(&status); err != nil || status != "ativa" {
 		t.Errorf("status do treino após reativar = %q (%v), want ativa", status, err)
+	}
+}
+
+// trialGravadoHandlers lê `empresas.trial_termina_em` por `id`.
+func trialGravadoHandlers(t *testing.T, db *sql.DB, id string) *time.Time {
+	t.Helper()
+	var v sql.NullTime
+	if err := db.QueryRow(`SELECT trial_termina_em FROM empresas WHERE id = $1`, id).Scan(&v); err != nil {
+		t.Fatalf("ler trial_termina_em de %s: %v", id, err)
+	}
+	if !v.Valid {
+		return nil
+	}
+	return &v.Time
+}
+
+// TestEmpresasPlataforma_EstenderIsentarTrial cobre a matriz de I/O da Story
+// 18.3 na fronteira HTTP: estender a Empresa real e o Treinamento (cada um
+// com o seu próprio `id`, sem afetar o outro), isentar, `dias` inválido
+// (400 VALIDATION_ERROR, nada gravado) e `{id}` inexistente/malformado (404
+// NOT_FOUND).
+func TestEmpresasPlataforma_EstenderIsentarTrial(t *testing.T) {
+	db := testDB(t)
+	limparParesPlataforma(t, db, "plat-trial-http")
+	id, _ := criarDonoHandlers(t, db)
+	mux := muxPlataformaTeste(db)
+	token, _, _, err := services.EmitirSessaoPlataforma(db, segredoJWTPlataformaHandlers, id)
+	if err != nil {
+		t.Fatalf("EmitirSessaoPlataforma: %v", err)
+	}
+	post := func(caminho, corpo string) *httptest.ResponseRecorder {
+		return despacharPlataforma(mux, reqPlataforma{metodo: http.MethodPost, caminho: caminho, token: token, corpo: corpo})
+	}
+
+	w := post("/api/plataforma/empresas", corpoNovaEmpresa("plat-trial-http", "91222333000110", "PE"))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("criar: status = %d (body=%s)", w.Code, w.Body.String())
+	}
+	var criada struct {
+		Empresa     services.Empresa `json:"empresa"`
+		Treinamento services.Empresa `json:"treinamento"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &criada); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	prazoOriginalTreino := criada.Treinamento.TrialTerminaEm
+
+	// A listagem expõe o trial do Treinamento aninhado (Story 18.3), igual ao
+	// gravado na criação (herdado da Empresa real, Story 18.1).
+	wLista := despacharPlataforma(mux, reqPlataforma{metodo: http.MethodGet, caminho: "/api/plataforma/empresas", token: token})
+	if wLista.Code != http.StatusOK {
+		t.Fatalf("listar: status = %d (body=%s)", wLista.Code, wLista.Body.String())
+	}
+	var lista struct {
+		Empresas []services.EmpresaResumo `json:"empresas"`
+	}
+	if err := json.Unmarshal(wLista.Body.Bytes(), &lista); err != nil {
+		t.Fatalf("decode lista: %v", err)
+	}
+	var achadaNaLista bool
+	for _, e := range lista.Empresas {
+		if e.ID != criada.Empresa.ID {
+			continue
+		}
+		achadaNaLista = true
+		if e.Treinamento == nil || e.Treinamento.TrialTerminaEm == nil || prazoOriginalTreino == nil ||
+			!e.Treinamento.TrialTerminaEm.Equal(*prazoOriginalTreino) {
+			t.Errorf("listagem: treinamento.trialTerminaEm = %v, want %v (não-nulo, igual ao gravado na criação)",
+				e.Treinamento, prazoOriginalTreino)
+		}
+	}
+	if !achadaNaLista {
+		t.Fatal("empresa recém-criada ausente da listagem")
+	}
+
+	// Estender a Empresa real: 200, prazo = now()+30d, Treinamento inalterado.
+	antes := time.Now().UTC()
+	w = post("/api/plataforma/empresas/"+criada.Empresa.ID+"/trial/extensao", `{"dias":30}`)
+	depois := time.Now().UTC()
+	if w.Code != http.StatusOK {
+		t.Fatalf("estender empresa real: status = %d (body=%s)", w.Code, w.Body.String())
+	}
+	novoPrazo := trialGravadoHandlers(t, db, criada.Empresa.ID)
+	if novoPrazo == nil || novoPrazo.Before(antes.Add(30*24*time.Hour)) || novoPrazo.After(depois.Add(30*24*time.Hour)) {
+		t.Errorf("trial da empresa real = %v, want entre %v e %v", novoPrazo, antes.Add(30*24*time.Hour), depois.Add(30*24*time.Hour))
+	}
+	if v := trialGravadoHandlers(t, db, criada.Treinamento.ID); v == nil || prazoOriginalTreino == nil || !v.Equal(*prazoOriginalTreino) {
+		t.Errorf("trial do treinamento mudou ao estender a real: %v, want %v", v, prazoOriginalTreino)
+	}
+
+	// Estender só o Treinamento, isoladamente.
+	w = post("/api/plataforma/empresas/"+criada.Treinamento.ID+"/trial/extensao", `{"dias":10}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("estender treinamento: status = %d (body=%s)", w.Code, w.Body.String())
+	}
+	if v := trialGravadoHandlers(t, db, criada.Empresa.ID); v == nil || !v.Equal(*novoPrazo) {
+		t.Errorf("trial da empresa real mudou ao estender o treinamento: %v, want %v", v, novoPrazo)
+	}
+
+	// `dias` inválido: 400, nada gravado. `36501` (acima do teto de 36500,
+	// 100 anos) e `999999999999` (estouraria time.Duration em nanossegundos e
+	// envolveria/wraparound para um prazo sem sentido) também são recusados.
+	prazoAntesInvalidos := trialGravadoHandlers(t, db, criada.Empresa.ID)
+	for _, corpo := range []string{`{"dias":0}`, `{"dias":-5}`, `{}`, `{"dias":1.5}`, ``, `{"dias":36501}`, `{"dias":999999999999}`} {
+		w = post("/api/plataforma/empresas/"+criada.Empresa.ID+"/trial/extensao", corpo)
+		if w.Code != http.StatusBadRequest || codigoDeErro(t, w) != "VALIDATION_ERROR" {
+			t.Errorf("dias=%q: status/code = %d/%s, want 400/VALIDATION_ERROR (body=%s)", corpo, w.Code, codigoDeErro(t, w), w.Body.String())
+		}
+	}
+	if v := trialGravadoHandlers(t, db, criada.Empresa.ID); v == nil || prazoAntesInvalidos == nil || !v.Equal(*prazoAntesInvalidos) {
+		t.Errorf("trial da empresa real mudou com dias inválido: %v, want %v", v, prazoAntesInvalidos)
+	}
+
+	// `{id}` inexistente/malformado -> 404, nas duas rotas.
+	for _, sufixo := range []string{"/trial/extensao", "/trial/isencao"} {
+		corpo := ""
+		if sufixo == "/trial/extensao" {
+			corpo = `{"dias":5}`
+		}
+		for _, idInvalido := range []string{"00000000-0000-4000-8000-000000000000", "nao-e-uuid"} {
+			if w := post("/api/plataforma/empresas/"+idInvalido+sufixo, corpo); w.Code != http.StatusNotFound || codigoDeErro(t, w) != "NOT_FOUND" {
+				t.Errorf("%s %q: status/code = %d/%s, want 404/NOT_FOUND", sufixo, idInvalido, w.Code, codigoDeErro(t, w))
+			}
+		}
+	}
+
+	// Isentar: exige confirmação no frontend (fora deste teste); aqui, 200 e
+	// trial_termina_em = NULL, sem afetar o Treinamento.
+	w = post("/api/plataforma/empresas/"+criada.Empresa.ID+"/trial/isencao", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("isentar: status = %d (body=%s)", w.Code, w.Body.String())
+	}
+	if v := trialGravadoHandlers(t, db, criada.Empresa.ID); v != nil {
+		t.Errorf("trial da empresa real após isentar = %v, want nil", v)
+	}
+	if v := trialGravadoHandlers(t, db, criada.Treinamento.ID); v == nil {
+		t.Error("trial do treinamento foi isentado junto com a empresa real")
 	}
 }
 

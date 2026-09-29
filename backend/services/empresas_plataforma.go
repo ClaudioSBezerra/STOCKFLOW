@@ -88,6 +88,10 @@ type TreinamentoResumo struct {
 	// MFAObrigatorio (Story 14.2) é o valor GRAVADO no Treinamento — nunca
 	// derivado do da Empresa real (as duas são independentes após a criação).
 	MFAObrigatorio bool `json:"mfaObrigatorio"`
+	// TrialTerminaEm (Story 18.3): o prazo de teste GRAVADO no Treinamento —
+	// independente do da Empresa real (AtualizarTrialEmpresa nunca sincroniza
+	// os dois). `nil` = sem prazo (isento).
+	TrialTerminaEm *time.Time `json:"trialTerminaEm"`
 }
 
 // EmpresaResumo é uma linha da área "Empresas" do Dono: SÓ metadado
@@ -375,7 +379,7 @@ func ListarEmpresasPlataforma(db *sql.DB) ([]EmpresaResumo, error) {
 		SELECT e.id, e.nome_fantasia, e.razao_social, e.cnpj,
 		       e.logradouro, e.numero, e.complemento, e.bairro, e.cidade, e.cep, e.uf,
 		       e.slug, e.status, e.criado_em, e.mfa_obrigatorio, e.trial_termina_em,
-		       t.id, t.slug, t.status, t.mfa_obrigatorio,
+		       t.id, t.slug, t.status, t.mfa_obrigatorio, t.trial_termina_em,
 		       a.nome, a.email
 		FROM empresas e
 		LEFT JOIN empresas t ON t.empresa_origem_id = e.id
@@ -399,13 +403,13 @@ func ListarEmpresasPlataforma(db *sql.DB) ([]EmpresaResumo, error) {
 		var e EmpresaResumo
 		var complemento, treinoID, treinoSlug, treinoStatus, admNome, admEmail sql.NullString
 		var treinoMFA sql.NullBool // LEFT JOIN: nulo quando não há Treinamento
-		var trialTerminaEm sql.NullTime
+		var trialTerminaEm, treinoTrialTerminaEm sql.NullTime
 		if err := rows.Scan(
 			&e.ID, &e.NomeFantasia, &e.RazaoSocial, &e.CNPJ,
 			&e.Endereco.Logradouro, &e.Endereco.Numero, &complemento, &e.Endereco.Bairro,
 			&e.Endereco.Cidade, &e.Endereco.CEP, &e.Endereco.UF,
 			&e.Slug, &e.Status, &e.CriadoEm, &e.MFAObrigatorio, &trialTerminaEm,
-			&treinoID, &treinoSlug, &treinoStatus, &treinoMFA,
+			&treinoID, &treinoSlug, &treinoStatus, &treinoMFA, &treinoTrialTerminaEm,
 			&admNome, &admEmail,
 		); err != nil {
 			return nil, fmt.Errorf("falha ao ler empresa da listagem: %w", err)
@@ -418,6 +422,9 @@ func ListarEmpresasPlataforma(db *sql.DB) ([]EmpresaResumo, error) {
 			e.Treinamento = &TreinamentoResumo{
 				ID: treinoID.String, Slug: treinoSlug.String, Status: treinoStatus.String,
 				MFAObrigatorio: treinoMFA.Bool,
+			}
+			if treinoTrialTerminaEm.Valid {
+				e.Treinamento.TrialTerminaEm = &treinoTrialTerminaEm.Time
 			}
 		}
 		if admNome.Valid {
@@ -499,4 +506,36 @@ func AlterarStatusEmpresa(db *sql.DB, empresaID, status string) error {
 		return fmt.Errorf("falha ao commitar alteração de status da empresa: %w", err)
 	}
 	return nil
+}
+
+// AtualizarTrialEmpresa estende ou isenta o prazo de teste de UMA linha de
+// `empresas` — a Empresa real OU o seu Treinamento, cada um com o seu
+// próprio `id` (Story 18.3). Ao contrário de AlterarStatusEmpresa, o
+// `UPDATE` NUNCA atinge o par via `empresa_origem_id`: estender/isentar a
+// Empresa real nunca muda o Treinamento e vice-versa (ver Design Notes,
+// spec-18-3).
+//
+// `trialTerminaEm` nil isenta (`trial_termina_em = NULL`, sem guardar o
+// valor anterior); não-nil grava esse valor direto — quem soma os dias ao
+// `now()` é o chamador (handler), nunca esta função a partir do prazo
+// antigo.
+//
+// `{id}` inexistente ou malformado -> ErrEmpresaNaoEncontrada (mesmo padrão
+// de AlterarStatusEmpresa).
+func AtualizarTrialEmpresa(db *sql.DB, empresaID string, trialTerminaEm *time.Time) error {
+	const atualizar = `UPDATE empresas SET trial_termina_em = $2 WHERE id = $1 RETURNING id`
+	var id string
+	err := db.QueryRow(atualizar, empresaID, trialTerminaEm).Scan(&id)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, sql.ErrNoRows):
+		return ErrEmpresaNaoEncontrada
+	default:
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation {
+			return ErrEmpresaNaoEncontrada
+		}
+		return fmt.Errorf("falha ao atualizar o prazo de teste da empresa: %w", err)
+	}
 }

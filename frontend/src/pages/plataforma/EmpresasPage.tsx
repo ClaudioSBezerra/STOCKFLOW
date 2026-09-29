@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type ComponentProps, type FormEvent }
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -12,7 +13,9 @@ import {
   SLUG_MAX_EMPRESA,
   criarEmpresa,
   desativarEmpresa,
+  estenderTrial,
   formatarCNPJ,
+  isentarTrial,
   limparTokenPlataforma,
   listarEmpresas,
   logoutPlataforma,
@@ -61,6 +64,27 @@ const MENSAGEM_SUCESSO = 'Empresa criada. O administrador receberá um e-mail pa
 const MENSAGEM_FALHA_CRIAR = 'Não foi possível criar a empresa. Tente novamente em instantes.';
 const MENSAGEM_FALHA_LISTA = 'Não foi possível carregar as empresas. Tente novamente em instantes.';
 const MENSAGEM_FALHA_STATUS = 'Não foi possível alterar o status da empresa. Tente novamente em instantes.';
+const MENSAGEM_FALHA_TRIAL = 'Não foi possível alterar o prazo de teste. Tente novamente em instantes.';
+
+/** Teto de `dias` do diálogo "Estender teste" — espelha `diasEstensaoTrialMax` (100 anos) do backend. */
+const DIAS_ESTENDER_TRIAL_MAX = 36500;
+
+/** Story 18.3: a Empresa real OU o Treinamento dela — cada ação de trial atinge só um `id`. */
+interface AlvoTrial {
+  id: string;
+  /** Nome exibido em títulos/mensagens: "Acme Obras" ou "Treinamento de Acme Obras". */
+  rotulo: string;
+}
+
+/**
+ * Sentinel devolvido por `alterarTrial` quando a sessão encerrou: a ação NÃO
+ * foi aplicada (o request voltou 401 e a segunda tentativa também) e
+ * `irParaLogin()` já disparou o redirecionamento — o chamador não deve
+ * mostrar toast nenhum (nem de sucesso, nem de erro) para essa resposta.
+ * Precisa ser distinguível de `null` (sucesso real) e de uma mensagem de erro
+ * de verdade (string vinda do servidor).
+ */
+const SESSAO_ENCERRADA = Symbol('sessao-encerrada');
 
 /** 401 depois da tentativa de renovação: a sessão do Dono acabou. */
 function sessaoEncerrada(e: unknown): boolean {
@@ -167,6 +191,12 @@ export function EmpresasPage() {
   const [erroForm, setErroForm] = useState<string | null>(null);
   const [paraDesativar, setParaDesativar] = useState<EmpresaResumo | null>(null);
   const [alterandoId, setAlterandoId] = useState<string | null>(null);
+  const [paraEstender, setParaEstender] = useState<AlvoTrial | null>(null);
+  const [diasEstender, setDiasEstender] = useState('30');
+  const [enviandoTrial, setEnviandoTrial] = useState(false);
+  const [erroEstender, setErroEstender] = useState<string | null>(null);
+  const [paraIsentar, setParaIsentar] = useState<AlvoTrial | null>(null);
+  const [trialEmAndamentoId, setTrialEmAndamentoId] = useState<string | null>(null);
 
   const irParaLogin = useCallback(() => {
     limparTokenPlataforma();
@@ -301,6 +331,97 @@ export function EmpresasPage() {
     } finally {
       setAlterandoId(null);
     }
+  }
+
+  /**
+   * Estende ou isenta o prazo de teste de UM `id` — a Empresa real OU o seu
+   * Treinamento, nunca os dois (Story 18.3). Devolve `null` em sucesso (já
+   * recarregou a lista), `SESSAO_ENCERRADA` se a sessão expirou (já
+   * redirecionando, sem toast), ou a mensagem de erro para o chamador
+   * decidir como mostrar (inline no diálogo de "Estender", toast no de
+   * "Isentar").
+   */
+  async function alterarTrial(
+    id: string,
+    acao: 'extensao' | 'isencao',
+    dias?: number,
+  ): Promise<string | null | typeof SESSAO_ENCERRADA> {
+    try {
+      if (acao === 'extensao') {
+        await estenderTrial(id, dias ?? 0);
+      } else {
+        await isentarTrial(id);
+      }
+      await recarregar();
+      return null;
+    } catch (e) {
+      if (sessaoEncerrada(e)) {
+        irParaLogin();
+        return SESSAO_ENCERRADA;
+      }
+      if (e instanceof ErroPlataforma && (e.status === 400 || e.status === 404) && e.mensagem) {
+        return capitalizar(e.mensagem);
+      }
+      return MENSAGEM_FALHA_TRIAL;
+    }
+  }
+
+  function abrirEstenderTrial(alvo: AlvoTrial) {
+    setDiasEstender('30');
+    setErroEstender(null);
+    setParaEstender(alvo);
+  }
+
+  async function enviarEstenderTrial(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!paraEstender || enviandoTrial) {
+      return;
+    }
+    const dias = Number(diasEstender);
+    setErroEstender(null);
+    setEnviandoTrial(true);
+    setTrialEmAndamentoId(paraEstender.id);
+    const resultado = await alterarTrial(paraEstender.id, 'extensao', dias);
+    setEnviandoTrial(false);
+    // Só limpa se ainda for o `id` desta chamada: outra ação (outro `id`) pode
+    // ter iniciado enquanto esta estava pendente e já ter assumido o estado
+    // "em andamento" — limpar sem essa checagem reabriria os botões dela cedo
+    // demais, ainda com a requisição dela em voo.
+    setTrialEmAndamentoId((atual) => (atual === paraEstender.id ? null : atual));
+    if (resultado === SESSAO_ENCERRADA) {
+      // Já redirecionando para o login: a ação não foi aplicada, e não há
+      // diálogo para mostrar erro nem sucesso.
+      return;
+    }
+    if (resultado) {
+      setErroEstender(resultado);
+      return;
+    }
+    toast.success(`Teste de ${paraEstender.rotulo} estendido em ${dias} dia${dias === 1 ? '' : 's'}.`);
+    setParaEstender(null);
+  }
+
+  function confirmarIsentarTrial() {
+    const alvo = paraIsentar;
+    if (!alvo) {
+      return;
+    }
+    setTrialEmAndamentoId(alvo.id);
+    void (async () => {
+      const resultado = await alterarTrial(alvo.id, 'isencao');
+      // Mesma checagem de enviarEstenderTrial: não limpar o `id` de uma
+      // ação diferente que tenha assumido "em andamento" nesse meio-tempo.
+      setTrialEmAndamentoId((atual) => (atual === alvo.id ? null : atual));
+      if (resultado === SESSAO_ENCERRADA) {
+        // Já redirecionando para o login: a ação não foi aplicada, sem toast.
+        return;
+      }
+      if (resultado) {
+        toast.error(resultado);
+      } else {
+        toast.success(`Teste de ${alvo.rotulo} isentado.`);
+      }
+    })();
   }
 
   async function sair() {
@@ -532,33 +653,92 @@ export function EmpresasPage() {
                             ? ` · Treinamento: ${textoMFA(empresa.treinamento.mfaObrigatorio)}`
                             : null}
                         </span>
-                        <span>Teste: {textoTrial(empresa.trialTerminaEm)}</span>
+                        <span>
+                          {`Teste: ${textoTrial(empresa.trialTerminaEm)}${empresa.treinamento ? ` · Treinamento: ${textoTrial(empresa.treinamento.trialTerminaEm)}` : ''}`}
+                        </span>
                         <span className="text-muted-foreground">
                           Criada em {formatarData(empresa.criadoEm)}
                         </span>
                       </div>
-                      <div className="shrink-0">
-                        {empresa.status === 'ativa' ? (
-                          <Button
-                            variant="destructive"
-                            className="min-h-touch-target-min"
-                            aria-label={`Desativar ${empresa.nomeFantasia}`}
-                            disabled={alterandoId === empresa.id}
-                            onClick={() => setParaDesativar(empresa)}
-                          >
-                            Desativar
-                          </Button>
-                        ) : (
+                      <div className="flex shrink-0 flex-col items-stretch gap-2 sm:items-end">
+                        <div className="flex flex-wrap gap-2 sm:justify-end">
+                          {empresa.status === 'ativa' ? (
+                            <Button
+                              variant="destructive"
+                              className="min-h-touch-target-min"
+                              aria-label={`Desativar ${empresa.nomeFantasia}`}
+                              disabled={alterandoId === empresa.id}
+                              onClick={() => setParaDesativar(empresa)}
+                            >
+                              Desativar
+                            </Button>
+                          ) : (
+                            <Button
+                              variant="outline"
+                              className="min-h-touch-target-min"
+                              aria-label={`Reativar ${empresa.nomeFantasia}`}
+                              disabled={alterandoId === empresa.id}
+                              onClick={() => void alterarStatus(empresa, 'reativar')}
+                            >
+                              Reativar
+                            </Button>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap gap-2 sm:justify-end">
                           <Button
                             variant="outline"
-                            className="min-h-touch-target-min"
-                            aria-label={`Reativar ${empresa.nomeFantasia}`}
-                            disabled={alterandoId === empresa.id}
-                            onClick={() => void alterarStatus(empresa, 'reativar')}
+                            size="sm"
+                            aria-label={`Estender teste de ${empresa.nomeFantasia}`}
+                            disabled={trialEmAndamentoId === empresa.id}
+                            onClick={() =>
+                              abrirEstenderTrial({ id: empresa.id, rotulo: empresa.nomeFantasia })
+                            }
                           >
-                            Reativar
+                            Estender teste
                           </Button>
-                        )}
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            aria-label={`Isentar teste de ${empresa.nomeFantasia}`}
+                            disabled={trialEmAndamentoId === empresa.id}
+                            onClick={() =>
+                              setParaIsentar({ id: empresa.id, rotulo: empresa.nomeFantasia })
+                            }
+                          >
+                            Isentar teste
+                          </Button>
+                        </div>
+                        {(() => {
+                          const treinamento = empresa.treinamento;
+                          if (!treinamento) return null;
+                          const rotuloTreino = `Treinamento de ${empresa.nomeFantasia}`;
+                          return (
+                            <div className="flex flex-wrap gap-2 sm:justify-end">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                aria-label={`Estender teste do Treinamento de ${empresa.nomeFantasia}`}
+                                disabled={trialEmAndamentoId === treinamento.id}
+                                onClick={() =>
+                                  abrirEstenderTrial({ id: treinamento.id, rotulo: rotuloTreino })
+                                }
+                              >
+                                Estender teste
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                aria-label={`Isentar teste do Treinamento de ${empresa.nomeFantasia}`}
+                                disabled={trialEmAndamentoId === treinamento.id}
+                                onClick={() =>
+                                  setParaIsentar({ id: treinamento.id, rotulo: rotuloTreino })
+                                }
+                              >
+                                Isentar teste
+                              </Button>
+                            </div>
+                          );
+                        })()}
                       </div>
                     </CardContent>
                   </Card>
@@ -586,6 +766,65 @@ export function EmpresasPage() {
         description="Ninguém desta empresa nem do Ambiente de Treinamento dela conseguirá entrar enquanto ela estiver desativada. Nenhum dado é apagado — você pode reativá-la depois."
         confirmLabel="Desativar"
         confirmVariant="destructive"
+      />
+
+      <Dialog
+        open={paraEstender !== null}
+        onOpenChange={(aberto) => {
+          if (!aberto) {
+            if (enviandoTrial) return;
+            setParaEstender(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {paraEstender ? `Estender teste de ${paraEstender.rotulo}` : 'Estender teste'}
+            </DialogTitle>
+          </DialogHeader>
+          <form onSubmit={enviarEstenderTrial} noValidate className="flex flex-col gap-4">
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="trial-dias">Dias a somar a partir de agora</Label>
+              <Input
+                id="trial-dias"
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={DIAS_ESTENDER_TRIAL_MAX}
+                step={1}
+                value={diasEstender}
+                onChange={(event) => setDiasEstender(event.target.value)}
+                required
+              />
+            </div>
+            {erroEstender && (
+              <p role="alert" className="text-body text-destructive">
+                {erroEstender}
+              </p>
+            )}
+            <Button
+              type="submit"
+              className="min-h-touch-target-min self-start"
+              disabled={enviandoTrial}
+            >
+              {enviandoTrial ? 'Estendendo...' : 'Estender'}
+            </Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={paraIsentar !== null}
+        onOpenChange={(aberto) => {
+          if (!aberto) {
+            setParaIsentar(null);
+          }
+        }}
+        onConfirm={confirmarIsentarTrial}
+        title={paraIsentar ? `Isentar teste de ${paraIsentar.rotulo}?` : 'Isentar teste?'}
+        description="O prazo de teste é removido imediatamente, sem guardar o valor anterior. Para voltar a ter um prazo, será preciso estendê-lo de novo."
+        confirmLabel="Isentar"
       />
     </div>
   );

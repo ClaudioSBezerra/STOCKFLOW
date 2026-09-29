@@ -393,6 +393,8 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	mux.HandleFunc("POST /api/plataforma/empresas", requireDono(handlers.CriarEmpresaHandler(db, emailCfg, fotosDir)))
 	mux.HandleFunc("POST /api/plataforma/empresas/{id}/desativacao", requireDono(handlers.DesativarEmpresaHandler(db)))
 	mux.HandleFunc("POST /api/plataforma/empresas/{id}/reativacao", requireDono(handlers.ReativarEmpresaHandler(db)))
+	mux.HandleFunc("POST /api/plataforma/empresas/{id}/trial/extensao", requireDono(handlers.EstenderTrialHandler(db)))
+	mux.HandleFunc("POST /api/plataforma/empresas/{id}/trial/isencao", requireDono(handlers.IsentarTrialHandler(db)))
 
 	// Login na raiz do domínio pela conta — Story 15.2 (AD-36). Terceira
 	// exceção ao prefixo de Empresa: sem `/e/{slug}` e SEM RequireEmpresa,
