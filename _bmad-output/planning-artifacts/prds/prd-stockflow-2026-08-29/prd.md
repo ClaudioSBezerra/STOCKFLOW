@@ -235,6 +235,7 @@ Toda conta de Usuário, todo Produto, Estoque, Movimentação, Pedido, Categoria
 Papel novo, ortogonal à hierarquia `usuario`/`almoxarife`/`gestor`/`adm` (que continua existindo dentro de cada Empresa). Realiza UJ-6.
 **Consequences:**
 - Só o Dono da Plataforma cria uma Empresa nova, através de uma tela própria (área "Empresas", visível só a esse papel) — sem cadastro self-service em v1 (decisão confirmada com o usuário). O cadastro pergunta também se a Empresa exige dupla autenticação (FR-53, padrão "Não").
+- Na mesma tela, o Dono da Plataforma vê e ajusta o período de teste de cada Empresa (FR-57): dias restantes/vencido, estender por N dias, ou marcar como isenta.
 - `[ASSUMPTION]` Cadastro da Empresa inclui dados de pessoa jurídica, além do nome usado no dia a dia: CNPJ, Razão Social, Nome Fantasia, e endereço completo (logradouro/número/complemento, Bairro, Cidade, CEP, UF). CNPJ é validado no formato correto (14 dígitos + dígitos verificadores) e é único entre Empresas (409 em duplicata) — não é possível cadastrar a mesma pessoa jurídica duas vezes. Nome Fantasia é o nome exibido no dia a dia do produto (Glossário §3); Razão Social/CNPJ/endereço ficam nos metadados administrativos, não aparecem na navegação normal do Usuário.
 - **Reconciliado com a restrição já registrada em §4.1 FR-3/§12** (primeiro Adm provisionado fora do app, nunca por endpoint HTTP — AD-12 em `addendum.md`: self-promotion HTTP é vetor de escalação de privilégio). Essa restrição é sobre **auto-promoção** (alguém conceder privilégio à própria conta), não sobre gerenciar contas de terceiros — o mesmo tipo de ação que `gestor`/`adm` já fazem hoje com segurança via HTTP (FR-31 Gestão de Contas, FR-33 Decidir Promoção).
 - Criar uma Empresa + provisionar seu primeiro `adm` pela tela do Dono da Plataforma segue esse mesmo padrão seguro: endpoint autenticado, atrás de `RequireRole(Dono da Plataforma)` + MFA (ver abaixo), nunca alterando a própria conta de quem chama.
@@ -243,7 +244,7 @@ Papel novo, ortogonal à hierarquia `usuario`/`almoxarife`/`gestor`/`adm` (que c
 - `[ASSUMPTION]` Dono da Plataforma exige MFA obrigatório (a exigência que FR-37 fazia para `gestor`/`adm`, aplicada aqui por ser o papel mais privilegiado do sistema — sem exceção, mesmo sendo uma única conta). **Não é afetado por FR-53**: a escolha de exigir MFA é da Empresa, e o Dono da Plataforma não pertence a nenhuma.
 - `[ASSUMPTION]` Dono da Plataforma enxerga e gerencia apenas METADADOS de cada Empresa (Nome Fantasia, Razão Social, CNPJ, endereço, status ativo/inativo, `adm` responsável, data de criação) — sem acesso ao conteúdo operacional (Catálogo, Estoques, Pedidos, Log de Acesso, Duplicatas) de nenhuma Empresa, preservando o isolamento total mesmo para esse papel. Necessidade de suporte/depuração cross-Empresa é decisão de Arquitetura/operação, fora deste PRD.
 - Desativar uma Empresa (mesmo princípio de FR-31 aplicado a Empresas) impede login de qualquer conta vinculada a ela, sem apagar dados.
-**Out of Scope:** planos comerciais/billing (Starter/Business/Enterprise, cotados em `addendum.md` §D) — nenhuma cobrança ou limite de uso por plano nesta versão.
+**Out of Scope:** ~~planos comerciais/billing (Starter/Business/Enterprise, cotados em `addendum.md` §D) — nenhuma cobrança ou limite de uso por plano nesta versão~~ — **superado nesta versão:** o período de teste com bloqueio automático (FR-57) passa a existir em v1; cobrança automática (integração de pagamento) continua fora de escopo, tratada por um Epic futuro.
 
 #### FR-42: Vínculo de Usuário a uma Empresa via convite nominal
 Toda conta de Usuário (FR-3) pertence a exatamente uma Empresa desde a criação, determinada por um convite/link nominal (vinculado a um e-mail específico) da Empresa — nunca por domínio de e-mail nem por link genérico reutilizável.
@@ -286,6 +287,15 @@ Os dados e contas já em produção (Ferreira Costa) tornam-se a primeira Empres
 - Uma Empresa "Ferreira Costa - Treinamento" (FR-43) é criada como parte desta mesma migração — não fica pendente de ação manual futura.
 - **Diferente da migração de dados legados anterior (Firestore→espelho Postgres dormente, já concluída):** esta migração roda sobre o banco já vivo em produção diária, com usuários ativos gerando Movimentações/Pedidos a qualquer momento. Precisa do mesmo rigor já exigido de importação em massa (FR-10): segura contra interrupção (resumível — retomar de onde parou nunca duplica nem perde vínculo), sem downtime obrigatório, e com plano de rollback próprio antes de ser aplicada — `[NOTE FOR PM]` desenho exato (ex. coluna `empresa_id` anulável primeiro, backfill em lote, só depois tornar obrigatória) é decisão de Arquitetura, mas a garantia de segurança-contra-concorrência é requisito deste PRD, não opcional.
 - Mesma restrição de §9 do PRD original: o corte é sempre disparado manualmente por uma pessoa, nunca de forma autônoma por um agente de IA.
+
+#### FR-57: Período de teste de 14 dias, com bloqueio automático e liberação manual *(novo — 2026-09-29)*
+Toda Empresa real criada a partir de agora ganha automaticamente 14 dias corridos de teste, contados da criação; o Ambiente de Treinamento dela (FR-43) herda o mesmo prazo. Esgotado o prazo sem confirmação de pagamento, a Empresa (e seu Treinamento) fica bloqueada.
+**Consequences:**
+- Empresas já existentes na plataforma na data desta versão (ex. Ferreira Costa, FBTECHIA) não são afetadas — continuam sem prazo, sem risco de bloqueio retroativo.
+- Esgotado o prazo, nenhuma rota de negócio da Empresa (nem do Treinamento) responde — inclusive para quem já estava logado. A pessoa vê uma tela explicando que o teste acabou e como assinar/falar com a plataforma, nunca um erro genérico.
+- Só o Dono da Plataforma pode estender o prazo (por N dias) ou marcar a Empresa como isenta (sem prazo, nunca bloqueia), pela tela de gestão de Empresas (FR-41) — é a válvula de escape até existir cobrança automática.
+- Estender ou isentar o Treinamento é uma ação independente da Empresa real (mesmo princípio de FR-43: herda só na criação, nunca propaga depois) — o Dono decide as duas separadamente se precisar.
+**Out of Scope:** cobrança automática/integração de pagamento (Hotmart ou outro meio) — Epic futuro; aviso por e-mail antes do vencimento; qualquer bloqueio parcial/somente-leitura (o bloqueio é total).
 
 ### 4.2 Catálogo de Produtos
 **Descrição:** qualquer Usuário autenticado pode buscar e visualizar o catálogo, com a quantidade discriminada por Estoque. Realiza UJ-1.

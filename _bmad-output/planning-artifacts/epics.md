@@ -93,6 +93,7 @@ FR54: Login na raiz do domínio, sem a Empresa na URL — e-mail e senha descobr
 FR45 (revisado): EAN-13 único entre os Produtos ativos da Empresa — cadastro, edição e reativação recusam EAN já usado por outro Produto ativo, dizendo qual; inativo libera o EAN; duplicatas antigas não são alteradas e bloqueiam o salvamento até correção.
 FR55: Inativar e reativar Produto — gestor/adm, qualquer motivo (opcional), só sem saldo nem reserva (a recusa diz onde há saldo); o inativo some de Catálogo, busca, leitura por código, exportação, Carrinho, duplicatas/inconsistências, lançamento de saldo e importação, e continua no histórico com a marca "Inativo"; filtro "Inativos" e reativar para gestor/adm.
 FR56: Histórico de alterações do Produto — troca de nome (antes/depois), inativação e reativação registradas com quem e quando, visíveis no detalhe do Produto para almoxarife+.
+FR57: Período de teste de 14 dias com bloqueio automático — toda Empresa real criada a partir de agora ganha 14 dias corridos, herdados pelo Treinamento na criação; esgotado o prazo, nenhuma rota de negócio responde e a pessoa vê uma tela explicando o vencimento; só o Dono da Plataforma estende ou isenta, pela tela de gestão de Empresas; Empresas já existentes não são afetadas.
 
 ### NonFunctional Requirements
 
@@ -258,6 +259,7 @@ FR56: Epic 16 - Histórico de alterações do Produto
 FR45 (revisado): Epic 16 - EAN-13 único entre Produtos ativos
 FR41 (linha nova): Epic 14 - Cadastro da Empresa pergunta se exige MFA
 FR43 (linha nova): Epic 14 - Treinamento herda a escolha
+FR57: Epic 18 - Período de teste de 14 dias com bloqueio automático
 
 ## Epic List
 
@@ -328,6 +330,10 @@ Gestor e adm tiram de uso um Produto sem apagá-lo (só sem saldo) e o reativam 
 ### Epic 17: Novo visual — menu lateral agrupado e páginas de lista
 O stockflow adota o padrão visual aprovado pelos sócios (`referencias/modelo-tela.png`): menu lateral escuro com os nomes das telas agrupados, cada tela com endereço próprio, e páginas de lista com busca, filtros, indicadores e tabela limpa. No celular, o menu abre pelo ☰. Pedido do usuário (2026-09-25).
 **UX covered:** UX-DR24, UX-DR25, UX-DR26 (substituem UX-DR3/7/15/16)
+
+### Epic 18: Período de teste de 14 dias, com bloqueio automático e liberação manual
+Toda Empresa real criada a partir de agora ganha 14 dias corridos de teste (herdados pelo Treinamento na criação); esgotado o prazo sem pagamento, a Empresa fica bloqueada por completo, com uma tela explicando o vencimento. Só o Dono da Plataforma estende ou isenta uma Empresa, pela tela que já existe. A integração de pagamento automático (Hotmart) fica para um Epic futuro. Pedido do usuário (2026-09-29).
+**FRs covered:** FR57
 
 ## Epic 1: Autenticação e Gestão de Acesso
 
@@ -2528,3 +2534,83 @@ So that todas as telas de consulta sejam iguais de usar.
 **Given** todas as telas do Epic 17
 **When** o Epic termina
 **Then** nenhuma tela usa mais o rail de ícones, as abas por módulo ou a bottom nav, e os testes de navegação cobrem desktop, menu recolhido e celular
+
+## Epic 18: Período de teste de 14 dias, com bloqueio automático e liberação manual
+
+Antes de existir cobrança automática (integração futura com a Hotmart), toda Empresa nova precisa de um limite claro de uso gratuito. Toda Empresa real criada a partir de agora ganha 14 dias corridos de teste, contados da criação; o Ambiente de Treinamento dela herda o mesmo prazo. Esgotado o prazo, a Empresa (e o Treinamento) fica bloqueada por completo — nenhuma rota de negócio responde, e a pessoa vê uma tela explicando o vencimento e como assinar. Só o Dono da Plataforma estende ou isenta uma Empresa, pela tela de gestão de Empresas que já existe (Architecture AD-39). Empresas já existentes na plataforma (Ferreira Costa, FBTECHIA) não são afetadas. Pedido do usuário (2026-09-29).
+
+### Story 18.1: Toda Empresa nova ganha 14 dias de teste, herdados pelo Treinamento
+
+As a Dono da Plataforma,
+I want que toda Empresa criada a partir de agora comece com um prazo de teste,
+So that eu tenha um limite claro antes de existir cobrança automática.
+
+**Acceptance Criteria:**
+
+**Given** a migration desta story
+**When** ela roda
+**Then** `empresas` ganha `trial_termina_em` (`TIMESTAMPTZ NULL`), `NULL` em toda Empresa já existente — nenhuma delas é afetada (Architecture AD-39)
+
+**Given** o Dono da Plataforma cria uma Empresa nova pela tela "Empresas"
+**When** `CriarEmpresaComTreinamento` roda
+**Then** a Empresa real é gravada com `trial_termina_em = criado_em + 14 dias` e o Ambiente de Treinamento dela é gravado com o MESMO valor (herda na criação, mesmo padrão de FR-53/AD-35 para MFA) — os dois ficam idênticos nesse instante, mas nada os mantém sincronizados depois
+
+**Given** `cmd/migrar-multi-empresa` (adoção da Empresa fundadora) ou qualquer outro caminho de provisionamento fora da tela do Dono
+**When** roda
+**Then** `trial_termina_em` continua `NULL` (sem prazo, isenta) — só `CriarEmpresaComTreinamento` grava um prazo
+
+**Given** a tela "Empresas" do Dono da Plataforma
+**When** lista as Empresas
+**Then** cada linha mostra o prazo de teste: dias restantes, "Vencido há N dias", ou "Sem prazo" (isenta)
+
+### Story 18.2: Empresa com o prazo vencido fica bloqueada por completo
+
+As a Dono da Plataforma,
+I want que uma Empresa pare de funcionar assim que o teste vence,
+So that ninguém use o sistema de graça além do combinado, sem eu precisar agir manualmente.
+
+**Acceptance Criteria:**
+
+**Given** uma Empresa com `trial_termina_em` no passado
+**When** qualquer requisição chega em `/e/{slug}/api/...` (login incluído)
+**Then** `middleware.RequireEmpresa` responde `402 PAYMENT_REQUIRED` com o código `TRIAL_EXPIRADO`, antes de qualquer outra validação — nunca o 404 usado para slug inexistente ou Empresa desativada (Architecture AD-39)
+
+**Given** uma sessão já aberta no navegador de uma Empresa cujo prazo vence enquanto a pessoa está logada
+**When** a próxima chamada à API acontece
+**Then** ela também recebe `TRIAL_EXPIRADO` — não existe carência até a sessão expirar sozinha
+
+**Given** o cliente HTTP do frontend
+**When** recebe `TRIAL_EXPIRADO` de qualquer chamada
+**Then** troca a tela normal por um aviso dedicado ("seu período de teste acabou, veja como assinar"), nunca o toast de erro genérico usado para outras falhas
+
+**Given** o login pela raiz do domínio (AD-36) de uma conta cuja Empresa está com o prazo vencido
+**When** a senha confere
+**Then** a pessoa é levada para `/e/{slug}/` normalmente, e o mesmo aviso aparece assim que a primeira chamada de sessão esbarra no bloqueio — a raiz não duplica a checagem
+
+**Given** uma Empresa com `trial_termina_em` `NULL` (isenta) ou no futuro
+**When** qualquer requisição chega
+**Then** nada muda — o comportamento é exatamente o de hoje
+
+### Story 18.3: Dono da Plataforma estende ou isenta o prazo de uma Empresa
+
+As a Dono da Plataforma,
+I want estender o prazo de teste de uma Empresa ou marcá-la como isenta,
+So that eu tenha uma válvula de escape manual até existir cobrança automática.
+
+**Acceptance Criteria:**
+
+**Given** a tela "Empresas", numa Empresa com prazo definido (vencido ou não)
+**When** o Dono aciona "Estender" e informa quantos dias
+**Then** `POST /api/plataforma/empresas/{id}/trial` com `{"acao": "estender", "dias": N}` soma N dias a partir de agora (não a partir do prazo antigo) e a tela atualiza os dias restantes
+
+**Given** a mesma tela
+**When** o Dono aciona "Marcar como isenta"
+**Then** `POST .../trial` com `{"acao": "isentar"}` grava `trial_termina_em = NULL`; a Empresa (se estava bloqueada) volta a responder normalmente na próxima requisição
+
+**Given** uma Empresa real estendida ou isentada
+**When** a ação termina
+**Then** o Ambiente de Treinamento dela NÃO é afetado — continua com o prazo que tinha; o Dono repete a ação nele separadamente se quiser o mesmo efeito
+
+**Given** qualquer papel diferente de Dono da Plataforma
+**When** chama `POST /api/plataforma/empresas/{id}/trial` (tela ou API direta)
+**Then** a resposta é 403
