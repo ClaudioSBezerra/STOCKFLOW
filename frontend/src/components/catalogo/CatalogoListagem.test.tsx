@@ -675,6 +675,24 @@ describe('CatalogoListagem — filtros (Story 4.2)', () => {
     );
   });
 
+  it('marcar "Só com fotos" dispara o fetch com comFoto=true (feedback Ferreira Costa, 2026-09-29)', async () => {
+    const fetchMock = stubFetchComFiltros();
+    const user = userEvent.setup();
+    renderCatalogo();
+
+    await screen.findByText('Nenhum produto no catálogo.');
+    fetchMock.mockClear();
+
+    await user.click(screen.getByRole('checkbox', { name: 'Só com fotos' }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/produtos/catalogo?agrupar=false&pagina=1&comFoto=true',
+        expect.anything(),
+      ),
+    );
+  });
+
   it('"Mostrar só inativos" envia inativos=1 e marca os cards como Inativo (Story 16.2)', async () => {
     const fetchMock = vi.fn((url: string) => {
       if (url === '/api/categorias') return Promise.resolve({ ok: true, json: async () => ({ categorias: [] }) });

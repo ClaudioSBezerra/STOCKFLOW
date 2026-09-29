@@ -1669,8 +1669,10 @@ func TestIndicadoresCatalogoProdutos(t *testing.T) {
 
 	t.Run("fotosDir com foto do produto A", func(t *testing.T) {
 		dir := t.TempDir()
-		// Criar arquivo de foto para o produto A (padrão <id>.jpg).
-		if err := os.WriteFile(filepath.Join(dir, idA+".jpg"), []byte("fake"), 0o644); err != nil {
+		// Criar arquivo de foto para o produto A — padrão real de
+		// services.enviarFotoProduto: sempre "<id>-<epoch>.jpg", NUNCA
+		// "<id>.jpg" puro.
+		if err := os.WriteFile(filepath.Join(dir, idA+"-1727600000.jpg"), []byte("fake"), 0o644); err != nil {
 			t.Fatalf("criar foto: %v", err)
 		}
 		ind, err := IndicadoresCatalogoProdutos(db, dir, FiltrosCatalogo{EmpresaID: empresaTeste})

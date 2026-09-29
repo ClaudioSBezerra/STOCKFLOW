@@ -165,17 +165,17 @@ func (p parDimensao) paraDimensao() *DimensaoValor {
 	return &DimensaoValor{Valor: p.valor.Float64, Unidade: p.unidade.String}
 }
 
-// FiltrosCatalogo agrupa os 4 filtros opcionais combináveis por E lógico do
+// FiltrosCatalogo agrupa os 5 filtros opcionais combináveis por E lógico do
 // Catálogo (Story 4.2, spec-4-2), aplicados ANTES do `GROUP BY` nas 3 queries
 // (grade, contagem de grupos, grupos) — decidem QUAIS Produtos entram, nunca
 // recortam o que é mostrado sobre quem entrou (Design Notes). Zero-value
 // (`FiltrosCatalogo{}`) = nenhum filtro, comportamento idêntico à Story 4.3
 // (sem regressão). `Q` já deve chegar trimado e validado (<=255 runes) pelo
-// chamador (handler) — aqui só é usado, nunca revalidado. `ComEstoque == nil`
-// significa "sem filtro"; `*ComEstoque` distingue `true`/`false`.
+// chamador (handler) — aqui só é usado, nunca revalidado. `ComEstoque`/
+// `ComFoto == nil` significa "sem filtro"; o ponteiro distingue `true`/`false`.
 type FiltrosCatalogo struct {
 	// EmpresaID é a Empresa resolvida do slug da URL pelo middleware (Story
-	// 9.1, AD-19/AD-20). Diferente dos 4 filtros opcionais abaixo, NÃO é um
+	// 9.1, AD-19/AD-20). Diferente dos filtros opcionais abaixo, NÃO é um
 	// filtro de tela: é a fronteira de isolamento, sempre presente, e
 	// montarFiltrosCatalogo a emite incondicionalmente — um zero-value aqui
 	// produz `p.empresa_id = ''`, que não casa nenhuma linha (falha fechada).
@@ -187,6 +187,19 @@ type FiltrosCatalogo struct {
 	// SomenteInativos (Story 16.2): false (padrão) -> só ativos; true -> só
 	// Produtos inativados (`inativado_em IS NOT NULL`).
 	SomenteInativos bool
+	// ComFoto (feedback Ferreira Costa, 2026-09-29): `true` -> só Produtos com
+	// ao menos uma foto em FotosDir; `false` -> só sem nenhuma. Foto não é
+	// coluna do banco (Story 3.5, AD-11) — montarFiltrosCatalogo resolve o
+	// conjunto de IDs com foto de FotosDir e filtra por `p.id`:
+	// idsProdutosComFoto/IndicadoresCatalogoProdutos usam a MESMA leitura de
+	// diretório, então a faixa de indicadores e a listagem nunca divergem
+	// (AD-38).
+	ComFoto *bool
+	// FotosDir é o diretório de fotos configurado (main.go, Story 3.5) — só
+	// lido quando ComFoto != nil. "" (ex.: chamador que não passa a config)
+	// equivale a "nenhuma foto existe": ComFoto=true não casa nada,
+	// ComFoto=false casa tudo.
+	FotosDir string
 }
 
 // filtroUUIDInvalido reconhece o SQLSTATE 22P02 (invalid_text_representation)
@@ -270,11 +283,69 @@ func montarFiltrosCatalogo(f FiltrosCatalogo, primeiroPlaceholder int) (string, 
 			"COALESCE((SELECT SUM(fc.quantidade) FROM saldo_produto_estoque fc WHERE fc.produto_id = p.id), 0) %s 0", op,
 		))
 	}
+	if f.ComFoto != nil {
+		ids := idsComFoto(f.FotosDir)
+		op := "= ANY"
+		if !*f.ComFoto {
+			op = "<> ALL"
+		}
+		condicoes = append(condicoes, fmt.Sprintf("p.id %s($%d)", op, n))
+		args = append(args, pq.Array(ids))
+		n++
+	}
 
 	if len(condicoes) == 0 {
 		return "", nil
 	}
 	return " WHERE " + strings.Join(condicoes, " AND "), args
+}
+
+// tamanhoUUID é o tamanho fixo de um UUID canônico (8-4-4-4-12 hex + 4
+// hifens) — usado por idsComFoto para separar o ID do Produto do timestamp
+// no nome do arquivo.
+const tamanhoUUID = 36
+
+// idsComFoto lista, a partir de uma única leitura de FotosDir (Never: sem
+// chamada por Produto), os IDs de Produto que têm ao menos um arquivo de
+// foto. O nome do arquivo é SEMPRE `<produto_id>-<epoch>.jpg`
+// (services.enviarFotoProduto, Story 3.5) — nunca `<produto_id>.jpg` sem
+// sufixo —, então o ID é sempre os primeiros `tamanhoUUID` caracteres do
+// stem, e só conta quando o caractere seguinte é o hífen que introduz o
+// timestamp (guarda contra um arquivo de outro formato no diretório).
+//
+// CORREÇÃO (feedback Ferreira Costa, 2026-09-29): a versão anterior
+// (Epic 17) comparava o stem INTEIRO (`<id>-<epoch>`) contra o ID puro —
+// nunca casava, então SemFoto sempre contava TODO Produto como sem foto,
+// mesmo com foto de verdade em disco. `fotosDir` vazio ou Glob com erro ->
+// conjunto vazio (conservador: nenhum Produto "tem foto"). Compartilhada por
+// montarFiltrosCatalogo (filtro `ComFoto`) e IndicadoresCatalogoProdutos
+// (indicador `SemFoto`) — a MESMA leitura de diretório, nunca duas fontes de
+// verdade (AD-38).
+func idsComFoto(fotosDir string) []string {
+	if fotosDir == "" {
+		return nil
+	}
+	fotos, err := filepath.Glob(fotosDir + "/*.jpg")
+	if err != nil {
+		return nil
+	}
+	vistos := make(map[string]struct{}, len(fotos))
+	ids := make([]string, 0, len(fotos))
+	for _, f := range fotos {
+		base := filepath.Base(f)
+		ext := filepath.Ext(base)
+		stem := base[:len(base)-len(ext)]
+		if len(stem) <= tamanhoUUID || stem[tamanhoUUID] != '-' {
+			continue
+		}
+		id := stem[:tamanhoUUID]
+		if _, ok := vistos[id]; ok {
+			continue
+		}
+		vistos[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // IndicadoresCatalogo é o conjunto de indicadores do painel do Catálogo —
@@ -336,33 +407,16 @@ func IndicadoresCatalogoProdutos(db *sql.DB, fotosDir string, filtros FiltrosCat
 	semFoto := 0
 
 	if itens > 0 {
-		// Listagem de fotos uma única vez por requisição (Never: sem chamada por
-		// Produto). Padrão de arquivo: <produto_id>.jpg ou <produto_id>-sufixo.jpg.
-		if fotosDir == "" {
-			// Sem diretório configurado: todos sem foto.
-			semFoto = itens
-		} else {
-			fotos, globErr := filepath.Glob(fotosDir + "/*.jpg")
-			if globErr != nil {
-				// Padrão inválido (não deveria ocorrer com Glob simples): conservador.
-				semFoto = itens
-			} else {
-				// Construir conjunto de IDs com foto (stem do nome de arquivo).
-				// IDs são UUIDs (ex.: "550e8400-e29b-..."); o separador confiável
-				// é a extensão (".jpg"), não o primeiro '-' que está dentro do UUID.
-				comFoto := make(map[string]struct{}, len(fotos))
-				for _, f := range fotos {
-					base := filepath.Base(f)
-					ext := filepath.Ext(base)
-					if stem := base[:len(base)-len(ext)]; stem != "" {
-						comFoto[stem] = struct{}{}
-					}
-				}
-				for _, id := range produtoIDs {
-					if _, ok := comFoto[id]; !ok {
-						semFoto++
-					}
-				}
+		// Listagem de fotos uma única vez por requisição (Never: sem chamada
+		// por Produto), MESMA leitura de idsComFoto usada pelo filtro
+		// `ComFoto` (AD-38) — nunca duas formas de decidir "tem foto".
+		comFoto := make(map[string]struct{})
+		for _, id := range idsComFoto(fotosDir) {
+			comFoto[id] = struct{}{}
+		}
+		for _, id := range produtoIDs {
+			if _, ok := comFoto[id]; !ok {
+				semFoto++
 			}
 		}
 	}

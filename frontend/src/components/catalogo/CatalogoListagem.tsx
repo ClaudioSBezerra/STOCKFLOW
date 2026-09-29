@@ -147,12 +147,13 @@ interface FiltrosAtivos {
   categoriaId: string;
   estoqueId: string;
   comEstoque: boolean;
+  comFoto: boolean;
   termo: string;
   somenteInativos?: boolean;
 }
 
-// queryFiltros monta a fatia comum de query string dos 4 filtros
-// combináveis (`q`/`categoriaId`/`estoqueId`/`comEstoque`), SEM
+// queryFiltros monta a fatia comum de query string dos filtros combináveis
+// (`q`/`categoriaId`/`estoqueId`/`comEstoque`/`comFoto`), SEM
 // `agrupar`/`pagina` — reusada por `carregar` (que prefixa `agrupar=&
 // pagina=`) e por `aoExportar` (que não tem nenhum dos dois, Story 4.6,
 // spec-4-6: a exportação nunca é de uma página, sempre o filtro completo).
@@ -172,6 +173,9 @@ function queryFiltros(filtros: FiltrosAtivos): string {
   }
   if (filtros.comEstoque) {
     partes.push('comEstoque=true');
+  }
+  if (filtros.comFoto) {
+    partes.push('comFoto=true');
   }
   if (filtros.somenteInativos) {
     partes.push('inativos=1');
@@ -211,6 +215,11 @@ export function CatalogoListagem({
   const [categoriaId, setCategoriaId] = useState('');
   const [estoqueId, setEstoqueId] = useState('');
   const [comEstoque, setComEstoque] = useState(false);
+  // comFoto (feedback Ferreira Costa, 2026-09-29): "Só com fotos" — mesmo
+  // padrão de comEstoque, um checkbox só liga o filtro (nunca "só sem foto"
+  // por aqui; o servidor aceita os dois, mas a Ferreira Costa só pediu achar
+  // quem TEM foto).
+  const [comFoto, setComFoto] = useState(false);
   const [somenteInativos, setSomenteInativos] = useState(false);
   const [categorias, setCategorias] = useState<CategoriaCatalogo[]>([]);
   const [estoques, setEstoques] = useState<EstoqueFiltro[]>([]);
@@ -326,9 +335,9 @@ export function CatalogoListagem({
 
   useEffect(() => {
     void (async () => {
-      await carregar(modo, pagina, { categoriaId, estoqueId, comEstoque, termo, somenteInativos });
+      await carregar(modo, pagina, { categoriaId, estoqueId, comEstoque, comFoto, termo, somenteInativos });
     })();
-  }, [carregar, modo, pagina, categoriaId, estoqueId, comEstoque, termo, somenteInativos]);
+  }, [carregar, modo, pagina, categoriaId, estoqueId, comEstoque, comFoto, termo, somenteInativos]);
 
   // Fetch de indicadores (Story 17.3): disparado nos mesmos eventos de mudança
   // de filtro que `carregar`, mas sem `pagina` nem `modo` (os indicadores são
@@ -337,7 +346,7 @@ export function CatalogoListagem({
   useEffect(() => {
     void (async () => {
       try {
-        const extras = queryFiltros({ categoriaId, estoqueId, comEstoque, termo, somenteInativos });
+        const extras = queryFiltros({ categoriaId, estoqueId, comEstoque, comFoto, termo, somenteInativos });
         const url = apiUrl(`/api/produtos/catalogo/indicadores${extras !== '' ? `?${extras}` : ''}`);
         const res = await fetch(url, { headers: authHeaders() });
         if (!res.ok) {
@@ -354,7 +363,7 @@ export function CatalogoListagem({
         setIndicadores(null);
       }
     })();
-  }, [categoriaId, estoqueId, comEstoque, termo, somenteInativos]);
+  }, [categoriaId, estoqueId, comEstoque, comFoto, termo, somenteInativos]);
 
   // Carrega as listas de categoria/Estoque uma vez no mount para popular os
   // dois `<Select>` de filtro (mesmo padrão de
@@ -417,7 +426,7 @@ export function CatalogoListagem({
   async function aoExportar() {
     setExportando(true);
     try {
-      const extras = queryFiltros({ categoriaId, estoqueId, comEstoque, termo });
+      const extras = queryFiltros({ categoriaId, estoqueId, comEstoque, comFoto, termo });
       const url = `/api/produtos/catalogo/exportar${extras !== '' ? `?${extras}` : ''}`;
       const res = await fetch(apiUrl(url), { headers: authHeaders() });
       if (!res.ok) {
@@ -452,6 +461,11 @@ export function CatalogoListagem({
 
   function aoMudarComEstoque(estado: boolean | 'indeterminate') {
     setComEstoque(estado === true);
+    setPagina(1);
+  }
+
+  function aoMudarComFoto(estado: boolean | 'indeterminate') {
+    setComFoto(estado === true);
     setPagina(1);
   }
 
@@ -578,6 +592,11 @@ export function CatalogoListagem({
             onCheckedChange={aoMudarComEstoque}
           />
           <Label htmlFor="catalogo-filtro-com-estoque">Com estoque disponível</Label>
+        </div>
+
+        <div className="flex min-h-touch-target-min items-center gap-2">
+          <Checkbox id="catalogo-filtro-com-foto" checked={comFoto} onCheckedChange={aoMudarComFoto} />
+          <Label htmlFor="catalogo-filtro-com-foto">Só com fotos</Label>
         </div>
 
         {podeVerInativos && (

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -1080,7 +1082,30 @@ func getProdutosCatalogo(db *sql.DB, authHeader, query string) *httptest.Respons
 	mux.HandleFunc("GET /e/{slug}/api/produtos/catalogo",
 		comEmpresa(db,
 			middleware.RequireAuth(db, testJWTSecret)(
-				ListarCatalogoHandler(db))))
+				ListarCatalogoHandler(db, ""))))
+	alvo := prefixoEmpresaTeste + "/api/produtos/catalogo"
+	if query != "" {
+		alvo += "?" + query
+	}
+	r := httptest.NewRequest(http.MethodGet, alvo, nil)
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+// getProdutosCatalogoComFotosDir é getProdutosCatalogo com um `fotosDir` real
+// (para o filtro `comFoto`, feedback Ferreira Costa 2026-09-29) — os demais
+// 20 testes de ListarCatalogoHandler usam getProdutosCatalogo (fotosDir "")
+// porque não testam foto nenhuma.
+func getProdutosCatalogoComFotosDir(db *sql.DB, authHeader, query, fotosDir string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /e/{slug}/api/produtos/catalogo",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				ListarCatalogoHandler(db, fotosDir))))
 	alvo := prefixoEmpresaTeste + "/api/produtos/catalogo"
 	if query != "" {
 		alvo += "?" + query
@@ -1543,6 +1568,69 @@ func TestListarCatalogoHandler_400ComEstoqueInvalido(t *testing.T) {
 	}
 }
 
+// TestListarCatalogoHandler_400ComFotoInvalido prova que `comFoto` só aceita
+// {true,false,ausente} — mesmo padrão de comEstoque (feedback Ferreira Costa,
+// 2026-09-29).
+func TestListarCatalogoHandler_400ComFotoInvalido(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "Catalogo ComFotoInv", "catalogo-comfotoinv@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "catalogo-comfotoinv@empresa.com", "senha-123456")
+
+	for _, comFoto := range []string{"talvez", "1", "TRUE", "yes"} {
+		w := getProdutosCatalogo(db, "Bearer "+token, "comFoto="+comFoto)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("comFoto=%q: status = %d, want %d (body=%s)", comFoto, w.Code, http.StatusBadRequest, w.Body.String())
+		}
+		env := decodeErro(t, w.Body.Bytes())
+		if env.Error.Code != "VALIDATION_ERROR" || env.Error.Message != "parâmetro comFoto inválido" {
+			t.Errorf("comFoto=%q: erro = %+v, want VALIDATION_ERROR / 'parâmetro comFoto inválido'", comFoto, env.Error)
+		}
+	}
+}
+
+// TestListarCatalogoHandler_FiltroComFoto prova o filtro "Só com fotos" fim a
+// fim via HTTP (feedback Ferreira Costa, 2026-09-29): só o Produto com um
+// arquivo de foto de verdade em FOTOS_DIR (padrão real "<id>-<epoch>.jpg")
+// aparece com comFoto=true; com comFoto=false, só o outro.
+func TestListarCatalogoHandler_FiltroComFoto(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	criarContaComPapel(t, db, "Catalogo ComFoto", "catalogo-comfoto@empresa.com", "senha-123456", "usuario")
+	token := tokenDeLogin(t, db, "catalogo-comfoto@empresa.com", "senha-123456")
+
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Handler ComFoto")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	comFotoID := seedProdutoCatalogoHandler(t, db, estoque.ID, "Produto Com Foto Handler", categoriaID, 1)
+	seedProdutoCatalogoHandler(t, db, estoque.ID, "Produto Sem Foto Handler", categoriaID, 1)
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, comFotoID+"-1727600000.jpg"), []byte("fake"), 0o644); err != nil {
+		t.Fatalf("criar foto: %v", err)
+	}
+
+	w := getProdutosCatalogoComFotosDir(db, "Bearer "+token, "comFoto=true", dir)
+	if w.Code != http.StatusOK {
+		t.Fatalf("comFoto=true: status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+	resp := decodeCatalogoProdutos(t, w)
+	if resp.Paginacao.Total != 1 || len(resp.Produtos) != 1 || resp.Produtos[0].ID != comFotoID {
+		t.Fatalf("comFoto=true: resp = %+v, want só %q (Com Foto)", resp, comFotoID)
+	}
+
+	w = getProdutosCatalogoComFotosDir(db, "Bearer "+token, "comFoto=false", dir)
+	if w.Code != http.StatusOK {
+		t.Fatalf("comFoto=false: status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+	resp = decodeCatalogoProdutos(t, w)
+	if resp.Paginacao.Total != 1 || len(resp.Produtos) != 1 || resp.Produtos[0].Nome != "Produto Sem Foto Handler" {
+		t.Fatalf("comFoto=false: resp = %+v, want só 'Produto Sem Foto Handler'", resp)
+	}
+}
+
 // TestListarCatalogoHandler_400QMuitoLongo prova a linha "q maior que 255
 // runes" da matriz: mesmo teto/mensagem de BuscarProdutosHandler.
 func TestListarCatalogoHandler_400QMuitoLongo(t *testing.T) {
@@ -1641,7 +1729,7 @@ func getProdutosCatalogoExportar(db *sql.DB, authHeader, query string) *httptest
 		comEmpresa(db,
 			middleware.RequireAuth(db, testJWTSecret)(
 				middleware.RequireRole(services.PapelAlmoxarife)(
-					ExportarCatalogoHandler(db)))))
+					ExportarCatalogoHandler(db, "")))))
 	alvo := prefixoEmpresaTeste + "/api/produtos/catalogo/exportar"
 	if query != "" {
 		alvo += "?" + query

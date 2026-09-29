@@ -398,7 +398,7 @@ func BuscarProdutoPorCodigoHandler(db *sql.DB) http.HandlerFunc {
 }
 
 // ListarCatalogoHandler expõe GET
-// /api/produtos/catalogo?agrupar=<>&pagina=<>&q=<>&categoriaId=<>&estoqueId=<>&comEstoque=<>
+// /api/produtos/catalogo?agrupar=<>&pagina=<>&q=<>&categoriaId=<>&estoqueId=<>&comEstoque=<>&comFoto=<>
 // (Story 4.3, spec-4-3, FR-6; filtros da Story 4.2, spec-4-2): só
 // RequireAuth, qualquer papel (`usuario`+) — sem RequireRole, mesmo padrão
 // de GET /api/produtos/busca / GET /api/categorias.
@@ -417,16 +417,19 @@ func BuscarProdutoPorCodigoHandler(db *sql.DB) http.HandlerFunc {
 // `categoriaId`/`estoqueId` (Story 4.2): repassados como estão para
 // services.FiltrosCatalogo, sem validação de formato — um valor malformado
 // (não-UUID) colapsa em página vazia no service/banco, nunca um erro aqui.
-// `comEstoque` (Story 4.2): só `true`, `false` ou ausente (-> sem filtro);
-// qualquer outro valor -> `400 VALIDATION_ERROR` "parâmetro comEstoque
-// inválido" (mesmo padrão de `agrupar`), sem consulta. Todos os filtros
-// combinam por E lógico entre si e com `agrupar`/`pagina`.
+// `comEstoque`/`comFoto`: só `true`, `false` ou ausente (-> sem filtro);
+// qualquer outro valor -> `400 VALIDATION_ERROR` "parâmetro comEstoque/
+// comFoto inválido" (mesmo padrão de `agrupar`), sem consulta. `comFoto`
+// (feedback Ferreira Costa, 2026-09-29): filtra por ter ou não ao menos uma
+// foto (Story 3.5) — mesma leitura de FOTOS_DIR do indicador "Sem foto"
+// (AD-38). Todos os filtros combinam por E lógico entre si e com
+// `agrupar`/`pagina`.
 //
 // Sucesso `agrupar=false`: `200 {"produtos":[...],"paginacao":{...}}` (grade,
 // um Produto por linha). Sucesso `agrupar=true`: `200
 // {"grupos":[...],"paginacao":{...}}` (Produtos com mesmo nome + dimensões
 // colapsados). Erro de banco -> `500 INTERNAL_ERROR` + slog.
-func ListarCatalogoHandler(db *sql.DB) http.HandlerFunc {
+func ListarCatalogoHandler(db *sql.DB, fotosDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		usuario, ok := middleware.UsuarioDaSessao(r.Context())
 		if !ok {
@@ -471,6 +474,7 @@ func ListarCatalogoHandler(db *sql.DB) http.HandlerFunc {
 			Q:           termo,
 			CategoriaID: r.URL.Query().Get("categoriaId"),
 			EstoqueID:   r.URL.Query().Get("estoqueId"),
+			FotosDir:    fotosDir,
 		}
 		// Story 16.2: `inativos=1` só é honrado para gestor+; abaixo disso é ignorado.
 		if r.URL.Query().Get("inativos") == "1" && services.RankPapel(usuario.Papel) >= services.RankPapel(services.PapelGestor) {
@@ -487,6 +491,19 @@ func ListarCatalogoHandler(db *sql.DB) http.HandlerFunc {
 			filtros.ComEstoque = &v
 		default:
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "parâmetro comEstoque inválido")
+			return
+		}
+		switch r.URL.Query().Get("comFoto") {
+		case "":
+			// ausente -> sem filtro (ComFoto permanece nil).
+		case "true":
+			v := true
+			filtros.ComFoto = &v
+		case "false":
+			v := false
+			filtros.ComFoto = &v
+		default:
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "parâmetro comFoto inválido")
 			return
 		}
 
@@ -512,7 +529,7 @@ func ListarCatalogoHandler(db *sql.DB) http.HandlerFunc {
 }
 
 // ExportarCatalogoHandler expõe GET
-// /api/produtos/catalogo/exportar?q=<>&categoriaId=<>&estoqueId=<>&comEstoque=<>
+// /api/produtos/catalogo/exportar?q=<>&categoriaId=<>&estoqueId=<>&comEstoque=<>&comFoto=<>
 // (Story 4.6, spec-4-6, FR-30): RequireAuth + RequireRole(almoxarife) —
 // exportação restrita a `almoxarife`+, decisão do middleware (403 para papel
 // abaixo, mesmo em chamada direta à API; o handler nunca roda para
@@ -528,7 +545,7 @@ func ListarCatalogoHandler(db *sql.DB) http.HandlerFunc {
 // `Content-Disposition: attachment; filename="catalogo.xlsx"`, corpo = bytes
 // do `.xlsx` gerado por services.GerarCatalogoXLSX. Erro de banco -> `500
 // INTERNAL_ERROR` + slog.
-func ExportarCatalogoHandler(db *sql.DB) http.HandlerFunc {
+func ExportarCatalogoHandler(db *sql.DB, fotosDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := middleware.UsuarioDaSessao(r.Context()); !ok {
 			slog.Error("ExportarCatalogoHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
@@ -551,6 +568,7 @@ func ExportarCatalogoHandler(db *sql.DB) http.HandlerFunc {
 			Q:           termo,
 			CategoriaID: r.URL.Query().Get("categoriaId"),
 			EstoqueID:   r.URL.Query().Get("estoqueId"),
+			FotosDir:    fotosDir,
 		}
 		switch r.URL.Query().Get("comEstoque") {
 		case "":
@@ -563,6 +581,19 @@ func ExportarCatalogoHandler(db *sql.DB) http.HandlerFunc {
 			filtros.ComEstoque = &v
 		default:
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "parâmetro comEstoque inválido")
+			return
+		}
+		switch r.URL.Query().Get("comFoto") {
+		case "":
+			// ausente -> sem filtro (ComFoto permanece nil).
+		case "true":
+			v := true
+			filtros.ComFoto = &v
+		case "false":
+			v := false
+			filtros.ComFoto = &v
+		default:
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "parâmetro comFoto inválido")
 			return
 		}
 
@@ -581,7 +612,7 @@ func ExportarCatalogoHandler(db *sql.DB) http.HandlerFunc {
 }
 
 // IndicadoresCatalogoHandler expõe GET
-// /e/{slug}/api/produtos/catalogo/indicadores?q=<>&categoriaId=<>&estoqueId=<>&comEstoque=<>&inativos=<>
+// /e/{slug}/api/produtos/catalogo/indicadores?q=<>&categoriaId=<>&estoqueId=<>&comEstoque=<>&comFoto=<>&inativos=<>
 // (Story 17.3): só RequireAuth, qualquer papel (`usuario`+) — sem
 // RequireRole, mesmo padrão de ListarCatalogoHandler. Devolve
 // `{"itens":N,"comSaldo":N,"semFoto":N}` calculados sobre o mesmo conjunto
@@ -613,6 +644,7 @@ func IndicadoresCatalogoHandler(db *sql.DB, fotosDir string) http.HandlerFunc {
 			Q:           termo,
 			CategoriaID: r.URL.Query().Get("categoriaId"),
 			EstoqueID:   r.URL.Query().Get("estoqueId"),
+			FotosDir:    fotosDir,
 		}
 		// Story 16.2: `inativos=1` só é honrado para gestor+; abaixo disso é ignorado.
 		if r.URL.Query().Get("inativos") == "1" && services.RankPapel(usuario.Papel) >= services.RankPapel(services.PapelGestor) {
@@ -629,6 +661,19 @@ func IndicadoresCatalogoHandler(db *sql.DB, fotosDir string) http.HandlerFunc {
 			filtros.ComEstoque = &v
 		default:
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "parâmetro comEstoque inválido")
+			return
+		}
+		switch r.URL.Query().Get("comFoto") {
+		case "":
+			// ausente -> sem filtro (ComFoto permanece nil).
+		case "true":
+			v := true
+			filtros.ComFoto = &v
+		case "false":
+			v := false
+			filtros.ComFoto = &v
+		default:
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "parâmetro comFoto inválido")
 			return
 		}
 

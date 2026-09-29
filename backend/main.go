@@ -673,7 +673,7 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// inválido / `comEstoque` inválido / `q` muito longo -> 400
 	// VALIDATION_ERROR.
 	registrar("GET /e/{slug}/api/produtos/catalogo", middleware.RequireAuth(db, jwtSecret)(
-		handlers.ListarCatalogoHandler(db)))
+		handlers.ListarCatalogoHandler(db, fotosDir)))
 
 	// Indicadores do Catálogo — Story 17.3 (AD-38). GET
 	// /api/produtos/catalogo/indicadores só leva RequireAuth (usuario+),
@@ -700,7 +700,7 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// filtrado no Excel.
 	registrar("GET /e/{slug}/api/produtos/catalogo/exportar", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAlmoxarife)(
-			handlers.ExportarCatalogoHandler(db))))
+			handlers.ExportarCatalogoHandler(db, fotosDir))))
 
 	// Identificação de Produto via QR Code / código de barras — Story 4.5
 	// (FR-35). GET /api/produtos/por-codigo?codigo=<valor> leva só
