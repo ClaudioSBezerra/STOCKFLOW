@@ -95,6 +95,9 @@ interface CatalogoItem {
   disponivel: boolean;
   unidadeMedida: string | null;
   embalagem: string | null;
+  // fotoArquivo (feedback do usuário, 2026-09-29): nome do arquivo da foto
+  // capa do Produto, para a miniatura do card — `null` sem foto.
+  fotoArquivo: string | null;
 }
 
 interface EstoqueQuantidade {
@@ -644,6 +647,7 @@ export function CatalogoListagem({
                 to={`/produtos/${item.id}`}
                 className="min-h-touch-target-min flex flex-col gap-2 rounded-md border border-border p-3"
               >
+                <MiniaturaCatalogo produtoId={item.id} arquivo={item.fotoArquivo} nome={item.nome} />
                 {item.codigo && (
                   <span className="text-label text-muted-foreground font-mono">{item.codigo}</span>
                 )}
@@ -738,6 +742,63 @@ export function CatalogoListagem({
         </nav>
       )}
     </section>
+  );
+}
+
+/**
+ * MiniaturaCatalogo (feedback do usuário, 2026-09-29): miniatura da foto capa
+ * no card da grade, pra não precisar abrir o Produto só pra ver se tem foto.
+ * `arquivo` (services.CatalogoItem.FotoArquivo) já vem resolvido pelo
+ * backend — aqui só busca os BYTES autenticados de
+ * `GET /produtos/{id}/fotos/{arquivo}` (mesmo padrão de
+ * FotosProdutoSection: `<img src>` não manda o header de auth) e troca por
+ * um Object URL. Sem `arquivo` (Produto sem foto) ou falha ao buscar: ícone
+ * de espaço reservado, nunca quebra o card.
+ */
+function MiniaturaCatalogo({
+  produtoId,
+  arquivo,
+  nome,
+}: {
+  produtoId: string;
+  arquivo: string | null;
+  nome: string;
+}) {
+  const [src, setSrc] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!arquivo) {
+      setSrc(null);
+      return;
+    }
+    let objectUrl: string | null = null;
+    let cancelado = false;
+    void (async () => {
+      try {
+        const res = await fetch(apiUrl(`/api/produtos/${produtoId}/fotos/${arquivo}`), {
+          headers: authHeaders(),
+        });
+        if (!res.ok || cancelado) return;
+        objectUrl = URL.createObjectURL(await res.blob());
+        if (!cancelado) setSrc(objectUrl);
+      } catch {
+        // Miniatura é só um extra visual — falha aqui nunca quebra o card.
+      }
+    })();
+    return () => {
+      cancelado = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [produtoId, arquivo]);
+
+  return (
+    <div className="flex h-32 w-full items-center justify-center overflow-hidden rounded-md bg-muted">
+      {src ? (
+        <img src={src} alt={`Foto de ${nome}`} className="h-full w-full object-cover" />
+      ) : (
+        <Package aria-hidden="true" className="h-8 w-8 text-muted-foreground" />
+      )}
+    </div>
   );
 }
 

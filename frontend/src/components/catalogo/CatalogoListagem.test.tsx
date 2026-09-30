@@ -36,7 +36,7 @@ const DIMENSOES_NULAS = {
 
 // Campos da Story 10.4 (spec-10-4) que as fixtures antigas não traziam: item
 // da grade sem unidade/embalagem; grupo homogêneo sem código, mesma categoria.
-const COLUNAS_ITEM_PADRAO = { unidadeMedida: null, embalagem: null };
+const COLUNAS_ITEM_PADRAO = { unidadeMedida: null, embalagem: null, fotoArquivo: null };
 const COLUNAS_GRUPO_PADRAO = {
   codigo: null,
   categoria: { id: 'c1', codigo: '04.001', nome: 'Construção Civil' },
@@ -691,6 +691,56 @@ describe('CatalogoListagem — filtros (Story 4.2)', () => {
         expect.anything(),
       ),
     );
+  });
+
+  it('mostra a miniatura da foto capa no card, e o ícone de espaço reservado quando não tem foto (feedback do usuário, 2026-09-29)', async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes('/fotos/')) {
+        return Promise.resolve({ ok: true, blob: async () => new Blob(['x']) });
+      }
+      if (url === '/api/categorias') return Promise.resolve({ ok: true, json: async () => ({ categorias: [] }) });
+      if (url === '/api/estoques') return Promise.resolve({ ok: true, json: async () => ({ estoques: [] }) });
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          produtos: [
+            {
+              id: 'p1',
+              nome: 'Parafuso Com Foto',
+              codigo: null,
+              ...COLUNAS_ITEM_PADRAO,
+              categoria: { id: 'c1', codigo: '04.001', nome: 'Construção Civil' },
+              dimensoes: DIMENSOES_NULAS,
+              quantidadeTotal: 5,
+              disponivel: true,
+              fotoArquivo: 'p1-1727600000.jpg',
+            },
+            {
+              id: 'p2',
+              nome: 'Parafuso Sem Foto',
+              codigo: null,
+              ...COLUNAS_ITEM_PADRAO,
+              categoria: { id: 'c1', codigo: '04.001', nome: 'Construção Civil' },
+              dimensoes: DIMENSOES_NULAS,
+              quantidadeTotal: 3,
+              disponivel: true,
+            },
+          ],
+          paginacao: { pagina: 1, tamanho: 24, total: 2, totalPaginas: 1 },
+        }),
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:x'), revokeObjectURL: vi.fn() }));
+
+    renderCatalogo();
+
+    expect(await screen.findByAltText('Foto de Parafuso Com Foto')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith('/api/produtos/p1/fotos/p1-1727600000.jpg', expect.anything()),
+    );
+    expect(screen.queryByAltText('Foto de Parafuso Sem Foto')).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([url]) => (url as string).includes('/produtos/p2/fotos/'))).toBe(false);
   });
 
   it('"Mostrar só inativos" envia inativos=1 e marca os cards como Inativo (Story 16.2)', async () => {

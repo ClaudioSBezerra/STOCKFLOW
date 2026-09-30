@@ -872,6 +872,67 @@ func TestListarCatalogoGrade_FiltroComEstoque(t *testing.T) {
 	}
 }
 
+// TestListarCatalogoGrade_FotoArquivoCapaMaisAntiga prova a miniatura da
+// grade (feedback do usuário, 2026-09-29): `FotoArquivo` vem preenchido com
+// o nome do arquivo de foto MAIS ANTIGO do Produto (nunca o mais recente),
+// `nil` para quem não tem foto, e não muda nada quando `FotosDir` está vazio
+// (mesmo comportamento de antes desta mudança).
+func TestListarCatalogoGrade_FotoArquivoCapaMaisAntiga(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Estoque Foto Capa")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+
+	idComDuasFotos, _ := criarProdutoCatComSaldo(t, db, CriarProdutoInput{
+		UnidadeMedida: "un", Nome: "Produto Com Duas Fotos", CategoriaID: categoriaID,
+	}, estoque.ID, 1)
+	idSemFoto, _ := criarProdutoCatComSaldo(t, db, CriarProdutoInput{
+		UnidadeMedida: "un", Nome: "Produto Sem Nenhuma Foto", CategoriaID: categoriaID,
+	}, estoque.ID, 1)
+
+	dir := t.TempDir()
+	maisAntiga := idComDuasFotos + "-1000000000.jpg"
+	maisRecente := idComDuasFotos + "-2000000000.jpg"
+	for _, nome := range []string{maisRecente, maisAntiga} { // ordem de criação embaralhada de propósito
+		if err := os.WriteFile(filepath.Join(dir, nome), []byte("fake"), 0o644); err != nil {
+			t.Fatalf("criar foto %s: %v", nome, err)
+		}
+	}
+
+	itens, _, err := ListarCatalogoGrade(db, 1, FiltrosCatalogo{EmpresaID: empresaTeste, FotosDir: dir})
+	if err != nil {
+		t.Fatalf("ListarCatalogoGrade: %v", err)
+	}
+	porID := make(map[string]CatalogoItem, len(itens))
+	for _, it := range itens {
+		porID[it.ID] = it
+	}
+
+	comFoto := porID[idComDuasFotos]
+	if comFoto.FotoArquivo == nil || *comFoto.FotoArquivo != maisAntiga {
+		t.Errorf("FotoArquivo do produto com 2 fotos = %v, want %q (a mais antiga)", comFoto.FotoArquivo, maisAntiga)
+	}
+	semFoto := porID[idSemFoto]
+	if semFoto.FotoArquivo != nil {
+		t.Errorf("FotoArquivo do produto sem foto = %v, want nil", *semFoto.FotoArquivo)
+	}
+
+	// FotosDir vazio (comportamento de antes desta mudança): nenhum item ganha FotoArquivo.
+	itensSemDir, _, err := ListarCatalogoGrade(db, 1, FiltrosCatalogo{EmpresaID: empresaTeste})
+	if err != nil {
+		t.Fatalf("ListarCatalogoGrade sem FotosDir: %v", err)
+	}
+	for _, it := range itensSemDir {
+		if it.FotoArquivo != nil {
+			t.Errorf("item %q com FotosDir vazio: FotoArquivo = %v, want nil", it.Nome, *it.FotoArquivo)
+		}
+	}
+}
+
 // TestListarCatalogoGrade_TodosOsFiltrosComQCombinados prova a linha "Todos
 // os filtros + q combinados" da matriz: só o Produto que satisfaz as 4
 // condições simultaneamente (E lógico) sobrevive, mesmo com outros Produtos

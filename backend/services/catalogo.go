@@ -61,6 +61,12 @@ type CatalogoItem struct {
 	// mesmo padrão de Codigo.
 	UnidadeMedida *string `json:"unidadeMedida"`
 	Embalagem     *string `json:"embalagem"`
+	// FotoArquivo (feedback do usuário, 2026-09-29): nome do arquivo da foto
+	// mais antiga do Produto (a "capa"), para a miniatura no card da grade —
+	// `nil` sem foto. O frontend busca os bytes em
+	// `GET /produtos/{id}/fotos/{arquivo}` (mesma rota autenticada já usada
+	// pelo detalhe do Produto) — nunca base64 inline aqui (AD-11).
+	FotoArquivo *string `json:"fotoArquivo"`
 }
 
 // EstoqueQuantidade é a discriminação da quantidade de um grupo por Estoque
@@ -305,23 +311,26 @@ func montarFiltrosCatalogo(f FiltrosCatalogo, primeiroPlaceholder int) (string, 
 // no nome do arquivo.
 const tamanhoUUID = 36
 
-// idsComFoto lista, a partir de uma única leitura de FotosDir (Never: sem
-// chamada por Produto), os IDs de Produto que têm ao menos um arquivo de
-// foto. O nome do arquivo é SEMPRE `<produto_id>-<epoch>.jpg`
-// (services.enviarFotoProduto, Story 3.5) — nunca `<produto_id>.jpg` sem
-// sufixo —, então o ID é sempre os primeiros `tamanhoUUID` caracteres do
-// stem, e só conta quando o caractere seguinte é o hífen que introduz o
-// timestamp (guarda contra um arquivo de outro formato no diretório).
+// capasPorProduto lista, a partir de uma única leitura de FotosDir (Never:
+// sem chamada por Produto), o nome do arquivo de foto MAIS ANTIGO de cada
+// Produto (a "capa" usada como miniatura na grade, feedback do usuário,
+// 2026-09-29) — chave ausente = sem foto nenhuma. O nome do arquivo é SEMPRE
+// `<produto_id>-<epoch>.jpg` (services.enviarFotoProduto, Story 3.5) — nunca
+// `<produto_id>.jpg` sem sufixo —, então o ID é sempre os primeiros
+// `tamanhoUUID` caracteres do stem, e só conta quando o caractere seguinte é
+// o hífen que introduz o timestamp (guarda contra um arquivo de outro
+// formato no diretório); comparação lexicográfica do NOME do arquivo já
+// ordena por epoch (mesmo número de dígitos, Unix seconds).
 //
 // CORREÇÃO (feedback Ferreira Costa, 2026-09-29): a versão anterior
 // (Epic 17) comparava o stem INTEIRO (`<id>-<epoch>`) contra o ID puro —
 // nunca casava, então SemFoto sempre contava TODO Produto como sem foto,
 // mesmo com foto de verdade em disco. `fotosDir` vazio ou Glob com erro ->
-// conjunto vazio (conservador: nenhum Produto "tem foto"). Compartilhada por
-// montarFiltrosCatalogo (filtro `ComFoto`) e IndicadoresCatalogoProdutos
-// (indicador `SemFoto`) — a MESMA leitura de diretório, nunca duas fontes de
-// verdade (AD-38).
-func idsComFoto(fotosDir string) []string {
+// mapa vazio (conservador: nenhum Produto "tem foto"). Compartilhada por
+// montarFiltrosCatalogo (filtro `ComFoto`), IndicadoresCatalogoProdutos
+// (indicador `SemFoto`) e ListarCatalogoGrade (miniatura) — a MESMA leitura
+// de diretório, nunca duas fontes de verdade (AD-38).
+func capasPorProduto(fotosDir string) map[string]string {
 	if fotosDir == "" {
 		return nil
 	}
@@ -329,8 +338,7 @@ func idsComFoto(fotosDir string) []string {
 	if err != nil {
 		return nil
 	}
-	vistos := make(map[string]struct{}, len(fotos))
-	ids := make([]string, 0, len(fotos))
+	capas := make(map[string]string, len(fotos))
 	for _, f := range fotos {
 		base := filepath.Base(f)
 		ext := filepath.Ext(base)
@@ -339,10 +347,23 @@ func idsComFoto(fotosDir string) []string {
 			continue
 		}
 		id := stem[:tamanhoUUID]
-		if _, ok := vistos[id]; ok {
-			continue
+		if atual, ok := capas[id]; !ok || base < atual {
+			capas[id] = base
 		}
-		vistos[id] = struct{}{}
+	}
+	return capas
+}
+
+// idsComFoto devolve só as chaves de capasPorProduto — os IDs de Produto que
+// têm ao menos uma foto, para o filtro `ComFoto` e o indicador `SemFoto`
+// (nenhum dos dois precisa do nome do arquivo, só a presença).
+func idsComFoto(fotosDir string) []string {
+	capas := capasPorProduto(fotosDir)
+	if len(capas) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(capas))
+	for id := range capas {
 		ids = append(ids, id)
 	}
 	return ids
@@ -485,6 +506,11 @@ func ListarCatalogoGrade(db *sql.DB, pagina int, filtros FiltrosCatalogo) ([]Cat
 	}
 	defer rows.Close()
 
+	// Uma única leitura de FotosDir para a página inteira (Never: sem
+	// chamada por Produto) — mesma fonte de idsComFoto/IndicadoresCatalogoProdutos
+	// (AD-38).
+	capas := capasPorProduto(filtros.FotosDir)
+
 	itens := make([]CatalogoItem, 0)
 	for rows.Next() {
 		var (
@@ -519,6 +545,9 @@ func ListarCatalogoGrade(db *sql.DB, pagina int, filtros FiltrosCatalogo) ([]Cat
 		}
 		it.QuantidadeTotal = quantidade
 		it.Disponivel = quantidade > 0
+		if arquivo, ok := capas[it.ID]; ok {
+			it.FotoArquivo = &arquivo
+		}
 		itens = append(itens, it)
 	}
 	if err := rows.Err(); err != nil {
