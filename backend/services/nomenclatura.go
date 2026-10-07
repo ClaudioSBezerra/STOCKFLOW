@@ -15,6 +15,14 @@ type NomenclaturaTemplate struct {
 	ID       string `json:"id"`
 	Subtipo  string `json:"subtipo"`
 	Template string `json:"template"`
+	// Exemplo (feedback Ferreira Costa — Karla, 2026-10-06): o `template`
+	// preenchido de verdade (ex. "CABO FLEXÍVEL 750V Ø2,5MM² AZUL ISOLAÇÃO
+	// DUPLA" para "CABO [TIPO] [TENSÃO] Ø[SEÇÃO]MM² [COR] [COMPLEMENTO]"),
+	// mostrado como dica no cadastro. Puramente informativo — nunca validado
+	// contra `template`. `nil` sem exemplo (sempre o caso do Genérico,
+	// [NOME LIVRE], AD-34, e de qualquer template custom que a Empresa criar
+	// sem preencher um).
+	Exemplo *string `json:"exemplo"`
 }
 
 // tokenTemplate casa cada placeholder `[ENTRE COLCHETES]` de um template de
@@ -101,7 +109,7 @@ func nomeValidoParaTemplate(templateTexto, nome string) bool {
 // (migration 000035), e nunca aparece aqui.
 func ListarNomenclaturaTemplates(db *sql.DB, empresaID string) ([]NomenclaturaTemplate, error) {
 	rows, err := db.Query(
-		`SELECT id, subtipo, template FROM nomenclatura_templates
+		`SELECT id, subtipo, template, exemplo FROM nomenclatura_templates
 		 WHERE empresa_id = $1 ORDER BY subtipo ASC`, empresaID)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao listar templates de nomenclatura: %w", err)
@@ -111,8 +119,13 @@ func ListarNomenclaturaTemplates(db *sql.DB, empresaID string) ([]NomenclaturaTe
 	templates := make([]NomenclaturaTemplate, 0)
 	for rows.Next() {
 		var t NomenclaturaTemplate
-		if err := rows.Scan(&t.ID, &t.Subtipo, &t.Template); err != nil {
+		var exemplo sql.NullString
+		if err := rows.Scan(&t.ID, &t.Subtipo, &t.Template, &exemplo); err != nil {
 			return nil, fmt.Errorf("falha ao ler linha de template de nomenclatura: %w", err)
+		}
+		if exemplo.Valid {
+			e := exemplo.String
+			t.Exemplo = &e
 		}
 		templates = append(templates, t)
 	}

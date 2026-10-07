@@ -169,6 +169,34 @@ describe('LancamentoSaldoSection', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Não foi possível lançar o saldo agora.');
   });
 
+  it('produto com unidade de medida e embalagem: rótulo mostra a unidade e a embalagem aparece só como texto informativo (feedback Ferreira Costa — Karla, 2026-10-06)', async () => {
+    const produtoComUnidade = [
+      {
+        id: 'p-2',
+        nome: 'Cabo flexível 2,5mm',
+        codigo: '000002',
+        categoria: { id: 'c-1', codigo: '01.001', nome: 'Elétricos' },
+        unidadeMedida: 'm',
+        embalagem: 'Rolo de 100m',
+      },
+    ];
+    stubFetch((url) => {
+      if (url === '/api/estoques') return jsonOk({ estoques: ESTOQUES });
+      if (url.startsWith('/api/produtos/busca')) return jsonOk({ produtos: produtoComUnidade });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    const user = userEvent.setup();
+    render(<LancamentoSaldoSection />);
+
+    await screen.findByRole('option', { name: 'Canteiro A' });
+    await user.type(screen.getByLabelText('Produto'), 'cabo');
+    await user.click(await screen.findByRole('button', { name: /Cabo flexível 2,5mm/ }));
+
+    expect(screen.getByText(/Embalagem: Rolo de 100m/)).toBeInTheDocument();
+    expect(screen.getByText(/só informativo — a quantidade abaixo é sempre em m/)).toBeInTheDocument();
+    expect(screen.getByLabelText('Quantidade (em m)')).toBeInTheDocument();
+  });
+
   it('falha ao carregar estoques mostra alerta', async () => {
     stubFetch((url) => {
       if (url === '/api/estoques') return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });

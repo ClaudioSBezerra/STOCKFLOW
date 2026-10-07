@@ -143,6 +143,16 @@ func TestListarNomenclaturaTemplates_Todas29OrdenadasPorSubtipo(t *testing.T) {
 			if tpl.Template != TemplateGenericoMarcador {
 				t.Errorf("template do subtipo Genérico = %q, want %q", tpl.Template, TemplateGenericoMarcador)
 			}
+			// Migration 000053 (feedback Ferreira Costa, 2026-10-06): nada pra
+			// exemplificar num campo de texto livre — Exemplo fica nil.
+			if tpl.Exemplo != nil {
+				t.Errorf("Exemplo do Genérico = %q, want nil", *tpl.Exemplo)
+			}
+			continue
+		}
+		// Migration 000053: os 28 templates fixos vêm com exemplo preenchido.
+		if tpl.Exemplo == nil || *tpl.Exemplo == "" {
+			t.Errorf("Exemplo de %q = %v, want preenchido", tpl.Subtipo, tpl.Exemplo)
 		}
 	}
 	if !achouGenerico {
@@ -269,7 +279,7 @@ func TestCriarNomenclaturaTemplate_Sucesso(t *testing.T) {
 	db := testDB(t)
 	limparTemplatesDeTeste(t, db)
 
-	tpl, err := CriarNomenclaturaTemplate(db, empresaTeste, "  T10.6 Cabos — Especial ", "  CABO [TIPO] [BITOLA]  ")
+	tpl, err := CriarNomenclaturaTemplate(db, empresaTeste, "  T10.6 Cabos — Especial ", "  CABO [TIPO] [BITOLA]  ", "")
 	if err != nil {
 		t.Fatalf("CriarNomenclaturaTemplate: %v", err)
 	}
@@ -279,6 +289,47 @@ func TestCriarNomenclaturaTemplate_Sucesso(t *testing.T) {
 	var emp string
 	if err := db.QueryRow(`SELECT empresa_id FROM nomenclatura_templates WHERE id = $1`, tpl.ID).Scan(&emp); err != nil || emp != empresaTeste {
 		t.Errorf("empresa_id = %q (err=%v), want %q", emp, err, empresaTeste)
+	}
+}
+
+// TestNomenclaturaTemplate_ExemploCRUD prova o campo opcional `exemplo`
+// (feedback Ferreira Costa — Karla, 2026-10-06) em Criar/Atualizar: trimado,
+// "" vira nil, e nunca é validado contra os tokens de `template` (é só uma
+// dica visual).
+func TestNomenclaturaTemplate_ExemploCRUD(t *testing.T) {
+	db := testDB(t)
+	limparTemplatesDeTeste(t, db)
+
+	criado, err := CriarNomenclaturaTemplate(db, empresaTeste, "T10.6 Com Exemplo", "CABO [TIPO]", "  CABO FLEXÍVEL  ")
+	if err != nil {
+		t.Fatalf("CriarNomenclaturaTemplate: %v", err)
+	}
+	if criado.Exemplo == nil || *criado.Exemplo != "CABO FLEXÍVEL" {
+		t.Errorf("Exemplo = %v, want \"CABO FLEXÍVEL\" (trimado)", criado.Exemplo)
+	}
+
+	semExemplo, err := CriarNomenclaturaTemplate(db, empresaTeste, "T10.6 Sem Exemplo", "TUBO [TIPO]", "")
+	if err != nil {
+		t.Fatalf("CriarNomenclaturaTemplate: %v", err)
+	}
+	if semExemplo.Exemplo != nil {
+		t.Errorf("Exemplo = %q, want nil", *semExemplo.Exemplo)
+	}
+
+	atualizado, err := AtualizarNomenclaturaTemplate(db, empresaTeste, criado.ID, "T10.6 Com Exemplo", "CABO [TIPO]", "NOVO EXEMPLO")
+	if err != nil {
+		t.Fatalf("AtualizarNomenclaturaTemplate: %v", err)
+	}
+	if atualizado.Exemplo == nil || *atualizado.Exemplo != "NOVO EXEMPLO" {
+		t.Errorf("Exemplo após atualizar = %v, want \"NOVO EXEMPLO\"", atualizado.Exemplo)
+	}
+
+	limpo, err := AtualizarNomenclaturaTemplate(db, empresaTeste, criado.ID, "T10.6 Com Exemplo", "CABO [TIPO]", "")
+	if err != nil {
+		t.Fatalf("AtualizarNomenclaturaTemplate: %v", err)
+	}
+	if limpo.Exemplo != nil {
+		t.Errorf("Exemplo após limpar = %q, want nil", *limpo.Exemplo)
 	}
 }
 
@@ -297,7 +348,7 @@ func TestCriarNomenclaturaTemplate_Validacao(t *testing.T) {
 		"subtipo longo":   {"T10.6 " + strings.Repeat("x", 250), "CABO [TIPO]"},
 	}
 	for nome, c := range casos {
-		if _, err := CriarNomenclaturaTemplate(db, empresaTeste, c[0], c[1]); !errors.Is(err, ErrTemplateValidacao) {
+		if _, err := CriarNomenclaturaTemplate(db, empresaTeste, c[0], c[1], ""); !errors.Is(err, ErrTemplateValidacao) {
 			t.Errorf("%s: erro = %v, want ErrTemplateValidacao", nome, err)
 		}
 	}
@@ -334,21 +385,21 @@ func TestCriarNomenclaturaTemplate_MarcadorEDuplicado(t *testing.T) {
 	limparTemplatesDeTeste(t, db)
 	outra := empresaDeTemplates(t, db, "templates-outra-empresa", "106000000001")
 
-	if _, err := CriarNomenclaturaTemplate(db, empresaTeste, "T10.6 Livre 2", TemplateGenericoMarcador); err != nil {
+	if _, err := CriarNomenclaturaTemplate(db, empresaTeste, "T10.6 Livre 2", TemplateGenericoMarcador, ""); err != nil {
 		t.Fatalf("segundo marcador deveria ser permitido: %v", err)
 	}
-	if _, err := CriarNomenclaturaTemplate(db, empresaTeste, "T10.6 Dup", "CABO [TIPO]"); err != nil {
+	if _, err := CriarNomenclaturaTemplate(db, empresaTeste, "T10.6 Dup", "CABO [TIPO]", ""); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if _, err := CriarNomenclaturaTemplate(db, empresaTeste, "T10.6 Dup", "OUTRO [X]"); !errors.Is(err, ErrTemplateDuplicado) {
+	if _, err := CriarNomenclaturaTemplate(db, empresaTeste, "T10.6 Dup", "OUTRO [X]", ""); !errors.Is(err, ErrTemplateDuplicado) {
 		t.Errorf("duplicado: erro = %v, want ErrTemplateDuplicado", err)
 	}
 	// O subtipo seedado (Genérico) também colide.
-	if _, err := CriarNomenclaturaTemplate(db, empresaTeste, "Genérico", "OUTRO [X]"); !errors.Is(err, ErrTemplateDuplicado) {
+	if _, err := CriarNomenclaturaTemplate(db, empresaTeste, "Genérico", "OUTRO [X]", ""); !errors.Is(err, ErrTemplateDuplicado) {
 		t.Errorf("duplicado do seed: erro = %v, want ErrTemplateDuplicado", err)
 	}
 	// Mesmo subtipo em outra Empresa é permitido (isolamento).
-	if _, err := CriarNomenclaturaTemplate(db, outra.ID, "T10.6 Dup", "CABO [TIPO]"); err != nil {
+	if _, err := CriarNomenclaturaTemplate(db, outra.ID, "T10.6 Dup", "CABO [TIPO]", ""); err != nil {
 		t.Errorf("outra empresa deveria aceitar o mesmo subtipo: %v", err)
 	}
 }
@@ -358,21 +409,21 @@ func TestAtualizarNomenclaturaTemplate(t *testing.T) {
 	limparTemplatesDeTeste(t, db)
 	outra := empresaDeTemplates(t, db, "templates-outra-empresa", "106000000001")
 
-	a, _ := CriarNomenclaturaTemplate(db, empresaTeste, "T10.6 A", "A [X]")
-	CriarNomenclaturaTemplate(db, empresaTeste, "T10.6 B", "B [X]")
-	alheio, err := CriarNomenclaturaTemplate(db, outra.ID, "T10.6 A", "A [X]")
+	a, _ := CriarNomenclaturaTemplate(db, empresaTeste, "T10.6 A", "A [X]", "")
+	CriarNomenclaturaTemplate(db, empresaTeste, "T10.6 B", "B [X]", "")
+	alheio, err := CriarNomenclaturaTemplate(db, outra.ID, "T10.6 A", "A [X]", "")
 	if err != nil {
 		t.Fatalf("seed alheio: %v", err)
 	}
 
-	got, err := AtualizarNomenclaturaTemplate(db, empresaTeste, a.ID, " T10.6 A2 ", " A2 [X] [Y] ")
+	got, err := AtualizarNomenclaturaTemplate(db, empresaTeste, a.ID, " T10.6 A2 ", " A2 [X] [Y] ", "")
 	if err != nil || got.ID != a.ID || got.Subtipo != "T10.6 A2" || got.Template != "A2 [X] [Y]" {
 		t.Fatalf("atualizar = %+v, %v", got, err)
 	}
-	if _, err := AtualizarNomenclaturaTemplate(db, empresaTeste, a.ID, "T10.6 B", "A2 [X]"); !errors.Is(err, ErrTemplateDuplicado) {
+	if _, err := AtualizarNomenclaturaTemplate(db, empresaTeste, a.ID, "T10.6 B", "A2 [X]", ""); !errors.Is(err, ErrTemplateDuplicado) {
 		t.Errorf("duplicado: %v", err)
 	}
-	if _, err := AtualizarNomenclaturaTemplate(db, empresaTeste, a.ID, "T10.6 A2", "sem token"); !errors.Is(err, ErrTemplateValidacao) {
+	if _, err := AtualizarNomenclaturaTemplate(db, empresaTeste, a.ID, "T10.6 A2", "sem token", ""); !errors.Is(err, ErrTemplateValidacao) {
 		t.Errorf("inválido: %v", err)
 	}
 
@@ -382,7 +433,7 @@ func TestAtualizarNomenclaturaTemplate(t *testing.T) {
 		"malformado":  "nao-e-uuid",
 		"id com NUL":  "0000\x00000",
 	} {
-		if _, err := AtualizarNomenclaturaTemplate(db, empresaTeste, id, "T10.6 Z", "Z [X]"); !errors.Is(err, ErrTemplateNaoEncontrado) {
+		if _, err := AtualizarNomenclaturaTemplate(db, empresaTeste, id, "T10.6 Z", "Z [X]", ""); !errors.Is(err, ErrTemplateNaoEncontrado) {
 			t.Errorf("%s: erro = %v, want ErrTemplateNaoEncontrado", nome, err)
 		}
 	}
@@ -400,7 +451,7 @@ func TestAtualizarNomenclaturaTemplate_EmUsoNaoRetroativo(t *testing.T) {
 	db := testDB(t)
 	limparTemplatesDeTeste(t, db)
 
-	tpl, err := CriarNomenclaturaTemplate(db, empresaTeste, "T10.6 Uso", "TUBO [TIPO] [MEDIDA]")
+	tpl, err := CriarNomenclaturaTemplate(db, empresaTeste, "T10.6 Uso", "TUBO [TIPO] [MEDIDA]", "")
 	if err != nil {
 		t.Fatalf("seed template: %v", err)
 	}
@@ -411,7 +462,7 @@ func TestAtualizarNomenclaturaTemplate_EmUsoNaoRetroativo(t *testing.T) {
 		t.Fatalf("seed produto: %v", err)
 	}
 
-	if _, err := AtualizarNomenclaturaTemplate(db, empresaTeste, tpl.ID, "T10.6 Uso", "FITA [COR] [LARGURA]"); err != nil {
+	if _, err := AtualizarNomenclaturaTemplate(db, empresaTeste, tpl.ID, "T10.6 Uso", "FITA [COR] [LARGURA]", ""); err != nil {
 		t.Fatalf("editar em uso: %v", err)
 	}
 
@@ -438,8 +489,8 @@ func TestExcluirNomenclaturaTemplate(t *testing.T) {
 	limparTemplatesDeTeste(t, db)
 	outra := empresaDeTemplates(t, db, "templates-outra-empresa", "106000000001")
 
-	livre, _ := CriarNomenclaturaTemplate(db, empresaTeste, "T10.6 Livre", "L [X]")
-	alheio, _ := CriarNomenclaturaTemplate(db, outra.ID, "T10.6 Livre", "L [X]")
+	livre, _ := CriarNomenclaturaTemplate(db, empresaTeste, "T10.6 Livre", "L [X]", "")
+	alheio, _ := CriarNomenclaturaTemplate(db, outra.ID, "T10.6 Livre", "L [X]", "")
 
 	for nome, id := range map[string]string{
 		"alheio":      alheio.ID,
@@ -470,7 +521,7 @@ func TestExcluirNomenclaturaTemplate_EmUso(t *testing.T) {
 	db := testDB(t)
 	limparTemplatesDeTeste(t, db)
 
-	tpl, _ := CriarNomenclaturaTemplate(db, empresaTeste, "T10.6 Em Uso", "TUBO [TIPO]")
+	tpl, _ := CriarNomenclaturaTemplate(db, empresaTeste, "T10.6 Em Uso", "TUBO [TIPO]", "")
 	input := criarProdutoInputValido(t, db, "TUBO PVC 50MM", "04.001")
 	input.TemplateID = tpl.ID
 	if _, err := CriarProduto(db, empresaTeste, input); err != nil {
@@ -503,7 +554,7 @@ func TestNomenclaturaTemplates_FallbackGenerico(t *testing.T) {
 	if err := ExcluirNomenclaturaTemplate(db, e.ID, genId); !errors.Is(err, ErrTemplateFallbackObrigatorio) {
 		t.Errorf("excluir único: erro = %v, want ErrTemplateFallbackObrigatorio", err)
 	}
-	if _, err := AtualizarNomenclaturaTemplate(db, e.ID, genId, "Genérico", "CABO [TIPO]"); !errors.Is(err, ErrTemplateFallbackObrigatorio) {
+	if _, err := AtualizarNomenclaturaTemplate(db, e.ID, genId, "Genérico", "CABO [TIPO]", ""); !errors.Is(err, ErrTemplateFallbackObrigatorio) {
 		t.Errorf("editar texto do único: erro = %v, want ErrTemplateFallbackObrigatorio", err)
 	}
 	var texto string
@@ -513,7 +564,7 @@ func TestNomenclaturaTemplates_FallbackGenerico(t *testing.T) {
 	}
 
 	// Renomear só o subtipo é permitido (identificado pelo texto, não pelo subtipo).
-	got, err := AtualizarNomenclaturaTemplate(db, e.ID, genId, "Livre", TemplateGenericoMarcador)
+	got, err := AtualizarNomenclaturaTemplate(db, e.ID, genId, "Livre", TemplateGenericoMarcador, "")
 	if err != nil || got.Subtipo != "Livre" {
 		t.Fatalf("renomear subtipo: %+v, %v", got, err)
 	}
@@ -522,11 +573,11 @@ func TestNomenclaturaTemplates_FallbackGenerico(t *testing.T) {
 	}
 
 	// Com um segundo marcador, o primeiro é editável/excluível.
-	segundo, err := CriarNomenclaturaTemplate(db, e.ID, "Livre 2", TemplateGenericoMarcador)
+	segundo, err := CriarNomenclaturaTemplate(db, e.ID, "Livre 2", TemplateGenericoMarcador, "")
 	if err != nil {
 		t.Fatalf("segundo marcador: %v", err)
 	}
-	if _, err := AtualizarNomenclaturaTemplate(db, e.ID, genId, "Livre", "CABO [TIPO]"); err != nil {
+	if _, err := AtualizarNomenclaturaTemplate(db, e.ID, genId, "Livre", "CABO [TIPO]", ""); err != nil {
 		t.Errorf("editar com 2º marcador: %v", err)
 	}
 	// Agora só resta o segundo: passa a ser o fallback protegido.
@@ -534,7 +585,7 @@ func TestNomenclaturaTemplates_FallbackGenerico(t *testing.T) {
 		t.Errorf("excluir o novo único: erro = %v, want ErrTemplateFallbackObrigatorio", err)
 	}
 	// Restaura o marcador no primeiro: excluir o segundo passa.
-	if _, err := AtualizarNomenclaturaTemplate(db, e.ID, genId, "Livre", TemplateGenericoMarcador); err != nil {
+	if _, err := AtualizarNomenclaturaTemplate(db, e.ID, genId, "Livre", TemplateGenericoMarcador, ""); err != nil {
 		t.Fatalf("restaurar marcador: %v", err)
 	}
 	if err := ExcluirNomenclaturaTemplate(db, e.ID, segundo.ID); err != nil {
@@ -586,7 +637,7 @@ func TestExcluirNomenclaturaTemplate_ConcorrenteNaoRemoveOFallback(t *testing.T)
 	db := testDB(t)
 	e := empresaDeTemplates(t, db, "templates-concorrente", "106000000077")
 	genID := idTemplateGenerico(t, db, e.ID)
-	outro, err := CriarNomenclaturaTemplate(db, e.ID, "Livre Concorrente", TemplateGenericoMarcador)
+	outro, err := CriarNomenclaturaTemplate(db, e.ID, "Livre Concorrente", TemplateGenericoMarcador, "")
 	if err != nil {
 		t.Fatalf("seed segundo marcador: %v", err)
 	}

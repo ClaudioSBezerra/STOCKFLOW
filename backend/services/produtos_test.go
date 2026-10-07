@@ -1717,6 +1717,59 @@ func TestBuscarProdutos_CodigoAusenteDevolveNilNoPonteiro(t *testing.T) {
 	}
 }
 
+// TestBuscarProdutos_UnidadeMedidaEEmbalagem prova que a busca devolve
+// UnidadeMedida/Embalagem (feedback Ferreira Costa — Karla, 2026-10-06): a
+// tela de Lançar saldo precisa mostrar em qual unidade a quantidade está
+// sendo lançada. `nil` quando a coluna é NULL (produto de importação em
+// massa sem unidade, Story 10.3).
+func TestBuscarProdutos_UnidadeMedidaEEmbalagem(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+	templateID := templateGenericoID(t, db, empresaTeste)
+
+	var comUnidadeID, semUnidadeID string
+	if err := db.QueryRow(
+		`INSERT INTO produtos (nome, categoria_id, template_id, empresa_id, unidade_medida, embalagem)
+		 VALUES ('Cabo Busca Unidade Teste', $1, $2, $3, 'm', 'Rolo de 100m') RETURNING id`,
+		categoriaID, templateID, empresaTeste,
+	).Scan(&comUnidadeID); err != nil {
+		t.Fatalf("seed com unidade: %v", err)
+	}
+	if err := db.QueryRow(
+		`INSERT INTO produtos (nome, categoria_id, template_id, empresa_id)
+		 VALUES ('Produto Busca Sem Unidade Teste', $1, $2, $3) RETURNING id`,
+		categoriaID, templateID, empresaTeste,
+	).Scan(&semUnidadeID); err != nil {
+		t.Fatalf("seed sem unidade: %v", err)
+	}
+
+	resultado, err := BuscarProdutos(db, empresaTeste, "Busca")
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	porID := make(map[string]ProdutoBusca, len(resultado))
+	for _, pb := range resultado {
+		porID[pb.ID] = pb
+	}
+
+	comUnidade := porID[comUnidadeID]
+	if comUnidade.UnidadeMedida == nil || *comUnidade.UnidadeMedida != "m" {
+		t.Errorf("UnidadeMedida = %v, want \"m\"", comUnidade.UnidadeMedida)
+	}
+	if comUnidade.Embalagem == nil || *comUnidade.Embalagem != "Rolo de 100m" {
+		t.Errorf("Embalagem = %v, want \"Rolo de 100m\"", comUnidade.Embalagem)
+	}
+
+	semUnidade := porID[semUnidadeID]
+	if semUnidade.UnidadeMedida != nil {
+		t.Errorf("UnidadeMedida = %v, want nil", *semUnidade.UnidadeMedida)
+	}
+	if semUnidade.Embalagem != nil {
+		t.Errorf("Embalagem = %v, want nil", *semUnidade.Embalagem)
+	}
+}
+
 // TestBuscarProdutos_EmpateDeRankENomeDesempataPorID prova o desempate final
 // `p.id ASC` (Review Triage Log de 2026-08-31): dois Produtos com MESMO rank
 // (ambos batem só por prefixo em `nome`) e MESMO `nome` não têm ordem

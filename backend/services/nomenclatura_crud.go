@@ -83,6 +83,21 @@ func validarTemplateNomenclatura(subtipo, template string) (string, string, erro
 	return subtipo, template, nil
 }
 
+// validarExemploTemplate trima `exemplo` (opcional — feedback Ferreira Costa,
+// 2026-10-06): "" (ausente) vira NULL; só valida tamanho/byte NUL, igual aos
+// demais campos de texto livre opcionais do domínio — nunca confere contra os
+// tokens de `template` (é só uma dica visual, não dado estrutural).
+func validarExemploTemplate(exemplo string) (sql.NullString, error) {
+	exemplo = strings.TrimSpace(exemplo)
+	if exemplo == "" {
+		return sql.NullString{}, nil
+	}
+	if strings.ContainsRune(exemplo, 0) || utf8.RuneCountInString(exemplo) > templateTextoMax {
+		return sql.NullString{}, ErrTemplateValidacao
+	}
+	return sql.NullString{String: exemplo, Valid: true}, nil
+}
+
 // traduzirErroEscritaTemplate converte erros do Postgres nos erros de
 // domínio. Devolve nil quando `err` não é um erro conhecido.
 func traduzirErroEscritaTemplate(err error) error {
@@ -107,19 +122,31 @@ func traduzirErroEscritaTemplate(err error) error {
 
 // CriarNomenclaturaTemplate insere um Template na Empresa `empresaID`.
 // Unicidade de `subtipo` por Empresa vem do índice único (sem SELECT prévio).
-func CriarNomenclaturaTemplate(db *sql.DB, empresaID, subtipo, template string) (NomenclaturaTemplate, error) {
+// `exemplo` é opcional (Feedback Ferreira Costa, 2026-10-06) — "" vira NULL.
+func CriarNomenclaturaTemplate(db *sql.DB, empresaID, subtipo, template, exemplo string) (NomenclaturaTemplate, error) {
 	subtipo, template, err := validarTemplateNomenclatura(subtipo, template)
 	if err != nil {
 		return NomenclaturaTemplate{}, err
 	}
+	exemploCol, err := validarExemploTemplate(exemplo)
+	if err != nil {
+		return NomenclaturaTemplate{}, err
+	}
 	var t NomenclaturaTemplate
-	const insert = `INSERT INTO nomenclatura_templates (subtipo, template, empresa_id) VALUES ($1, $2, $3)
-		RETURNING id, subtipo, template`
-	if err := db.QueryRow(insert, subtipo, template, empresaID).Scan(&t.ID, &t.Subtipo, &t.Template); err != nil {
+	var exemploLido sql.NullString
+	const insert = `INSERT INTO nomenclatura_templates (subtipo, template, empresa_id, exemplo) VALUES ($1, $2, $3, $4)
+		RETURNING id, subtipo, template, exemplo`
+	if err := db.QueryRow(insert, subtipo, template, empresaID, exemploCol).Scan(
+		&t.ID, &t.Subtipo, &t.Template, &exemploLido,
+	); err != nil {
 		if te := traduzirErroEscritaTemplate(err); te != nil {
 			return NomenclaturaTemplate{}, te
 		}
 		return NomenclaturaTemplate{}, fmt.Errorf("falha ao inserir template de nomenclatura: %w", err)
+	}
+	if exemploLido.Valid {
+		e := exemploLido.String
+		t.Exemplo = &e
 	}
 	return t, nil
 }
@@ -177,8 +204,12 @@ func travarTemplateEMarcadores(tx *sql.Tx, empresaID, id string) (textoAlvo stri
 // no próximo cadastro/renomeação (ambos leem `template` na hora da ação).
 // Trocar o texto do ÚNICO template-marcador por outro texto ->
 // ErrTemplateFallbackObrigatorio (renomear só o `subtipo` é permitido).
-func AtualizarNomenclaturaTemplate(db *sql.DB, empresaID, id, subtipo, template string) (NomenclaturaTemplate, error) {
+func AtualizarNomenclaturaTemplate(db *sql.DB, empresaID, id, subtipo, template, exemplo string) (NomenclaturaTemplate, error) {
 	subtipo, template, err := validarTemplateNomenclatura(subtipo, template)
+	if err != nil {
+		return NomenclaturaTemplate{}, err
+	}
+	exemploCol, err := validarExemploTemplate(exemplo)
 	if err != nil {
 		return NomenclaturaTemplate{}, err
 	}
@@ -200,9 +231,12 @@ func AtualizarNomenclaturaTemplate(db *sql.DB, empresaID, id, subtipo, template 
 	}
 
 	var t NomenclaturaTemplate
-	const update = `UPDATE nomenclatura_templates SET subtipo = $1, template = $2
-		WHERE id = $3 AND empresa_id = $4 RETURNING id, subtipo, template`
-	if err := tx.QueryRow(update, subtipo, template, id, empresaID).Scan(&t.ID, &t.Subtipo, &t.Template); err != nil {
+	var exemploLido sql.NullString
+	const update = `UPDATE nomenclatura_templates SET subtipo = $1, template = $2, exemplo = $3
+		WHERE id = $4 AND empresa_id = $5 RETURNING id, subtipo, template, exemplo`
+	if err := tx.QueryRow(update, subtipo, template, exemploCol, id, empresaID).Scan(
+		&t.ID, &t.Subtipo, &t.Template, &exemploLido,
+	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return NomenclaturaTemplate{}, ErrTemplateNaoEncontrado
 		}
@@ -213,6 +247,10 @@ func AtualizarNomenclaturaTemplate(db *sql.DB, empresaID, id, subtipo, template 
 	}
 	if err := tx.Commit(); err != nil {
 		return NomenclaturaTemplate{}, fmt.Errorf("falha ao confirmar atualização do template: %w", err)
+	}
+	if exemploLido.Valid {
+		e := exemploLido.String
+		t.Exemplo = &e
 	}
 	return t, nil
 }

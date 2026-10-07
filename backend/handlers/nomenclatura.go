@@ -16,18 +16,20 @@ import (
 // GET /api/nomenclatura-templates permanece em
 // ListarNomenclaturaTemplatesHandler (produtos.go), só RequireAuth.
 //
-//   - POST   /api/nomenclatura-templates       {"subtipo","template"} -> 201 {"template":{...}}
-//   - PUT    /api/nomenclatura-templates/{id}  {"subtipo","template"} -> 200 {"template":{...}}
-//   - DELETE /api/nomenclatura-templates/{id}                         -> 204 sem corpo
+//   - POST   /api/nomenclatura-templates       {"subtipo","template","exemplo"} -> 201 {"template":{...}}
+//   - PUT    /api/nomenclatura-templates/{id}  {"subtipo","template","exemplo"} -> 200 {"template":{...}}
+//   - DELETE /api/nomenclatura-templates/{id}                                   -> 204 sem corpo
 //
 // 400 VALIDATION_ERROR, 404 NOT_FOUND (id alheio/inexistente/malformado),
 // 409 CONFLICT (subtipo duplicado, template em uso ou fallback obrigatório).
 
 // templateNomenclaturaRequest é o corpo de POST/PUT. Campos ausentes
-// decodificam como "" e são rejeitados pela service.
+// decodificam como "" e são rejeitados pela service. `Exemplo` (feedback
+// Ferreira Costa, 2026-10-06) é opcional: "" vira NULL.
 type templateNomenclaturaRequest struct {
 	Subtipo  string `json:"subtipo"`
 	Template string `json:"template"`
+	Exemplo  string `json:"exemplo"`
 }
 
 // mapearErroTemplateNomenclatura escreve a resposta de erro para `err`.
@@ -63,7 +65,7 @@ func CriarTemplateNomenclaturaHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "payload inválido")
 			return
 		}
-		t, err := services.CriarNomenclaturaTemplate(db, empresaID, req.Subtipo, req.Template)
+		t, err := services.CriarNomenclaturaTemplate(db, empresaID, req.Subtipo, req.Template, req.Exemplo)
 		if err != nil {
 			mapearErroTemplateNomenclatura(w, err, "criar")
 			return
@@ -85,7 +87,7 @@ func AtualizarTemplateNomenclaturaHandler(db *sql.DB) http.HandlerFunc {
 			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "payload inválido")
 			return
 		}
-		t, err := services.AtualizarNomenclaturaTemplate(db, empresaID, r.PathValue("id"), req.Subtipo, req.Template)
+		t, err := services.AtualizarNomenclaturaTemplate(db, empresaID, r.PathValue("id"), req.Subtipo, req.Template, req.Exemplo)
 		if err != nil {
 			mapearErroTemplateNomenclatura(w, err, "atualizar")
 			return

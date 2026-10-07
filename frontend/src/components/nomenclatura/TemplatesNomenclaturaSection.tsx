@@ -27,6 +27,10 @@ interface TemplateNomenclatura {
   id: string;
   subtipo: string;
   template: string;
+  // exemplo (feedback Ferreira Costa — Karla, 2026-10-06): o template
+  // preenchido de verdade, opcional, mostrado como dica no cadastro de
+  // Produto. `null` sem exemplo.
+  exemplo: string | null;
 }
 
 const TEXTO_MAX = 255;
@@ -50,6 +54,7 @@ export function TemplatesNomenclaturaSection() {
   const [templates, setTemplates] = useState<TemplateNomenclatura[]>([]);
   const [subtipo, setSubtipo] = useState('');
   const [texto, setTexto] = useState('');
+  const [exemplo, setExemplo] = useState('');
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [erroCarregar, setErroCarregar] = useState<string | null>(null);
@@ -58,6 +63,7 @@ export function TemplatesNomenclaturaSection() {
   const [editando, setEditando] = useState<TemplateNomenclatura | null>(null);
   const [editSubtipo, setEditSubtipo] = useState('');
   const [editTexto, setEditTexto] = useState('');
+  const [editExemplo, setEditExemplo] = useState('');
   const [erroEdicao, setErroEdicao] = useState<string | null>(null);
   const [salvando, setSalvando] = useState(false);
 
@@ -105,7 +111,7 @@ export function TemplatesNomenclaturaSection() {
       const res = await fetch(apiUrl('/api/nomenclatura-templates'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ subtipo, template: texto }),
+        body: JSON.stringify({ subtipo, template: texto, exemplo }),
       });
       if (res.status === 400 || res.status === 409) {
         setErro(await mensagemDoServidor(res, MENSAGEM_ERRO_CADASTRO));
@@ -118,6 +124,7 @@ export function TemplatesNomenclaturaSection() {
       toast.success('Template criado.');
       setSubtipo('');
       setTexto('');
+      setExemplo('');
       await carregar();
     } catch {
       setErro(MENSAGEM_ERRO_CADASTRO);
@@ -130,6 +137,7 @@ export function TemplatesNomenclaturaSection() {
     setEditando(t);
     setEditSubtipo(t.subtipo);
     setEditTexto(t.template);
+    setEditExemplo(t.exemplo ?? '');
     setErroEdicao(null);
   }
 
@@ -151,7 +159,7 @@ export function TemplatesNomenclaturaSection() {
       const res = await fetch(apiUrl(`/api/nomenclatura-templates/${editando.id}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ subtipo: editSubtipo, template: editTexto }),
+        body: JSON.stringify({ subtipo: editSubtipo, template: editTexto, exemplo: editExemplo }),
       });
       if (res.status === 400 || res.status === 409) {
         setErroEdicao(await mensagemDoServidor(res, MENSAGEM_ERRO_EDITAR));
@@ -251,6 +259,16 @@ export function TemplatesNomenclaturaSection() {
                 onChange={(event) => setTexto(event.target.value)}
               />
             </div>
+            <div className="flex flex-1 flex-col gap-2">
+              <Label htmlFor="template-exemplo">Exemplo (opcional)</Label>
+              <Input
+                id="template-exemplo"
+                value={exemplo}
+                maxLength={TEXTO_MAX}
+                placeholder="CABO FLEXÍVEL 2,5MM²"
+                onChange={(event) => setExemplo(event.target.value)}
+              />
+            </div>
             <Button
               type="submit"
               disabled={enviando || subtipo.trim() === '' || texto.trim() === ''}
@@ -306,6 +324,15 @@ export function TemplatesNomenclaturaSection() {
                         onChange={(event) => setEditTexto(event.target.value)}
                       />
                     </div>
+                    <div className="flex flex-1 flex-col gap-2">
+                      <Label htmlFor={`template-exemplo-${t.id}`}>Exemplo (opcional)</Label>
+                      <Input
+                        id={`template-exemplo-${t.id}`}
+                        value={editExemplo}
+                        maxLength={TEXTO_MAX}
+                        onChange={(event) => setEditExemplo(event.target.value)}
+                      />
+                    </div>
                     <div className="flex gap-2">
                       <Button
                         type="submit"
@@ -333,6 +360,11 @@ export function TemplatesNomenclaturaSection() {
                   <div className="flex min-w-0 flex-col gap-1">
                     <span className="min-w-0 break-words font-medium">{t.subtipo}</span>
                     <span className="text-muted-foreground min-w-0 break-words">{t.template}</span>
+                    {t.exemplo && (
+                      <span className="text-muted-foreground min-w-0 break-words text-sm">
+                        Exemplo: {t.exemplo}
+                      </span>
+                    )}
                     {ehFallbackUnico(t) && (
                       <span
                         id={`template-fallback-${t.id}`}

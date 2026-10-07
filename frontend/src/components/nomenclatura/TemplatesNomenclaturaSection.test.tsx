@@ -60,6 +60,46 @@ describe('TemplatesNomenclaturaSection', () => {
     expect(screen.getByText('Genérico')).toBeInTheDocument();
   });
 
+  it('template com exemplo: mostra na lista; cadastro envia o exemplo digitado; editar pré-preenche o exemplo existente (feedback Ferreira Costa — Karla, 2026-10-06)', async () => {
+    const comExemplo = [
+      { id: 't-3', subtipo: 'Tubo — PEAD/PPR', template: 'TUBO PEAD [PN] DN[XX]', exemplo: 'TUBO PEAD PN80 DN32' },
+    ];
+    const fetchMock = stubFetch((url, init) => {
+      if (url === URL_LISTA && metodo(init) === 'GET') return jsonOk({ templates: comExemplo });
+      if (url === URL_LISTA && metodo(init) === 'POST') {
+        return jsonOk({ template: { id: 't-4', subtipo: 'Nova', template: 'NOVA [X]', exemplo: 'NOVA EXEMPLO' } });
+      }
+      throw new Error(`URL inesperada: ${url} (${metodo(init)})`);
+    });
+
+    const user = userEvent.setup();
+    render(<TemplatesNomenclaturaSection />);
+
+    expect(await screen.findByText('Exemplo: TUBO PEAD PN80 DN32')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Editar template Tubo — PEAD/PPR' }));
+    // Duas entradas "Exemplo (opcional)" na tela enquanto a edição está
+    // aberta: a do formulário de cadastro (vazia, índice 0) e a da linha em
+    // edição, pré-preenchida com o exemplo já salvo (índice 1).
+    expect(screen.getAllByLabelText('Exemplo (opcional)')[1]).toHaveValue('TUBO PEAD PN80 DN32');
+    await user.click(screen.getByRole('button', { name: 'Cancelar' }));
+
+    await user.type(screen.getByLabelText('Subtipo do template'), 'Nova');
+    await user.type(screen.getByLabelText('Estrutura do template'), 'NOVA [[X]');
+    await user.type(screen.getAllByLabelText('Exemplo (opcional)')[0], 'NOVA EXEMPLO');
+    await user.click(screen.getByRole('button', { name: 'Adicionar template' }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        URL_LISTA,
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ subtipo: 'Nova', template: 'NOVA [X]', exemplo: 'NOVA EXEMPLO' }),
+        }),
+      ),
+    );
+  });
+
   it('lista vazia mostra a mensagem', async () => {
     stubFetch(() => jsonOk({ templates: [] }));
     render(<TemplatesNomenclaturaSection />);
@@ -113,7 +153,7 @@ describe('TemplatesNomenclaturaSection', () => {
         URL_LISTA,
         expect.objectContaining({
           method: 'POST',
-          body: JSON.stringify({ subtipo: 'Cabos — Rede', template: 'CABO [TIPO]' }),
+          body: JSON.stringify({ subtipo: 'Cabos — Rede', template: 'CABO [TIPO]', exemplo: '' }),
         }),
       ),
     );
@@ -196,7 +236,7 @@ describe('TemplatesNomenclaturaSection', () => {
         `${URL_LISTA}/t-1`,
         expect.objectContaining({
           method: 'PUT',
-          body: JSON.stringify({ subtipo: 'Rede', template: 'REDE [CAT]' }),
+          body: JSON.stringify({ subtipo: 'Rede', template: 'REDE [CAT]', exemplo: '' }),
         }),
       ),
     );

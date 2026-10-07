@@ -792,6 +792,14 @@ type ProdutoBusca struct {
 	Nome      string    `json:"nome"`
 	Codigo    *string   `json:"codigo"`
 	Categoria Categoria `json:"categoria"`
+	// UnidadeMedida/Embalagem (feedback Ferreira Costa — Karla, 2026-10-06):
+	// devolvidos aqui para que a tela de Lançar saldo mostre, ao lado da
+	// quantidade, em QUAL unidade ela está lançando ("Quantidade (m)") e a
+	// embalagem do Produto só como texto informativo — nunca multiplica a
+	// quantidade digitada (Story 10.3: embalagem é sempre texto livre, sem
+	// relação numérica com nada).
+	UnidadeMedida *string `json:"unidadeMedida"`
+	Embalagem     *string `json:"embalagem"`
 }
 
 // escaparCoringasLike escapa os 3 caracteres com significado especial em um
@@ -820,7 +828,7 @@ func escaparCoringasLike(s string) string {
 // é trivial para um `ILIKE` sequencial com `JOIN` em `categorias` (25
 // linhas).
 const buscarProdutosQuery = `
-	SELECT p.id, p.nome, p.codigo, c.id, c.codigo, c.nome,
+	SELECT p.id, p.nome, p.codigo, c.id, c.codigo, c.nome, p.unidade_medida, p.embalagem,
 		CASE
 			WHEN lower(p.nome) = lower($1) OR lower(p.codigo) = lower($1) THEN 0
 			WHEN p.nome ILIKE $2 ESCAPE '\' OR p.codigo ILIKE $2 ESCAPE '\' THEN 1
@@ -856,11 +864,12 @@ func BuscarProdutos(db *sql.DB, empresaID string, termo string) ([]ProdutoBusca,
 	resultado := make([]ProdutoBusca, 0)
 	for rows.Next() {
 		var pb ProdutoBusca
-		var codigo sql.NullString
+		var codigo, unidadeMedida, embalagem sql.NullString
 		var rank int
 		if err := rows.Scan(
 			&pb.ID, &pb.Nome, &codigo,
 			&pb.Categoria.ID, &pb.Categoria.Codigo, &pb.Categoria.Nome,
+			&unidadeMedida, &embalagem,
 			&rank,
 		); err != nil {
 			return nil, fmt.Errorf("falha ao ler linha de busca de produtos: %w", err)
@@ -868,6 +877,14 @@ func BuscarProdutos(db *sql.DB, empresaID string, termo string) ([]ProdutoBusca,
 		if codigo.Valid {
 			c := codigo.String
 			pb.Codigo = &c
+		}
+		if unidadeMedida.Valid {
+			u := unidadeMedida.String
+			pb.UnidadeMedida = &u
+		}
+		if embalagem.Valid {
+			e := embalagem.String
+			pb.Embalagem = &e
 		}
 		resultado = append(resultado, pb)
 	}

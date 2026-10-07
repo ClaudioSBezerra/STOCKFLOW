@@ -40,6 +40,12 @@ interface ProdutoBusca {
   nome: string;
   codigo: string | null;
   categoria: { id: string; codigo: string; nome: string };
+  // unidadeMedida/embalagem (feedback Ferreira Costa — Karla, 2026-10-06):
+  // mostrados ao lado da quantidade pra deixar claro em qual unidade ela é
+  // lançada — embalagem é só texto informativo, nunca multiplica o número
+  // digitado (Story 10.3).
+  unidadeMedida: string | null;
+  embalagem: string | null;
 }
 
 const DEBOUNCE_MS = 300;
@@ -219,24 +225,32 @@ export function LancamentoSaldoSection() {
           <div className="flex flex-col gap-2">
             <Label htmlFor="lote-busca-produto">Produto</Label>
             {produto ? (
-              <div className="text-body flex items-center justify-between gap-2 rounded-md border border-border p-3">
-                <span className="min-w-0 break-words">
-                  {produto.nome}
-                  {produto.codigo && (
-                    <span className="font-mono text-muted-foreground">
-                      {" "}
-                      · {produto.codigo}
-                    </span>
-                  )}
-                </span>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setProduto(null)}
-                >
-                  Trocar produto
-                </Button>
+              <div className="flex flex-col gap-1 rounded-md border border-border p-3">
+                <div className="text-body flex items-center justify-between gap-2">
+                  <span className="min-w-0 break-words">
+                    {produto.nome}
+                    {produto.codigo && (
+                      <span className="font-mono text-muted-foreground">
+                        {" "}
+                        · {produto.codigo}
+                      </span>
+                    )}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setProduto(null)}
+                  >
+                    Trocar produto
+                  </Button>
+                </div>
+                {produto.embalagem && (
+                  <span className="text-label text-muted-foreground">
+                    Embalagem: {produto.embalagem} (só informativo — a quantidade abaixo é sempre em{" "}
+                    {produto.unidadeMedida ?? "unidade"})
+                  </span>
+                )}
               </div>
             ) : (
               <>
@@ -308,7 +322,9 @@ export function LancamentoSaldoSection() {
           </div>
 
           <div className="flex flex-col gap-2">
-            <Label htmlFor="lote-quantidade">Quantidade</Label>
+            <Label htmlFor="lote-quantidade">
+              Quantidade{produto?.unidadeMedida ? ` (em ${produto.unidadeMedida})` : ""}
+            </Label>
             <Input
               id="lote-quantidade"
               inputMode="decimal"

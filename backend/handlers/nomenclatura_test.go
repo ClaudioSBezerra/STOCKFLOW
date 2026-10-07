@@ -97,8 +97,8 @@ func TestTemplatesNomenclaturaHandler_CriarEditarExcluir(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(resp.Template) != 3 || resp.Template["subtipo"] != "T10.6 Cabos — Especial" || resp.Template["template"] != "CABO [TIPO] [BITOLA]" {
-		t.Errorf("template = %v, want {id,subtipo,template}", resp.Template)
+	if len(resp.Template) != 4 || resp.Template["subtipo"] != "T10.6 Cabos — Especial" || resp.Template["template"] != "CABO [TIPO] [BITOLA]" {
+		t.Errorf("template = %v, want {id,subtipo,template,exemplo}", resp.Template)
 	}
 	id := resp.Template["id"].(string)
 

@@ -67,7 +67,9 @@ const TEMPLATES = [
 function stubListasPadrao(extra?: Partial<Record<string, unknown>>) {
   return stubFetch((url, init) => {
     if (url === '/api/categorias') return jsonOk({ categorias: CATEGORIAS });
-    if (url === '/api/nomenclatura-templates') return jsonOk({ templates: TEMPLATES });
+    if (url === '/api/nomenclatura-templates') {
+      return jsonOk({ templates: (extra?.templates as typeof TEMPLATES | undefined) ?? TEMPLATES });
+    }
     if (url === '/api/produtos' && init?.method === 'POST') {
       const handler = extra?.postProdutos as FetchImpl | undefined;
       if (handler) return handler(url, init);
@@ -335,6 +337,27 @@ describe('CadastroProdutoSection', () => {
       screen.getByRole('combobox', { name: 'Template de nomenclatura' }),
     ).toHaveTextContent('Selecione um template');
   }, 15000);
+
+  it('template com exemplo: mostra "Formato: ... — Exemplo: ..." (feedback Ferreira Costa — Karla, 2026-10-06)', async () => {
+    stubListasPadrao({
+      templates: [
+        { id: 'tpl-1', subtipo: 'Tubo — PEAD/PPR', template: 'TUBO PEAD [PN] DN[XX]', exemplo: 'TUBO PEAD PN80 DN32' },
+      ],
+    });
+
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
+    await user.click(screen.getByRole('combobox', { name: 'Template de nomenclatura' }));
+    await user.click(await screen.findByRole('option', { name: 'Tubo — PEAD/PPR' }));
+
+    expect(
+      screen.getByText('Formato: TUBO PEAD [PN] DN[XX] — Exemplo: TUBO PEAD PN80 DN32'),
+    ).toBeInTheDocument();
+  });
 
   // Mesmo motivo do timeout explícito acima.
   it('cadastro válido sem dimensões: nenhuma chave de dimensão no payload', async () => {

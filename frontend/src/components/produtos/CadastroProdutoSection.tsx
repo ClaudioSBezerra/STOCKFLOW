@@ -104,6 +104,11 @@ interface NomenclaturaTemplate {
   id: string;
   subtipo: string;
   template: string;
+  // exemplo (feedback Ferreira Costa — Karla, 2026-10-06): o template
+  // preenchido de verdade, mostrado junto do "Formato:" como dica de como
+  // preencher — `null` nos templates sem exemplo (sempre o caso do
+  // Genérico, [NOME LIVRE]).
+  exemplo: string | null;
 }
 
 const MENSAGEM_ERRO_CARREGAR =
@@ -427,6 +432,7 @@ export function CadastroProdutoSection() {
             {templateSelecionado && (
               <p id="produto-nome-formato" className="text-label text-muted-foreground">
                 Formato: {templateSelecionado.template}
+                {templateSelecionado.exemplo && <> — Exemplo: {templateSelecionado.exemplo}</>}
               </p>
             )}
           </div>
@@ -644,7 +650,17 @@ export function CadastroProdutoSection() {
             herdada de `text-foreground`, quase invisível sobre
             `bg-black/95`) — o botão abaixo o substitui só aqui, com cor
             clara explícita, sem alterar o padrão usado pelos diálogos claros
-            do resto do app. */}
+            do resto do app.
+
+            Teto de 500px na foto em si (feedback Ferreira Costa — Karla,
+            2026-10-06): `max-h-full max-w-full` deixava o navegador ESTICAR
+            a foto (sempre ≤500px no lado maior, `fotoMaxLadoPx` em
+            `backend/handlers/fotos.go`) até caber na tela inteira — borrada
+            em qualquer monitor/celular maior que 500px, ou seja, quase
+            sempre. `min(500px,100%)` trava em QUALQUER DOS DOIS o que for
+            menor: nunca maior que a resolução real salva (nunca mais
+            borrada) e ainda encolhe para caber numa tela menor que 500px
+            (celular em retrato). */}
         <Dialog
           open={lightboxIndex !== null}
           onOpenChange={(open) => {
@@ -668,7 +684,7 @@ export function CadastroProdutoSection() {
               <img
                 src={fotos[lightboxIndex].objectUrl}
                 alt=""
-                className="max-h-full max-w-full object-contain"
+                className="max-h-[min(500px,100%)] max-w-[min(500px,100%)] object-contain"
               />
             )}
           </DialogContent>

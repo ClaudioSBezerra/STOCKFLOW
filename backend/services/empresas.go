@@ -424,8 +424,8 @@ func CopiarListasPadrao(tx *sql.Tx, empresaID string) error {
 	}
 
 	const copiarTemplates = `
-		INSERT INTO nomenclatura_templates (subtipo, template, empresa_id)
-		SELECT p.subtipo, p.template, $1
+		INSERT INTO nomenclatura_templates (subtipo, template, empresa_id, exemplo)
+		SELECT p.subtipo, p.template, $1, p.exemplo
 		FROM nomenclatura_templates_padrao p
 		WHERE NOT EXISTS (
 			SELECT 1 FROM nomenclatura_templates t
