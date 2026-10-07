@@ -13,6 +13,7 @@ import { fetchSSOConfig } from '@/lib/keycloak/config';
 import { apiUrl } from '@/lib/api';
 import { rankPapel } from '@/components/shell/nav-items';
 import { instalarInterceptorDeTrialExpirado, ouvirTrialExpirado } from '@/lib/httpTrial';
+import { instalarInterceptorDeRenovacaoDeSessao } from '@/lib/httpSessao';
 
 // Marca gravada pelo callback de SSO (Story 1.9): decide se "Sair" dispara o
 // RP-initiated logout do Keycloak ou só volta para /login local.
@@ -28,8 +29,12 @@ const SESSION_KEY_AUTH_VIA_SSO = 'auth_via_sso';
  *
  * Falha em qualquer passo -> estado `anonimo`, sem erro visível (nenhum
  * toast, nenhuma tela de erro). Enquanto os fetches não resolvem -> estado
- * `carregando`. O único gatilho de bootstrap é a montagem: não há refresh
- * proativo nem interceptor de 401 nesta story.
+ * `carregando`. O único gatilho de BOOTSTRAP é a montagem — não há timer
+ * proativo renovando o access token antes de vencer. Em vez disso,
+ * `lib/httpSessao.ts` (feedback real de uso, 2026-10-07) intercepta todo
+ * `401` de uma chamada autenticada e renova + repete na hora, então o
+ * access token de 30min fica invisível enquanto a sessão de 2h (AD-6,
+ * FR1) estiver de pé — nunca interrompe quem está no meio de uma ação.
  */
 export interface UsuarioSessao {
   id: string;
@@ -217,11 +222,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    // Instalado como a PRIMEIRA linha do efeito, antes do guard de
-    // bootstrapIniciado abaixo (chamar de novo é barato — é um no-op contra
-    // o `window.fetch` ATUAL): garante que o próprio bootstrap silencioso
-    // logo abaixo (`/api/auth/refresh`/`/api/auth/me`, o primeiro fetch que
-    // o app faz) já está coberto pelo interceptor.
+    // Instalados como as PRIMEIRAS linhas do efeito, antes do guard de
+    // bootstrapIniciado abaixo (chamar de novo é barato — cada um é um
+    // no-op contra o `window.fetch` ATUAL): garante que o próprio bootstrap
+    // silencioso logo abaixo (`/api/auth/refresh`/`/api/auth/me`, o primeiro
+    // fetch que o app faz) já está coberto pelos dois interceptores.
+    instalarInterceptorDeRenovacaoDeSessao();
     instalarInterceptorDeTrialExpirado();
 
     if (bootstrapIniciado.current) {
