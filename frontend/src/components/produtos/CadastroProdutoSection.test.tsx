@@ -272,6 +272,35 @@ describe('CadastroProdutoSection', () => {
     expect(screen.getByLabelText('Nome')).toHaveValue('');
   }, 15000);
 
+  it('cadastro com sucesso abre um Dialog modal mostrando "Código: X", fechado com Enter (feedback Ferreira Costa, direção, 2026-10-20)', async () => {
+    stubListasPadrao({
+      postProdutos: () =>
+        Promise.resolve({
+          ok: true,
+          status: 201,
+          json: async () => ({ produto: { id: 'p-10', nome: 'Tubo PVC 100mm', codigo: '000010' } }),
+        }),
+    });
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <CadastroProdutoSection />
+      </MemoryRouter>,
+    );
+    await preencherCamposObrigatorios(user);
+    await user.click(screen.getByRole('button', { name: 'Cadastrar produto' }));
+
+    const botaoOk = await screen.findByRole('button', { name: 'OK' });
+    expect(screen.getByText('Produto cadastrado')).toBeInTheDocument();
+    expect(screen.getByText('000010')).toBeInTheDocument();
+    // Radix Dialog foca automaticamente o único elemento focável (o botão
+    // "OK") ao abrir — Enter sobre um botão focado dispara o click nativo.
+    expect(botaoOk).toHaveFocus();
+
+    await user.keyboard('{Enter}');
+    expect(screen.queryByText('Produto cadastrado')).not.toBeInTheDocument();
+  });
+
   // Story 11.6 (FR8, AD-29): sem Select de Estoque nem Input de quantidade
   // inicial; o botão habilita só com nome/categoria/template/unidade e nenhuma
   // chamada a `/api/estoques` acontece (o stub lançaria "URL inesperada").
@@ -326,6 +355,7 @@ describe('CadastroProdutoSection', () => {
     await user.click(screen.getByRole('button', { name: 'Cadastrar produto' }));
 
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Produto cadastrado.'));
+    await user.click(await screen.findByRole('button', { name: 'OK' }));
     const corpo = corpoDoPost(fetchMock);
     expect(corpo.template_id).toBe('tpl-1');
 
@@ -658,6 +688,7 @@ describe('CadastroProdutoSection', () => {
     );
     await preencherCamposObrigatorios(user);
     await user.click(screen.getByRole('button', { name: 'Cadastrar produto' }));
+    await user.click(await screen.findByRole('button', { name: 'OK' }));
     await waitFor(() => expect(screen.getByLabelText('Código')).toHaveValue('000008'));
 
     await user.type(screen.getByLabelText('Nome'), 'P');
@@ -682,6 +713,7 @@ describe('CadastroProdutoSection', () => {
     expect(screen.queryByText(/cadastrado sem saldo/i)).not.toBeInTheDocument();
     await preencherCamposObrigatorios(user);
     await user.click(screen.getByRole('button', { name: 'Cadastrar produto' }));
+    await user.click(await screen.findByRole('button', { name: 'OK' }));
 
     const aviso = await screen.findByText(/cadastrado sem saldo em estoque/i);
     expect(aviso).toBeInTheDocument();
@@ -747,6 +779,9 @@ describe('CadastroProdutoSection — Adicionar foto', () => {
     await preencherCamposObrigatorios(user);
     await user.click(screen.getByRole('button', { name: 'Cadastrar produto' }));
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Produto cadastrado.'));
+    // Dialog de confirmação do código (feedback Ferreira Costa, direção,
+    // 2026-10-20) bloqueia o resto da tela até o usuário confirmar.
+    await user.click(await screen.findByRole('button', { name: 'OK' }));
     return fetchMock;
   }
 

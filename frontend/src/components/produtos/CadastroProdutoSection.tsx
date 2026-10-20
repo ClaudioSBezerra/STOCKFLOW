@@ -4,7 +4,15 @@ import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/card';
-import { Dialog, DialogClose, DialogContent, DialogTitle } from '@/components/ui/dialog';
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -180,6 +188,14 @@ export function CadastroProdutoSection() {
   // começar o próximo cadastro (senão exibiria o código do Produto anterior
   // ao lado de um formulário novo).
   const [codigoVisivel, setCodigoVisivel] = useState(false);
+  // Confirmação do código (feedback Ferreira Costa, direção, 2026-10-20):
+  // Karla cadastrava o mesmo Produto mais de uma vez por não ter certeza de
+  // que o cadastro anterior tinha ido — o toast.success some sozinho e o
+  // campo Código, lá embaixo no formulário, passava despercebido. Este
+  // Dialog modal força o usuário a VER o código gerado e confirmar com
+  // Enter (foco automático no botão "OK", único elemento focável do
+  // Dialog) antes de poder continuar.
+  const [confirmacaoCodigoAberta, setConfirmacaoCodigoAberta] = useState(false);
   const [fotoInputKey, setFotoInputKey] = useState(0);
   const [arquivoFoto, setArquivoFoto] = useState<File | null>(null);
   const [enviandoFoto, setEnviandoFoto] = useState(false);
@@ -308,6 +324,7 @@ export function CadastroProdutoSection() {
       // não só o último).
       setProdutoCriado(body.produto);
       setCodigoVisivel(true);
+      setConfirmacaoCodigoAberta(true);
       setArquivoFoto(null);
       setErroFoto(null);
       setFotoInputKey((k) => k + 1);
@@ -687,6 +704,32 @@ export function CadastroProdutoSection() {
                 className="max-h-[min(500px,100%)] max-w-[min(500px,100%)] object-contain"
               />
             )}
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={confirmacaoCodigoAberta}
+          onOpenChange={(open) => {
+            if (!open) {
+              setConfirmacaoCodigoAberta(false);
+            }
+          }}
+        >
+          <DialogContent showCloseButton={false} className="sm:max-w-sm">
+            <DialogHeader>
+              <DialogTitle>Produto cadastrado</DialogTitle>
+              <DialogDescription>
+                Código:{' '}
+                <span className="font-mono text-lg font-semibold text-foreground">
+                  {produtoCriado?.codigo}
+                </span>
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button type="button" autoFocus onClick={() => setConfirmacaoCodigoAberta(false)}>
+                OK
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </CardContent>
