@@ -26,6 +26,7 @@ const carrinhoState = vi.hoisted(() => ({
   itens: [] as Array<{
     produtoId: string;
     produtoNome: string;
+    produtoCodigo?: string;
     estoqueId: string;
     estoqueNome: string;
     quantidade: number;
