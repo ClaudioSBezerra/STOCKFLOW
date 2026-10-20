@@ -65,6 +65,11 @@ type PedidoItem struct {
 	EstoqueID     string  `json:"estoqueId"`
 	EstoqueNome   string  `json:"estoqueNome"`
 	Quantidade    float64 `json:"quantidade"`
+	// ProdutoCodigo (feedback Ferreira Costa, direção, 2026-10-20): lido ao
+	// vivo por LEFT JOIN, como Inativo logo abaixo — nunca parte do
+	// SNAPSHOT (AD-17), já que um Produto legado pode ganhar código depois
+	// do envio do Pedido (migração de códigos legados).
+	ProdutoCodigo *string `json:"produtoCodigo"`
 	// QuantidadeAprovada (Story 7.5, spec-7-5): nil enquanto o Pedido
 	// permanece `pendente`; a partir da decisão, um valor concreto de 0 até
 	// `Quantidade` — o quanto de fato foi debitado/aprovado deste item.
@@ -561,7 +566,7 @@ func BuscarPedidoProprio(db *sql.DB, empresaID string, pedidoID, usuarioID, pape
 
 	const selectItens = `
 		SELECT pi.produto_id, pi.produto_nome, pi.categoria_nome, pi.estoque_id, pi.estoque_nome, pi.quantidade, pi.quantidade_aprovada,
-		       COALESCE(pr.inativado_em IS NOT NULL, false)
+		       COALESCE(pr.inativado_em IS NOT NULL, false), pr.codigo
 		FROM pedido_itens pi
 		LEFT JOIN produtos pr ON pr.id = pi.produto_id AND pr.empresa_id = pi.empresa_id
 		WHERE pi.pedido_id = $1 AND pi.empresa_id = $2 ORDER BY pi.produto_nome`
@@ -575,14 +580,18 @@ func BuscarPedidoProprio(db *sql.DB, empresaID string, pedidoID, usuarioID, pape
 	for rows.Next() {
 		var it PedidoItem
 		var quantidadeAprovada sql.NullFloat64
+		var codigo sql.NullString
 		if err := rows.Scan(
 			&it.ProdutoID, &it.ProdutoNome, &it.CategoriaNome,
-			&it.EstoqueID, &it.EstoqueNome, &it.Quantidade, &quantidadeAprovada, &it.Inativo,
+			&it.EstoqueID, &it.EstoqueNome, &it.Quantidade, &quantidadeAprovada, &it.Inativo, &codigo,
 		); err != nil {
 			return PedidoDetalhe{}, fmt.Errorf("falha ao ler item do pedido: %w", err)
 		}
 		if quantidadeAprovada.Valid {
 			it.QuantidadeAprovada = &quantidadeAprovada.Float64
+		}
+		if codigo.Valid {
+			it.ProdutoCodigo = &codigo.String
 		}
 		det.Itens = append(det.Itens, it)
 	}

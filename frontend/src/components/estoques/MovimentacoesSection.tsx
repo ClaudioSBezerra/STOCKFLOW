@@ -31,6 +31,10 @@ interface Movimentacao {
   id: string;
   produtoId: string;
   produtoNome: string;
+  // produtoCodigo (feedback Ferreira Costa, direção, 2026-10-20): mostrar o
+  // código nas telas de consulta — `null` no catálogo legado ainda sem
+  // código.
+  produtoCodigo: string | null;
   tipo: string;
   estoqueOrigemId: string | null;
   estoqueOrigemNome: string | null;
@@ -335,7 +339,12 @@ export function MovimentacoesSection() {
                 <ArrowLeftRight aria-hidden="true" className="h-4 w-4 text-muted-foreground" />
               </div>
               <div className="flex min-w-0 flex-1 flex-col">
-                <span className="font-medium">{mov.produtoNome}</span>
+                <span className="font-medium">
+                  {mov.produtoNome}
+                  {mov.produtoCodigo && (
+                    <span className="text-muted-foreground font-mono"> · {mov.produtoCodigo}</span>
+                  )}
+                </span>
                 <span className="text-label text-muted-foreground">
                   {mov.estoqueOrigemNome ?? '—'} → {mov.estoqueDestinoNome ?? '—'}
                 </span>

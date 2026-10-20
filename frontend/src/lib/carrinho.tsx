@@ -36,6 +36,7 @@ import { apiUrl, authHeaders } from '@/lib/api';
 export interface ItemCarrinho {
   produtoId: string;
   produtoNome: string;
+  produtoCodigo: string | null;
   estoqueId: string;
   estoqueNome: string;
   quantidade: number;

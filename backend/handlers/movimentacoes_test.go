@@ -698,7 +698,7 @@ func TestListarMovimentacoesHandler_200ComCampos(t *testing.T) {
 		t.Fatalf("decode cru: %v", err)
 	}
 	querChaves := map[string]bool{
-		"id": true, "produtoId": true, "produtoNome": true, "tipo": true,
+		"id": true, "produtoId": true, "produtoNome": true, "produtoCodigo": true, "tipo": true,
 		"estoqueOrigemId": true, "estoqueOrigemNome": true,
 		"estoqueDestinoId": true, "estoqueDestinoNome": true,
 		"quantidade": true, "usuarioId": true, "usuarioNome": true, "criadoEm": true, "inativo": true,

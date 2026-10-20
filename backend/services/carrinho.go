@@ -20,11 +20,12 @@ import (
 // Produto e do Estoque já resolvidos por JOIN (o frontend nunca precisa de
 // uma segunda chamada por linha).
 type ItemCarrinho struct {
-	ProdutoID   string  `json:"produtoId"`
-	ProdutoNome string  `json:"produtoNome"`
-	EstoqueID   string  `json:"estoqueId"`
-	EstoqueNome string  `json:"estoqueNome"`
-	Quantidade  float64 `json:"quantidade"`
+	ProdutoID     string  `json:"produtoId"`
+	ProdutoNome   string  `json:"produtoNome"`
+	ProdutoCodigo *string `json:"produtoCodigo"`
+	EstoqueID     string  `json:"estoqueId"`
+	EstoqueNome   string  `json:"estoqueNome"`
+	Quantidade    float64 `json:"quantidade"`
 }
 
 // Motivos de remoção preguiçosa devolvidos por ListarCarrinho (Always,
@@ -166,9 +167,10 @@ func AdicionarItemCarrinho(db *sql.DB, empresaID string, usuarioID, produtoID, e
 	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
 
 	var produtoNome string
+	var produtoCodigo sql.NullString
 	var produtoInativo bool
-	const selectProduto = `SELECT nome, inativado_em IS NOT NULL FROM produtos WHERE id = $1 AND deleted_at IS NULL AND empresa_id = $2`
-	if err := tx.QueryRow(selectProduto, produtoID, empresaID).Scan(&produtoNome, &produtoInativo); err != nil {
+	const selectProduto = `SELECT nome, codigo, inativado_em IS NOT NULL FROM produtos WHERE id = $1 AND deleted_at IS NULL AND empresa_id = $2`
+	if err := tx.QueryRow(selectProduto, produtoID, empresaID).Scan(&produtoNome, &produtoCodigo, &produtoInativo); err != nil {
 		var pqErr *pq.Error
 		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
 			return ItemCarrinho{}, ErrCarrinhoProdutoNaoEncontrado
@@ -253,12 +255,18 @@ func AdicionarItemCarrinho(db *sql.DB, empresaID string, usuarioID, produtoID, e
 		return ItemCarrinho{}, fmt.Errorf("falha ao commitar adição ao carrinho: %w", err)
 	}
 
+	var produtoCodigoPtr *string
+	if produtoCodigo.Valid {
+		produtoCodigoPtr = &produtoCodigo.String
+	}
+
 	return ItemCarrinho{
-		ProdutoID:   produtoID,
-		ProdutoNome: produtoNome,
-		EstoqueID:   estoqueID,
-		EstoqueNome: estoqueNome,
-		Quantidade:  quantidadeFinal,
+		ProdutoID:     produtoID,
+		ProdutoNome:   produtoNome,
+		ProdutoCodigo: produtoCodigoPtr,
+		EstoqueID:     estoqueID,
+		EstoqueNome:   estoqueNome,
+		Quantidade:    quantidadeFinal,
 	}, nil
 }
 
@@ -268,6 +276,7 @@ func AdicionarItemCarrinho(db *sql.DB, empresaID string, usuarioID, produtoID, e
 // separar itens ativos de itens obsoletos antes de decidir o que apagar.
 type linhaCarrinhoBruta struct {
 	produtoID, produtoNome, estoqueID string
+	produtoCodigo                     sql.NullString
 	produtoDeletedEm                  sql.NullTime
 	produtoInativadoEm                sql.NullTime
 	estoqueNome                       sql.NullString
@@ -298,7 +307,7 @@ func ListarCarrinho(db *sql.DB, empresaID string, usuarioID string) ([]ItemCarri
 	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
 
 	const q = `
-		SELECT ci.produto_id, p.nome, p.deleted_at, p.inativado_em, ci.estoque_id, e.nome, ci.quantidade
+		SELECT ci.produto_id, p.nome, p.codigo, p.deleted_at, p.inativado_em, ci.estoque_id, e.nome, ci.quantidade
 		FROM carrinho_itens ci
 		JOIN produtos p ON p.id = ci.produto_id AND p.empresa_id = $2
 		LEFT JOIN estoques e ON e.id = ci.estoque_id AND e.empresa_id = $2
@@ -313,7 +322,7 @@ func ListarCarrinho(db *sql.DB, empresaID string, usuarioID string) ([]ItemCarri
 	for rows.Next() {
 		var l linhaCarrinhoBruta
 		if err := rows.Scan(
-			&l.produtoID, &l.produtoNome, &l.produtoDeletedEm, &l.produtoInativadoEm,
+			&l.produtoID, &l.produtoNome, &l.produtoCodigo, &l.produtoDeletedEm, &l.produtoInativadoEm,
 			&l.estoqueID, &l.estoqueNome, &l.quantidade,
 		); err != nil {
 			rows.Close()
@@ -368,8 +377,12 @@ func ListarCarrinho(db *sql.DB, empresaID string, usuarioID string) ([]ItemCarri
 				return nil, nil, fmt.Errorf("falha ao limpar item de estoque excluído do carrinho: %w", err)
 			}
 		default:
+			var produtoCodigoPtr *string
+			if l.produtoCodigo.Valid {
+				produtoCodigoPtr = &l.produtoCodigo.String
+			}
 			itens = append(itens, ItemCarrinho{
-				ProdutoID: l.produtoID, ProdutoNome: l.produtoNome,
+				ProdutoID: l.produtoID, ProdutoNome: l.produtoNome, ProdutoCodigo: produtoCodigoPtr,
 				EstoqueID: l.estoqueID, EstoqueNome: l.estoqueNome.String,
 				Quantidade: l.quantidade,
 			})

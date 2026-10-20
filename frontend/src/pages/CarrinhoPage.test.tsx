@@ -140,6 +140,14 @@ describe('CarrinhoPage', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('mostra o código do produto ao lado do nome, quando presente (feedback Ferreira Costa, direção, 2026-10-20)', () => {
+    carrinhoState.itens = [{ ...ITEM_1, produtoCodigo: '000123' }, ITEM_2];
+    render(<CarrinhoPage />);
+
+    expect(screen.getByText('· 000123')).toBeInTheDocument();
+    expect(screen.getByText('Conduíte 3/4')).toBeInTheDocument();
+  });
+
   it('clicar em "Remover" abre o ConfirmDialog citando o nome do produto', async () => {
     carrinhoState.itens = [ITEM_1];
     const user = userEvent.setup();

@@ -170,6 +170,29 @@ describe('MovimentacoesSection', () => {
     expect(within(linha).getByText('Entrada')).toBeInTheDocument();
   });
 
+  it('mostra o código do produto ao lado do nome, quando presente (feedback Ferreira Costa, direção, 2026-10-20)', async () => {
+    stubFetch((url) => {
+      if (ehLista(url)) {
+        return jsonOk({
+          movimentacoes: [
+            { ...MOVIMENTACOES[0], produtoCodigo: '000123' },
+            { ...MOVIMENTACOES[1], id: 'm-sem-codigo', produtoCodigo: null },
+          ],
+        });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    render(<MovimentacoesSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+
+    const linhas = await screen.findAllByRole('listitem');
+    expect(within(linhas[0] as HTMLElement).getByText('· 000123')).toBeInTheDocument();
+    expect(within(linhas[1] as HTMLElement).queryByText(/·/)).not.toBeInTheDocument();
+  });
+
   it('não tem nenhum botão de ação em nenhuma linha', async () => {
     stubFetch((url) => {
       if (ehLista(url)) return jsonOk({ movimentacoes: MOVIMENTACOES });

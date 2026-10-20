@@ -234,6 +234,36 @@ describe('MeusPedidosSection', () => {
     expect(buscarPedidoMock).toHaveBeenCalledWith('p-1');
   });
 
+  it('mostra o código do produto ao lado do nome, quando presente (feedback Ferreira Costa, direção, 2026-10-20)', async () => {
+    buscarPedidoMock.mockResolvedValue({
+      ...PEDIDOS[0],
+      itens: [
+        {
+          produtoId: 'pr-1',
+          produtoNome: 'Cabo Flexível 4mm',
+          produtoCodigo: '000123',
+          categoriaNome: 'Fios e Cabos',
+          estoqueId: 'e-1',
+          estoqueNome: 'Almoxarifado Central',
+          quantidade: 5,
+        },
+      ],
+    });
+
+    render(<MeusPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText(/Obra Norte/);
+
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole('button', { name: /^Ver itens do pedido de Ana Silva — Obra Norte/ }),
+    );
+
+    expect(await screen.findByText('· 000123')).toBeInTheDocument();
+  });
+
   it('marca "Inativo" só no item cujo Produto foi inativado (Story 16.2)', async () => {
     buscarPedidoMock.mockResolvedValue({
       ...PEDIDOS[0],

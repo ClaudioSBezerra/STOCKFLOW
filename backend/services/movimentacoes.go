@@ -47,9 +47,14 @@ const maxMovimentacoesPorConsulta = 500
 // `EstoqueDestinoNome` são `nil` para `tipo="baixa"` (a Baixa não tem
 // destino) e preenchidos para `tipo="transferencia"`.
 type MovimentacaoHistorico struct {
-	ID                 string    `json:"id"`
-	ProdutoID          string    `json:"produtoId"`
-	ProdutoNome        string    `json:"produtoNome"`
+	ID          string `json:"id"`
+	ProdutoID   string `json:"produtoId"`
+	ProdutoNome string `json:"produtoNome"`
+	// ProdutoCodigo (feedback Ferreira Costa, direção, 2026-10-20): mostrar o
+	// código nas telas de consulta "de forma geral" — `nil` para o catálogo
+	// legado ainda sem código (cmd/atribuir-codigos-produto resolve isso à
+	// parte).
+	ProdutoCodigo      *string   `json:"produtoCodigo"`
 	Tipo               string    `json:"tipo"`
 	EstoqueOrigemID    *string   `json:"estoqueOrigemId"`
 	EstoqueOrigemNome  *string   `json:"estoqueOrigemNome"`
@@ -149,7 +154,7 @@ func ListarMovimentacoes(db *sql.DB, empresaID string, filtro FiltroMovimentacoe
 		return nil, err
 	}
 	q := fmt.Sprintf(`
-		SELECT m.id, m.produto_id, p.nome, m.tipo,
+		SELECT m.id, m.produto_id, p.nome, p.codigo, m.tipo,
 		       m.estoque_origem_id, eo.nome, m.estoque_destino_id, ed.nome,
 		       m.quantidade, m.usuario_id, u.nome, m.criado_em, p.inativado_em IS NOT NULL
 		FROM movimentacoes m
@@ -170,13 +175,16 @@ func ListarMovimentacoes(db *sql.DB, empresaID string, filtro FiltroMovimentacoe
 	movimentacoes := make([]MovimentacaoHistorico, 0)
 	for rows.Next() {
 		var m MovimentacaoHistorico
-		var origemID, origemNome, destinoID, destinoNome sql.NullString
+		var codigo, origemID, origemNome, destinoID, destinoNome sql.NullString
 		if err := rows.Scan(
-			&m.ID, &m.ProdutoID, &m.ProdutoNome, &m.Tipo,
+			&m.ID, &m.ProdutoID, &m.ProdutoNome, &codigo, &m.Tipo,
 			&origemID, &origemNome, &destinoID, &destinoNome,
 			&m.Quantidade, &m.UsuarioID, &m.UsuarioNome, &m.CriadoEm, &m.Inativo,
 		); err != nil {
 			return nil, fmt.Errorf("falha ao ler linha de movimentação: %w", err)
+		}
+		if codigo.Valid {
+			m.ProdutoCodigo = &codigo.String
 		}
 		if origemID.Valid {
 			m.EstoqueOrigemID = &origemID.String

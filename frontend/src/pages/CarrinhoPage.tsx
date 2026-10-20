@@ -197,7 +197,12 @@ export function CarrinhoPage() {
                   className="text-body flex items-center justify-between gap-4 border-b border-border pb-2 last:border-b-0 last:pb-0"
                 >
                   <div className="flex min-w-0 flex-col">
-                    <span className="min-w-0 truncate">{item.produtoNome}</span>
+                    <span className="min-w-0 truncate">
+                      {item.produtoNome}
+                      {item.produtoCodigo && (
+                        <span className="text-muted-foreground font-mono"> · {item.produtoCodigo}</span>
+                      )}
+                    </span>
                     <span className="text-label text-muted-foreground">{item.estoqueNome}</span>
                   </div>
                   <span className="flex shrink-0 items-center gap-3">

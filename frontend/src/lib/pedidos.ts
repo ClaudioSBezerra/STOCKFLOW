@@ -64,6 +64,9 @@ export interface PedidoItem {
   quantidadeAprovada: number | null;
   // inativo (Story 16.2): o Produto foi inativado depois do envio.
   inativo?: boolean;
+  // produtoCodigo (feedback Ferreira Costa, direção, 2026-10-20): lido ao
+  // vivo, como inativo acima — null enquanto o Produto não tiver código.
+  produtoCodigo: string | null;
 }
 
 export interface PedidoDetalhe extends PedidoCabecalho {

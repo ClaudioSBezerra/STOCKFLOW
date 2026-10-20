@@ -365,6 +365,9 @@ export function MeusPedidosSection() {
                   <div className="flex min-w-0 flex-col">
                     <span className="min-w-0 truncate">
                         {item.produtoNome}
+                        {item.produtoCodigo && (
+                          <span className="text-muted-foreground font-mono"> · {item.produtoCodigo}</span>
+                        )}
                         {item.inativo && (
                           <span className="ml-2 rounded-full border border-border px-2 py-0.5 text-label text-muted-foreground">Inativo</span>
                         )}
