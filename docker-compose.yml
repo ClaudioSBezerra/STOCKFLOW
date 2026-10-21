@@ -112,6 +112,31 @@ services:
       retries: 5
       start_period: 10s
 
+  # Cloudflare Tunnel (21/10, migração de segurança) — scaffold DORMENTE,
+  # mesmo padrão já aplicado em FB_APU05/FB_FAROL/FB_SMARTPICK. Sem
+  # CLOUDFLARE_TUNNEL_TOKEN setado no Coolify, este container só reinicia
+  # sozinho, sem afetar `api`/`web`/`db`. Sem `networks:` explícito aqui de
+  # propósito — mesmo padrão do resto deste arquivo: todos os serviços
+  # entram na rede default do compose automaticamente.
+  #
+  # Passo a passo (manual, painel Cloudflare):
+  #   1. Zero Trust -> Networks -> Tunnels -> Create a tunnel, nome ex.
+  #      "stockflow-prod".
+  #   2. Copiar o token gerado e setar CLOUDFLARE_TUNNEL_TOKEN no Coolify.
+  #   3. Public Hostname: Subdomain=stockflow, Domain=fbtechia.com,
+  #      Service=http://web:80.
+  #   4. Confirmar que stockflow.fbtechia.com responde via o túnel antes de
+  #      remover a configuração de domínio público do Coolify pra este app
+  #      (fallback até validar).
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: stockflow-cloudflared-prod
+    restart: always
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      web:
+        condition: service_healthy
+
 volumes:
   stockflow-db-data:
   stockflow-fotos-data:
