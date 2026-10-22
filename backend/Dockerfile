@@ -1,5 +1,11 @@
 # syntax=docker/dockerfile:1
-FROM golang:1.27-alpine AS build
+# Pinado em patch exato (22/10, migração de segurança) — a tag flutuante
+# "1.27-alpine" ficava sujeita ao cache local do Docker nunca puxar a
+# versão nova; fixar o patch garante o pull. 1.27.3 corrige 15
+# vulnerabilidades da biblioteca padrão do Go (net/http, crypto/tls,
+# crypto/x509, net/url) achadas via `govulncheck` — nenhuma em
+# dependência terceira.
+FROM golang:1.27.3-alpine AS build
 
 WORKDIR /src
 
