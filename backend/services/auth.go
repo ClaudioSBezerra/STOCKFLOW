@@ -146,10 +146,12 @@ var (
 	// não há o que resetar/desligar (Story 14.4). Handler -> 409
 	// MFA_NAO_CONFIGURADO.
 	ErrMFANaoConfigurado = errors.New("autenticação em duas etapas não configurada para esta conta")
-	// ErrMFAExigidoPelaEmpresa indica que a conta é `gestor`/`adm` numa
-	// Empresa com `mfa_obrigatorio=true` e por isso não pode desligar o
-	// próprio MFA (Story 14.4). Handler -> 409 MFA_EXIGIDO_PELA_EMPRESA.
-	ErrMFAExigidoPelaEmpresa = errors.New("a Empresa exige dupla autenticação para o seu papel; ela não pode ser desligada")
+	// ErrMFAExigidoPelaEmpresa indica que a conta não pode desligar o próprio
+	// MFA (Story 14.4) — ou é `gestor`/`adm` numa Empresa com
+	// `mfa_obrigatorio=true`, ou tem `mfa_obrigatorio_individual=true`
+	// (feedback Ferreira Costa, direção, 2026-10-21, qualquer papel). Handler
+	// -> 409 MFA_EXIGIDO_PELA_EMPRESA.
+	ErrMFAExigidoPelaEmpresa = errors.New("a autenticação em duas etapas é obrigatória para esta conta; ela não pode ser desligada")
 )
 
 // normalizeEmail aplica a mesma normalização usada em cmd/seed-admin:
@@ -479,6 +481,11 @@ type UsuarioSessao struct {
 	Ativo         bool
 	MFAHabilitado bool
 	Origem        string
+	// MFAObrigatorioIndividual (feedback Ferreira Costa, direção, 2026-10-21):
+	// gate por CONTA, independente do papel e de empresa.MFAObrigatorio —
+	// decidido pelo `adm` em CriarUsuarioDireto. Lido do Postgres como
+	// MFAHabilitado, sempre atual.
+	MFAObrigatorioIndividual bool
 }
 
 // Login valida e-mail/senha e devolve o id do usuário autenticado. Cobre a
@@ -1203,10 +1210,12 @@ func BuscarUsuarioSessao(db *sql.DB, usuarioID string) (UsuarioSessao, error) {
 	var u UsuarioSessao
 	var empresaID sql.NullString
 	const selectUsuario = `
-		SELECT id, nome, email, papel, ativo, mfa_habilitado, empresa_id
+		SELECT id, nome, email, papel, ativo, mfa_habilitado, empresa_id, mfa_obrigatorio_individual
 		FROM usuarios
 		WHERE id = $1`
-	err := db.QueryRow(selectUsuario, usuarioID).Scan(&u.ID, &u.Nome, &u.Email, &u.Papel, &u.Ativo, &u.MFAHabilitado, &empresaID)
+	err := db.QueryRow(selectUsuario, usuarioID).Scan(
+		&u.ID, &u.Nome, &u.Email, &u.Papel, &u.Ativo, &u.MFAHabilitado, &empresaID, &u.MFAObrigatorioIndividual,
+	)
 	u.EmpresaID = empresaID.String
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

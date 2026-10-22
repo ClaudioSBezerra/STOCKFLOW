@@ -48,6 +48,14 @@ export interface UsuarioSessao {
    */
   mfaHabilitado: boolean;
   /**
+   * MFA obrigatório para ESTA CONTA especificamente (feedback Ferreira
+   * Costa, direção, 2026-10-21), independente do papel e do flag da Empresa
+   * — decidido pelo `adm` em "Cadastrar usuário". Espelha
+   * `usuarios.mfa_obrigatorio_individual`. Ausente (resposta antiga ou mock
+   * de teste) = "não exige".
+   */
+  mfaObrigatorioIndividual?: boolean;
+  /**
    * Proveniência da SESSÃO atual ('senha' | 'sso'), não da conta — vem do
    * claim `origem` do JWT (Story 1.11). Entra em `mfaSetupPendente`, que
    * `RotaProtegida` (App.tsx) usa para redirecionar para Configurações →
@@ -79,18 +87,20 @@ export interface UsuarioSessao {
  * 14.1) — espelho ÚNICO do gate de middleware.RequireRole no frontend, usado
  * pelo bloqueio de navegação (`RotaProtegida`, App.tsx) e pelo rótulo
  * "obrigatório"/"opcional" de Configurações → Segurança:
- * `origem==='senha' && rank>=gestor && !mfaHabilitado && empresa.mfaObrigatorio`.
- * `empresa` ausente equivale a "não exige". O servidor continua sendo a
- * autoridade (403 MFA_SETUP_REQUIRED).
+ * `origem==='senha' && !mfaHabilitado` e (
+ *   `rank>=gestor && empresa.mfaObrigatorio` — Story 14.1, OU
+ *   `mfaObrigatorioIndividual` — feedback Ferreira Costa, direção,
+ *   2026-10-21, QUALQUER papel, inclusive abaixo de gestor
+ * ). `empresa` ausente equivale a "Empresa não exige". O servidor continua
+ * sendo a autoridade (403 MFA_SETUP_REQUIRED).
  */
 export function mfaSetupPendente(usuario: UsuarioSessao | null | undefined): boolean {
-  return (
-    usuario != null &&
-    usuario.origem === 'senha' &&
-    rankPapel(usuario.papel) >= rankPapel('gestor') &&
-    !usuario.mfaHabilitado &&
-    usuario.empresa?.mfaObrigatorio === true
-  );
+  if (usuario == null || usuario.origem !== 'senha' || usuario.mfaHabilitado) {
+    return false;
+  }
+  const exigidoPelaEmpresa =
+    rankPapel(usuario.papel) >= rankPapel('gestor') && usuario.empresa?.mfaObrigatorio === true;
+  return exigidoPelaEmpresa || usuario.mfaObrigatorioIndividual === true;
 }
 
 export type EstadoAuth = 'carregando' | 'autenticado' | 'anonimo';

@@ -378,9 +378,30 @@ func TestMFADesligarHandler_ExigidoPelaEmpresa(t *testing.T) {
 
 	w := postMFADesligar(db, "Bearer "+token, corpoDesligar("senha-123456", codigoTOTPHandlerTeste(t, segredo)))
 	esperarErro(t, w, http.StatusConflict, "MFA_EXIGIDO_PELA_EMPRESA")
-	if msg := decodeErro(t, w.Body.Bytes()).Error.Message; msg != "A Empresa exige dupla autenticação para o seu papel; ela não pode ser desligada." {
+	if msg := decodeErro(t, w.Body.Bytes()).Error.Message; msg != "A autenticação em duas etapas é obrigatória para esta conta; ela não pode ser desligada." {
 		t.Errorf("mensagem = %q", msg)
 	}
+	if e := lerEstadoMFAHandler(t, db, id); !e.habilitado || e.tentativas != 0 {
+		t.Errorf("estado = %+v, want MFA intacto e tentativas=0", e)
+	}
+}
+
+// TestMFADesligarHandler_ExigidoIndividualmente prova a via NOVA do gate
+// (feedback Ferreira Costa, direção, 2026-10-21) na fronteira HTTP: uma
+// conta `usuario` (abaixo de gestor, onde a exigência por Empresa nunca
+// chega) com `mfa_obrigatorio_individual=true` recebe o MESMO 409
+// MFA_EXIGIDO_PELA_EMPRESA ao tentar desligar — mesmo com a Empresa NÃO
+// exigindo nada.
+func TestMFADesligarHandler_ExigidoIndividualmente(t *testing.T) {
+	db := testDB(t)
+	prepararSegurancaEmpresaTeste(t, db)
+	id, token, segredo := contaComMFAParaDesligar(t, db, "dmfa-exigido-individual@empresa.com", "usuario")
+	if _, err := db.Exec(`UPDATE usuarios SET mfa_obrigatorio_individual = true WHERE id = $1`, id); err != nil {
+		t.Fatalf("falha ao marcar mfa_obrigatorio_individual: %v", err)
+	}
+
+	w := postMFADesligar(db, "Bearer "+token, corpoDesligar("senha-123456", codigoTOTPHandlerTeste(t, segredo)))
+	esperarErro(t, w, http.StatusConflict, "MFA_EXIGIDO_PELA_EMPRESA")
 	if e := lerEstadoMFAHandler(t, db, id); !e.habilitado || e.tentativas != 0 {
 		t.Errorf("estado = %+v, want MFA intacto e tentativas=0", e)
 	}

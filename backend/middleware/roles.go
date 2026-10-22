@@ -55,6 +55,14 @@ import (
 // slog.Error — erro de composição, fail-closed: nunca abre a rota. As rotas
 // do Dono da Plataforma (RequireDonoPlataforma) não passam por aqui e não
 // leem o flag de Empresa nenhuma.
+//
+// Feedback Ferreira Costa (direção, 2026-10-21) acrescenta uma SEGUNDA via,
+// independente da Empresa: `usuario.MFAObrigatorioIndividual` (decidido pelo
+// `adm` em CriarUsuarioDireto, por CONTA) dispara o mesmo 403
+// MFA_SETUP_REQUIRED em QUALQUER rota com RequireRole — inclusive
+// `usuario`/`almoxarife`, onde o gate por Empresa nunca chega. As duas
+// condições de origem/MFAHabilitado continuam valendo para esta via também;
+// só o requisito de papel mínimo gestor+ fica restrito ao gate por Empresa.
 func RequireRole(papelMinimo string) func(http.HandlerFunc) http.HandlerFunc {
 	rankMinimo := services.RankPapel(papelMinimo)
 	if rankMinimo == 0 {
@@ -75,14 +83,24 @@ func RequireRole(papelMinimo string) func(http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 
-			if rankMinimo >= services.RankPapel(services.PapelGestor) && usuario.Origem == "senha" && !usuario.MFAHabilitado {
-				empresa, ok := EmpresaDaRequisicao(r.Context())
-				if !ok {
-					slog.Error("RequireRole aplicado sem RequireEmpresa antes — Empresa ausente do contexto", "papel_minimo", papelMinimo, "rota", r.URL.Path)
-					escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver empresa da requisição")
-					return
+			if usuario.Origem == "senha" && !usuario.MFAHabilitado {
+				// exigidoPelaEmpresa (Story 14.1) só se aplica a rotas gestor+ —
+				// mesmo comportamento de antes desta mudança. exigidoIndividualmente
+				// (feedback Ferreira Costa, direção, 2026-10-21) vale para QUALQUER
+				// rota com RequireRole, inclusive usuario/almoxarife: o `adm` pode
+				// exigir MFA de uma conta específica sem depender do papel dela nem
+				// do flag da Empresa inteira.
+				exigidoPelaEmpresa := false
+				if rankMinimo >= services.RankPapel(services.PapelGestor) {
+					empresa, ok := EmpresaDaRequisicao(r.Context())
+					if !ok {
+						slog.Error("RequireRole aplicado sem RequireEmpresa antes — Empresa ausente do contexto", "papel_minimo", papelMinimo, "rota", r.URL.Path)
+						escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver empresa da requisição")
+						return
+					}
+					exigidoPelaEmpresa = empresa.MFAObrigatorio
 				}
-				if empresa.MFAObrigatorio {
+				if exigidoPelaEmpresa || usuario.MFAObrigatorioIndividual {
 					escreverErro(w, http.StatusForbidden, "MFA_SETUP_REQUIRED", "configure a autenticação em duas etapas em Configurações → Segurança para continuar.")
 					return
 				}

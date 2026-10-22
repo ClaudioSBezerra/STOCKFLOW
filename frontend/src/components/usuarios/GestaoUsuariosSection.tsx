@@ -41,6 +41,10 @@ interface UsuarioResumo {
   papel: string;
   ativo: boolean;
   mfaHabilitado?: boolean;
+  // mfaObrigatorioIndividual (feedback Ferreira Costa, direção, 2026-10-21):
+  // decidido pelo adm em "Cadastrar usuário" (CriarUsuarioSection) — exibida
+  // aqui só como informação, nenhuma ação desta tela a altera.
+  mfaObrigatorioIndividual?: boolean;
 }
 
 type TipoAcao = 'desativar' | 'reativar' | 'rebaixar' | 'resetar-mfa';
@@ -268,6 +272,7 @@ export function GestaoUsuariosSection() {
                 <span className="flex shrink-0 items-center gap-2">
                   <PilhulaStatus status={rotuloPapel(c.papel)} />
                   {!c.ativo && <PilhulaStatus status="Inativa" />}
+                  {c.mfaObrigatorioIndividual && <PilhulaStatus status="2FA obrigatório" />}
                 </span>
                 {!ehAtor && (
                   <div className="flex flex-wrap gap-2">

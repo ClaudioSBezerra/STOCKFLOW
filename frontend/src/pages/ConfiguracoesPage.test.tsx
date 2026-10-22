@@ -23,6 +23,10 @@ const authState = vi.hoisted(() => ({
   // exige) para os casos do gate herdados da Story 1.11; os casos "Empresa
   // não exige" sobrescrevem.
   empresaMfaObrigatorio: true,
+  // Feedback Ferreira Costa, direção, 2026-10-21: exigência por CONTA,
+  // independente do papel/Empresa. Padrão `false`; os testes dedicados
+  // sobrescrevem.
+  mfaObrigatorioIndividual: false,
 }));
 
 const atualizarUsuarioMock = vi.hoisted(() => vi.fn());
@@ -41,6 +45,7 @@ vi.mock('@/lib/auth', async (importOriginal) => ({
       mfaHabilitado: authState.mfaHabilitado,
       origem: authState.origem,
       empresa: { mfaObrigatorio: authState.empresaMfaObrigatorio },
+      mfaObrigatorioIndividual: authState.mfaObrigatorioIndividual,
     },
     definirSessao: vi.fn(),
     atualizarUsuario: atualizarUsuarioMock,
@@ -67,6 +72,7 @@ beforeEach(() => {
   authState.mfaHabilitado = false;
   authState.origem = 'senha';
   authState.empresaMfaObrigatorio = true;
+  authState.mfaObrigatorioIndividual = false;
   atualizarUsuarioMock.mockReset();
 });
 
@@ -483,7 +489,7 @@ describe('ConfiguracoesPage — Segurança (MFA, Story 1.11)', () => {
 
     expect(await screen.findByRole('heading', { level: 2, name: 'Segurança' })).toBeInTheDocument();
     expect(
-      screen.getByText('Obrigatório para o seu papel. Configure para continuar acessando ações restritas.'),
+      screen.getByText('Obrigatório para esta conta. Configure para continuar acessando ações restritas.'),
     ).toBeInTheDocument();
   });
 
@@ -498,9 +504,9 @@ describe('ConfiguracoesPage — Segurança (MFA, Story 1.11)', () => {
 
     render(<ConfiguracoesPage />);
 
-    expect(await screen.findByText('Opcional para o seu papel.')).toBeInTheDocument();
+    expect(await screen.findByText('Opcional para esta conta.')).toBeInTheDocument();
     expect(
-      screen.queryByText('Obrigatório para o seu papel. Configure para continuar acessando ações restritas.'),
+      screen.queryByText('Obrigatório para esta conta. Configure para continuar acessando ações restritas.'),
     ).not.toBeInTheDocument();
   });
 
@@ -514,7 +520,7 @@ describe('ConfiguracoesPage — Segurança (MFA, Story 1.11)', () => {
     render(<ConfiguracoesPage />);
 
     expect(
-      await screen.findByText('Obrigatório para o seu papel. Configure para continuar acessando ações restritas.'),
+      await screen.findByText('Obrigatório para esta conta. Configure para continuar acessando ações restritas.'),
     ).toBeInTheDocument();
   });
 
@@ -527,7 +533,7 @@ describe('ConfiguracoesPage — Segurança (MFA, Story 1.11)', () => {
 
     render(<ConfiguracoesPage />);
 
-    expect(await screen.findByText('Opcional para o seu papel.')).toBeInTheDocument();
+    expect(await screen.findByText('Opcional para esta conta.')).toBeInTheDocument();
   });
 
   it('gestor via SSO sem MFA: mensagem "opcional", nunca "obrigatório"', async () => {
@@ -540,9 +546,9 @@ describe('ConfiguracoesPage — Segurança (MFA, Story 1.11)', () => {
 
     render(<ConfiguracoesPage />);
 
-    expect(await screen.findByText('Opcional para o seu papel.')).toBeInTheDocument();
+    expect(await screen.findByText('Opcional para esta conta.')).toBeInTheDocument();
     expect(
-      screen.queryByText('Obrigatório para o seu papel. Configure para continuar acessando ações restritas.'),
+      screen.queryByText('Obrigatório para esta conta. Configure para continuar acessando ações restritas.'),
     ).not.toBeInTheDocument();
   });
 
@@ -739,7 +745,7 @@ describe('ConfiguracoesPage — Desligar meu MFA (Story 14.4)', () => {
     authState.papel = 'gestor';
     authState.mfaHabilitado = true;
     authState.empresaMfaObrigatorio = false; // a sessão ainda não viu a mudança
-    const mensagem = 'A Empresa exige dupla autenticação para o seu papel; ela não pode ser desligada.';
+    const mensagem = 'A autenticação em duas etapas é obrigatória para esta conta; ela não pode ser desligada.';
     stubFetchBase((url, init) => {
       if (url === '/api/auth/mfa/desligar' && init?.method === 'POST') {
         return Promise.resolve({
@@ -770,7 +776,7 @@ describe('ConfiguracoesPage — Desligar meu MFA (Story 14.4)', () => {
 
     expect(await screen.findByText('Autenticação em duas etapas ativa.')).toBeInTheDocument();
     expect(
-      screen.getByText('A Empresa exige dupla autenticação para o seu papel; ela não pode ser desligada.'),
+      screen.getByText('A autenticação em duas etapas é obrigatória para esta conta; ela não pode ser desligada.'),
     ).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Desligar meu MFA' })).not.toBeInTheDocument();
   });
@@ -786,6 +792,40 @@ describe('ConfiguracoesPage — Desligar meu MFA (Story 14.4)', () => {
     render(<ConfiguracoesPage />);
 
     expect(await screen.findByRole('button', { name: 'Desligar meu MFA' })).toBeInTheDocument();
+  });
+
+  it('usuario com mfaObrigatorioIndividual não vê o botão, mesmo com a Empresa não exigindo (feedback Ferreira Costa, direção, 2026-10-21)', async () => {
+    authState.papel = 'usuario';
+    authState.mfaHabilitado = true;
+    authState.empresaMfaObrigatorio = false;
+    authState.mfaObrigatorioIndividual = true;
+    stubFetchBase(() => {
+      throw new Error('URL inesperada');
+    });
+
+    render(<ConfiguracoesPage />);
+
+    expect(await screen.findByText('Autenticação em duas etapas ativa.')).toBeInTheDocument();
+    expect(
+      screen.getByText('A autenticação em duas etapas é obrigatória para esta conta; ela não pode ser desligada.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Desligar meu MFA' })).not.toBeInTheDocument();
+  });
+
+  it('usuario sem MFA ainda configurado, com mfaObrigatorioIndividual, vê "Obrigatório para esta conta"', async () => {
+    authState.papel = 'usuario';
+    authState.mfaHabilitado = false;
+    authState.empresaMfaObrigatorio = false;
+    authState.mfaObrigatorioIndividual = true;
+    stubFetchBase(() => {
+      throw new Error('URL inesperada');
+    });
+
+    render(<ConfiguracoesPage />);
+
+    expect(
+      await screen.findByText('Obrigatório para esta conta. Configure para continuar acessando ações restritas.'),
+    ).toBeInTheDocument();
   });
 });
 

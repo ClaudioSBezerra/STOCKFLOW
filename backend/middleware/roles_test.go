@@ -514,3 +514,48 @@ func TestRequireRole_MFAGate_PapelBaixoEmpresaExigePassa(t *testing.T) {
 		t.Fatalf("gestor em rota almoxarife: status = %d, executou = %v, want 200 (body=%s)", w.Code, executou, w.Body.String())
 	}
 }
+
+// TestRequireRole_MFAGate_IndividualExigeMesmoAbaixoDeGestor prova a via NOVA
+// do gate (feedback Ferreira Costa, direção, 2026-10-21):
+// `MFAObrigatorioIndividual=true` dispara 403 MFA_SETUP_REQUIRED numa rota
+// `usuario` — exatamente o caso que a Empresa (Story 14.1) nunca cobre.
+// `empresa: nil` prova que esta via NÃO depende de EmpresaDaRequisicao: o
+// gate dispara sem nunca tentar resolver a Empresa do contexto.
+func TestRequireRole_MFAGate_IndividualExigeMesmoAbaixoDeGestor(t *testing.T) {
+	w, executou := chamarRequireRoleComEmpresa(services.PapelUsuario, &services.UsuarioSessao{
+		Papel: services.PapelUsuario, Ativo: true, Origem: "senha", MFAHabilitado: false, MFAObrigatorioIndividual: true,
+	}, nil)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusForbidden, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "MFA_SETUP_REQUIRED" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "MFA_SETUP_REQUIRED")
+	}
+	if executou {
+		t.Error("handler decorado executou apesar do 403 MFA_SETUP_REQUIRED (via individual)")
+	}
+}
+
+// TestRequireRole_MFAGate_IndividualNaoDisparaQuandoMFAHabilitado prova que
+// MFAObrigatorioIndividual=true não barra uma conta que já configurou MFA —
+// mesma escapatória da via por Empresa.
+func TestRequireRole_MFAGate_IndividualNaoDisparaQuandoMFAHabilitado(t *testing.T) {
+	w, executou := chamarRequireRoleComEmpresa(services.PapelUsuario, &services.UsuarioSessao{
+		Papel: services.PapelUsuario, Ativo: true, Origem: "senha", MFAHabilitado: true, MFAObrigatorioIndividual: true,
+	}, nil)
+	if w.Code != http.StatusOK || !executou {
+		t.Fatalf("status = %d, executou = %v, want 200 e executou (body=%s)", w.Code, executou, w.Body.String())
+	}
+}
+
+// TestRequireRole_MFAGate_IndividualNaoDisparaParaSSO prova que a via
+// individual respeita a mesma exceção `origem=sso` da via por Empresa.
+func TestRequireRole_MFAGate_IndividualNaoDisparaParaSSO(t *testing.T) {
+	w, executou := chamarRequireRoleComEmpresa(services.PapelUsuario, &services.UsuarioSessao{
+		Papel: services.PapelUsuario, Ativo: true, Origem: "sso", MFAHabilitado: false, MFAObrigatorioIndividual: true,
+	}, nil)
+	if w.Code != http.StatusOK || !executou {
+		t.Fatalf("status = %d, executou = %v, want 200 e executou (body=%s)", w.Code, executou, w.Body.String())
+	}
+}

@@ -458,3 +458,33 @@ describe('mfaSetupPendente (Story 14.1)', () => {
     expect(mfaSetupPendente(null)).toBe(false);
   });
 });
+
+describe('mfaSetupPendente — via individual (feedback Ferreira Costa, direção, 2026-10-21)', () => {
+  const baseIndividual: UsuarioSessao = {
+    id: '2',
+    nome: 'Almoxarife',
+    email: 'almoxarife@empresa.com',
+    papel: 'almoxarife',
+    mfaHabilitado: false,
+    origem: 'senha',
+    mfaObrigatorioIndividual: true,
+  };
+
+  it('true para mfaObrigatorioIndividual=true mesmo abaixo de gestor e sem a Empresa exigir', () => {
+    expect(mfaSetupPendente(baseIndividual)).toBe(true);
+    expect(mfaSetupPendente({ ...baseIndividual, papel: 'usuario' })).toBe(true);
+  });
+
+  it('false quando MFA já habilitado, mesmo com mfaObrigatorioIndividual=true', () => {
+    expect(mfaSetupPendente({ ...baseIndividual, mfaHabilitado: true })).toBe(false);
+  });
+
+  it('false para origem=sso, mesmo com mfaObrigatorioIndividual=true', () => {
+    expect(mfaSetupPendente({ ...baseIndividual, origem: 'sso' })).toBe(false);
+  });
+
+  it('false quando mfaObrigatorioIndividual é false/ausente e a Empresa não exige', () => {
+    expect(mfaSetupPendente({ ...baseIndividual, mfaObrigatorioIndividual: false })).toBe(false);
+    expect(mfaSetupPendente({ ...baseIndividual, mfaObrigatorioIndividual: undefined })).toBe(false);
+  });
+});

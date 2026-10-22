@@ -221,14 +221,19 @@ func refreshTokenCookiePathDoSlug(slug string) string {
 // de Ambiente de Treinamento. É o ÚNICO uso de `empresa_origem_id` fora da
 // gestão de Empresas — nenhum service de domínio o consulta (AD-23).
 type usuarioResposta struct {
-	ID                  string `json:"id"`
-	Nome                string `json:"nome"`
-	Email               string `json:"email"`
-	Papel               string `json:"papel"`
-	MfaHabilitado       bool   `json:"mfaHabilitado"`
-	Origem              string `json:"origem"`
-	EmpresaNome         string `json:"empresaNome"`
-	AmbienteTreinamento bool   `json:"ambienteTreinamento"`
+	ID            string `json:"id"`
+	Nome          string `json:"nome"`
+	Email         string `json:"email"`
+	Papel         string `json:"papel"`
+	MfaHabilitado bool   `json:"mfaHabilitado"`
+	// MfaObrigatorioIndividual (feedback Ferreira Costa, direção, 2026-10-21)
+	// espelha services.UsuarioSessao.MFAObrigatorioIndividual — o frontend o
+	// usa (mfaSetupPendente) para espelhar a via NOVA do gate de
+	// middleware.RequireRole, independente da Empresa.
+	MfaObrigatorioIndividual bool   `json:"mfaObrigatorioIndividual"`
+	Origem                   string `json:"origem"`
+	EmpresaNome              string `json:"empresaNome"`
+	AmbienteTreinamento      bool   `json:"ambienteTreinamento"`
 	// Empresa (Story 14.1) é aninhado para que stories seguintes pendurem
 	// mais metadados da Empresa aqui sem mover os campos planos acima.
 	// Ausente (omitempty) quando a requisição não tem Empresa no contexto.
@@ -245,12 +250,13 @@ type empresaResposta struct {
 
 func usuarioRespostaDe(r *http.Request, usuario services.UsuarioSessao) usuarioResposta {
 	resposta := usuarioResposta{
-		ID:            usuario.ID,
-		Nome:          usuario.Nome,
-		Email:         usuario.Email,
-		Papel:         usuario.Papel,
-		MfaHabilitado: usuario.MFAHabilitado,
-		Origem:        usuario.Origem,
+		ID:                       usuario.ID,
+		Nome:                     usuario.Nome,
+		Email:                    usuario.Email,
+		Papel:                    usuario.Papel,
+		MfaHabilitado:            usuario.MFAHabilitado,
+		MfaObrigatorioIndividual: usuario.MFAObrigatorioIndividual,
+		Origem:                   usuario.Origem,
 	}
 	if empresa, ok := middleware.EmpresaDaRequisicao(r.Context()); ok {
 		resposta.EmpresaNome = empresa.NomeFantasia

@@ -277,3 +277,126 @@ func TestListarUsuariosHandler_SemToken401(t *testing.T) {
 		t.Errorf("code = %q, want %q", env.Error.Code, "TOKEN_EXPIRED")
 	}
 }
+
+// postCriarUsuario despacha através da MESMA composição registrada em
+// newMux: RequireAuth -> RequireRole("adm") -> CriarUsuarioHandler — cadastro
+// direto pelo adm (feedback Ferreira Costa, direção, 2026-10-21), segundo
+// caminho além do convite.
+func postCriarUsuario(db *sql.DB, authHeader, corpo string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/usuarios", strings.NewReader(corpo))
+	req.Header.Set("Content-Type", "application/json")
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	comEmpresa(db, middleware.RequireAuth(db, testJWTSecret)(
+		middleware.RequireRole(services.PapelAdm)(
+			CriarUsuarioHandler(db))))(w, req)
+	return w
+}
+
+// TestCriarUsuarioHandler_201ComPapelEMFAEscolhidos prova o caminho feliz na
+// fronteira HTTP: um `adm` cadastra uma conta `gestor` com MFA individual
+// obrigatório, recebe 201 com a projeção da conta, e a senha escolhida já
+// autentica (sem convite, sem verificação de e-mail).
+func TestCriarUsuarioHandler_201ComPapelEMFAEscolhidos(t *testing.T) {
+	db := testDB(t)
+	criarContaComPapel(t, db, "Adm Criador", "criador-adm@empresa.com", "senha-123456", "adm")
+	token := tokenDeLogin(t, db, "criador-adm@empresa.com", "senha-123456")
+
+	corpo := `{"nome":"Karla Tenório","email":"karla.handler@empresa.com","senha":"SenhaForte123","papel":"gestor","mfaObrigatorioIndividual":true}`
+	w := postCriarUsuario(db, "Bearer "+token, corpo)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
+	}
+	var resp struct {
+		Usuario services.UsuarioResumo `json:"usuario"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if resp.Usuario.Papel != "gestor" {
+		t.Errorf("papel = %q, want %q", resp.Usuario.Papel, "gestor")
+	}
+	if !resp.Usuario.MFAObrigatorioIndividual {
+		t.Error("mfaObrigatorioIndividual = false, want true")
+	}
+
+	loginW := postLogin(db, `{"email":"karla.handler@empresa.com","senha":"SenhaForte123"}`)
+	if loginW.Code != http.StatusOK {
+		t.Fatalf("login da conta recém-criada: status = %d, want %d (body=%s)", loginW.Code, http.StatusOK, loginW.Body.String())
+	}
+}
+
+// TestCriarUsuarioHandler_403ParaGestor prova que, diferente do convite
+// (gestor+ pode emitir), o cadastro direto é exclusivo de `adm` — um gestor
+// recebe 403 FORBIDDEN e nenhuma conta é criada.
+func TestCriarUsuarioHandler_403ParaGestor(t *testing.T) {
+	db := testDB(t)
+	criarContaComPapel(t, db, "Gestora", "gestora-nao-cria@empresa.com", "senha-123456", "gestor")
+	token := tokenDeLogin(t, db, "gestora-nao-cria@empresa.com", "senha-123456")
+
+	corpo := `{"nome":"Alguém","email":"nao-deveria-existir@empresa.com","senha":"SenhaForte123","papel":"usuario","mfaObrigatorioIndividual":false}`
+	w := postCriarUsuario(db, "Bearer "+token, corpo)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusForbidden, w.Body.String())
+	}
+
+	var existe bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM usuarios WHERE email = 'nao-deveria-existir@empresa.com')`).Scan(&existe); err != nil {
+		t.Fatalf("falha ao conferir não-criação: %v", err)
+	}
+	if existe {
+		t.Error("conta foi criada mesmo com 403 — gestor não deveria conseguir")
+	}
+}
+
+// TestCriarUsuarioHandler_409EmailDuplicado prova o mapeamento do erro de
+// serviço para 409 CONFLICT na fronteira HTTP.
+func TestCriarUsuarioHandler_409EmailDuplicado(t *testing.T) {
+	db := testDB(t)
+	criarContaComPapel(t, db, "Adm Criador", "criador2-adm@empresa.com", "senha-123456", "adm")
+	token := tokenDeLogin(t, db, "criador2-adm@empresa.com", "senha-123456")
+
+	corpo := `{"nome":"Primeira","email":"dup-handler@empresa.com","senha":"SenhaForte123","papel":"usuario"}`
+	if w := postCriarUsuario(db, "Bearer "+token, corpo); w.Code != http.StatusCreated {
+		t.Fatalf("primeira criação: status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
+	}
+	w := postCriarUsuario(db, "Bearer "+token, corpo)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusConflict, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "CONFLICT" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "CONFLICT")
+	}
+}
+
+// TestCriarUsuarioHandler_400PapelInvalido prova o mapeamento de
+// ErrPapelInvalido para 400 VALIDATION_ERROR.
+func TestCriarUsuarioHandler_400PapelInvalido(t *testing.T) {
+	db := testDB(t)
+	criarContaComPapel(t, db, "Adm Criador", "criador3-adm@empresa.com", "senha-123456", "adm")
+	token := tokenDeLogin(t, db, "criador3-adm@empresa.com", "senha-123456")
+
+	corpo := `{"nome":"Alguém","email":"papel-invalido@empresa.com","senha":"SenhaForte123","papel":"inexistente"}`
+	w := postCriarUsuario(db, "Bearer "+token, corpo)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "VALIDATION_ERROR" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "VALIDATION_ERROR")
+	}
+}
+
+// TestCriarUsuarioHandler_401SemToken prova o cenário "sem token" da I/O
+// Matrix: RequireAuth responde antes de RequireRole/do handler.
+func TestCriarUsuarioHandler_401SemToken(t *testing.T) {
+	db := testDB(t)
+
+	w := postCriarUsuario(db, "", `{"nome":"x","email":"x@empresa.com","senha":"SenhaForte123","papel":"usuario"}`)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+}

@@ -41,7 +41,7 @@ interface MinhaSolicitacao {
 const MENSAGEM_ERRO_SOLICITAR =
   'Não foi possível solicitar a promoção agora. Tente novamente em instantes.';
 const MENSAGEM_MFA_EXIGIDO_PELA_EMPRESA =
-  'A Empresa exige dupla autenticação para o seu papel; ela não pode ser desligada.';
+  'A autenticação em duas etapas é obrigatória para esta conta; ela não pode ser desligada.';
 const MENSAGEM_ERRO_CARREGAR_MINHA =
   'Não foi possível verificar o estado da sua solicitação. Recarregue a página.';
 
@@ -50,12 +50,13 @@ const MENSAGEM_ERRO_CARREGAR_MINHA =
  * Três estados de mensagem, todos derivados de `usuario` (nunca reconsultado
  * aqui — o backend já é a autoridade em `/me`/login):
  *   - "ativo": `mfaHabilitado === true`.
- *   - "obrigatório para o seu papel": `mfaSetupPendente(usuario)` (lib/auth)
- *     — `origem==='senha' && rank>=gestor && !mfaHabilitado &&
- *     empresa.mfaObrigatorio` (Story 14.1), o MESMO helper do gate de
- *     navegação em App.tsx e espelho do 403 MFA_SETUP_REQUIRED no servidor.
- *   - "opcional": qualquer outro caso sem MFA (papel abaixo de gestor, sessão
- *     SSO, ou Empresa que não exige MFA — nunca forçado).
+ *   - "obrigatório": `mfaSetupPendente(usuario)` (lib/auth) — `origem==='senha'
+ *     && !mfaHabilitado` e (`rank>=gestor && empresa.mfaObrigatorio`, Story
+ *     14.1, OU `mfaObrigatorioIndividual`, feedback Ferreira Costa, direção,
+ *     2026-10-21, qualquer papel), o MESMO helper do gate de navegação em
+ *     App.tsx e espelho do 403 MFA_SETUP_REQUIRED no servidor.
+ *   - "opcional": qualquer outro caso sem MFA (sessão SSO, ou nem a Empresa
+ *     nem a conta exigindo — nunca forçado).
  *
  * Fluxo de configuração (`etapa`): 'inicial' -> botão dispara
  * `POST /mfa/iniciar` -> 'configurando' (QR Code + segredo em `font-mono` +
@@ -66,16 +67,19 @@ const MENSAGEM_ERRO_CARREGAR_MINHA =
  * Desligamento (Story 14.4): com MFA ativo, "Desligar meu MFA" leva a
  * `etapa 'desligando'` (senha atual + código) -> `POST /mfa/desligar`.
  * Sucesso -> `atualizarUsuario({...usuario, mfaHabilitado:false})` + toast.
- * Se `rank>=gestor && empresa.mfaObrigatorio`, o botão não aparece e fica o
- * texto do 409 MFA_EXIGIDO_PELA_EMPRESA; o servidor segue sendo a autoridade
- * (o 409 dele também vira alerta).
+ * Se `rank>=gestor && empresa.mfaObrigatorio` OU `mfaObrigatorioIndividual`
+ * (feedback Ferreira Costa, direção, 2026-10-21), o botão não aparece e fica
+ * o texto do 409 MFA_EXIGIDO_PELA_EMPRESA; o servidor segue sendo a
+ * autoridade (o 409 dele também vira alerta — `services.DesligarMFAPropria`
+ * checa as duas mesmas condições).
  */
 function SegurancaCard() {
   const { usuario, atualizarUsuario } = useAuth();
   const mfaHabilitado = usuario?.mfaHabilitado ?? false;
   const mfaObrigatorio = mfaSetupPendente(usuario);
   const desligarBloqueadoPelaEmpresa =
-    rankPapel(usuario?.papel ?? '') >= rankPapel('gestor') && usuario?.empresa?.mfaObrigatorio === true;
+    (rankPapel(usuario?.papel ?? '') >= rankPapel('gestor') && usuario?.empresa?.mfaObrigatorio === true) ||
+    usuario?.mfaObrigatorioIndividual === true;
 
   const [etapa, setEtapa] = useState<'inicial' | 'configurando' | 'desligando'>('inicial');
   const [segredo, setSegredo] = useState('');
@@ -278,8 +282,8 @@ function SegurancaCard() {
           <>
             <p className="text-body text-muted-foreground">
               {mfaObrigatorio
-                ? 'Obrigatório para o seu papel. Configure para continuar acessando ações restritas.'
-                : 'Opcional para o seu papel.'}
+                ? 'Obrigatório para esta conta. Configure para continuar acessando ações restritas.'
+                : 'Opcional para esta conta.'}
             </p>
             <Button
               type="button"

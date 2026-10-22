@@ -455,6 +455,12 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	registrar("GET /e/{slug}/api/usuarios", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelGestor)(
 			handlers.ListarUsuariosHandler(db))))
+	// Cadastro direto pelo adm (feedback Ferreira Costa, direção, 2026-10-21):
+	// segundo caminho além do convite (Story 9.3), que continua existindo
+	// como está. Só adm — em qualquer papel, inclusive outro adm.
+	registrar("POST /e/{slug}/api/usuarios", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAdm)(
+			handlers.CriarUsuarioHandler(db))))
 	registrar("POST /e/{slug}/api/promocoes", middleware.RequireAuth(db, jwtSecret)(
 		handlers.SolicitarPromocaoHandler(db)))
 	registrar("GET /e/{slug}/api/promocoes/minha", middleware.RequireAuth(db, jwtSecret)(

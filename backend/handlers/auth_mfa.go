@@ -215,12 +215,14 @@ func MFADesligarHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		err := services.DesligarMFAPropria(db, usuario.ID, usuario.Papel, empresa.MFAObrigatorio, req.SenhaAtual, req.Codigo)
+		err := services.DesligarMFAPropria(
+			db, usuario.ID, usuario.Papel, empresa.MFAObrigatorio, usuario.MFAObrigatorioIndividual, req.SenhaAtual, req.Codigo,
+		)
 		switch {
 		case err == nil:
 			escreverJSON(w, http.StatusOK, map[string]any{})
 		case errors.Is(err, services.ErrMFAExigidoPelaEmpresa):
-			escreverErro(w, http.StatusConflict, "MFA_EXIGIDO_PELA_EMPRESA", "A Empresa exige dupla autenticação para o seu papel; ela não pode ser desligada.")
+			escreverErro(w, http.StatusConflict, "MFA_EXIGIDO_PELA_EMPRESA", "A autenticação em duas etapas é obrigatória para esta conta; ela não pode ser desligada.")
 		case errors.Is(err, services.ErrMFANaoConfigurado):
 			escreverErro(w, http.StatusConflict, "MFA_NAO_CONFIGURADO", "autenticação em duas etapas não configurada para esta conta")
 		case errors.Is(err, services.ErrContaBloqueada):

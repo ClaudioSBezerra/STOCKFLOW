@@ -112,8 +112,10 @@ func ResetarMFAUsuario(db *sql.DB, empresaID, alvoID, atorID, papelAtor string) 
 // DesligarMFAPropria desliga o MFA da própria conta (POST /api/auth/mfa/desligar).
 // Ordem das checagens (a checagem "sessão sem MFA" do handler vem antes):
 //
-//  1. `gestor`/`adm` numa Empresa que exige -> ErrMFAExigidoPelaEmpresa, sem
-//     alterar nada nem contar tentativa.
+//  1. `gestor`/`adm` numa Empresa que exige, OU a conta tem
+//     `mfa_obrigatorio_individual=true` (feedback Ferreira Costa, direção,
+//     2026-10-21 — QUALQUER papel) -> ErrMFAExigidoPelaEmpresa, sem alterar
+//     nada nem contar tentativa.
 //  2. Conta sem MFA no banco -> ErrMFANaoConfigurado.
 //  3. bcrypt SEMPRE roda (dummyBcryptHash se `senha_hash` nulo), e só depois
 //     se olha `bloqueado_ate` — molde de Login. Bloqueio vigente ->
@@ -131,8 +133,8 @@ func ResetarMFAUsuario(db *sql.DB, empresaID, alvoID, atorID, papelAtor string) 
 //     tratado como código inválido: rollback, registrarFalhaLogin. Junto, o
 //     INSERT `mfa_desligado` na mesma transação. As sessões da conta NÃO são
 //     revogadas.
-func DesligarMFAPropria(db *sql.DB, usuarioID, papel string, empresaExige bool, senhaAtual, codigo string) error {
-	if empresaExige && RankPapel(papel) >= RankPapel(PapelGestor) {
+func DesligarMFAPropria(db *sql.DB, usuarioID, papel string, empresaExige, individualExige bool, senhaAtual, codigo string) error {
+	if (empresaExige && RankPapel(papel) >= RankPapel(PapelGestor)) || individualExige {
 		return ErrMFAExigidoPelaEmpresa
 	}
 

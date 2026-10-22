@@ -210,7 +210,7 @@ func TestDesligarMFAPropria_Sucesso(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := DesligarMFAPropria(db, id, PapelUsuario, false, "senha-123456", codigoTOTPValidoAgora(t, segredo)); err != nil {
+	if err := DesligarMFAPropria(db, id, PapelUsuario, false, false, "senha-123456", codigoTOTPValidoAgora(t, segredo)); err != nil {
 		t.Fatalf("DesligarMFAPropria: %v", err)
 	}
 	e := lerEstadoMFA(t, db, id)
@@ -230,7 +230,7 @@ func TestDesligarMFAPropria_GestorEmEmpresaQueNaoExige(t *testing.T) {
 	db := testDB(t)
 	restaurarExigenciaEmpresaTeste(t, db)
 	id, segredo := contaRecuperacaoMFA(t, db, "desligar-gestor-ok@empresa.com", PapelGestor, true)
-	if err := DesligarMFAPropria(db, id, PapelGestor, false, "senha-123456", codigoTOTPValidoAgora(t, segredo)); err != nil {
+	if err := DesligarMFAPropria(db, id, PapelGestor, false, false, "senha-123456", codigoTOTPValidoAgora(t, segredo)); err != nil {
 		t.Fatalf("DesligarMFAPropria: %v", err)
 	}
 	if lerEstadoMFA(t, db, id).habilitado {
@@ -243,7 +243,7 @@ func TestDesligarMFAPropria_FalhasIncrementamTentativas(t *testing.T) {
 	restaurarExigenciaEmpresaTeste(t, db)
 	id, segredo := contaRecuperacaoMFA(t, db, "desligar-falhas@empresa.com", PapelUsuario, true)
 
-	err := DesligarMFAPropria(db, id, PapelUsuario, false, "senha-errada1", codigoTOTPValidoAgora(t, segredo))
+	err := DesligarMFAPropria(db, id, PapelUsuario, false, false, "senha-errada1", codigoTOTPValidoAgora(t, segredo))
 	if !errors.Is(err, ErrCredenciaisInvalidas) {
 		t.Fatalf("senha errada: err = %v, want ErrCredenciaisInvalidas", err)
 	}
@@ -251,7 +251,7 @@ func TestDesligarMFAPropria_FalhasIncrementamTentativas(t *testing.T) {
 		t.Errorf("após senha errada: %+v, want MFA intacto e tentativas=1", e)
 	}
 
-	err = DesligarMFAPropria(db, id, PapelUsuario, false, "senha-123456", codigoTOTPInvalidoAgora(t, segredo))
+	err = DesligarMFAPropria(db, id, PapelUsuario, false, false, "senha-123456", codigoTOTPInvalidoAgora(t, segredo))
 	if !errors.Is(err, ErrMFACodigoInvalido) {
 		t.Fatalf("código errado: err = %v, want ErrMFACodigoInvalido", err)
 	}
@@ -269,7 +269,7 @@ func TestDesligarMFAPropria_CodigoJaUsadoNoPasso(t *testing.T) {
 	if _, err := db.Exec(`UPDATE usuarios SET mfa_ultimo_passo_usado = $1 WHERE id = $2`, PassoAtualTOTP()+1, id); err != nil {
 		t.Fatal(err)
 	}
-	err := DesligarMFAPropria(db, id, PapelUsuario, false, "senha-123456", codigoTOTPValidoAgora(t, segredo))
+	err := DesligarMFAPropria(db, id, PapelUsuario, false, false, "senha-123456", codigoTOTPValidoAgora(t, segredo))
 	if !errors.Is(err, ErrMFACodigoInvalido) {
 		t.Fatalf("err = %v, want ErrMFACodigoInvalido", err)
 	}
@@ -290,7 +290,7 @@ func TestDesligarMFAPropria_PassoAnteriorAceito(t *testing.T) {
 	if _, err := db.Exec(`UPDATE usuarios SET mfa_ultimo_passo_usado = $1 WHERE id = $2`, PassoAtualTOTP()-5, id); err != nil {
 		t.Fatal(err)
 	}
-	if err := DesligarMFAPropria(db, id, PapelUsuario, false, "senha-123456", codigoTOTPValidoAgora(t, segredo)); err != nil {
+	if err := DesligarMFAPropria(db, id, PapelUsuario, false, false, "senha-123456", codigoTOTPValidoAgora(t, segredo)); err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
 }
@@ -302,7 +302,7 @@ func TestDesligarMFAPropria_ContaSoSSONaoContaTentativa(t *testing.T) {
 	if _, err := db.Exec(`UPDATE usuarios SET senha_hash = NULL WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
-	err := DesligarMFAPropria(db, id, PapelUsuario, false, "qualquer-1", codigoTOTPValidoAgora(t, segredo))
+	err := DesligarMFAPropria(db, id, PapelUsuario, false, false, "qualquer-1", codigoTOTPValidoAgora(t, segredo))
 	if !errors.Is(err, ErrCredenciaisInvalidas) {
 		t.Fatalf("err = %v, want ErrCredenciaisInvalidas", err)
 	}
@@ -316,7 +316,7 @@ func TestDesligarMFAPropria_ExigidoPelaEmpresa(t *testing.T) {
 	restaurarExigenciaEmpresaTeste(t, db)
 	for _, papel := range []string{PapelGestor, PapelAdm} {
 		id, segredo := contaRecuperacaoMFA(t, db, "desligar-exigido-"+papel+"@empresa.com", papel, true)
-		err := DesligarMFAPropria(db, id, papel, true, "senha-123456", codigoTOTPValidoAgora(t, segredo))
+		err := DesligarMFAPropria(db, id, papel, true, false, "senha-123456", codigoTOTPValidoAgora(t, segredo))
 		if !errors.Is(err, ErrMFAExigidoPelaEmpresa) {
 			t.Fatalf("%s: err = %v, want ErrMFAExigidoPelaEmpresa", papel, err)
 		}
@@ -326,8 +326,27 @@ func TestDesligarMFAPropria_ExigidoPelaEmpresa(t *testing.T) {
 	}
 	// `usuario` numa Empresa que exige pode desligar: a exigência é só de gestor/adm.
 	id, segredo := contaRecuperacaoMFA(t, db, "desligar-exigido-usuario@empresa.com", PapelUsuario, true)
-	if err := DesligarMFAPropria(db, id, PapelUsuario, true, "senha-123456", codigoTOTPValidoAgora(t, segredo)); err != nil {
+	if err := DesligarMFAPropria(db, id, PapelUsuario, true, false, "senha-123456", codigoTOTPValidoAgora(t, segredo)); err != nil {
 		t.Errorf("usuario em Empresa que exige: err = %v, want nil", err)
+	}
+}
+
+// TestDesligarMFAPropria_ExigidoIndividualmente prova a via NOVA (feedback
+// Ferreira Costa, direção, 2026-10-21): `individualExige=true` recusa o
+// desligamento em QUALQUER papel — inclusive `usuario`, onde a exigência por
+// Empresa nunca se aplica — e `empresaExige=false` (Empresa não exige nada)
+// não muda esse resultado.
+func TestDesligarMFAPropria_ExigidoIndividualmente(t *testing.T) {
+	db := testDB(t)
+	restaurarExigenciaEmpresaTeste(t, db)
+
+	id, segredo := contaRecuperacaoMFA(t, db, "desligar-exigido-individual@empresa.com", PapelUsuario, true)
+	err := DesligarMFAPropria(db, id, PapelUsuario, false, true, "senha-123456", codigoTOTPValidoAgora(t, segredo))
+	if !errors.Is(err, ErrMFAExigidoPelaEmpresa) {
+		t.Fatalf("err = %v, want ErrMFAExigidoPelaEmpresa", err)
+	}
+	if e := lerEstadoMFA(t, db, id); !e.habilitado || e.tentativas != 0 {
+		t.Errorf("estado = %+v, want MFA intacto e tentativas=0", e)
 	}
 }
 
@@ -335,7 +354,7 @@ func TestDesligarMFAPropria_SemMFA(t *testing.T) {
 	db := testDB(t)
 	restaurarExigenciaEmpresaTeste(t, db)
 	id, _ := contaRecuperacaoMFA(t, db, "desligar-semmfa@empresa.com", PapelUsuario, false)
-	if err := DesligarMFAPropria(db, id, PapelUsuario, false, "senha-123456", "123456"); !errors.Is(err, ErrMFANaoConfigurado) {
+	if err := DesligarMFAPropria(db, id, PapelUsuario, false, false, "senha-123456", "123456"); !errors.Is(err, ErrMFANaoConfigurado) {
 		t.Fatalf("err = %v, want ErrMFANaoConfigurado", err)
 	}
 }
@@ -346,7 +365,7 @@ func TestDesligarMFAPropria_BloqueioNaQuintaFalha(t *testing.T) {
 	id, segredo := contaRecuperacaoMFA(t, db, "desligar-bloqueio@empresa.com", PapelUsuario, true)
 
 	for i := 1; i <= maxTentativasLogin; i++ {
-		err := DesligarMFAPropria(db, id, PapelUsuario, false, "senha-errada1", codigoTOTPValidoAgora(t, segredo))
+		err := DesligarMFAPropria(db, id, PapelUsuario, false, false, "senha-errada1", codigoTOTPValidoAgora(t, segredo))
 		if !errors.Is(err, ErrCredenciaisInvalidas) {
 			t.Fatalf("falha %d: err = %v, want ErrCredenciaisInvalidas", i, err)
 		}
@@ -355,7 +374,7 @@ func TestDesligarMFAPropria_BloqueioNaQuintaFalha(t *testing.T) {
 	if !e.bloqueado.Valid || !e.bloqueado.Time.After(time.Now()) {
 		t.Fatalf("bloqueado_ate = %v, want futuro após a 5ª falha", e.bloqueado)
 	}
-	err := DesligarMFAPropria(db, id, PapelUsuario, false, "senha-123456", codigoTOTPValidoAgora(t, segredo))
+	err := DesligarMFAPropria(db, id, PapelUsuario, false, false, "senha-123456", codigoTOTPValidoAgora(t, segredo))
 	if !errors.Is(err, ErrContaBloqueada) {
 		t.Fatalf("6ª chamada: err = %v, want ErrContaBloqueada", err)
 	}
@@ -371,7 +390,7 @@ func TestDesligarMFAPropria_BloqueioExpiradoEDestravado(t *testing.T) {
 	if _, err := db.Exec(`UPDATE usuarios SET tentativas_login_falhas = 5, bloqueado_ate = now() - interval '1 minute' WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
-	if err := DesligarMFAPropria(db, id, PapelUsuario, false, "senha-123456", codigoTOTPValidoAgora(t, segredo)); err != nil {
+	if err := DesligarMFAPropria(db, id, PapelUsuario, false, false, "senha-123456", codigoTOTPValidoAgora(t, segredo)); err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
 	if e := lerEstadoMFA(t, db, id); e.habilitado || e.tentativas != 0 || e.bloqueado.Valid {
