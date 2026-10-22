@@ -30,6 +30,7 @@ const authState = vi.hoisted(() => ({
 }));
 
 const atualizarUsuarioMock = vi.hoisted(() => vi.fn());
+const logoutMock = vi.hoisted(() => vi.fn());
 
 // Só `useAuth` é substituído: `mfaSetupPendente` (Story 14.1) roda a
 // implementação REAL, a mesma usada por RotaProtegida.
@@ -49,7 +50,7 @@ vi.mock('@/lib/auth', async (importOriginal) => ({
     },
     definirSessao: vi.fn(),
     atualizarUsuario: atualizarUsuarioMock,
-    logout: vi.fn(),
+    logout: logoutMock,
   }),
 }));
 
@@ -74,6 +75,7 @@ beforeEach(() => {
   authState.empresaMfaObrigatorio = true;
   authState.mfaObrigatorioIndividual = false;
   atualizarUsuarioMock.mockReset();
+  logoutMock.mockReset();
 });
 
 afterEach(() => {
@@ -94,6 +96,21 @@ describe('ConfiguracoesPage — Meu Perfil', () => {
     expect(screen.getByText('Ana Usuária')).toBeInTheDocument();
     expect(screen.getByText('ana@empresa.com')).toBeInTheDocument();
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/promocoes/minha', expect.anything()));
+  });
+
+  // Feedback Ferreira Costa (direção, 2026-10-22): "Sair" saiu do dropdown
+  // do topo e passou a viver aqui, dentro de Meu Perfil.
+  it('tem um botão "Sair" que chama logout()', async () => {
+    const user = userEvent.setup();
+    stubFetch((url) => {
+      if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    render(<ConfiguracoesPage />);
+
+    await user.click(screen.getByRole('button', { name: 'Sair' }));
+    expect(logoutMock).toHaveBeenCalledTimes(1);
   });
 
   it('usuario sem pendente: botão habilitado com o alvo correto (Almoxarife)', async () => {

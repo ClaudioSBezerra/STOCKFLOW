@@ -81,6 +81,15 @@ const link = (nome: string | RegExp) => within(menu()).getByRole('link', { name:
 const semLink = (nome: string | RegExp) =>
   expect(within(menu()).queryByRole('link', { name: nome })).not.toBeInTheDocument();
 
+// "Meu perfil" aparece duas vezes — no rodapé do menu lateral E no avatar do
+// topo (feedback Ferreira Costa, direção, 2026-10-22: o avatar agora é um
+// link direto para a mesma rota, sem dropdown). Os testes do RODAPÉ do menu
+// pegam o link FORA do `<header role="banner">`.
+const perfilNoRodapeDoMenu = () =>
+  screen
+    .getAllByRole('link', { name: 'Meu perfil' })
+    .find((el) => !screen.getByRole('banner').contains(el))!;
+
 describe('AppShell — menu lateral', () => {
   beforeEach(() => {
     authState.papel = 'adm';
@@ -103,7 +112,7 @@ describe('AppShell — menu lateral', () => {
     renderShell();
 
     expect(screen.getByText('stockflow')).toBeInTheDocument();
-    const perfil = screen.getByRole('link', { name: 'Meu perfil' });
+    const perfil = perfilNoRodapeDoMenu();
     expect(perfil).toHaveAttribute('href', '/configuracoes');
     expect(menu()).not.toContainElement(perfil);
   });
@@ -158,7 +167,7 @@ describe('AppShell — menu lateral', () => {
     expect(nav.queryByRole('button', { name: 'Qualidade dos dados' })).not.toBeInTheDocument();
     expect(nav.getAllByRole('button')).toHaveLength(2);
     expect(screen.queryByText(/acesso negado/i)).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Meu perfil' })).toBeInTheDocument();
+    expect(perfilNoRodapeDoMenu()).toBeInTheDocument();
   });
 
   it('papel almoxarife vê os grupos Estoque e Qualidade dos dados', () => {
@@ -192,7 +201,7 @@ describe('AppShell — menu lateral', () => {
 
   it('"Meu perfil" fica ativo em /configuracoes', () => {
     renderShell('/configuracoes');
-    const perfil = screen.getByRole('link', { name: 'Meu perfil' });
+    const perfil = perfilNoRodapeDoMenu();
     expect(perfil).toHaveAttribute('aria-current', 'page');
     expect(perfil.className).toMatch(ATIVO);
   });
@@ -241,24 +250,37 @@ describe('AppShell — menu lateral', () => {
     );
   });
 
-  it('topo: Ajuda abre o diálogo e o menu da conta tem Meu perfil e Sair', async () => {
+  // "Ajuda" passou a carregar o Manual Online (feedback Ferreira Costa,
+  // direção, 2026-10-22) — o comportamento rico (seções, PDF, erro de carga)
+  // tem cobertura dedicada em ManualDialog.test.tsx; aqui só confirmamos que
+  // o botão existe e abre ALGUM diálogo.
+  it('topo: Ajuda abre o diálogo do Manual Online', async () => {
     const user = userEvent.setup();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve({ ok: true, json: async () => ({ secoes: [] }) })),
+    );
     renderShell();
 
     await user.click(screen.getByRole('button', { name: 'Ajuda' }));
-    const dialogo = await screen.findByRole('dialog');
-    expect(dialogo).toHaveTextContent('Dúvidas de uso? Fale com o administrador da sua empresa.');
+    expect(await screen.findByRole('dialog')).toHaveTextContent('Manual do stockflow');
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
 
-    await user.click(screen.getByRole('button', { name: 'Menu da conta' }));
-    const conta = await screen.findByRole('menu');
-    expect(within(conta).getByRole('menuitem', { name: 'Meu perfil' })).toHaveAttribute(
-      'href',
-      '/configuracoes',
-    );
-    await user.click(within(conta).getByRole('menuitem', { name: 'Sair' }));
-    expect(authState.logout).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+
+  // "Sair" saiu do topo (feedback Ferreira Costa, direção, 2026-10-22): o
+  // avatar do topo direito virou um link direto para "Meu perfil", sem
+  // dropdown nenhum — "Sair" agora vive dentro da própria página de Perfil
+  // (ConfiguracoesPage.test.tsx cobre o clique em si).
+  it('topo: o avatar é um link direto para Meu perfil, sem menu/dropdown', () => {
+    renderShell();
+
+    const avatar = within(screen.getByRole('banner')).getByRole('link', { name: 'Meu perfil' });
+    expect(avatar).toHaveAttribute('href', '/configuracoes');
+    expect(screen.queryByRole('button', { name: 'Menu da conta' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'Sair' })).not.toBeInTheDocument();
   });
 
   it('o topo tem 56px (topbar-height) e fundo branco', () => {

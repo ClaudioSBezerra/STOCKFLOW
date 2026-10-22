@@ -461,6 +461,14 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	registrar("POST /e/{slug}/api/usuarios", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelAdm)(
 			handlers.CriarUsuarioHandler(db))))
+	// Manual Online (feedback Ferreira Costa, direção, 2026-10-22): seções
+	// filtradas pelo papel de quem chama (sem RequireRole — o recorte é do
+	// service); o PDF é sempre o manual completo, só para adm.
+	registrar("GET /e/{slug}/api/manual", middleware.RequireAuth(db, jwtSecret)(
+		handlers.ManualHandler(db)))
+	registrar("GET /e/{slug}/api/manual/pdf", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelAdm)(
+			handlers.BaixarManualPDFHandler())))
 	registrar("POST /e/{slug}/api/promocoes", middleware.RequireAuth(db, jwtSecret)(
 		handlers.SolicitarPromocaoHandler(db)))
 	registrar("GET /e/{slug}/api/promocoes/minha", middleware.RequireAuth(db, jwtSecret)(

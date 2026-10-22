@@ -1,31 +1,17 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { CircleHelp, Menu, TriangleAlert } from 'lucide-react';
+import { Menu, TriangleAlert } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import { useAuth } from '@/lib/auth';
 import { useCarrinho } from '@/lib/carrinho';
 import { nomeDaMarca } from '@/lib/marca';
 import { gruposVisiveis, itemAtivo, navGrupos, perfil } from './nav-items';
 import { MenuLateral } from './MenuLateral';
+import { ManualDialog } from './ManualDialog';
 import { useMenuEstado } from './useMenuEstado';
 
 const touchTarget = 'min-h-touch-target-min min-w-touch-target-min';
@@ -47,28 +33,6 @@ function FaixaTreinamento() {
   );
 }
 
-/** Ajuda: diálogo curto, sem página de ajuda nova (Story 17.1). */
-function BotaoAjuda() {
-  return (
-    <Dialog>
-      <DialogTrigger asChild>
-        <Button variant="ghost" className={cn('gap-2', touchTarget)}>
-          <CircleHelp className="size-5" aria-hidden="true" />
-          Ajuda
-        </Button>
-      </DialogTrigger>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Ajuda</DialogTitle>
-          <DialogDescription>
-            Dúvidas de uso? Fale com o administrador da sua empresa.
-          </DialogDescription>
-        </DialogHeader>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 /**
  * Layout raiz do stockflow (Epic 17, Story 17.1): menu lateral azul-marinho
  * de 240px (64px recolhido) no desktop (`>= md`, 768px) e topo branco de 56px
@@ -87,7 +51,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   // Navegação gated por papel: item sem permissão some (nunca desabilitado) e
   // grupo sem item visível some inteiro — `gruposVisiveis` usa
   // `filtrarNavPorPapel`, a mesma regra de sempre.
-  const { usuario, logout } = useAuth();
+  const { usuario } = useAuth();
   // cart-badge: contagem lida do estado global do CarrinhoProvider.
   const { count } = useCarrinho();
   const papel = usuario?.papel ?? '';
@@ -162,31 +126,18 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
                 Treinamento
               </span>
             ) : null}
-            <BotaoAjuda />
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  aria-label="Menu da conta"
-                  className={cn('flex items-center justify-center rounded-full', touchTarget)}
-                >
-                  <Avatar className="size-8">
-                    <AvatarFallback>
-                      <perfil.icon className="size-4" aria-hidden="true" />
-                    </AvatarFallback>
-                  </Avatar>
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem asChild className={touchTarget}>
-                  <NavLink to={perfil.to}>{perfil.label}</NavLink>
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem className={touchTarget} onSelect={() => logout()}>
-                  Sair
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <ManualDialog />
+            <NavLink
+              to={perfil.to}
+              aria-label={perfil.label}
+              className={cn('flex items-center justify-center rounded-full', touchTarget)}
+            >
+              <Avatar className="size-8">
+                <AvatarFallback>
+                  <perfil.icon className="size-4" aria-hidden="true" />
+                </AvatarFallback>
+              </Avatar>
+            </NavLink>
           </div>
         </header>
 

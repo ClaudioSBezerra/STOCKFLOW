@@ -670,6 +670,11 @@ describe('<App /> — rotas próprias do menu (Story 17.1)', () => {
     const menu = await screen.findByRole('navigation', { name: 'Menu principal' });
     await waitFor(() => expect(window.location.pathname).toBe('/configuracoes'));
     expect(within(menu).getByRole('link', { name: 'Movimentações' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Meu perfil' })).toHaveAttribute('aria-current', 'page');
+    // "Meu perfil" aparece duas vezes — rodapé do menu e avatar do topo
+    // (feedback Ferreira Costa, direção, 2026-10-22) — as duas apontam para
+    // /configuracoes e ficam "ativas" ao chegar lá.
+    for (const l of screen.getAllByRole('link', { name: 'Meu perfil' })) {
+      expect(l).toHaveAttribute('aria-current', 'page');
+    }
   });
 });
