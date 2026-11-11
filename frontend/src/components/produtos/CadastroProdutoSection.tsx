@@ -170,6 +170,12 @@ export function CadastroProdutoSection() {
   const [ean13, setEan13] = useState('');
   const [unidadeMedida, setUnidadeMedida] = useState('');
   const [embalagem, setEmbalagem] = useState('');
+  // Preço Unitário (feedback Ferreira Costa, direção, 2026-11-11): sempre
+  // opcional, puramente informativo — nunca usado em nenhum cálculo do
+  // sistema. `type="number"` (mesmo padrão de Lançar Saldo): `.value` do
+  // navegador já normaliza para ponto decimal, nunca vírgula, qualquer que
+  // seja o idioma do navegador.
+  const [precoUnitario, setPrecoUnitario] = useState('');
 
   const [categorias, setCategorias] = useState<Categoria[]>([]);
   const [templates, setTemplates] = useState<NomenclaturaTemplate[]>([]);
@@ -269,6 +275,7 @@ export function CadastroProdutoSection() {
     setEan13('');
     setUnidadeMedida('');
     setEmbalagem('');
+    setPrecoUnitario('');
   }
 
   const templateSelecionado = templates.find((t) => t.id === templateId);
@@ -307,6 +314,7 @@ export function CadastroProdutoSection() {
           ean13: ean13.trim() === '' ? undefined : ean13.trim(),
           unidade_medida: unidadeMedida,
           embalagem: embalagem.trim() === '' ? undefined : embalagem.trim(),
+          preco_unitario: precoUnitario.trim() === '' ? undefined : Number(precoUnitario),
         }),
       });
       if (!res.ok) {
@@ -520,6 +528,18 @@ export function CadastroProdutoSection() {
               id="produto-embalagem"
               value={embalagem}
               onChange={(event) => setEmbalagem(event.target.value)}
+            />
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="produto-preco-unitario">Preço Unitário</Label>
+            <Input
+              id="produto-preco-unitario"
+              type="number"
+              min="0"
+              step="0.01"
+              value={precoUnitario}
+              onChange={(event) => setPrecoUnitario(event.target.value)}
             />
           </div>
 

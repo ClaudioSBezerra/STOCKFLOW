@@ -572,7 +572,7 @@ describe('CadastroProdutoSection', () => {
   // Story 10.3, spec-10-3: os 4 campos novos no payload — Código do
   // Fornecedor/EAN-13/Embalagem só quando preenchidos (trimados), Unidade de
   // Medida sempre.
-  it('cadastro com os 4 campos novos: envia codigo_fornecedor/ean13/unidade_medida/embalagem no payload', async () => {
+  it('cadastro com os 5 campos novos: envia codigo_fornecedor/ean13/unidade_medida/embalagem/preco_unitario no payload', async () => {
     const fetchMock = stubListasPadrao({
       postProdutos: () =>
         Promise.resolve({
@@ -593,6 +593,7 @@ describe('CadastroProdutoSection', () => {
     await user.type(screen.getByLabelText('Código do Fornecedor'), '  ABC-123  ');
     await user.type(screen.getByLabelText('EAN-13'), '  7891234567895  ');
     await user.type(screen.getByLabelText('Embalagem'), '  Caixa com 10  ');
+    await user.type(screen.getByLabelText('Preço Unitário'), '1234.56');
 
     await user.click(screen.getByRole('button', { name: 'Cadastrar produto' }));
 
@@ -602,13 +603,15 @@ describe('CadastroProdutoSection', () => {
     expect(corpo.ean13).toBe('7891234567895');
     expect(corpo.unidade_medida).toBe('un');
     expect(corpo.embalagem).toBe('Caixa com 10');
+    expect(corpo.preco_unitario).toBe(1234.56);
   });
 
-  // Story 10.3, spec-10-3: os 3 campos opcionais (Código do Fornecedor/
-  // EAN-13/Embalagem) ausentes viram chave omitida do payload — mesmo padrão
-  // de `observacoes` — enquanto Unidade de Medida (obrigatória) é sempre
-  // enviada.
-  it('cadastro sem Código do Fornecedor/EAN-13/Embalagem: as 3 chaves ficam ausentes do payload', async () => {
+  // Story 10.3, spec-10-3 (+ feedback Ferreira Costa, direção, 2026-11-11,
+  // para Preço Unitário): os 4 campos opcionais (Código do Fornecedor/
+  // EAN-13/Embalagem/Preço Unitário) ausentes viram chave omitida do
+  // payload — mesmo padrão de `observacoes` — enquanto Unidade de Medida
+  // (obrigatória) é sempre enviada.
+  it('cadastro sem Código do Fornecedor/EAN-13/Embalagem/Preço Unitário: as 4 chaves ficam ausentes do payload', async () => {
     const fetchMock = stubListasPadrao({
       postProdutos: () =>
         Promise.resolve({
@@ -633,6 +636,7 @@ describe('CadastroProdutoSection', () => {
     expect(corpo.codigo_fornecedor).toBeUndefined();
     expect(corpo.ean13).toBeUndefined();
     expect(corpo.embalagem).toBeUndefined();
+    expect(corpo.preco_unitario).toBeUndefined();
     expect(corpo.unidade_medida).toBe('un');
   });
 

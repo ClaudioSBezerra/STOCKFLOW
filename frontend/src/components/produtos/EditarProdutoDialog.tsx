@@ -49,6 +49,9 @@ export interface ProdutoEditavel {
   ean13?: string | null;
   templateId?: string | null;
   observacoes?: string | null;
+  // precoUnitario (feedback Ferreira Costa, direção, 2026-11-11): sempre
+  // opcional, puramente informativo.
+  precoUnitario?: number | null;
 }
 
 interface Categoria {
@@ -90,6 +93,7 @@ export function EditarProdutoDialog({ produto, open, onOpenChange, onSalvo, onFo
   const [ean13, setEan13] = useState('');
   const [unidadeMedida, setUnidadeMedida] = useState('');
   const [embalagem, setEmbalagem] = useState('');
+  const [precoUnitario, setPrecoUnitario] = useState('');
 
   const [categorias, setCategorias] = useState<Categoria[]>([]);
   const [templates, setTemplates] = useState<Template[]>([]);
@@ -112,6 +116,7 @@ export function EditarProdutoDialog({ produto, open, onOpenChange, onSalvo, onFo
     setEan13(produto.ean13 ?? '');
     setUnidadeMedida(produto.unidadeMedida ?? '');
     setEmbalagem(produto.embalagem ?? '');
+    setPrecoUnitario(produto.precoUnitario != null ? String(produto.precoUnitario) : '');
     setErro(null);
 
     let cancelado = false;
@@ -168,6 +173,7 @@ export function EditarProdutoDialog({ produto, open, onOpenChange, onSalvo, onFo
           ean13: ean13.trim() === '' ? undefined : ean13.trim(),
           unidade_medida: unidadeMedida === '' ? undefined : unidadeMedida,
           embalagem: embalagem.trim() === '' ? undefined : embalagem.trim(),
+          preco_unitario: precoUnitario.trim() === '' ? undefined : Number(precoUnitario),
         }),
       });
       if (!res.ok) {
@@ -290,6 +296,18 @@ export function EditarProdutoDialog({ produto, open, onOpenChange, onSalvo, onFo
               id="editar-embalagem"
               value={embalagem}
               onChange={(event) => setEmbalagem(event.target.value)}
+            />
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="editar-preco-unitario">Preço Unitário</Label>
+            <Input
+              id="editar-preco-unitario"
+              type="number"
+              min="0"
+              step="0.01"
+              value={precoUnitario}
+              onChange={(event) => setPrecoUnitario(event.target.value)}
             />
           </div>
 

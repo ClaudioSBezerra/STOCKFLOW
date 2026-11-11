@@ -734,6 +734,48 @@ func TestObterProdutoDetalhe_CodigoFornecedorEEAN13(t *testing.T) {
 	}
 }
 
+// TestObterProdutoDetalhe_PrecoUnitario prova que o detalhe expõe
+// preco_unitario (feedback Ferreira Costa, direção, 2026-11-11) — `nil`
+// quando nunca preenchido, o valor exato quando gravado no cadastro.
+func TestObterProdutoDetalhe_PrecoUnitario(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	estoque, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Detalhe Preco")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+
+	semPrecoID, _ := criarProdutoCatComSaldo(t, db, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Produto Detalhe Sem Preco",
+		CategoriaID:   categoriaID,
+	}, estoque.ID, 1)
+	det, err := ObterProdutoDetalhe(db, empresaTeste, semPrecoID)
+	if err != nil {
+		t.Fatalf("ObterProdutoDetalhe: %v", err)
+	}
+	if det.PrecoUnitario != nil {
+		t.Errorf("precoUnitario = %v, want nil", *det.PrecoUnitario)
+	}
+
+	valor := 42.5
+	comPrecoID, _ := criarProdutoCatComSaldo(t, db, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Produto Detalhe Com Preco",
+		CategoriaID:   categoriaID,
+		PrecoUnitario: &valor,
+	}, estoque.ID, 1)
+	det2, err := ObterProdutoDetalhe(db, empresaTeste, comPrecoID)
+	if err != nil {
+		t.Fatalf("ObterProdutoDetalhe: %v", err)
+	}
+	if det2.PrecoUnitario == nil || *det2.PrecoUnitario != valor {
+		t.Errorf("precoUnitario = %v, want %v", det2.PrecoUnitario, valor)
+	}
+}
+
 // TestObterProdutoDetalhe_IDInexistente prova a linha "id inexistente" da
 // matriz: um UUID sintaticamente válido mas sem linha correspondente ->
 // ErrProdutoNaoEncontrado.

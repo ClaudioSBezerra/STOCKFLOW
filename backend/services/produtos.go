@@ -73,6 +73,26 @@ func validarUnidadeMedida(valor string) (string, error) {
 	return trimado, nil
 }
 
+// validarPrecoUnitario (feedback Ferreira Costa, direção, 2026-11-11): campo
+// SEMPRE opcional — `nil` (ausente no corpo JSON) vira NULL, sem erro. Quando
+// informado, só aceita >= 0 e dentro de limiteNumericPreco (mesmo papel de
+// validarDimensao/quantidade: um valor fora da faixa vira 400
+// VALIDATION_ERROR aqui, nunca um "numeric field overflow" bruto do Postgres).
+func validarPrecoUnitario(preco *float64) (sql.NullFloat64, error) {
+	if preco == nil {
+		return sql.NullFloat64{}, nil
+	}
+	if *preco < 0 {
+		return sql.NullFloat64{}, &ErroProdutoValidacao{Mensagem: "preço unitário deve ser maior ou igual a zero"}
+	}
+	if *preco > limiteNumericPreco {
+		return sql.NullFloat64{}, &ErroProdutoValidacao{
+			Mensagem: fmt.Sprintf("preço unitário deve ser no máximo %s", limiteNumericPrecoTexto),
+		}
+	}
+	return sql.NullFloat64{Float64: *preco, Valid: true}, nil
+}
+
 // pesosEAN13 são os pesos alternados 1/3 do dígito verificador do EAN-13,
 // aplicados às 12 primeiras posições (algoritmo padrão: soma ponderada,
 // dígito = (10 - soma%10) % 10).
@@ -123,6 +143,13 @@ const limiteNumeric103 = 9999999.999
 // para as mensagens de validação — `%g`/`%v` formatam esse float em notação
 // científica (`9.999999999e+06`), ilegível para quem lê o erro.
 const limiteNumeric103Texto = "9999999.999"
+
+// limiteNumericPreco / limiteNumericPrecoTexto — mesma ideia de
+// limiteNumeric103, para a coluna `preco_unitario NUMERIC(12,2)` (migration
+// 000055, feedback Ferreira Costa, direção, 2026-11-11): 10 dígitos antes da
+// vírgula, 2 depois.
+const limiteNumericPreco = 9999999999.99
+const limiteNumericPrecoTexto = "9999999999.99"
 
 // Produto é a projeção mínima devolvida por POST /api/produtos (Story 3.1;
 // Story 10.2, spec-10-2, acrescenta `Codigo` — o código sequencial gerado
@@ -184,6 +211,10 @@ type CriarProdutoInput struct {
 	EAN13            string
 	UnidadeMedida    string
 	Embalagem        string
+	// PrecoUnitario (feedback Ferreira Costa, direção, 2026-11-11): sempre
+	// opcional, puramente informativo — nunca usado em nenhum cálculo do
+	// sistema. `nil` grava NULL.
+	PrecoUnitario *float64
 }
 
 // ErroProdutoValidacao é o erro de validação devolvido por CriarProduto:
@@ -427,6 +458,10 @@ func CriarProduto(db *sql.DB, empresaID string, input CriarProdutoInput) (Produt
 	if err != nil {
 		return Produto{}, err
 	}
+	precoUnitario, err := validarPrecoUnitario(input.PrecoUnitario)
+	if err != nil {
+		return Produto{}, err
+	}
 
 	// O código sequencial é gerado dentro da transação; se uma importação
 	// concorrente gravar o mesmo número no meio do caminho (colisão no índice
@@ -468,12 +503,12 @@ func CriarProduto(db *sql.DB, empresaID string, input CriarProdutoInput) (Produt
 				diametro_valor, diametro_unidade,
 				altura_valor, altura_unidade,
 				espessura_valor, espessura_unidade,
-				codigo_fornecedor, ean13, unidade_medida, embalagem,
+				codigo_fornecedor, ean13, unidade_medida, embalagem, preco_unitario,
 				empresa_id
 			)
-			SELECT $1, $2, c.id, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+			SELECT $1, $2, c.id, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
 			FROM categorias c
-			WHERE c.id = $3 AND c.empresa_id = $20
+			WHERE c.id = $3 AND c.empresa_id = $21
 			RETURNING id, nome, codigo`
 			var p Produto
 			err = tx.QueryRow(insertProduto,
@@ -483,7 +518,7 @@ func CriarProduto(db *sql.DB, empresaID string, input CriarProdutoInput) (Produt
 				diametroValor, diametroUnidade,
 				alturaValor, alturaUnidade,
 				espessuraValor, espessuraUnidade,
-				codigoFornecedor, ean13, unidadeMedida, embalagem,
+				codigoFornecedor, ean13, unidadeMedida, embalagem, precoUnitario,
 				empresaID,
 			).Scan(&p.ID, &p.Nome, &p.Codigo)
 			if err != nil {
@@ -661,6 +696,10 @@ func AtualizarProduto(db *sql.DB, empresaID string, atorID string, id string, in
 	if err != nil {
 		return Produto{}, err
 	}
+	precoUnitario, err := validarPrecoUnitario(input.PrecoUnitario)
+	if err != nil {
+		return Produto{}, err
+	}
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -743,7 +782,8 @@ func AtualizarProduto(db *sql.DB, empresaID string, atorID string, id string, in
 			diametro_valor = $10, diametro_unidade = $11,
 			altura_valor = $12, altura_unidade = $13,
 			espessura_valor = $14, espessura_unidade = $15,
-			codigo_fornecedor = $16, ean13 = $17, unidade_medida = $18, embalagem = $19
+			codigo_fornecedor = $16, ean13 = $17, unidade_medida = $18, embalagem = $19,
+			preco_unitario = $21
 		FROM categorias c
 		WHERE p.id = $2 AND p.empresa_id = $20 AND p.deleted_at IS NULL
 		  AND c.id = $3 AND c.empresa_id = $20
@@ -758,7 +798,7 @@ func AtualizarProduto(db *sql.DB, empresaID string, atorID string, id string, in
 		alturaValor, alturaUnidade,
 		espessuraValor, espessuraUnidade,
 		codigoFornecedor, ean13, unidadeMedida, embalagem,
-		empresaID,
+		empresaID, precoUnitario,
 	).Scan(&p.ID, &p.Nome, &codigo)
 	if err != nil {
 		var pqErr *pq.Error

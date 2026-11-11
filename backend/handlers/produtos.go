@@ -93,6 +93,10 @@ type criarProdutoRequest struct {
 	EAN13            string `json:"ean13"`
 	UnidadeMedida    string `json:"unidade_medida"`
 	Embalagem        string `json:"embalagem"`
+	// PrecoUnitario (feedback Ferreira Costa, direção, 2026-11-11): sempre
+	// opcional, repassado 1:1 — services.validarPrecoUnitario é a única fonte
+	// de verdade (>= 0, dentro do limite da coluna).
+	PrecoUnitario *float64 `json:"preco_unitario"`
 }
 
 // CriarProdutoHandler expõe POST /api/produtos: cadastra um novo Produto SEM
@@ -145,6 +149,7 @@ func CriarProdutoHandler(db *sql.DB, registro *realtime.Registry) http.HandlerFu
 			EAN13:            req.EAN13,
 			UnidadeMedida:    req.UnidadeMedida,
 			Embalagem:        req.Embalagem,
+			PrecoUnitario:    req.PrecoUnitario,
 		}
 
 		produto, err := services.CriarProduto(db, empresa.ID, input)
@@ -285,6 +290,7 @@ func AtualizarProdutoHandler(db *sql.DB, registro *realtime.Registry) http.Handl
 			EAN13:            req.EAN13,
 			UnidadeMedida:    req.UnidadeMedida,
 			Embalagem:        req.Embalagem,
+			PrecoUnitario:    req.PrecoUnitario,
 		}
 
 		produto, err := services.AtualizarProduto(db, empresa.ID, usuario.ID, r.PathValue("id"), input)

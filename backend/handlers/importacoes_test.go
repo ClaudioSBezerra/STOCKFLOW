@@ -129,10 +129,11 @@ func categoriaNomePorCodigoHandler(t *testing.T, db *sql.DB, codigo string) stri
 	return nome
 }
 
-// linhaImportacao monta uma linha de dado (16 células, mesma ordem de
-// services.CabecalhoEsperado) com dimensões/observações em branco.
+// linhaImportacao monta uma linha de dado (17 células, mesma ordem de
+// services.CabecalhoEsperado) com dimensões/observações/preço unitário em
+// branco.
 func linhaImportacao(nome, codigo, categoria, quantidade, estoque string) []string {
-	return []string{nome, codigo, categoria, "", "", "", "", "", "", "", "", "", "", quantidade, estoque, ""}
+	return []string{nome, codigo, categoria, "", "", "", "", "", "", "", "", "", "", quantidade, estoque, "", ""}
 }
 
 // TestCriarImportacaoHandler_201ParaAlmoxarife prova a AC1 na fronteira HTTP:
@@ -243,10 +244,13 @@ func TestCriarImportacaoHandler_400CabecalhoInvalido(t *testing.T) {
 	criarContaComPapel(t, db, "Almox Cabeçalho", "importacao-cabecalho@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "importacao-cabecalho@empresa.com", "senha-123456")
 
-	cabecalhoSemObservacoes := services.CabecalhoEsperado[:len(services.CabecalhoEsperado)-1]
+	// Falta a última coluna ("Preço Unitário") — qualquer coluna faltando
+	// rejeita o cabeçalho inteiro; o teste só precisa de UM cabeçalho inválido
+	// para provar a AC2, não especificamente qual coluna falta.
+	cabecalhoComUmaAMenos := services.CabecalhoEsperado[:len(services.CabecalhoEsperado)-1]
 	linhas := [][]string{
-		cabecalhoSemObservacoes,
-		{"Produto Sem Observacoes", "SKU-X", "Materiais Civis", "", "", "", "", "", "", "", "", "", "", "1", "Canteiro X"},
+		cabecalhoComUmaAMenos,
+		{"Produto Sem Observacoes", "SKU-X", "Materiais Civis", "", "", "", "", "", "", "", "", "", "", "1", "Canteiro X", ""},
 	}
 	xlsx := construirXLSX(t, linhas)
 

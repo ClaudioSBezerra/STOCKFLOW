@@ -195,6 +195,62 @@ func TestCriarProdutoHandler_MapeiaFornecedorEAN13EEmbalagem(t *testing.T) {
 	}
 }
 
+// TestCriarProdutoHandler_MapeiaPrecoUnitario prova que `preco_unitario`
+// (feedback Ferreira Costa, direção, 2026-11-11) chega ao banco quando
+// informado, e um valor negativo é rejeitado com 400 VALIDATION_ERROR —
+// mesmo molde de TestCriarProdutoHandler_MapeiaFornecedorEAN13EEmbalagem.
+func TestCriarProdutoHandler_MapeiaPrecoUnitario(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	categoriaID := categoriaIDPorCodigoHandler(t, db, "04.001")
+	criarContaComPapel(t, db, "Conta almox preco", "prod-preco-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "prod-preco-almox@empresa.com", "senha-123456")
+	base := func(extra string) string {
+		return `{
+			"nome": "Produto com preco unitario",
+			"categoria_id": "` + categoriaID + `",
+			"template_id": "` + templateIDPorSubtipoHandler(t, db, "Genérico") + `",
+			"unidade_medida": "cx",
+			` + extra + `
+		}`
+	}
+
+	w := postProdutos(db, "Bearer "+token, base(`"preco_unitario": 1234.56`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Produto struct {
+			ID string `json:"id"`
+		} `json:"produto"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	var preco sql.NullFloat64
+	if err := db.QueryRow(`SELECT preco_unitario FROM produtos WHERE id = $1`, resp.Produto.ID).Scan(&preco); err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	if !preco.Valid || preco.Float64 != 1234.56 {
+		t.Errorf("preco_unitario persistido = %v, want 1234.56", preco)
+	}
+
+	w = postProdutos(db, "Bearer "+token, base(`"preco_unitario": -1`))
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("preço negativo: status = %d, want 400 (body=%s)", w.Code, w.Body.String())
+	}
+
+	w = postProdutos(db, "Bearer "+token, `{
+		"nome": "Produto sem preco unitario",
+		"categoria_id": "`+categoriaID+`",
+		"template_id": "`+templateIDPorSubtipoHandler(t, db, "Genérico")+`",
+		"unidade_medida": "cx"
+	}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("sem preco_unitario: status = %d, want 201 (body=%s)", w.Code, w.Body.String())
+	}
+}
+
 func TestCriarProdutoHandler_201ParaAlmoxarifeGestorAdm(t *testing.T) {
 	db := testDB(t)
 	limparProdutosHandler(t, db)

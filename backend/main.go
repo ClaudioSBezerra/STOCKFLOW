@@ -38,7 +38,7 @@
 // edição de Produto — escopo restrito a `nome`, revalidado contra o template
 // aplicado quando existir) e a importação em massa via planilha padronizada —
 // Story 3.3 (POST /api/importacoes, mínimo `almoxarife`: recebe um `.xlsx`
-// multipart no campo `planilha`, valida o cabeçalho fixo de 16 colunas e
+// multipart no campo `planilha`, valida o cabeçalho fixo de 17 colunas e
 // processa cada linha sequencialmente, criando Produtos e Estoques ausentes
 // automaticamente; GET /api/importacoes/ultima, mínimo `almoxarife`, indica
 // até onde uma importação interrompida chegou; POST

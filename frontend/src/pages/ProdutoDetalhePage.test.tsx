@@ -250,6 +250,30 @@ describe('ProdutoDetalhePage', () => {
     expect(screen.getByText('Unidade de medida').nextElementSibling).toHaveTextContent('m');
   });
 
+  // Feedback Ferreira Costa (direção, 2026-11-11): Preço Unitário formatado
+  // em R$ (pt-BR) quando preenchido, "—" quando nunca preenchido.
+  it('mostra o Preço Unitário formatado em R$ quando preenchido', async () => {
+    stubPadrao({ produto: { ...PRODUTO_DETALHE, precoUnitario: 1234.56 } });
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+
+    await screen.findByText('Cabo Flexível 4mm');
+    expect(screen.getByText('Preço Unitário').nextElementSibling).toHaveTextContent('R$ 1.234,56');
+  });
+
+  it('Preço Unitário mostra "—" quando nunca preenchido', async () => {
+    stubPadrao();
+    renderPagina();
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+
+    await screen.findByText('Cabo Flexível 4mm');
+    expect(screen.getByText('Preço Unitário').nextElementSibling).toHaveTextContent('—');
+  });
+
   it('fallback: busca o detalhe mesmo sem SSE conectar, após o timer de escape (incidente real 2026-09-04)', async () => {
     vi.useFakeTimers();
     try {

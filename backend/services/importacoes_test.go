@@ -90,6 +90,97 @@ func TestCriarImportacao_SucessoCompleto(t *testing.T) {
 	}
 }
 
+// TestCriarImportacao_PrecoUnitario prova a coluna nova "Preço Unitário"
+// (feedback Ferreira Costa, direção, 2026-11-11): célula vazia grava NULL,
+// célula preenchida grava o valor exato, e reimportar a MESMA linha por
+// código (caminho de atualização) sobrescreve o preço, igual a qualquer
+// outro campo editável da planilha.
+func TestCriarImportacao_PrecoUnitario(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	criadoPor := criarUsuarioImportacao(t, db, "importacao-preco@empresa.com")
+	categoria := categoriaNomePorCodigo(t, db, "04.001")
+
+	semPreco := linhaBase("Produto Importado Sem Preco", "SKU-PRECO-1", categoria, "1", "Canteiro Preço")
+	comPreco := linhaBase("Produto Importado Com Preco", "SKU-PRECO-2", categoria, "1", "Canteiro Preço")
+	comPreco[colPrecoUnitario] = "1234.56"
+
+	linhas := [][]string{CabecalhoEsperado, semPreco, comPreco}
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
+	if err != nil {
+		t.Fatalf("CriarImportacao erro inesperado: %v", err)
+	}
+	if relatorio.Criados != 2 || relatorio.Rejeitados != 0 {
+		t.Fatalf("relatorio = %+v, want Criados=2 Rejeitados=0", relatorio)
+	}
+
+	var precoSemID, precoComID sql.NullFloat64
+	if err := db.QueryRow(`SELECT preco_unitario FROM produtos WHERE codigo = 'SKU-PRECO-1'`).Scan(&precoSemID); err != nil {
+		t.Fatal(err)
+	}
+	if precoSemID.Valid {
+		t.Errorf("SKU-PRECO-1: preco_unitario = %v, want NULL", precoSemID)
+	}
+	if err := db.QueryRow(`SELECT preco_unitario FROM produtos WHERE codigo = 'SKU-PRECO-2'`).Scan(&precoComID); err != nil {
+		t.Fatal(err)
+	}
+	if !precoComID.Valid || precoComID.Float64 != 1234.56 {
+		t.Errorf("SKU-PRECO-2: preco_unitario = %v, want 1234.56", precoComID)
+	}
+
+	// Reimportar o MESMO código com um preço diferente -> caminho de
+	// atualização, sobrescreve.
+	atualizacao := linhaBase("Produto Importado Com Preco", "SKU-PRECO-2", categoria, "1", "Canteiro Preço")
+	atualizacao[colPrecoUnitario] = "9999.00"
+	_, relatorioAtt, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha2.xlsx", [][]string{CabecalhoEsperado, atualizacao})
+	if err != nil {
+		t.Fatalf("CriarImportacao (atualização) erro inesperado: %v", err)
+	}
+	if relatorioAtt.Rejeitados != 0 {
+		t.Fatalf("relatorio atualização = %+v, want Rejeitados=0", relatorioAtt)
+	}
+	if err := db.QueryRow(`SELECT preco_unitario FROM produtos WHERE codigo = 'SKU-PRECO-2'`).Scan(&precoComID); err != nil {
+		t.Fatal(err)
+	}
+	if !precoComID.Valid || precoComID.Float64 != 9999.00 {
+		t.Errorf("SKU-PRECO-2 após atualização: preco_unitario = %v, want 9999.00", precoComID)
+	}
+	if n := contarProdutos(t, db); n != 2 {
+		t.Errorf("linhas em produtos = %d, want 2 (atualização não deveria duplicar)", n)
+	}
+}
+
+// TestCriarImportacao_PrecoUnitarioInvalidoRejeitaSoALinha prova que um
+// preço negativo ou não-numérico rejeita SÓ a linha (as demais seguem
+// normalmente) — mesmo padrão de TestCriarImportacao_LinhaComDimensaoIncompleta.
+func TestCriarImportacao_PrecoUnitarioInvalidoRejeitaSoALinha(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	criadoPor := criarUsuarioImportacao(t, db, "importacao-preco-invalido@empresa.com")
+	categoria := categoriaNomePorCodigo(t, db, "04.001")
+
+	linhaNegativa := linhaBase("Produto Preco Negativo Rejeitado", "SKU-PRECO-NEG", categoria, "1", "Canteiro Preço Inválido")
+	linhaNegativa[colPrecoUnitario] = "-1"
+
+	linhas := [][]string{
+		CabecalhoEsperado,
+		linhaNegativa,
+		linhaBase("Produto Preco Valido Dois", "SKU-PRECO-OK", categoria, "1", "Canteiro Preço Inválido"),
+	}
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
+	if err != nil {
+		t.Fatalf("CriarImportacao erro inesperado: %v", err)
+	}
+	if relatorio.Criados != 1 || relatorio.Rejeitados != 1 {
+		t.Fatalf("relatorio = %+v, want Criados=1 Rejeitados=1", relatorio)
+	}
+	if len(relatorio.LinhasRejeitadas) != 1 || !strings.Contains(relatorio.LinhasRejeitadas[0].Erro, "maior ou igual a zero") {
+		t.Errorf("LinhasRejeitadas = %+v, want citar 'maior ou igual a zero'", relatorio.LinhasRejeitadas)
+	}
+}
+
 // TestCriarImportacao_LinhaComDimensaoIncompleta prova a I/O Matrix "Linha
 // com dimensão sem unidade": só a linha com o par incompleto é marcada
 // `rejeitada`; as demais N-1 são processadas normalmente.

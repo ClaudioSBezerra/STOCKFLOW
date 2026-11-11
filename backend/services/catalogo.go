@@ -967,6 +967,9 @@ type ProdutoDetalhe struct {
 	Embalagem        *string `json:"embalagem"`
 	CodigoFornecedor *string `json:"codigoFornecedor"`
 	EAN13            *string `json:"ean13"`
+	// PrecoUnitario (feedback Ferreira Costa, direção, 2026-11-11): puramente
+	// informativo, `null` quando nunca preenchido.
+	PrecoUnitario *float64 `json:"precoUnitario"`
 	// TemplateID/Observacoes (spec-13-1): pré-preenchem o diálogo de edição.
 	TemplateID  *string `json:"templateId"`
 	Observacoes *string `json:"observacoes"`
@@ -991,7 +994,7 @@ const produtoDetalheQuery = `
 		p.espessura_valor, p.espessura_unidade,
 		COALESCE(pe.total, 0) AS quantidade_total,
 		p.unidade_medida, p.embalagem, p.codigo_fornecedor, p.ean13,
-		p.template_id, p.observacoes, p.inativado_em
+		p.template_id, p.observacoes, p.inativado_em, p.preco_unitario
 	FROM produtos p
 	JOIN categorias c ON c.id = p.categoria_id
 	LEFT JOIN (
@@ -1023,6 +1026,7 @@ func ObterProdutoDetalhe(db *sql.DB, empresaID string, id string) (ProdutoDetalh
 		codigoFornecedor, ean13    sql.NullString
 		templateID, observacoes    sql.NullString
 		inativadoEm                sql.NullTime
+		precoUnitario              sql.NullFloat64
 	)
 	err := db.QueryRow(produtoDetalheQuery, id, empresaID).Scan(
 		&det.ID, &det.Nome, &codigo,
@@ -1034,7 +1038,7 @@ func ObterProdutoDetalhe(db *sql.DB, empresaID string, id string) (ProdutoDetalh
 		&esp.valor, &esp.unidade,
 		&quantidade,
 		&unidadeMedida, &embalagem, &codigoFornecedor, &ean13,
-		&templateID, &observacoes, &inativadoEm,
+		&templateID, &observacoes, &inativadoEm, &precoUnitario,
 	)
 	if err != nil {
 		var pqErr *pq.Error
@@ -1075,6 +1079,10 @@ func ObterProdutoDetalhe(db *sql.DB, empresaID string, id string) (ProdutoDetalh
 	if ean13.Valid {
 		e := strings.TrimSpace(ean13.String)
 		det.EAN13 = &e
+	}
+	if precoUnitario.Valid {
+		p := precoUnitario.Float64
+		det.PrecoUnitario = &p
 	}
 	det.Dimensoes = DimensoesProduto{
 		Comprimento: comp.paraDimensao(),

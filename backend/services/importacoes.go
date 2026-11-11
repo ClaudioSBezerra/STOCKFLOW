@@ -50,7 +50,7 @@ import (
 // (handlers/importacoes.go), não aqui: `CriarImportacao` assume `linhas[0]`
 // já validado — ver o comentário da função.
 
-// Ordem das 16 colunas fixas da planilha padronizada — mesma ordem de
+// Ordem das 17 colunas fixas da planilha padronizada — mesma ordem de
 // CabecalhoEsperado, usada tanto para ler cada célula de `dados` quanto para
 // montar o INSERT em `produtos`.
 const (
@@ -70,17 +70,23 @@ const (
 	colQuantidade
 	colEstoque
 	colObservacoes
+	// colPrecoUnitario (feedback Ferreira Costa, direção, 2026-11-11): 17ª
+	// coluna, sempre opcional — célula vazia grava NULL, mesma regra de
+	// validarPrecoUnitario (produtos.go). Acrescentada ao FINAL da planilha
+	// padronizada para não reordenar nenhuma coluna já documentada.
+	colPrecoUnitario
 )
 
 // numeroColunas é a contagem fixa de colunas da planilha padronizada — mesma
 // contagem de CabecalhoEsperado, e o tamanho fixo do array `dados` gravado em
-// cada `importacao_linhas` (16 strings brutas, índices colNome..colObservacoes).
-const numeroColunas = colObservacoes + 1
+// cada `importacao_linhas` (17 strings brutas, índices colNome..colPrecoUnitario).
+const numeroColunas = colPrecoUnitario + 1
 
-// CabecalhoEsperado é o cabeçalho fixo (16 colunas, nesta ordem exata) que
+// CabecalhoEsperado é o cabeçalho fixo (17 colunas, nesta ordem exata) que
 // handlers.CriarImportacaoHandler compara (com trim, sem normalizar caixa)
 // contra a primeira linha da planilha recebida — citado na mensagem de erro
-// quando o cabeçalho está fora do padrão.
+// quando o cabeçalho está fora do padrão. "Preço Unitário" (feedback
+// Ferreira Costa, direção, 2026-11-11) é sempre opcional.
 var CabecalhoEsperado = []string{
 	"Nome", "Código", "Categoria",
 	"Comprimento (valor)", "Comprimento (unidade)",
@@ -88,7 +94,7 @@ var CabecalhoEsperado = []string{
 	"Diâmetro (valor)", "Diâmetro (unidade)",
 	"Altura (valor)", "Altura (unidade)",
 	"Espessura (valor)", "Espessura (unidade)",
-	"Quantidade", "Estoque", "Observações",
+	"Quantidade", "Estoque", "Observações", "Preço Unitário",
 }
 
 // Importacao é a projeção somente-leitura de uma linha de `importacoes`,
@@ -555,8 +561,9 @@ func processarProximaLinha(db *sql.DB, empresaID string, importacaoID string) (b
 			diametro_valor, diametro_unidade,
 			altura_valor, altura_unidade,
 			espessura_valor, espessura_unidade,
+			preco_unitario,
 			empresa_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		RETURNING id`
 	// SAVEPOINT antes do INSERT (Story 3.4, review pass): protege contra a
 	// corrida "duas linhas da mesma leva com o mesmo código NOVO, processadas
@@ -587,6 +594,7 @@ func processarProximaLinha(db *sql.DB, empresaID string, importacaoID string) (b
 		validada.diametroValor, validada.diametroUnidade,
 		validada.alturaValor, validada.alturaUnidade,
 		validada.espessuraValor, validada.espessuraUnidade,
+		validada.precoUnitario,
 		empresaID,
 	).Scan(&produtoID)
 	if err != nil {
@@ -714,7 +722,8 @@ func processarLinhaDeAtualizacao(
 			largura_valor = $7, largura_unidade = $8,
 			diametro_valor = $9, diametro_unidade = $10,
 			altura_valor = $11, altura_unidade = $12,
-			espessura_valor = $13, espessura_unidade = $14
+			espessura_valor = $13, espessura_unidade = $14,
+			preco_unitario = $17
 		WHERE id = $15 AND empresa_id = $16`
 	if _, err := tx.Exec(updateProduto,
 		validada.nome, validada.codigo, categoriaID, validada.observacoes,
@@ -723,7 +732,7 @@ func processarLinhaDeAtualizacao(
 		validada.diametroValor, validada.diametroUnidade,
 		validada.alturaValor, validada.alturaUnidade,
 		validada.espessuraValor, validada.espessuraUnidade,
-		produtoExistenteID, empresaID,
+		produtoExistenteID, empresaID, validada.precoUnitario,
 	); err != nil {
 		return false, fmt.Errorf("falha ao atualizar produto da linha %d: %w", numeroLinha, err)
 	}
@@ -777,9 +786,11 @@ type linhaValidada struct {
 
 	categoriaTexto string
 	estoqueNome    string
+
+	precoUnitario sql.NullFloat64
 }
 
-// validarLinhaImportacao valida os 16 campos brutos de uma linha da planilha
+// validarLinhaImportacao valida os 17 campos brutos de uma linha da planilha
 // contra as MESMAS regras de CriarProduto: nome (obrigatório, máx. 255
 // runes), código (opcional, máx. 255 runes), quantidade (mesma checagem de
 // QuantidadeInicial: >= 0 e <= limiteNumeric103) e as 5 dimensões via
@@ -868,6 +879,29 @@ func validarLinhaImportacao(dados []string) (linhaValidada, error) {
 		return linhaValidada{}, err
 	}
 
+	// Preço Unitário (feedback Ferreira Costa, direção, 2026-11-11): célula
+	// vazia -> NULL, sem erro (sempre opcional). Mesma convenção de
+	// quantidade: só ponto decimal, validado por validarPrecoUnitario
+	// (produtos.go) — >= 0 e dentro do limite da coluna.
+	var precoUnitario sql.NullFloat64
+	if precoTexto := strings.TrimSpace(dados[colPrecoUnitario]); precoTexto != "" {
+		preco, err := strconv.ParseFloat(precoTexto, 64)
+		if err != nil || math.IsNaN(preco) || math.IsInf(preco, 0) {
+			return linhaValidada{}, &ErroImportacaoValidacao{
+				Mensagem: fmt.Sprintf("preço unitário: valor inválido %q", precoTexto),
+			}
+		}
+		precoValidado, err := validarPrecoUnitario(&preco)
+		if err != nil {
+			var erroValidacaoProduto *ErroProdutoValidacao
+			if errors.As(err, &erroValidacaoProduto) {
+				return linhaValidada{}, &ErroImportacaoValidacao{Mensagem: erroValidacaoProduto.Mensagem}
+			}
+			return linhaValidada{}, err
+		}
+		precoUnitario = precoValidado
+	}
+
 	return linhaValidada{
 		nome:        nome,
 		codigo:      codigo,
@@ -882,6 +916,8 @@ func validarLinhaImportacao(dados []string) (linhaValidada, error) {
 
 		categoriaTexto: strings.TrimSpace(dados[colCategoria]),
 		estoqueNome:    dados[colEstoque],
+
+		precoUnitario: precoUnitario,
 	}, nil
 }
 

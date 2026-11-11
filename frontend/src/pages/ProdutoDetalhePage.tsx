@@ -207,6 +207,14 @@ function formatarDataPedido(iso: string): string {
   return data.toLocaleDateString('pt-BR');
 }
 
+// formatarPrecoUnitario (feedback Ferreira Costa, direção, 2026-11-11):
+// `null`/`undefined` (nunca preenchido) -> "—", mesmo traço de qualquer outro
+// campo opcional do detalhe (Embalagem, Código do Fornecedor, EAN-13).
+function formatarPrecoUnitario(valor: number | null | undefined): string {
+  if (valor == null) return '—';
+  return valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+}
+
 function ListaLotes({ lotes }: { lotes: LoteSaldo[] }) {
   return (
     <ul className="text-label text-muted-foreground flex flex-col gap-1 pl-4" aria-label="Lotes">
@@ -244,6 +252,9 @@ interface ProdutoDetalhe {
   ean13?: string | null;
   templateId?: string | null;
   observacoes?: string | null;
+  // precoUnitario (feedback Ferreira Costa, direção, 2026-11-11): sempre
+  // opcional, puramente informativo.
+  precoUnitario?: number | null;
   quantidadeTotal: number;
   quantidadeReservada: number;
   quantidadeDisponivel: number;
@@ -898,6 +909,8 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
               <dd>{produto.unidadeMedida ?? '—'}</dd>
               <dt className="text-muted-foreground">Embalagem</dt>
               <dd>{produto.embalagem ?? '—'}</dd>
+              <dt className="text-muted-foreground">Preço Unitário</dt>
+              <dd>{formatarPrecoUnitario(produto.precoUnitario)}</dd>
               <dt className="text-muted-foreground">Código do fornecedor</dt>
               <dd className="font-mono">{produto.codigoFornecedor ?? '—'}</dd>
               <dt className="text-muted-foreground">EAN-13</dt>

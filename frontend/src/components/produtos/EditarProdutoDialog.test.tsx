@@ -117,6 +117,45 @@ describe('EditarProdutoDialog', () => {
     });
   });
 
+  // Feedback Ferreira Costa (direção, 2026-11-11): Preço Unitário pré-
+  // preenche, edita e vai no corpo do PUT como número (não string).
+  it('pré-preenche Preço Unitário e envia o valor editado como número no PUT', async () => {
+    const fn = stub(() => resposta(true, { produto: { id: 'p1' } }));
+    const comPreco: ProdutoEditavel = { ...PRODUTO, precoUnitario: 1234.56 };
+    render(<EditarProdutoDialog produto={comPreco} open onOpenChange={vi.fn()} onSalvo={vi.fn()} />);
+
+    expect(screen.getByLabelText('Preço Unitário')).toHaveValue(1234.56);
+
+    const campo = screen.getByLabelText('Preço Unitário');
+    await userEvent.clear(campo);
+    await userEvent.type(campo, '999.90');
+    await userEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+
+    await waitFor(() => {
+      const put = fn.mock.calls.find(([, init]) => init?.method === 'PUT');
+      expect(put).toBeDefined();
+    });
+    const put = fn.mock.calls.find(([, init]) => init?.method === 'PUT');
+    const corpo = JSON.parse(String(put?.[1]?.body)) as Record<string, unknown>;
+    expect(corpo.preco_unitario).toBe(999.9);
+  });
+
+  it('Preço Unitário ausente pré-preenche vazio e não vai no corpo do PUT', async () => {
+    const fn = stub(() => resposta(true, { produto: { id: 'p1' } }));
+    render(<EditarProdutoDialog produto={PRODUTO} open onOpenChange={vi.fn()} onSalvo={vi.fn()} />);
+
+    expect(screen.getByLabelText('Preço Unitário')).toHaveValue(null);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    await waitFor(() => {
+      const put = fn.mock.calls.find(([, init]) => init?.method === 'PUT');
+      expect(put).toBeDefined();
+    });
+    const put = fn.mock.calls.find(([, init]) => init?.method === 'PUT');
+    const corpo = JSON.parse(String(put?.[1]?.body)) as Record<string, unknown>;
+    expect(corpo.preco_unitario).toBeUndefined();
+  });
+
   it('400: mostra a mensagem do servidor em role=alert e não fecha', async () => {
     stub(() => resposta(false, { error: { message: 'nome fora do formato' } }, 400));
     const onOpenChange = vi.fn();

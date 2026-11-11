@@ -554,6 +554,89 @@ func TestCriarProduto_CodigoFornecedorEEmbalagemAusentesGravamNull(t *testing.T)
 	}
 }
 
+// TestCriarProduto_PrecoUnitario prova o caminho feliz e o fail-closed do
+// novo campo (feedback Ferreira Costa, direção, 2026-11-11): ausente grava
+// NULL, presente e válido grava o valor exato, negativo é rejeitado SEM
+// gravar nada.
+func TestCriarProduto_PrecoUnitario(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	t.Run("ausente grava NULL", func(t *testing.T) {
+		input := criarProdutoInputValido(t, db, "Produto Sem Preco Unitario", "04.001")
+		p, err := CriarProduto(db, empresaTeste, input)
+		if err != nil {
+			t.Fatalf("CriarProduto erro inesperado: %v", err)
+		}
+		var preco sql.NullFloat64
+		if err := db.QueryRow(`SELECT preco_unitario FROM produtos WHERE id = $1`, p.ID).Scan(&preco); err != nil {
+			t.Fatalf("falha ao ler preco_unitario: %v", err)
+		}
+		if preco.Valid {
+			t.Errorf("preco_unitario = %v, want NULL", preco)
+		}
+	})
+
+	t.Run("presente grava o valor exato", func(t *testing.T) {
+		input := criarProdutoInputValido(t, db, "Produto Com Preco Unitario", "04.001")
+		valor := 1234.56
+		input.PrecoUnitario = &valor
+		p, err := CriarProduto(db, empresaTeste, input)
+		if err != nil {
+			t.Fatalf("CriarProduto erro inesperado: %v", err)
+		}
+		var preco sql.NullFloat64
+		if err := db.QueryRow(`SELECT preco_unitario FROM produtos WHERE id = $1`, p.ID).Scan(&preco); err != nil {
+			t.Fatalf("falha ao ler preco_unitario: %v", err)
+		}
+		if !preco.Valid || preco.Float64 != valor {
+			t.Errorf("preco_unitario = %v, want %v", preco, valor)
+		}
+	})
+
+	t.Run("negativo é rejeitado", func(t *testing.T) {
+		input := criarProdutoInputValido(t, db, "Produto Preco Negativo Rejeitado", "04.001")
+		valor := -0.01
+		input.PrecoUnitario = &valor
+		_, err := CriarProduto(db, empresaTeste, input)
+		var erroValidacao *ErroProdutoValidacao
+		if !errors.As(err, &erroValidacao) {
+			t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
+		}
+		if !strings.Contains(erroValidacao.Mensagem, "maior ou igual a zero") {
+			t.Errorf("mensagem = %q, want citar %q", erroValidacao.Mensagem, "maior ou igual a zero")
+		}
+	})
+
+	t.Run("acima do limite é rejeitado", func(t *testing.T) {
+		input := criarProdutoInputValido(t, db, "Produto Preco Acima Do Limite", "04.001")
+		valor := limiteNumericPreco + 1
+		input.PrecoUnitario = &valor
+		_, err := CriarProduto(db, empresaTeste, input)
+		var erroValidacao *ErroProdutoValidacao
+		if !errors.As(err, &erroValidacao) {
+			t.Fatalf("erro = %v, want *ErroProdutoValidacao", err)
+		}
+	})
+
+	t.Run("zero é aceito", func(t *testing.T) {
+		input := criarProdutoInputValido(t, db, "Produto Preco Zero Aceito", "04.001")
+		valor := 0.0
+		input.PrecoUnitario = &valor
+		p, err := CriarProduto(db, empresaTeste, input)
+		if err != nil {
+			t.Fatalf("CriarProduto erro inesperado: %v", err)
+		}
+		var preco sql.NullFloat64
+		if err := db.QueryRow(`SELECT preco_unitario FROM produtos WHERE id = $1`, p.ID).Scan(&preco); err != nil {
+			t.Fatalf("falha ao ler preco_unitario: %v", err)
+		}
+		if !preco.Valid || preco.Float64 != 0 {
+			t.Errorf("preco_unitario = %v, want 0 (válido)", preco)
+		}
+	})
+}
+
 // TestValidarDimensao_UnidadeInvalida prova que `validarDimensao` rejeita uma
 // unidade fora de `{mm,cm,m}` mesmo com `valor` presente e válido — unidade
 // como "km" nunca foi exercitada antes deste teste. Unitário e sem banco:
@@ -2140,6 +2223,46 @@ func TestAtualizarProduto_SucessoPreservaCodigo(t *testing.T) {
 	}
 	if nome != "Produto Editado Dois" || un != "kg" || obs != "obs nova" || comp != 2.5 {
 		t.Errorf("gravado: %s %s %s %v", nome, un, obs, comp)
+	}
+}
+
+// TestAtualizarProduto_PrecoUnitario prova que AtualizarProduto regrava
+// preco_unitario como qualquer outro campo editável (feedback Ferreira
+// Costa, direção, 2026-11-11): grava o valor novo, e omiti-lo numa edição
+// seguinte volta o campo a NULL — igual a qualquer outro campo opcional
+// desta função (edição é sempre sobrescrita completa, nunca PATCH parcial).
+func TestAtualizarProduto_PrecoUnitario(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	in := criarProdutoInputValido(t, db, "Produto Preco Antes Da Edicao", "04.001")
+	p, err := CriarProduto(db, empresaTeste, in)
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	comPreco := criarProdutoInputValido(t, db, "Produto Preco Depois Da Edicao", "04.001")
+	valor := 99.90
+	comPreco.PrecoUnitario = &valor
+	if _, err := AtualizarProduto(db, empresaTeste, atorHistorico(t, db), p.ID, comPreco); err != nil {
+		t.Fatalf("AtualizarProduto (com preço): %v", err)
+	}
+	var preco sql.NullFloat64
+	if err := db.QueryRow(`SELECT preco_unitario FROM produtos WHERE id = $1`, p.ID).Scan(&preco); err != nil {
+		t.Fatal(err)
+	}
+	if !preco.Valid || preco.Float64 != valor {
+		t.Fatalf("preco_unitario = %v, want %v", preco, valor)
+	}
+
+	semPreco := criarProdutoInputValido(t, db, "Produto Preco Removido Na Edicao", "04.001")
+	if _, err := AtualizarProduto(db, empresaTeste, atorHistorico(t, db), p.ID, semPreco); err != nil {
+		t.Fatalf("AtualizarProduto (sem preço): %v", err)
+	}
+	if err := db.QueryRow(`SELECT preco_unitario FROM produtos WHERE id = $1`, p.ID).Scan(&preco); err != nil {
+		t.Fatal(err)
+	}
+	if preco.Valid {
+		t.Errorf("preco_unitario = %v, want NULL após edição sem o campo", preco)
 	}
 }
 
