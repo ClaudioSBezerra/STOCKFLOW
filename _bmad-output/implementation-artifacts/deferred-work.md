@@ -773,3 +773,23 @@ source_spec: `spec-18-3-dono-da-plataforma-estende-ou-isenta-o-trial.md`
 severity: low
 reason: Mesmo padrão já existente em `alterarStatus` (não introduzido por esta story) — risco pré-existente no arquivo, não causado pela Story 18.3, só reaproveitado por ela.
 status: open
+
+- source_spec: `spec-19-1-tokens-base-catalogo-2-0.md`
+  summary: Portar tipografia, raios, espaçamentos de sombra, tokens de badge e tokens de score do Catálogo 2.0 para `frontend/src/index.css`.
+  evidence: Spec original passou de ~1900 tokens estimados (acima do teto de 1600); usuário escolheu [S] Split. A tabela de mapeamento de cores sozinha já ocupa a maior parte do orçamento, então tipografia/raios/sombras/badges/score ficaram para uma story separada, depois que os tokens de cor + fonte estiverem no ar.
+
+- source_spec: `spec-19-1-tokens-base-catalogo-2-0.md`
+  summary: `--font-mono: 'JetBrains Mono', monospace` nunca teve uma fonte real carregada (sem `@fontsource`, `@font-face` ou link) — já caía no monospace genérico do sistema antes desta story.
+  evidence: Achado pela revisão (blind-hunter) ao auditar a troca de fonte desta story; confirmado que não existe nenhum arquivo/import de JetBrains Mono no repositório. Pré-existente, não causado por esta story, mas relevante para quem for migrar tipografia no resto do Épico 19.
+
+- source_spec: `spec-19-1-tokens-base-catalogo-2-0.md`
+  summary: Nenhum teste de frontend verifica a cor renderizada (hex/contraste) dos tokens — só o nome da classe Tailwind (ex. `bg-destructive`).
+  evidence: Achado pela revisão (blind-hunter): uma repaletagem inteira como esta não tem nenhum teste automatizado capaz de pegar um hex errado portado. Gap estrutural de cobertura, não introduzido por esta story.
+
+- source_spec: `spec-19-1-tokens-base-catalogo-2-0.md`
+  summary: Fazer uma varredura por valores hex antigos (`#e62019`, `#16a249`, `#ef4343` etc.) fora do `index.css` — favicon, manifest `theme-color`, templates de e-mail, exportação PDF/impressão.
+  evidence: Achado pela revisão (blind-hunter): a troca de paleta cobriu só os tokens `@theme`; não houve varredura por cor de marca hardcoded em outros formatos/arquivos que normalmente também mudam numa repaletagem de marca.
+
+- source_spec: `spec-19-1-tokens-base-catalogo-2-0.md`
+  summary: `--color-primary` (verde `#68a439`) com `--color-primary-foreground` branco não atinge contraste AA (~3,02:1) para texto normal; mesmo vale para `--color-secondary-foreground` sobre `--color-secondary` (~3,84:1).
+  evidence: Confirmado matematicamente (fórmula WCAG) e confirmado que o FB_APU05 usa a mesma combinação em produção (tailwind.config.js, --primary/--primary-foreground). Claudio decidiu manter igual ao FB_APU05 (2026-11-12) — trade-off aceito conscientemente para paridade visual com o padrão da empresa, não é um bug a corrigir nesta story.

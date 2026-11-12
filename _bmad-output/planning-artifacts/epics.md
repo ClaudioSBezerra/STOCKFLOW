@@ -1,5 +1,5 @@
 ---
-stepsCompleted: [1, 1-confirmed, 2, 2-approved, 3, 4-validated, r2-1, r2-1-confirmed, r2-2, r2-2-approved, r2-3, r2-4-validated]
+stepsCompleted: [1, 1-confirmed, 2, 2-approved, 3, 4-validated, r2-1, r2-1-confirmed, r2-2, r2-2-approved, r2-3, r2-4-validated, r3-1, r3-1-confirmed, r3-2, r3-2-approved, r3-3]
 inputDocuments:
   - _bmad-output/planning-artifacts/prds/prd-stockflow-2026-08-29/prd.md
   - _bmad-output/planning-artifacts/prds/prd-stockflow-2026-08-29/addendum.md
@@ -182,6 +182,15 @@ UX-DR23: Padrão de galeria/lightbox de fotos de Produto — toque abre lightbox
 UX-DR24 *(2026-09-25, Epic 17 — substitui UX-DR3 rail/bottom nav/submenu, UX-DR7, UX-DR15 e UX-DR16)*: menu lateral azul-marinho (240px, recolhível a 64px) com os nomes das telas agrupados (Catálogo, Pedidos, Estoque, Qualidade dos dados, Cadastros, Administração; Meu perfil no rodapé); item ativo em negrito branco com barra vermelha FC à esquerda; cada item é rota própria; no celular o menu abre por ☰ como gaveta e a bottom nav deixa de existir (UX `DESIGN.md`/`EXPERIENCE.md`, revisão de 2026-09-25; referência `referencias/modelo-tela.png`).
 UX-DR25: Padrão de página de lista — título, barra de busca com "Adicionar filtro"/"Limpar filtros" e filtros ativos em pílulas, faixa de indicadores calculada no servidor (alerta em vermelho FC) com as ações da página à direita.
 UX-DR26: Padrão de tabela — linhas de 60px com divisor fino, sem card nem zebra; primeira coluna com ícone redondo + nome + subtítulo cinza ("Categoria • Estoque"); números à direita; status em pílula suave (inclui `status-inativo`); no celular vira lista de linhas.
+UX-DR27: Tokens de cor do `DESIGN.md` (primary/accent/destructive/sidebar/secondary) substituídos pelos do "Catálogo 2.0 Design System" (Ferreira Costa, Marlos, 2026-11-11): brand-red, green-150 (CTA), blue secundário, neutros fg-*/bg-*/br-*, workspace "Business" (vermelho) — mantendo os MESMOS nomes de variável shadcn já usados (`--primary`, `--destructive` etc.), só o valor por trás muda.
+UX-DR28: Tipografia do Catálogo 2.0 (escala fs-9 a fs-64, pesos fw-light a fw-bold, classes semânticas t-h1..h4/t-body/t-label/t-badge/t-table-th-td) portada para a sintaxe `@theme` do Tailwind v4, substituindo a escala atual (heading-lg/md, body, label, code).
+UX-DR29: Fonte Inter servida localmente via `@fontsource-variable/inter` (não Google Fonts) — mesma decisão já validada no projeto irmão FB_APU05 por bloqueio do proxy corporativo a domínios externos.
+UX-DR30: Raios, espaçamentos e sombras do Catálogo 2.0 (r-button, r-card, r-pill, r-avatar, sp-tiny a sp-huge, shadow-card/modal/popover/tooltip) portados, preservando os nomes de variável já usados pelos componentes shadcn existentes.
+UX-DR31: Tokens semânticos de alerta (warn/err/suc/info) e de score (low/medium/good/excellent) do Catálogo 2.0 adicionados ao vocabulário de cores, para uso futuro em indicadores.
+UX-DR32: Tokens de badge (blue/gray/green/red/yellow) do Catálogo 2.0 adicionados como classes reutilizáveis para as pílulas de status já existentes (UX-DR26).
+UX-DR33: Componentes/páginas existentes migrados dos tokens antigos para os novos — troca visual 1:1, sem alterar nenhuma regra de negócio, rota ou comportamento.
+UX-DR34: Estrutura de navegação/layout de UX-DR24/25/26 (Epic 17) preservada integralmente — o Catálogo 2.0 só substitui a linguagem visual por baixo, não a arquitetura de informação.
+UX-DR35: Validação visual manual (antes/depois) do menu lateral, Catálogo, Pedidos e um formulário de cadastro, como critério de aceite antes de concluir o épico.
 
 ### FR Coverage Map
 
@@ -334,6 +343,10 @@ O stockflow adota o padrão visual aprovado pelos sócios (`referencias/modelo-t
 ### Epic 18: Período de teste de 14 dias, com bloqueio automático e liberação manual
 Toda Empresa real criada a partir de agora ganha 14 dias corridos de teste (herdados pelo Treinamento na criação); esgotado o prazo sem pagamento, a Empresa fica bloqueada por completo, com uma tela explicando o vencimento. Só o Dono da Plataforma estende ou isenta uma Empresa, pela tela que já existe. A integração de pagamento automático (Hotmart) fica para um Epic futuro. Pedido do usuário (2026-09-29).
 **FRs covered:** FR57
+
+### Epic 19: Catálogo 2.0 — Novo Sistema de Design
+Usuários do stockflow passam a ver a mesma linguagem visual já adotada nos demais sistemas internos da Ferreira Costa (projeto irmão FB_APU05 e futuros): cores, tipografia, espaçamentos, raios e sombras do "Catálogo 2.0 Design System" (Marlos, 2026-11-11). Nenhuma regra de negócio, rota ou fluxo muda — é 100% visual, preservando a arquitetura de navegação do Epic 17. Pedido do usuário (2026-11-12).
+**UX covered:** UX-DR27 a UX-DR35
 
 ## Epic 1: Autenticação e Gestão de Acesso
 
@@ -2614,3 +2627,112 @@ So that eu tenha uma válvula de escape manual até existir cobrança automátic
 **Given** qualquer papel diferente de Dono da Plataforma
 **When** chama `POST /api/plataforma/empresas/{id}/trial` (tela ou API direta)
 **Then** a resposta é 403
+
+## Epic 19: Catálogo 2.0 — Novo Sistema de Design
+
+Usuários do stockflow passam a ver a mesma linguagem visual já adotada nos demais sistemas internos da Ferreira Costa (projeto irmão FB_APU05 e futuros): cores, tipografia, espaçamentos, raios e sombras do "Catálogo 2.0 Design System" (Marlos, 2026-11-11). Nenhuma regra de negócio, rota ou fluxo muda — é 100% visual, preservando a arquitetura de navegação do Epic 17. Pedido do usuário (2026-11-12).
+
+### Story 19.1: Tokens base do Catálogo 2.0 no Tailwind v4
+
+As a usuário do stockflow,
+I want que a interface use as cores, tipografia, espaçamentos e sombras do Catálogo 2.0 Design System,
+So that eu veja a mesma identidade visual usada nos demais sistemas internos da Ferreira Costa.
+
+**Acceptance Criteria:**
+
+**Given** o `frontend/src/index.css` atual (tokens do DESIGN.md de 29/08)
+**When** os tokens de cor, tipografia, raio, espaçamento e sombra do Catálogo 2.0 são portados para a sintaxe `@theme` do Tailwind v4
+**Then** as variáveis shadcn existentes (`--color-primary`, `--color-accent`, `--color-destructive`, `--color-sidebar`, `--color-sidebar-item-active`, `--color-secondary`, `--color-border` etc.) mantêm os MESMOS nomes, só com valores novos (ex.: `--color-primary` passa a referenciar o verde `--green-150` como CTA principal, `--color-destructive` referencia `--brand-red`)
+**And** `npm run build` continua limpo
+
+**Given** a fonte Inter
+**When** a aplicação carrega
+**Then** ela é servida localmente via `@fontsource-variable/inter` (instalado em `frontend/package.json`, importado em `main.tsx`), sem nenhuma chamada a `fonts.googleapis.com`
+
+**Given** o `DESIGN.md` atual (`_bmad-output/planning-artifacts/ux-designs/ux-stockflow-2026-08-29/DESIGN.md`)
+**When** esta story é concluída
+**Then** um addendum documenta a origem dos novos tokens (Catálogo 2.0, Marlos, 2026-11-11, workspace Business/vermelho) e a tabela de mapeamento tokens-antigos → tokens-novos
+
+**Given** os tokens semânticos de alerta (warn/err/suc/info) e de score (low/medium/good/excellent) do Catálogo 2.0
+**When** esta story é concluída
+**Then** existem como variáveis `@theme` reutilizáveis, mesmo sem nenhum componente consumindo ainda (serão usados nas stories seguintes)
+
+### Story 19.2: Menu lateral e topo no novo padrão visual
+
+As a usuário do stockflow,
+I want que o menu lateral agrupado e o topo (Epic 17) usem as cores e tipografia do Catálogo 2.0,
+So that a navegação principal já reflita a nova identidade visual.
+
+**Acceptance Criteria:**
+
+**Given** o menu lateral azul-marinho atual (item ativo com barra vermelha FC de 3px)
+**When** esta story é concluída
+**Then** o menu usa os neutros do Catálogo 2.0 e a barra do item ativo usa `--brand-red`, sem mudar grupos/rotas/permissões do Epic 17
+
+**Given** o topo branco 56px (Treinamento, Ajuda, menu da conta)
+**When** esta story é concluída
+**Then** usa `t-label`/`t-body` e cores novas, mantendo os mesmos itens e comportamento
+
+**Given** o menu em gaveta no celular (☰)
+**When** esta story é concluída
+**Then** usa os mesmos tokens novos, preservando abrir/fechar por ☰/Esc/toque fora e retorno de foco (UX-DR16)
+
+### Story 19.3: Páginas de lista no novo padrão visual
+
+As a usuário do stockflow,
+I want que páginas de lista (Catálogo, Pedidos, Estoques, Usuários) usem indicadores, pílulas e tabela do Catálogo 2.0,
+So that a consulta do dia a dia já reflita a nova identidade visual.
+
+**Acceptance Criteria:**
+
+**Given** a faixa de indicadores (KPIs) de uma página de lista
+**When** esta story é concluída
+**Then** os cartões usam `bg-card`/`shadow-card` e tipografia `t-h2`/`t-body-secondary`, sem mudar números/cálculos exibidos (UX-DR25)
+
+**Given** uma pílula de status (ex. "Inativo", "Pendente")
+**When** esta story é concluída
+**Then** usa as cores de badge do Catálogo 2.0 (red/green/yellow conforme semântica já existente), mantendo texto e lógica de exibição (UX-DR26/UX-DR32)
+
+**Given** a tabela de 60px por linha (sem card, sem zebra)
+**When** esta story é concluída
+**Then** usa `t-table-th`/`t-table-td` e `--br-soft` como divisor, preservando colunas/ícone redondo/subtítulo já definidos (UX-DR26)
+
+### Story 19.4: Formulários e diálogos no novo padrão visual
+
+As a usuário do stockflow,
+I want que telas de cadastro/edição e diálogos de confirmação usem os tokens do Catálogo 2.0,
+So that toda interação de escrita reflita a nova identidade visual.
+
+**Acceptance Criteria:**
+
+**Given** um formulário de cadastro/edição (ex. Cadastrar Produto, Editar Produto)
+**When** esta story é concluída
+**Then** campos, labels e mensagens de erro usam `t-label`/`t-helper`/`t-error` e cores de campo (`--br-strong` para borda, `--err-tx` para erro), sem mudar validação ou comportamento de submit
+
+**Given** um diálogo de confirmação (ex. excluir, mesclar duplicatas)
+**When** esta story é concluída
+**Then** usa `--r-card` (raio) e `--shadow-modal`, preservando textos e ações existentes
+
+**Given** a tela de Importar planilha
+**When** esta story é concluída
+**Then** o relatório de criados/atualizados/rejeitados (UX-DR20) usa as cores semânticas (suc/err/warn) do Catálogo 2.0
+
+### Story 19.5: Validação visual final e limpeza
+
+As a responsável pelo projeto,
+I want conferir visualmente que a troca de sistema de design não quebrou nenhuma tela e que tokens antigos não usados foram removidos,
+So that o Epic 19 seja considerado concluído com segurança.
+
+**Acceptance Criteria:**
+
+**Given** as stories 19.1 a 19.4 concluídas
+**When** a validação visual é feita
+**Then** capturas de tela antes/depois do menu lateral, Catálogo, Pedidos e um formulário de cadastro são comparadas, sem nenhuma quebra de layout perceptível
+
+**Given** o `index.css` final
+**When** a limpeza é feita
+**Then** nenhum token do DESIGN.md antigo (29/08) que não seja mais referenciado por nenhum componente permanece no arquivo
+
+**Given** a suíte de testes do frontend
+**When** `npm test` roda após toda a migração
+**Then** todos os testes continuam passando

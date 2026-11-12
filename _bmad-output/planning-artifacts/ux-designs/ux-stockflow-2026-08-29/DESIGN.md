@@ -226,3 +226,42 @@ A pedido do usuário, com o Epic 17 no ar, as letras e as caixas da área de con
 | `touch-target-min` | 48px | 40px |
 
 No celular nada muda: o alvo de toque de 48px (UX-DR12) continua valendo para o uso em campo.
+
+## Addendum — Catálogo 2.0 (2026-11-12)
+
+Detalhes de escopo e critérios de aceite completos: `_bmad-output/implementation-artifacts/epic-19-context.md` e `_bmad-output/implementation-artifacts/spec-19-1-tokens-base-catalogo-2-0.md`.
+
+**Origem:** o stockflow usava cores próprias (este `DESIGN.md`, 29/08), diferentes do "Catálogo 2.0 Design System" (Marlos, 2026-11-11), já padronizado entre os sistemas internos da Ferreira Costa e adotado no projeto irmão FB_APU05. A Story 19.1 (Épico 19) porta os valores de cor do Catálogo 2.0 para dentro do bloco `@theme` do `frontend/src/index.css`, **mantendo os mesmos nomes de variável shadcn** já usados aqui neste documento (`{colors.primary}`, `{colors.destructive}` etc.) — só o valor hexadecimal muda. Fonte dos valores: `catalogo-tokens.css` do FB_APU05 (cópia local em `/home/claudio/projetos/FB_APU05/frontend/src/styles/catalogo-tokens.css`, idêntica à do servidor `hostinger-fc`).
+
+Tipografia (além da troca de fonte abaixo), raios, sombras e os tokens dedicados de badge/score do Catálogo 2.0 (`--badge-*`, `--score-*`) **não** entram nesta story — ficam para as stories seguintes do Épico 19 (ver `deferred-work.md`). As pílulas de status já existentes no app continuam herdando a nova cor através de `--color-text-on-tint-*` (que MUDA nesta story, junto com as demais cores). `--color-sidebar*` também não muda: o Catálogo 2.0 não define um token de sidebar escura equivalente (decisão da Story 19.2). Nenhum componente é tocado nesta story — só o valor dos tokens.
+
+**Tabela de mapeamento (nome shadcn do stockflow → novo valor → origem Catálogo 2.0):**
+
+| Variável | Novo valor | Origem (Catálogo 2.0) |
+|---|---|---|
+| `--color-primary` | `#68a439` | `--green-150` (CTA principal) |
+| `--color-primary-foreground` | `#ffffff` | — |
+| `--color-accent` | `#3d8bd4` | `--blue-d150` (acento secundário) |
+| `--color-accent-foreground` | `#ffffff` | — |
+| `--color-destructive` | `#e71c35` | `--brand-red` |
+| `--color-destructive-foreground` | `#ffffff` | — |
+| `--color-background` | `#f4f5f6` | `--bg-canvas` |
+| `--color-foreground` | `#252728` | `--fg-1` |
+| `--color-card` | `#ffffff` | `--bg-card` |
+| `--color-secondary` | `#e0f0ff` | `--blue-l850` (CTA secundário soft) |
+| `--color-secondary-foreground` | `#367bbb` | `--blue-d250` |
+| `--color-border` | `#e5e6e6` | `--br-soft` |
+| `--color-success` | `#17a74a` | `--suc-br` |
+| `--color-warning` | `#f2bd00` | `--warn-br` |
+| `--color-info` | `#48a4f9` | `--info-br` |
+| `--color-text-on-tint-success` | `#0d5c28` | `--suc-tx` |
+| `--color-text-on-tint-warning` | `#594600` | `--warn-tx` |
+| `--color-text-on-tint-info` | `#1a4a6b` | `--info-tx` |
+| `--color-text-on-tint-destructive` | `#960c23` | `--err-tx` |
+| `--color-muted` | `#f6f7f7` | `--bg-soft` |
+| `--color-muted-foreground` | `#5c5e62` | `--fg-helper` (valor direto, não mais `color-mix`) |
+| `--color-input` | `#d4d5d6` | `--br-strong` |
+| `--color-ring` | `#48a4f9` | `--blue` (foco) |
+| `--color-popover` / `-foreground` | inalterados (= card/foreground) | — |
+
+**Fonte:** `{typography.font-family}` passa a ser `'Inter Variable', 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif`, servida localmente via `@fontsource-variable/inter` (importado em `main.tsx`, antes de `index.css`) — nunca via Google Fonts ou CDN externo. Única mudança de tipografia desta story, por ser parte da troca de fonte.

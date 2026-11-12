@@ -2,6 +2,8 @@ import { StrictMode, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Toaster } from '@/components/ui/sonner';
 import { decidirEntrada } from '@/lib/entrada';
+import '@fontsource-variable/inter';
+import '@fontsource-variable/inter/wght-italic.css';
 import './index.css';
 
 /**

@@ -40,13 +40,10 @@ function estiloDoStatus(status: string): EstiloStatus {
         classe: 'bg-success/10 text-[color:var(--color-text-on-tint-success)]',
       };
     case 'parcialmente_aprovado':
-      // Tinta `info` (azul) — deliberadamente NÃO `accent`/`success`: no
-      // token set do DESIGN.md, --color-accent É literalmente igual a
-      // --color-success (#16a249); usar accent aqui seria visualmente
-      // idêntico a 'aprovado'. `info` é a única tinta ainda não usada por
-      // nenhum outro status de Pedido — garante "tinta/ícone distintos de
-      // aprovado/pendente" (spec-7-5) sem introduzir cor nova fora do
-      // DESIGN.md.
+      // Tinta `info` (azul) — deliberadamente NÃO `accent`/`success`: `info`
+      // é a única tinta ainda não usada por nenhum outro status de Pedido —
+      // garante "tinta/ícone distintos de aprovado/pendente" (spec-7-5) sem
+      // introduzir cor nova fora do DESIGN.md.
       return {
         rotulo: 'Parcialmente aprovado',
         Icone: SplitSquareHorizontal,
