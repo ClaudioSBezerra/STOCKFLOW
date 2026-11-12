@@ -384,21 +384,22 @@ func ListarPedidosProprios(db *sql.DB, empresaID string, usuarioID, filtroStatus
 		return nil, &ErroPedidoValidacao{Mensagem: "status inválido"}
 	}
 
-	// A subquery de contagem é escopada por `empresa_id` — sem isto ela
-	// reagrega `pedido_itens` de TODA a plataforma a cada chamada (o `JOIN`
-	// final por `pedido_id`, chave globalmente única, ainda casaria certo
-	// mesmo sem o escopo — não é vazamento de dado, é trabalho
-	// desperdiçado, proporcional ao volume de TODAS as Empresas, não só da
-	// que está consultando; Story 9.1 escopou o WHERE externo mas deixou
-	// esta agregação de fora). Reaproveita o mesmo placeholder $2.
+	// A contagem de itens é uma subquery CORRELACIONADA por `p.id` (correção
+	// 2026-11-12, investigação de lentidão em "Meus Pedidos"): a versão
+	// anterior agregava `pedido_itens` de TODA a Empresa numa subquery
+	// independente antes do JOIN — trabalho desperdiçado proporcional ao
+	// volume de pedidos de TODOS os usuários, não só do usuário consultando
+	// (nunca foi vazamento de dado, o JOIN por `pedido_id`, chave
+	// globalmente única, sempre casava certo). A forma correlacionada só
+	// conta os itens do PRÓPRIO pedido da linha, usa o mesmo índice da PK
+	// composta de `pedido_itens` (pedido_id, produto_id, estoque_id;
+	// migration 000026) e nunca precisa de `empresa_id` — `pedido_id` já
+	// identifica a linha sozinho.
 	q := `
 		SELECT p.id, p.usuario_id, p.solicitante, p.obra_centro_custo, p.observacao, p.status, p.criado_em,
-		       COALESCE(i.qtd, 0), cc.nome
+		       (SELECT count(*) FROM pedido_itens pi WHERE pi.pedido_id = p.id), cc.nome
 		FROM pedidos p
 		LEFT JOIN centros_custo cc ON cc.id = p.centro_custo_id AND cc.empresa_id = p.empresa_id
-		LEFT JOIN (
-			SELECT pedido_id, count(*) AS qtd FROM pedido_itens WHERE empresa_id = $2 GROUP BY pedido_id
-		) i ON i.pedido_id = p.id
 		WHERE p.usuario_id = $1 AND p.empresa_id = $2`
 	args := []any{usuarioID, empresaID}
 	if filtroStatus != "" {
