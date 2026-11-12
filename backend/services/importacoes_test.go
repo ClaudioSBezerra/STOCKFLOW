@@ -26,11 +26,13 @@ func categoriaNomePorCodigo(t *testing.T, db *sql.DB, codigo string) string {
 // CabecalhoEsperado) com as 5 dimensões e observações em branco — os testes
 // que precisam de uma dimensão preenchida sobrescrevem os índices
 // colComprimentoValor/colComprimentoUnidade (etc.) diretamente no slice
-// devolvido.
-func linhaBase(nome, codigo, categoria, quantidade, estoque string) []string {
+// devolvido. `codigoFornecedor` é a célula "Código" da planilha — grava em
+// `produtos.codigo_fornecedor`, nunca no `codigo` interno (sempre gerado
+// pelo servidor, correção de bug 2026-11-12).
+func linhaBase(nome, codigoFornecedor, categoria, quantidade, estoque string) []string {
 	linha := make([]string, numeroColunas)
 	linha[colNome] = nome
-	linha[colCodigo] = codigo
+	linha[colCodigo] = codigoFornecedor
 	linha[colCategoria] = categoria
 	linha[colQuantidade] = quantidade
 	linha[colEstoque] = estoque
@@ -116,13 +118,13 @@ func TestCriarImportacao_PrecoUnitario(t *testing.T) {
 	}
 
 	var precoSemID, precoComID sql.NullFloat64
-	if err := db.QueryRow(`SELECT preco_unitario FROM produtos WHERE codigo = 'SKU-PRECO-1'`).Scan(&precoSemID); err != nil {
+	if err := db.QueryRow(`SELECT preco_unitario FROM produtos WHERE codigo_fornecedor = 'SKU-PRECO-1'`).Scan(&precoSemID); err != nil {
 		t.Fatal(err)
 	}
 	if precoSemID.Valid {
 		t.Errorf("SKU-PRECO-1: preco_unitario = %v, want NULL", precoSemID)
 	}
-	if err := db.QueryRow(`SELECT preco_unitario FROM produtos WHERE codigo = 'SKU-PRECO-2'`).Scan(&precoComID); err != nil {
+	if err := db.QueryRow(`SELECT preco_unitario FROM produtos WHERE codigo_fornecedor = 'SKU-PRECO-2'`).Scan(&precoComID); err != nil {
 		t.Fatal(err)
 	}
 	if !precoComID.Valid || precoComID.Float64 != 1234.56 {
@@ -140,7 +142,7 @@ func TestCriarImportacao_PrecoUnitario(t *testing.T) {
 	if relatorioAtt.Rejeitados != 0 {
 		t.Fatalf("relatorio atualização = %+v, want Rejeitados=0", relatorioAtt)
 	}
-	if err := db.QueryRow(`SELECT preco_unitario FROM produtos WHERE codigo = 'SKU-PRECO-2'`).Scan(&precoComID); err != nil {
+	if err := db.QueryRow(`SELECT preco_unitario FROM produtos WHERE codigo_fornecedor = 'SKU-PRECO-2'`).Scan(&precoComID); err != nil {
 		t.Fatal(err)
 	}
 	if !precoComID.Valid || precoComID.Float64 != 9999.00 {
@@ -303,7 +305,7 @@ func TestCriarImportacao_EstoqueNovoReaproveitadoEntreLinhas(t *testing.T) {
 	rows, err := db.Query(`
 		SELECT DISTINCT pe.estoque_id FROM produto_estoque pe
 		JOIN produtos p ON p.id = pe.produto_id
-		WHERE p.codigo IN ('SKU-DB1', 'SKU-DB2')`)
+		WHERE p.codigo_fornecedor IN ('SKU-DB1', 'SKU-DB2')`)
 	if err != nil {
 		t.Fatalf("query estoque_id: %v", err)
 	}
@@ -669,7 +671,7 @@ func TestCriarImportacao_QuantidadeInvalidaOuNaoFinita(t *testing.T) {
 	}
 	var quantidadeGravada float64
 	if err := db.QueryRow(
-		`SELECT pe.quantidade FROM produto_estoque pe JOIN produtos p ON p.id = pe.produto_id WHERE p.codigo = 'SKU-QOK'`,
+		`SELECT pe.quantidade FROM produto_estoque pe JOIN produtos p ON p.id = pe.produto_id WHERE p.codigo_fornecedor = 'SKU-QOK'`,
 	).Scan(&quantidadeGravada); err != nil {
 		t.Fatalf("buscar quantidade gravada: %v", err)
 	}
@@ -701,7 +703,7 @@ func TestContinuarImportacao_IDInexistente(t *testing.T) {
 // `importacao_linhas`, todas `pendente`, DIRETO via SQL — sem passar por
 // CriarImportacao, que processaria tudo sincronamente sozinho e não deixaria
 // nada pendente para um teste de concorrência disputar. Cada linha é válida
-// (mesma categoria/estoque para todas) e tem um `codigo` único
+// (mesma categoria/estoque para todas) e tem um `codigo_fornecedor` único
 // (`SKU-CONC-<i>`) para que o teste possa depois contar Produtos por padrão
 // de código sem ambiguidade.
 //
@@ -845,9 +847,9 @@ func TestContinuarImportacao_ConcorrenciaSemDuplicarProcessamento(t *testing.T) 
 
 	// Nenhum Produto duplicado: exatamente 1 por numero_linha. Duas
 	// goroutines processando a MESMA linha produziriam 2 Produtos para o
-	// mesmo `codigo` — o que esta contagem pegaria.
+	// mesmo `codigo_fornecedor` — o que esta contagem pegaria.
 	var produtosCriados int
-	if err := db.QueryRow(`SELECT count(*) FROM produtos WHERE codigo LIKE 'SKU-CONC-%'`).Scan(&produtosCriados); err != nil {
+	if err := db.QueryRow(`SELECT count(*) FROM produtos WHERE codigo_fornecedor LIKE 'SKU-CONC-%'`).Scan(&produtosCriados); err != nil {
 		t.Fatalf("count produtos: %v", err)
 	}
 	if produtosCriados != totalLinhas {
@@ -855,12 +857,12 @@ func TestContinuarImportacao_ConcorrenciaSemDuplicarProcessamento(t *testing.T) 
 			"(ou nenhuma vez) por duas chamadas concorrentes", produtosCriados, totalLinhas)
 	}
 
-	// Reforço final e mais direto ainda: cada `codigo` semeado corresponde a
-	// EXATAMENTE um produto_id em produto_estoque, nunca dois.
+	// Reforço final e mais direto ainda: cada `codigo_fornecedor` semeado
+	// corresponde a EXATAMENTE um produto_id em produto_estoque, nunca dois.
 	var codigosComMaisDeUmProduto int
 	if err := db.QueryRow(`
 		SELECT count(*) FROM (
-			SELECT codigo FROM produtos WHERE codigo LIKE 'SKU-CONC-%' GROUP BY codigo HAVING count(*) > 1
+			SELECT codigo_fornecedor FROM produtos WHERE codigo_fornecedor LIKE 'SKU-CONC-%' GROUP BY codigo_fornecedor HAVING count(*) > 1
 		) duplicados`,
 	).Scan(&codigosComMaisDeUmProduto); err != nil {
 		t.Fatalf("count códigos duplicados: %v", err)
@@ -888,10 +890,11 @@ func TestCriarImportacao_CodigoExistente_AtualizaEmVezDeCriar(t *testing.T) {
 	}
 
 	produtoExistente, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida: "un",
-		Nome:          "Produto Nome Antigo",
-		CategoriaID:   categoriaAntiga,
-		TemplateID:    templateGenericoID(t, db, empresaTeste),
+		UnidadeMedida:    "un",
+		Nome:             "Produto Nome Antigo",
+		CategoriaID:      categoriaAntiga,
+		TemplateID:       templateGenericoID(t, db, empresaTeste),
+		CodigoFornecedor: "FORN-ATUALIZA-1",
 	}, estoque.ID, 10)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
@@ -899,7 +902,7 @@ func TestCriarImportacao_CodigoExistente_AtualizaEmVezDeCriar(t *testing.T) {
 
 	linhas := [][]string{
 		CabecalhoEsperado,
-		linhaBase("Produto Nome Novo", produtoExistente.Codigo, categoriaNova, "3", estoque.Nome),
+		linhaBase("Produto Nome Novo", "FORN-ATUALIZA-1", categoriaNova, "3", estoque.Nome),
 	}
 	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
 	if err != nil {
@@ -1003,10 +1006,11 @@ func TestCriarImportacao_CodigoExistente_TemplateNomeInvalido_Rejeitada(t *testi
 	templateID, _ := templatePorSubtipo(t, db, "Tubo — PEAD/PPR")
 
 	produtoExistente, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida: "un",
-		Nome:          "TUBO PEAD PN80 DN50",
-		CategoriaID:   categoriaID,
-		TemplateID:    templateID,
+		UnidadeMedida:    "un",
+		Nome:             "TUBO PEAD PN80 DN50",
+		CategoriaID:      categoriaID,
+		TemplateID:       templateID,
+		CodigoFornecedor: "FORN-TEMPLATE-INVALIDO-1",
 	}, estoque.ID, 1)
 	if err != nil {
 		t.Fatalf("seed CriarProduto com template: %v", err)
@@ -1014,7 +1018,7 @@ func TestCriarImportacao_CodigoExistente_TemplateNomeInvalido_Rejeitada(t *testi
 
 	linhas := [][]string{
 		CabecalhoEsperado,
-		linhaBase("Nome Fora Do Formato", produtoExistente.Codigo, categoriaNome, "1", estoque.Nome),
+		linhaBase("Nome Fora Do Formato", "FORN-TEMPLATE-INVALIDO-1", categoriaNome, "1", estoque.Nome),
 	}
 	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
 	if err != nil {
@@ -1163,10 +1167,11 @@ func TestCriarImportacao_CodigoExistente_NovoEstoque_ParExistenteIntacto(t *test
 	}
 
 	produtoExistente, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida: "un",
-		Nome:          "Produto Multi Estoque",
-		CategoriaID:   categoriaID,
-		TemplateID:    templateGenericoID(t, db, empresaTeste),
+		UnidadeMedida:    "un",
+		Nome:             "Produto Multi Estoque",
+		CategoriaID:      categoriaID,
+		TemplateID:       templateGenericoID(t, db, empresaTeste),
+		CodigoFornecedor: "FORN-MULTI-ESTOQUE-1",
 	}, estoqueOriginal.ID, 5)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
@@ -1174,7 +1179,7 @@ func TestCriarImportacao_CodigoExistente_NovoEstoque_ParExistenteIntacto(t *test
 
 	linhas := [][]string{
 		CabecalhoEsperado,
-		linhaBase("Produto Multi Estoque", produtoExistente.Codigo, categoriaNome, "7", "Canteiro Estoque Novo"),
+		linhaBase("Produto Multi Estoque", "FORN-MULTI-ESTOQUE-1", categoriaNome, "7", "Canteiro Estoque Novo"),
 	}
 	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
 	if err != nil {
@@ -1241,10 +1246,11 @@ func TestCriarImportacao_CodigoExistente_EstoqueInvalido_NaoAlteraProduto(t *tes
 	}
 
 	produtoExistente, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
-		UnidadeMedida: "un",
-		Nome:          "Produto Nome Original",
-		CategoriaID:   categoriaID,
-		TemplateID:    templateGenericoID(t, db, empresaTeste),
+		UnidadeMedida:    "un",
+		Nome:             "Produto Nome Original",
+		CategoriaID:      categoriaID,
+		TemplateID:       templateGenericoID(t, db, empresaTeste),
+		CodigoFornecedor: "FORN-ESTOQUE-INVALIDO-1",
 	}, estoqueOriginal.ID, 4)
 	if err != nil {
 		t.Fatalf("seed CriarProduto: %v", err)
@@ -1252,10 +1258,10 @@ func TestCriarImportacao_CodigoExistente_EstoqueInvalido_NaoAlteraProduto(t *tes
 
 	// Estoque vazio (após trim) -> ErrEstoqueValidacao dentro de
 	// processarLinhaDeAtualizacao — a linha deve ser rejeitada SEM alterar o
-	// Produto encontrado por código.
+	// Produto encontrado por código do fornecedor.
 	linhas := [][]string{
 		CabecalhoEsperado,
-		linhaBase("Produto Nome Diferente", produtoExistente.Codigo, categoriaNome, "9", "   "),
+		linhaBase("Produto Nome Diferente", "FORN-ESTOQUE-INVALIDO-1", categoriaNome, "9", "   "),
 	}
 	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
 	if err != nil {
@@ -1393,7 +1399,7 @@ func TestContinuarImportacao_CorridaMesmoCodigoNovo_SemErroNemDuplicar(t *testin
 	}
 
 	var nProdutos int
-	if err := db.QueryRow(`SELECT count(*) FROM produtos WHERE codigo = $1`, codigoDisputado).Scan(&nProdutos); err != nil {
+	if err := db.QueryRow(`SELECT count(*) FROM produtos WHERE codigo_fornecedor = $1`, codigoDisputado).Scan(&nProdutos); err != nil {
 		t.Fatalf("count produtos: %v", err)
 	}
 	if nProdutos != 1 {
@@ -1418,11 +1424,12 @@ func TestCriarImportacao_EmpresaSemFilial_EstoqueNovoRejeitado(t *testing.T) {
 	if err := db.QueryRow(`INSERT INTO estoques (nome, empresa_id) VALUES ('Legado Sem Filial', $1) RETURNING id`, emp.ID).Scan(&legadoID); err != nil {
 		t.Fatalf("seed estoque legado: %v", err)
 	}
-	existente, err := criarProdutoComSaldo(db, emp.ID, CriarProdutoInput{
-		UnidadeMedida: "un",
-		Nome:          "Produto Existente Sem Filial",
-		CategoriaID:   categoriaID,
-		TemplateID:    templateGenericoID(t, db, emp.ID),
+	_, err := criarProdutoComSaldo(db, emp.ID, CriarProdutoInput{
+		UnidadeMedida:    "un",
+		Nome:             "Produto Existente Sem Filial",
+		CategoriaID:      categoriaID,
+		TemplateID:       templateGenericoID(t, db, emp.ID),
+		CodigoFornecedor: "FORN-SEM-FILIAL-1",
 	}, legadoID, 4)
 	if err != nil {
 		t.Fatalf("seed produto: %v", err)
@@ -1432,8 +1439,8 @@ func TestCriarImportacao_EmpresaSemFilial_EstoqueNovoRejeitado(t *testing.T) {
 		CabecalhoEsperado,
 		// create: código novo + Estoque novo.
 		linhaBase("Produto Novo Sem Filial", "SKU-SEM-FILIAL", categoria, "2", "Estoque Novo Sem Filial"),
-		// update: Produto existente por código + Estoque novo.
-		linhaBase("Produto Existente Sem Filial", existente.Codigo, categoria, "3", "Estoque Novo Sem Filial"),
+		// update: Produto existente por código do fornecedor + Estoque novo.
+		linhaBase("Produto Existente Sem Filial", "FORN-SEM-FILIAL-1", categoria, "3", "Estoque Novo Sem Filial"),
 	}
 	importacao, relatorio, err := CriarImportacao(db, emp.ID, criadoPor, "planilha.xlsx", linhas)
 	if err != nil {
@@ -1456,7 +1463,167 @@ func TestCriarImportacao_EmpresaSemFilial_EstoqueNovoRejeitado(t *testing.T) {
 	if n := contar(t, db, `SELECT count(*) FROM estoques WHERE empresa_id = $1`, emp.ID); n != 1 {
 		t.Errorf("estoques da Empresa = %d, want 1 (só o legado; nenhum gravado pela importação)", n)
 	}
-	if n := contar(t, db, `SELECT count(*) FROM produtos WHERE empresa_id = $1 AND codigo = 'SKU-SEM-FILIAL'`, emp.ID); n != 0 {
+	if n := contar(t, db, `SELECT count(*) FROM produtos WHERE empresa_id = $1 AND codigo_fornecedor = 'SKU-SEM-FILIAL'`, emp.ID); n != 0 {
 		t.Errorf("produto da linha rejeitada gravado: %d", n)
+	}
+}
+
+// TestCriarImportacao_GeraCodigoInternoETemplateGenerico prova a correção do
+// bug (feedback real, Ferreira Costa, 2026-11-12): todo Produto criado pela
+// importação ganha um `codigo` interno sequencial (igual ao cadastro
+// manual, nunca NULL) e o template "Genérico" da Empresa — o valor da célula
+// "Código" da planilha vai para `codigo_fornecedor`, nunca mais para
+// `codigo`.
+func TestCriarImportacao_GeraCodigoInternoETemplateGenerico(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	criadoPor := criarUsuarioImportacao(t, db, "importacao-codigo-interno@empresa.com")
+	categoria := categoriaNomePorCodigo(t, db, "04.001")
+
+	linhas := [][]string{
+		CabecalhoEsperado,
+		linhaBase("Produto Codigo Interno Legado", "B.1.02.C009", categoria, "1", "Canteiro Codigo Interno"),
+	}
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
+	if err != nil {
+		t.Fatalf("CriarImportacao erro inesperado: %v", err)
+	}
+	if relatorio.Criados != 1 {
+		t.Fatalf("Criados = %d, want 1", relatorio.Criados)
+	}
+
+	var codigo, codigoFornecedor sql.NullString
+	var templateID sql.NullString
+	if err := db.QueryRow(
+		`SELECT codigo, codigo_fornecedor, template_id FROM produtos WHERE nome = $1 AND empresa_id = $2`,
+		"Produto Codigo Interno Legado", empresaTeste,
+	).Scan(&codigo, &codigoFornecedor, &templateID); err != nil {
+		t.Fatalf("buscar produto criado: %v", err)
+	}
+	if !codigo.Valid || len(codigo.String) != 6 {
+		t.Errorf("codigo = %+v, want sequencial de 6 dígitos gerado pelo servidor (bug: planilha com código gravava o valor da planilha direto em `codigo`)", codigo)
+	}
+	if codigo.String == "B.1.02.C009" {
+		t.Errorf("codigo = %q, want o sequencial interno, nunca o valor literal da planilha", codigo.String)
+	}
+	if !codigoFornecedor.Valid || codigoFornecedor.String != "B.1.02.C009" {
+		t.Errorf("codigo_fornecedor = %+v, want %q (valor da célula \"Código\" da planilha)", codigoFornecedor, "B.1.02.C009")
+	}
+	if !templateID.Valid {
+		t.Error("template_id = NULL, want o template Genérico da Empresa (importação é um caminho de cadastro, mesma regra do manual)")
+	} else if generico := templateGenericoID(t, db, empresaTeste); templateID.String != generico {
+		t.Errorf("template_id = %q, want o Genérico (%q)", templateID.String, generico)
+	}
+}
+
+// TestCriarImportacao_CelulaCodigoVazia_GeraCodigoInternoSemCodigoFornecedor
+// prova o subcaso "célula vazia" da mesma correção: o Produto ainda ganha
+// `codigo` sequencial (nunca NULL) e `codigo_fornecedor` fica NULL — nunca
+// confundido com o literal vazio.
+func TestCriarImportacao_CelulaCodigoVazia_GeraCodigoInternoSemCodigoFornecedor(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	criadoPor := criarUsuarioImportacao(t, db, "importacao-sem-codigo-fornecedor@empresa.com")
+	categoria := categoriaNomePorCodigo(t, db, "04.001")
+
+	linhas := [][]string{
+		CabecalhoEsperado,
+		linhaBase("Produto Sem Codigo Planilha Nenhum", "", categoria, "1", "Canteiro Sem Codigo Fornecedor"),
+	}
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
+	if err != nil {
+		t.Fatalf("CriarImportacao erro inesperado: %v", err)
+	}
+	if relatorio.Criados != 1 {
+		t.Fatalf("Criados = %d, want 1", relatorio.Criados)
+	}
+
+	var codigo, codigoFornecedor sql.NullString
+	if err := db.QueryRow(
+		`SELECT codigo, codigo_fornecedor FROM produtos WHERE nome = $1 AND empresa_id = $2`,
+		"Produto Sem Codigo Planilha Nenhum", empresaTeste,
+	).Scan(&codigo, &codigoFornecedor); err != nil {
+		t.Fatalf("buscar produto criado: %v", err)
+	}
+	if !codigo.Valid || codigo.String == "" {
+		t.Fatalf("codigo = %+v, want sequencial não-nulo (bug: planilha sem código gravava codigo = NULL)", codigo)
+	}
+	if len(codigo.String) != 6 {
+		t.Errorf("codigo = %q, want 6 dígitos (mesmo formato de zero-padding de proximoCodigoProduto)", codigo.String)
+	}
+	if codigoFornecedor.Valid {
+		t.Errorf("codigo_fornecedor = %q, want NULL (célula vazia na planilha)", codigoFornecedor.String)
+	}
+}
+
+// TestContinuarImportacao_CorridaCodigoFornecedorRepetido_UmaCriaDemaisAtualizam
+// prova que o `pg_advisory_xact_lock` por (empresa, código do fornecedor)
+// restaura, para a chave nova, a MESMA garantia que `idx_produtos_codigo`
+// dava à chave antiga: N linhas da MESMA leva repetindo o MESMO código do
+// fornecedor (ainda inexistente), reivindicadas por chamadas concorrentes de
+// ContinuarImportacao, nunca produzem mais de um Produto — mesmo sem nenhum
+// índice único em `codigo_fornecedor` (Story 10.3).
+func TestContinuarImportacao_CorridaCodigoFornecedorRepetido_UmaCriaDemaisAtualizam(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	criadoPor := criarUsuarioImportacao(t, db, "importacao-corrida-codigo-fornecedor@empresa.com")
+	categoria := categoriaNomePorCodigo(t, db, "04.001")
+
+	const totalLinhas = 20
+	const codigoFornecedorDisputado = "FORN-CORRIDA-REPETIDO"
+
+	var importacaoID string
+	const insertImportacao = `
+		INSERT INTO importacoes (nome_arquivo, total_linhas, criado_por, empresa_id)
+		VALUES ($1, $2, $3, $4) RETURNING id`
+	if err := db.QueryRow(insertImportacao, "planilha-corrida-fornecedor.xlsx", totalLinhas, criadoPor, empresaTeste).Scan(&importacaoID); err != nil {
+		t.Fatalf("seed importacoes: %v", err)
+	}
+	for i := 0; i < totalLinhas; i++ {
+		linha := linhaBase(
+			fmt.Sprintf("Produto Corrida Fornecedor %d", i),
+			codigoFornecedorDisputado, categoria, "1", "Canteiro Corrida Fornecedor",
+		)
+		dadosJSON, err := json.Marshal(linha)
+		if err != nil {
+			t.Fatalf("marshal linha %d: %v", i, err)
+		}
+		numeroLinha := i + 2
+		const insertLinha = `
+			INSERT INTO importacao_linhas (importacao_id, numero_linha, dados)
+			VALUES ($1, $2, $3)`
+		if _, err := db.Exec(insertLinha, importacaoID, numeroLinha, dadosJSON); err != nil {
+			t.Fatalf("seed importacao_linhas (numero_linha=%d): %v", numeroLinha, err)
+		}
+	}
+
+	const numeroDeChamadasConcorrentes = 4
+	var wg sync.WaitGroup
+	erros := make([]error, numeroDeChamadasConcorrentes)
+	for i := 0; i < numeroDeChamadasConcorrentes; i++ {
+		wg.Add(1)
+		go func(indice int) {
+			defer wg.Done()
+			_, _, err := ContinuarImportacao(db, empresaTeste, importacaoID)
+			erros[indice] = err
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range erros {
+		if err != nil {
+			t.Fatalf("chamada concorrente %d: ContinuarImportacao erro inesperado: %v", i, err)
+		}
+	}
+
+	var nProdutos int
+	if err := db.QueryRow(`SELECT count(*) FROM produtos WHERE codigo_fornecedor = $1`, codigoFornecedorDisputado).Scan(&nProdutos); err != nil {
+		t.Fatalf("count produtos: %v", err)
+	}
+	if nProdutos != 1 {
+		t.Errorf("produtos com código do fornecedor %q = %d, want 1 (nenhuma duplicata mesmo sob corrida concorrente, campo sem índice único)", codigoFornecedorDisputado, nProdutos)
 	}
 }

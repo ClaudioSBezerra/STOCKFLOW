@@ -18,8 +18,23 @@ import (
 // mesmo pacote `services`, `validarDimensao`/`unidadesDimensaoValidas`/
 // `limiteNumeric103`/`limiteNumeric103Texto`/`nomeValidoParaTemplate`
 // (produtos.go/nomenclatura.go) e `pqInvalidTextRepresentation`/
-// `ErrEstoqueValidacao` (estoques.go) — nenhum dos três arquivos é alterado
-// por esta story além do branch de unicidade em produtos.go/CriarProduto.
+// `ErrEstoqueValidacao` (estoques.go).
+//
+// CORREÇÃO DE BUG (2026-11-12, feedback real — Ferreira Costa importou um
+// catálogo inteiro e nenhum Produto ganhou código interno): a célula
+// "Código" da planilha NUNCA mais vira `produtos.codigo` diretamente — esse
+// campo é, a partir de agora, SEMPRE gerado pelo servidor via
+// `proximoCodigoProduto` (produtos.go), exatamente como o cadastro manual
+// (`CriarProduto`). O valor que a planilha traz (código legado/do fornecedor,
+// ex. "B.1.02.C009") vai para `codigo_fornecedor` — campo já existente
+// (Story 10.3), nunca usado pela importação até aqui. O match de
+// reimportação (Story 3.4, FR-11) passa a ser por `codigo_fornecedor`, não
+// por `codigo`: o contrato do FR-11 sempre foi "bate exatamente com o valor
+// armazenado", nunca exigiu que esse valor fosse sequencial. Todo Produto
+// criado pela importação também ganha `template_id` do template "Genérico"
+// da Empresa (`buscarTemplateGenericoID`) — mesma obrigatoriedade que
+// `CriarProduto` já aplica ao cadastro manual (Story 10.1, AC2); antes desta
+// correção a importação era o único caminho de cadastro sem template.
 //
 // `pqForeignKeyViolation` (estoques.go/produtos.go) NÃO é referenciada aqui,
 // de propósito: `categoria_id` é resolvido por SELECT e `estoque_id` por
@@ -29,22 +44,24 @@ import (
 // transação, então uma violação de FK nesse ponto não é um caminho
 // praticamente alcançável (viraria erro de infraestrutura genérico via
 // `%w`, não um caso dedicado). O `UPDATE produtos` do ramo de atualização
-// também não pode violar `idx_produtos_codigo` (migration 000017): o Produto
-// encontrado já É o dono daquele `código` (é assim que foi encontrado), então
-// `codigo` sempre volta gravado com o mesmo valor que já tinha.
+// também não pode violar `idx_produtos_codigo` (migration 000017): o
+// `codigo` interno do Produto encontrado nunca é tocado pela atualização
+// (só `codigo_fornecedor` é sobrescrito).
 //
-// `pqUniqueViolation` (auth.go) JÁ É referenciada aqui, também de propósito
-// (review pass pós-implementação): o caminho de CRIAÇÃO de
-// processarProximaLinha pode perder uma corrida contra outra transação
-// concorrente inserindo o MESMO código novo (duas linhas da mesma leva
-// disputando um código ainda inexistente, cada uma reivindicada por uma
-// chamada concorrente de continuar — `FOR UPDATE SKIP LOCKED` deixa as duas
-// avançarem). A segunda a tentar `INSERT INTO produtos` esbarra em
-// `idx_produtos_codigo`; em vez de abortar a linha inteira como erro de
-// infraestrutura, um `SAVEPOINT` antes do INSERT permite recuperar a
-// transação (`ROLLBACK TO SAVEPOINT`) e delegar essa linha para o mesmo
-// caminho de atualização que um match por código bem-sucedido usaria — ver
-// o comentário do SAVEPOINT em processarProximaLinha.
+// `pqUniqueViolation` (auth.go) JÁ É referenciada aqui, também de propósito:
+// o caminho de CRIAÇÃO de processarProximaLinha pode perder uma corrida
+// contra outra transação concorrente que gerou o MESMO código sequencial
+// (duas linhas, cada uma reivindicada por uma chamada concorrente de
+// continuar — `FOR UPDATE SKIP LOCKED` deixa as duas avançarem; o `UPDATE`
+// em `contadores_produto` dentro de `proximoCodigoProduto` serializa a
+// maioria dos casos via lock de linha, mas a janela entre esse UPDATE e o
+// COMMIT do INSERT ainda permite uma colisão rara). Em vez de abortar a
+// linha inteira como erro de infraestrutura, um `SAVEPOINT` antes de cada
+// tentativa permite desfazer só o avanço do contador + o INSERT que falhou e
+// tentar de novo (até um limite) — nunca delega para o caminho de
+// atualização: uma colisão de código AUTO-GERADO nunca significa "mesmo
+// Produto", só azar de concorrência (ver o comentário do SAVEPOINT em
+// processarProximaLinha).
 //
 // O cabeçalho fixo da planilha É VALIDADO PELO HANDLER
 // (handlers/importacoes.go), não aqui: `CriarImportacao` assume `linhas[0]`
@@ -527,15 +544,34 @@ func processarProximaLinha(db *sql.DB, empresaID string, importacaoID string) (b
 		return false, fmt.Errorf("falha ao resolver categoria da linha %d: %w", numeroLinha, err)
 	}
 
-	// Match por código (Story 3.4, FR-11): só quando a linha traz um código
-	// não-vazio — vazio sempre segue para o caminho de criação abaixo, sem
-	// nenhuma busca (nunca casa por `nome`). `codigo = $1` é determinístico
-	// graças ao índice único parcial `idx_produtos_codigo` (migration
-	// 000017): no máximo uma linha em `produtos` pode ter esse `código`.
-	if validada.codigo.Valid {
-		produtoExistenteID, produtoExistenteTemplateID, produtoInativo, encontrado, err := buscarProdutoPorCodigo(tx, empresaID, validada.codigo.String)
+	// Match por código do fornecedor (Story 3.4, FR-11; redesenhado nesta
+	// correção de bug — o `codigo` interno agora é sempre gerado pelo
+	// servidor, nunca mais vem da planilha): só quando a linha traz um
+	// código do fornecedor não-vazio — vazio sempre segue para o caminho de
+	// criação abaixo, sem nenhuma busca (nunca casa por `nome`).
+	if validada.codigoFornecedor.Valid {
+		// `codigo_fornecedor` não tem índice único (Story 10.3) — diferente
+		// de `codigo` (que tinha `idx_produtos_codigo`, migration 000017),
+		// nada no banco serializa duas transações concorrentes decidindo,
+		// ao mesmo tempo, "nenhum Produto ainda com este código do
+		// fornecedor" para o MESMO valor (ex. duas linhas da mesma leva
+		// repetindo o mesmo "Código" da planilha, cada uma reivindicada por
+		// uma chamada concorrente de continuar). Sem serialização, as duas
+		// cairiam no caminho de criação e gerariam dois Produtos distintos
+		// com o mesmo código do fornecedor — exatamente a duplicata que o
+		// FR-11 existe para evitar. `pg_advisory_xact_lock` trava só por
+		// (empresa, código do fornecedor), dura a transação inteira e libera
+		// sozinho no commit/rollback: a segunda transação bloqueia aqui até
+		// a primeira commitar, e então enxerga (READ COMMITTED) o Produto
+		// que ela acabou de criar, seguindo para o ramo de atualização.
+		const travarCodigoFornecedor = `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`
+		if _, err := tx.Exec(travarCodigoFornecedor, empresaID+":"+validada.codigoFornecedor.String); err != nil {
+			return false, fmt.Errorf("falha ao travar código do fornecedor da linha %d: %w", numeroLinha, err)
+		}
+
+		produtoExistenteID, produtoExistenteTemplateID, produtoInativo, encontrado, err := buscarProdutoPorCodigoFornecedor(tx, empresaID, validada.codigoFornecedor.String)
 		if err != nil {
-			return false, fmt.Errorf("falha ao buscar produto existente por código da linha %d: %w", numeroLinha, err)
+			return false, fmt.Errorf("falha ao buscar produto existente por código do fornecedor da linha %d: %w", numeroLinha, err)
 		}
 		if encontrado {
 			if produtoInativo {
@@ -553,9 +589,14 @@ func processarProximaLinha(db *sql.DB, empresaID string, importacaoID string) (b
 		return false, fmt.Errorf("falha ao encontrar/criar estoque da linha %d: %w", numeroLinha, err)
 	}
 
+	templateID, err := buscarTemplateGenericoID(tx, empresaID)
+	if err != nil {
+		return false, fmt.Errorf("falha ao resolver template genérico da linha %d: %w", numeroLinha, err)
+	}
+
 	const insertProduto = `
 		INSERT INTO produtos (
-			nome, codigo, categoria_id, observacoes,
+			nome, codigo, codigo_fornecedor, categoria_id, template_id, observacoes,
 			comprimento_valor, comprimento_unidade,
 			largura_valor, largura_unidade,
 			diametro_valor, diametro_unidade,
@@ -563,62 +604,58 @@ func processarProximaLinha(db *sql.DB, empresaID string, importacaoID string) (b
 			espessura_valor, espessura_unidade,
 			preco_unitario,
 			empresa_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 		RETURNING id`
-	// SAVEPOINT antes do INSERT (Story 3.4, review pass): protege contra a
-	// corrida "duas linhas da mesma leva com o mesmo código NOVO, processadas
-	// por duas transações concorrentes" (ex. duas chamadas sobrepostas de
-	// POST /api/importacoes/{id}/continuar — FOR UPDATE SKIP LOCKED deixa
-	// cada uma reivindicar uma linha diferente). As duas fazem o match por
-	// código acima (linha ~508) e as duas erram (nenhuma commitou ainda), daí
-	// as duas caem neste caminho de criação; a segunda a chegar aqui esbarra
-	// em `idx_produtos_codigo` (migration 000017) ao tentar commitar o mesmo
-	// código. Sem SAVEPOINT, um erro de instrução deixa a transação INTEIRA
-	// "aborted" no Postgres — nenhum outro comando funciona depois disso,
-	// nem o re-SELECT que resolveria a corrida. `ROLLBACK TO SAVEPOINT`
-	// desfaz só o INSERT que falhou, devolvendo a transação a um estado
-	// utilizável para buscar o Produto que a transação vencedora acabou de
-	// commitar (agora visível) e delegar para o ramo de atualização — mesmo
-	// Produto, sem duplicar e sem abortar a linha inteira como erro de
-	// infraestrutura (mesma ideia do "duas instruções separadas" de
-	// encontrarOuCriarEstoque, adaptada aqui com SAVEPOINT porque a segunda
-	// instrução aqui precisa rodar DENTRO da mesma transação já iniciada).
-	if _, err := tx.Exec(`SAVEPOINT sp_insert_produto`); err != nil {
-		return false, fmt.Errorf("falha ao criar savepoint antes de inserir produto da linha %d: %w", numeroLinha, err)
-	}
+	// O código interno é SEMPRE gerado pelo servidor (proximoCodigoProduto),
+	// nunca aceito da planilha (correção de bug 2026-11-12 — ver o comentário
+	// no topo do arquivo). Colisão no índice único de `codigo` é rara (o
+	// UPDATE em `contadores_produto` dentro de proximoCodigoProduto serializa
+	// a maior parte da concorrência via lock de linha, mesma garantia de
+	// CriarProduto), mas ainda possível na janela entre esse UPDATE e o
+	// COMMIT do INSERT — até `maxTentativasCodigoImportacao` tentativas,
+	// mesma margem de CriarProduto (produtos.go). `SAVEPOINT` antes de CADA
+	// tentativa (não só antes do INSERT): um `ROLLBACK TO SAVEPOINT` precisa
+	// desfazer tanto o avanço do contador quanto o INSERT que falhou, para
+	// que a tentativa seguinte releia o contador já avançado pela transação
+	// vencedora. Diferente da versão anterior desta função, uma colisão AQUI
+	// nunca delega para processarLinhaDeAtualizacao — os dois Produtos não
+	// têm nenhuma relação entre si, só azar de concorrência.
+	const maxTentativasCodigoImportacao = 3
 	var produtoID string
-	err = tx.QueryRow(insertProduto,
-		validada.nome, validada.codigo, categoriaID, validada.observacoes,
-		validada.comprimentoValor, validada.comprimentoUnidade,
-		validada.larguraValor, validada.larguraUnidade,
-		validada.diametroValor, validada.diametroUnidade,
-		validada.alturaValor, validada.alturaUnidade,
-		validada.espessuraValor, validada.espessuraUnidade,
-		validada.precoUnitario,
-		empresaID,
-	).Scan(&produtoID)
-	if err != nil {
-		var pqErr *pq.Error
-		if errors.As(err, &pqErr) && pqErr.Code == pqUniqueViolation {
-			if _, errRollback := tx.Exec(`ROLLBACK TO SAVEPOINT sp_insert_produto`); errRollback != nil {
-				return false, fmt.Errorf("falha ao reverter savepoint da linha %d: %w", numeroLinha, errRollback)
-			}
-			produtoExistenteID, produtoExistenteTemplateID, produtoInativo, encontrado, errBusca := buscarProdutoPorCodigo(tx, empresaID, validada.codigo.String)
-			if errBusca != nil {
-				return false, fmt.Errorf("falha ao buscar produto após corrida de código na linha %d: %w", numeroLinha, errBusca)
-			}
-			if !encontrado {
-				// Inalcançável na prática: a própria violação de unicidade
-				// prova que já existe uma linha commitada com esse código.
-				// Defesa em profundidade contra um estado inconsistente.
-				return false, fmt.Errorf("violação de unicidade de código na linha %d, mas produto não encontrado na re-busca", numeroLinha)
-			}
-			if produtoInativo {
-				return true, rejeitarECommitar(tx, linhaID, numeroLinha, motivoProdutoInativoImportacao)
-			}
-			return processarLinhaDeAtualizacao(tx, empresaID, linhaID, numeroLinha, validada, categoriaID, produtoExistenteID, produtoExistenteTemplateID)
+	for tentativa := 1; ; tentativa++ {
+		if _, err := tx.Exec(`SAVEPOINT sp_insert_produto`); err != nil {
+			return false, fmt.Errorf("falha ao criar savepoint antes de inserir produto da linha %d: %w", numeroLinha, err)
 		}
-		return false, fmt.Errorf("falha ao inserir produto da linha %d: %w", numeroLinha, err)
+
+		codigoInterno, err := proximoCodigoProduto(tx, empresaID)
+		if err != nil {
+			return false, fmt.Errorf("falha ao gerar código do produto da linha %d: %w", numeroLinha, err)
+		}
+
+		err = tx.QueryRow(insertProduto,
+			validada.nome, codigoInterno, validada.codigoFornecedor, categoriaID, templateID, validada.observacoes,
+			validada.comprimentoValor, validada.comprimentoUnidade,
+			validada.larguraValor, validada.larguraUnidade,
+			validada.diametroValor, validada.diametroUnidade,
+			validada.alturaValor, validada.alturaUnidade,
+			validada.espessuraValor, validada.espessuraUnidade,
+			validada.precoUnitario,
+			empresaID,
+		).Scan(&produtoID)
+		if err == nil {
+			break
+		}
+
+		var pqErr *pq.Error
+		if !errors.As(err, &pqErr) || pqErr.Code != pqUniqueViolation {
+			return false, fmt.Errorf("falha ao inserir produto da linha %d: %w", numeroLinha, err)
+		}
+		if _, errRollback := tx.Exec(`ROLLBACK TO SAVEPOINT sp_insert_produto`); errRollback != nil {
+			return false, fmt.Errorf("falha ao reverter savepoint da linha %d: %w", numeroLinha, errRollback)
+		}
+		if tentativa >= maxTentativasCodigoImportacao {
+			return false, fmt.Errorf("não foi possível gerar um código de produto único para a linha %d após %d tentativas", numeroLinha, maxTentativasCodigoImportacao)
+		}
 	}
 
 	const insertProdutoEstoque = `
@@ -639,22 +676,30 @@ func processarProximaLinha(db *sql.DB, empresaID string, importacaoID string) (b
 	return true, nil
 }
 
-// buscarProdutoPorCodigo busca o Produto (id + template_id) cujo `codigo`
-// bate exatamente com `codigo` (já trimado, não-vazio) — usado tanto pelo
-// match inicial de processarProximaLinha (Story 3.4, FR-11) quanto pela
-// re-busca depois de uma corrida perdida no INSERT do caminho de criação
-// (violação de `idx_produtos_codigo`, ver o comentário do SAVEPOINT em
-// processarProximaLinha). `encontrado=false` (sql.ErrNoRows) nunca é erro —
-// significa "nenhum Produto com esse código ainda", que o chamador trata
-// como sinal para seguir o caminho de criação.
+// buscarProdutoPorCodigoFornecedor busca o Produto (id + template_id) cujo
+// `codigo_fornecedor` bate exatamente com `codigoFornecedor` (já trimado,
+// não-vazio) — usado pelo match de processarProximaLinha (Story 3.4, FR-11,
+// redesenhado nesta correção de bug: antes casava por `codigo`, o código
+// interno; agora casa pelo valor que a planilha realmente carrega).
+// `encontrado=false` (sql.ErrNoRows) nunca é erro — significa "nenhum
+// Produto com esse código do fornecedor ainda", que o chamador trata como
+// sinal para seguir o caminho de criação.
+//
+// Diferente de `codigo` (único por Empresa via `idx_produtos_codigo`),
+// `codigo_fornecedor` NÃO tem índice único (Story 10.3: texto livre, sem
+// checagem de unicidade) — `ORDER BY criado_em, id LIMIT 1` torna o match
+// determinístico mesmo que dois Produtos acabem com o mesmo valor (prioriza
+// o mais antigo, mesmo critério de desempate de encontrarOuCriarEstoque).
 //
 // Story 16.2: `inativo` sinaliza Produto inativado (encontrado, mas a linha
 // deve ser rejeitada).
-func buscarProdutoPorCodigo(tx *sql.Tx, empresaID string, codigo string) (id string, templateID sql.NullString, inativo bool, encontrado bool, err error) {
-	const selectProdutoPorCodigo = `
+func buscarProdutoPorCodigoFornecedor(tx *sql.Tx, empresaID string, codigoFornecedor string) (id string, templateID sql.NullString, inativo bool, encontrado bool, err error) {
+	const selectProdutoPorCodigoFornecedor = `
 		SELECT id, template_id, inativado_em IS NOT NULL FROM produtos
-		WHERE codigo = $1 AND deleted_at IS NULL AND empresa_id = $2`
-	err = tx.QueryRow(selectProdutoPorCodigo, codigo, empresaID).Scan(&id, &templateID, &inativo)
+		WHERE codigo_fornecedor = $1 AND deleted_at IS NULL AND empresa_id = $2
+		ORDER BY criado_em, id
+		LIMIT 1`
+	err = tx.QueryRow(selectProdutoPorCodigoFornecedor, codigoFornecedor, empresaID).Scan(&id, &templateID, &inativo)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", sql.NullString{}, false, false, nil
 	}
@@ -664,21 +709,48 @@ func buscarProdutoPorCodigo(tx *sql.Tx, empresaID string, codigo string) (id str
 	return id, templateID, inativo, true, nil
 }
 
+// buscarTemplateGenericoID resolve o id do template "Genérico" (marcador
+// `[NOME LIVRE]`, Story 10.1, AD-34) da Empresa — toda Empresa tem ao menos
+// uma linha com esse marcador (ProvisionarEmpresa/CopiarListasPadrao,
+// migration 000036). Usado pela importação para dar a MESMA garantia que
+// `CriarProduto` já aplica ao cadastro manual (template sempre presente) —
+// prioriza `subtipo = 'Genérico'` (o semeado por padrão) para o caso raro de
+// a Empresa ter mais de um marcador `[NOME LIVRE]` sob outro subtipo (ex. um
+// fallback customizado renomeado, nomenclatura_crud.go).
+func buscarTemplateGenericoID(tx *sql.Tx, empresaID string) (string, error) {
+	var id string
+	const selectGenerico = `
+		SELECT id FROM nomenclatura_templates
+		WHERE empresa_id = $1 AND template = $2
+		ORDER BY (subtipo = 'Genérico') DESC, subtipo ASC
+		LIMIT 1`
+	err := tx.QueryRow(selectGenerico, empresaID, TemplateGenericoMarcador).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("template genérico ausente para a empresa %s", empresaID)
+	}
+	if err != nil {
+		return "", fmt.Errorf("falha ao buscar template genérico: %w", err)
+	}
+	return id, nil
+}
+
 // motivoProdutoInativoImportacao é o motivo da linha rejeitada por Produto inativo (Story 16.2).
 const motivoProdutoInativoImportacao = "Produto inativo — reative antes de importar"
 
 // processarLinhaDeAtualizacao é o ramo de UPDATE de processarProximaLinha
-// (Story 3.4, FR-11): chamado quando o `código` da linha já casou com um
-// Produto existente (`produtoExistenteID`), dentro da MESMA transação de
-// reivindicação da linha. Nunca chama AtualizarNomeProduto (produtos.go) —
-// escreve via UPDATE próprio, mas replica a MESMA regra de revalidação de
-// template que aquela função aplica (Story 3.2): um `template_id` NÃO-nulo no
-// Produto encontrado exige que `validada.nome` case o formato desse template,
-// senão a linha é rejeitada e o Produto não é tocado.
+// (Story 3.4, FR-11): chamado quando o `código do fornecedor` da linha já
+// casou com um Produto existente (`produtoExistenteID`), dentro da MESMA
+// transação de reivindicação da linha. Nunca chama AtualizarNomeProduto
+// (produtos.go) — escreve via UPDATE próprio, mas replica a MESMA regra de
+// revalidação de template que aquela função aplica (Story 3.2): um
+// `template_id` NÃO-nulo no Produto encontrado exige que `validada.nome`
+// case o formato desse template, senão a linha é rejeitada e o Produto não
+// é tocado.
 //
-// Sucesso: sobrescreve TODOS os campos que a planilha carrega (nome, código,
-// categoria, observações, as 5 dimensões) — `template_id` NUNCA é tocado, o
-// que já estava no Produto sobrevive. Também faz upsert em `produto_estoque`
+// Sucesso: sobrescreve nome, código do fornecedor, categoria, observações e
+// as 5 dimensões — `codigo` (o interno, sequencial) e `template_id` NUNCA
+// são tocados, o que já estava no Produto sobrevive. Também faz upsert em
+// `produto_estoque`
 // (`ON CONFLICT (produto_id, estoque_id) DO UPDATE SET quantidade =
 // EXCLUDED.quantidade` — substitui, nunca soma, e só no par Produto/Estoque
 // desta linha; outros pares do mesmo Produto com outros Estoques ficam
@@ -717,7 +789,7 @@ func processarLinhaDeAtualizacao(
 
 	const updateProduto = `
 		UPDATE produtos SET
-			nome = $1, codigo = $2, categoria_id = $3, observacoes = $4,
+			nome = $1, codigo_fornecedor = $2, categoria_id = $3, observacoes = $4,
 			comprimento_valor = $5, comprimento_unidade = $6,
 			largura_valor = $7, largura_unidade = $8,
 			diametro_valor = $9, diametro_unidade = $10,
@@ -726,7 +798,7 @@ func processarLinhaDeAtualizacao(
 			preco_unitario = $17
 		WHERE id = $15 AND empresa_id = $16`
 	if _, err := tx.Exec(updateProduto,
-		validada.nome, validada.codigo, categoriaID, validada.observacoes,
+		validada.nome, validada.codigoFornecedor, categoriaID, validada.observacoes,
 		validada.comprimentoValor, validada.comprimentoUnidade,
 		validada.larguraValor, validada.larguraUnidade,
 		validada.diametroValor, validada.diametroUnidade,
@@ -776,10 +848,10 @@ func rejeitarECommitar(tx *sql.Tx, linhaID string, numeroLinha int, motivo strin
 // campos brutos de uma linha (validarLinhaImportacao) — mesmos tipos usados
 // por CriarProduto (sql.NullString/sql.NullFloat64 para os campos opcionais).
 type linhaValidada struct {
-	nome        string
-	codigo      sql.NullString
-	observacoes sql.NullString
-	quantidade  float64
+	nome             string
+	codigoFornecedor sql.NullString
+	observacoes      sql.NullString
+	quantidade       float64
 
 	comprimentoValor, larguraValor, diametroValor, alturaValor, espessuraValor           sql.NullFloat64
 	comprimentoUnidade, larguraUnidade, diametroUnidade, alturaUnidade, espessuraUnidade sql.NullString
@@ -792,7 +864,9 @@ type linhaValidada struct {
 
 // validarLinhaImportacao valida os 17 campos brutos de uma linha da planilha
 // contra as MESMAS regras de CriarProduto: nome (obrigatório, máx. 255
-// runes), código (opcional, máx. 255 runes), quantidade (mesma checagem de
+// runes), código do fornecedor (opcional, máx. 255 runes — a célula
+// "Código" da planilha; o `codigo` interno nunca vem daqui, é sempre gerado
+// pelo servidor em processarProximaLinha), quantidade (mesma checagem de
 // QuantidadeInicial: >= 0 e <= limiteNumeric103) e as 5 dimensões via
 // validarDimensao reaproveitada tal qual — a unidade é lowercased ANTES de
 // checar contra unidadesDimensaoValidas (a planilha não impõe caixa). A
@@ -812,15 +886,15 @@ func validarLinhaImportacao(dados []string) (linhaValidada, error) {
 		}
 	}
 
-	codigoTrimado := strings.TrimSpace(dados[colCodigo])
-	if utf8.RuneCountInString(codigoTrimado) > 255 {
+	codigoFornecedorTrimado := strings.TrimSpace(dados[colCodigo])
+	if utf8.RuneCountInString(codigoFornecedorTrimado) > 255 {
 		return linhaValidada{}, &ErroImportacaoValidacao{
 			Mensagem: "código deve ter no máximo 255 caracteres",
 		}
 	}
-	var codigo sql.NullString
-	if codigoTrimado != "" {
-		codigo = sql.NullString{String: codigoTrimado, Valid: true}
+	var codigoFornecedor sql.NullString
+	if codigoFornecedorTrimado != "" {
+		codigoFornecedor = sql.NullString{String: codigoFornecedorTrimado, Valid: true}
 	}
 
 	var observacoes sql.NullString
@@ -903,10 +977,10 @@ func validarLinhaImportacao(dados []string) (linhaValidada, error) {
 	}
 
 	return linhaValidada{
-		nome:        nome,
-		codigo:      codigo,
-		observacoes: observacoes,
-		quantidade:  quantidade,
+		nome:             nome,
+		codigoFornecedor: codigoFornecedor,
+		observacoes:      observacoes,
+		quantidade:       quantidade,
 
 		comprimentoValor: comprimentoValor, comprimentoUnidade: comprimentoUnidade,
 		larguraValor: larguraValor, larguraUnidade: larguraUnidade,

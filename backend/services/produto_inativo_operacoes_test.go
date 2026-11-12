@@ -77,24 +77,25 @@ func TestImportacao_LinhaDeProdutoInativoRejeitada(t *testing.T) {
 		t.Fatal(err)
 	}
 	cat := categoriaIDPorCodigo(t, db, "04.001")
-	mk := func(nome string) Produto {
+	mk := func(nome, codigoFornecedor string) Produto {
 		p, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
 			UnidadeMedida: "un", Nome: nome, CategoriaID: cat, TemplateID: templateGenericoID(t, db, empresaTeste),
+			CodigoFornecedor: codigoFornecedor,
 		}, estoque.ID, 10)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return p
 	}
-	pInativo := mk("Produto Import Inativo")
-	pAtivo := mk("Produto Import Ativo")
+	pInativo := mk("Produto Import Inativo", "FORN-IMPORT-INATIVO-162")
+	mk("Produto Import Ativo", "FORN-IMPORT-ATIVO-162")
 	inativarDireto(t, db, pInativo.ID)
 
 	catNome := categoriaNomePorCodigo(t, db, "04.001")
 	linhas := [][]string{
 		CabecalhoEsperado,
-		linhaBase("Produto Import Inativo", pInativo.Codigo, catNome, "3", estoque.Nome),
-		linhaBase("Produto Import Ativo", pAtivo.Codigo, catNome, "4", estoque.Nome),
+		linhaBase("Produto Import Inativo", "FORN-IMPORT-INATIVO-162", catNome, "3", estoque.Nome),
+		linhaBase("Produto Import Ativo", "FORN-IMPORT-ATIVO-162", catNome, "4", estoque.Nome),
 	}
 	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
 	if err != nil {
