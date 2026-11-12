@@ -2746,3 +2746,7 @@ So that o Epic 19 seja considerado concluído com segurança.
 **Given** a suíte de testes do frontend
 **When** `npm test` roda após toda a migração
 **Then** todos os testes continuam passando
+
+**Resolução (2026-11-12):** `npm run build`/`npm test` (1040 testes) limpos. Limpeza de tokens: verificado todo o `@theme` de `index.css` contra uso real no código (incluindo o padrão `var(--color-X)` arbitrário usado por `StatusPedidoBadge.tsx`) — nenhum token específico do sistema antigo ficou órfão (Stories 19.1/19.2 só trocaram valores, nunca nomes). Único token sem uso confirmado (`--color-destructive-foreground`) é um par `-foreground` padrão do shadcn, não lixo desta migração — mantido por convenção, não removido.
+
+**Validação visual com screenshot real NÃO foi possível nesta sessão** — o ambiente não tem `docker compose` nem `chromium-cli` disponíveis para subir a stack completa (backend+banco+navegador headless) e capturar telas autenticadas. A conferência foi feita por leitura de código + cálculo manual de contraste WCAG (ver Design Notes das specs 19.1/19.2) e pela ausência total de cor hardcoded em todo `frontend/src` (grep). Recomendado: Claudio conferir visualmente pelo menos o menu lateral e uma tela de lista no navegador antes de considerar o Epic 19 definitivamente fechado.
