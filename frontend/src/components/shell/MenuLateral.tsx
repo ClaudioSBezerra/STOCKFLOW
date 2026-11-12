@@ -33,7 +33,12 @@ export function CartBadge({ count, className }: { count: number; className?: str
 
 function classesItem(ativo: boolean, extra?: string) {
   return cn(
-    'flex items-center gap-2 rounded-md px-3 text-body text-sidebar-foreground transition-colors hover:bg-sidebar-item-active hover:text-sidebar-foreground-active',
+    'flex items-center gap-2 rounded-md px-3 text-body text-sidebar-foreground transition-colors',
+    // Hover neutro só no item NÃO ativo: hover:* fica na camada `utilities`
+    // do Tailwind, que sempre vence `.sidebar-item-active` (`@layer
+    // components`) na cascata — sem essa condição, passar o mouse no item
+    // ativo "apagava" o verde dele.
+    !ativo && 'hover:bg-border hover:text-foreground',
     alvo,
     ativo && 'sidebar-item-active',
     extra,
@@ -105,7 +110,7 @@ function GrupoExpandido({
         aria-controls={painelId}
         onClick={() => estado.alternarGrupo(grupo.id)}
         className={cn(
-          'flex w-full items-center gap-2 rounded-md px-3 text-body font-semibold text-sidebar-group-title transition-colors hover:bg-sidebar-item-active',
+          'flex w-full items-center gap-2 rounded-md px-3 text-body font-semibold text-sidebar-group-title transition-colors hover:bg-border',
           alvo,
         )}
       >
@@ -156,7 +161,8 @@ function GrupoRecolhido({
                 type="button"
                 aria-label={grupo.label}
                 className={cn(
-                  'relative flex min-w-touch-target-min items-center justify-center rounded-md text-sidebar-group-title transition-colors hover:bg-sidebar-item-active',
+                  'relative flex min-w-touch-target-min items-center justify-center rounded-md text-sidebar-group-title transition-colors',
+                  !temAtivo && 'hover:bg-border',
                   alvo,
                   temAtivo && 'sidebar-item-active',
                 )}
@@ -228,7 +234,7 @@ export function MenuLateral({
             aria-label={recolhido ? 'Expandir menu' : 'Recolher menu'}
             onClick={estado.alternarRecolhido}
             className={cn(
-              'flex min-w-touch-target-min items-center justify-center rounded-md text-sidebar-foreground transition-colors hover:bg-sidebar-item-active hover:text-sidebar-foreground-active',
+              'flex min-w-touch-target-min items-center justify-center rounded-md text-sidebar-foreground transition-colors hover:bg-border hover:text-foreground',
               alvo,
             )}
           >
@@ -266,7 +272,7 @@ export function MenuLateral({
       </nav>
 
       {mostrarPerfil ? (
-        <div className="shrink-0 border-t border-sidebar-item-active px-2 py-2">
+        <div className="shrink-0 border-t border-border px-2 py-2">
           {recolhido ? (
             <Tooltip>
               <TooltipTrigger asChild>

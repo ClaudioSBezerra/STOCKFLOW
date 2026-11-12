@@ -233,7 +233,7 @@ Detalhes de escopo e critérios de aceite completos: `_bmad-output/implementatio
 
 **Origem:** o stockflow usava cores próprias (este `DESIGN.md`, 29/08), diferentes do "Catálogo 2.0 Design System" (Marlos, 2026-11-11), já padronizado entre os sistemas internos da Ferreira Costa e adotado no projeto irmão FB_APU05. A Story 19.1 (Épico 19) porta os valores de cor do Catálogo 2.0 para dentro do bloco `@theme` do `frontend/src/index.css`, **mantendo os mesmos nomes de variável shadcn** já usados aqui neste documento (`{colors.primary}`, `{colors.destructive}` etc.) — só o valor hexadecimal muda. Fonte dos valores: `catalogo-tokens.css` do FB_APU05 (cópia local em `/home/claudio/projetos/FB_APU05/frontend/src/styles/catalogo-tokens.css`, idêntica à do servidor `hostinger-fc`).
 
-Tipografia (além da troca de fonte abaixo), raios, sombras e os tokens dedicados de badge/score do Catálogo 2.0 (`--badge-*`, `--score-*`) **não** entram nesta story — ficam para as stories seguintes do Épico 19 (ver `deferred-work.md`). As pílulas de status já existentes no app continuam herdando a nova cor através de `--color-text-on-tint-*` (que MUDA nesta story, junto com as demais cores). `--color-sidebar*` também não muda: o Catálogo 2.0 não define um token de sidebar escura equivalente (decisão da Story 19.2). Nenhum componente é tocado nesta story — só o valor dos tokens.
+Tipografia (além da troca de fonte abaixo), raios, sombras e os tokens dedicados de badge/score do Catálogo 2.0 (`--badge-*`, `--score-*`) **não** entram nesta story — ficam para as stories seguintes do Épico 19 (ver `deferred-work.md`). As pílulas de status já existentes no app continuam herdando a nova cor através de `--color-text-on-tint-*` (que MUDA nesta story, junto com as demais cores). `--color-sidebar*` também não muda nesta story — ficou para a Story 19.2, que converteu o menu de escuro para o rail claro do Catálogo 2.0 (ver seção própria abaixo). Nenhum componente é tocado nesta story — só o valor dos tokens.
 
 **Tabela de mapeamento (nome shadcn do stockflow → novo valor → origem Catálogo 2.0):**
 
@@ -265,3 +265,17 @@ Tipografia (além da troca de fonte abaixo), raios, sombras e os tokens dedicado
 | `--color-popover` / `-foreground` | inalterados (= card/foreground) | — |
 
 **Fonte:** `{typography.font-family}` passa a ser `'Inter Variable', 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif`, servida localmente via `@fontsource-variable/inter` (importado em `main.tsx`, antes de `index.css`) — nunca via Google Fonts ou CDN externo. Única mudança de tipografia desta story, por ser parte da troca de fonte.
+
+### Story 19.2 — Menu lateral: rail claro
+
+**Origem:** investigação confirmou que o Catálogo 2.0 não tem nenhum token de "sidebar escura" — o projeto irmão FB_APU05 usa um rail CLARO (`AppRail.tsx`: `bg-card`, item ativo em `bg-cta-soft`/`text-cta-pressed`). Decisão (2026-11-12): converter o menu lateral do stockflow para esse mesmo padrão claro, abandonando o azul-marinho do Epic 17.
+
+| Variável | Novo valor | Origem (Catálogo 2.0 / FB_APU05) |
+|---|---|---|
+| `--color-sidebar` | `#ffffff` | `bg-card` |
+| `--color-sidebar-foreground` | `#4f5256` | `--fg-secondary` (item inativo) |
+| `--color-sidebar-item-active` | `#ebf6e3` | `--green-l850` (chip do item ativo) |
+| `--color-sidebar-foreground-active` | `#252728` | `--fg-1` — **desvio deliberado** do FB_APU05 (eles usam `--green-250`/`#5a8f19`, que não atinge contraste AA sobre o chip verde; aqui usamos quase-preto para manter AA de verdade, sem o precedente de trade-off aceito que existe no botão primário) |
+| `--color-sidebar-group-title` | `#252728` | `--fg-1` |
+
+Hover em item NÃO ativo usa os tokens genéricos `--color-border`/`--color-foreground` (cinza neutro) em vez do chip verde, para não ser confundido com o estado realmente ativo — o componente antes reaproveitava a mesma classe para as duas coisas, o que fazia sentido só no tema escuro.

@@ -2660,22 +2660,28 @@ So that eu veja a mesma identidade visual usada nos demais sistemas internos da 
 ### Story 19.2: Menu lateral e topo no novo padrão visual
 
 As a usuário do stockflow,
-I want que o menu lateral agrupado e o topo (Epic 17) usem as cores e tipografia do Catálogo 2.0,
-So that a navegação principal já reflita a nova identidade visual.
+I want que o menu lateral agrupado (Epic 17) deixe de ser azul-marinho escuro e passe a usar o rail claro do Catálogo 2.0 (igual ao já validado em produção no FB_APU05),
+So that a navegação principal reflita de verdade a mesma identidade visual da empresa, não uma aproximação.
+
+**Nota de decisão (2026-11-12):** investigação confirmou que o Catálogo 2.0 não define nenhum token de "sidebar escura" — o FB_APU05 usa um rail claro (`bg-card`, item ativo em `bg-cta-soft`/`text-cta-pressed`, verde claro). Claudio decidiu converter o menu do stockflow para esse mesmo padrão claro, em vez de manter o azul-marinho só com ajustes pontuais — escopo desta story é maior do que o texto original previa.
 
 **Acceptance Criteria:**
 
-**Given** o menu lateral azul-marinho atual (item ativo com barra vermelha FC de 3px)
+**Given** o menu lateral azul-marinho atual (`bg-sidebar #0f1729`, `sidebar-foreground`, `sidebar-item-active`, `sidebar-group-title`)
 **When** esta story é concluída
-**Then** o menu usa os neutros do Catálogo 2.0 e a barra do item ativo usa `--brand-red`, sem mudar grupos/rotas/permissões do Epic 17
+**Then** o menu usa fundo claro (`bg-card`) e as mesmas cores de item ativo que o FB_APU05 usa (verde claro de fundo + verde escuro de texto), sem mudar grupos/rotas/permissões do Epic 17
 
 **Given** o topo branco 56px (Treinamento, Ajuda, menu da conta)
 **When** esta story é concluída
-**Then** usa `t-label`/`t-body` e cores novas, mantendo os mesmos itens e comportamento
+**Then** continua coerente com o novo menu claro (nenhuma mudança visual própria é obrigatória aqui além de eventual ajuste de borda/contraste), mantendo os mesmos itens e comportamento
 
 **Given** o menu em gaveta no celular (☰)
 **When** esta story é concluída
-**Then** usa os mesmos tokens novos, preservando abrir/fechar por ☰/Esc/toque fora e retorno de foco (UX-DR16)
+**Then** usa o mesmo rail claro, preservando abrir/fechar por ☰/Esc/toque fora e retorno de foco (UX-DR16)
+
+**Given** o texto e os ícones do menu sobre o novo fundo claro
+**When** esta story é concluída
+**Then** o contraste de texto/ícone normal atinge pelo menos AA (4.5:1) — ao contrário do trade-off aceito do botão primário (Story 19.1), aqui não há um precedente de "a empresa já usa assim" que justifique abrir mão de contraste
 
 ### Story 19.3: Páginas de lista no novo padrão visual
 

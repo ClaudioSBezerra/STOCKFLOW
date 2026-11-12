@@ -34,10 +34,11 @@ function FaixaTreinamento() {
 }
 
 /**
- * Layout raiz do stockflow (Epic 17, Story 17.1): menu lateral azul-marinho
- * de 240px (64px recolhido) no desktop (`>= md`, 768px) e topo branco de 56px
- * com ☰ que abre o mesmo menu numa gaveta à esquerda no celular. Ver
- * EXPERIENCE.md (Menu agrupado) e DESIGN.md (sidebar-item-active).
+ * Layout raiz do stockflow (Epic 17, Story 17.1; rail claro desde a Story
+ * 19.2/Catálogo 2.0): menu lateral de 240px (64px recolhido) no desktop
+ * (`>= md`, 768px) e topo branco de 56px com ☰ que abre o mesmo menu numa
+ * gaveta à esquerda no celular. Ver EXPERIENCE.md (Menu agrupado) e
+ * DESIGN.md (sidebar-item-active, addendum Catálogo 2.0).
  */
 export function AppShell({ children }: { children?: React.ReactNode }) {
   const content = children ?? <Outlet />;

@@ -74,7 +74,8 @@ function renderShell(initialPath = '/') {
   );
 }
 
-// A classe do item ativo, não o `hover:bg-sidebar-item-active` de todos os itens.
+// A classe do item ativo, não a de hover (que usa `hover:bg-border`, um
+// token neutro diferente, justamente para não ser confundido com o ativo).
 const ATIVO = /(^|\s)sidebar-item-active(\s|$)/;
 const menu = () => screen.getByRole('navigation', { name: 'Menu principal' });
 const link = (nome: string | RegExp) => within(menu()).getByRole('link', { name: nome });

@@ -39,11 +39,11 @@
   --color-text-on-tint-warning: #594600;
   --color-text-on-tint-info: #1a4a6b;
   --color-text-on-tint-destructive: #960c23;
-  --color-sidebar: #0f1729;
-  --color-sidebar-foreground: #cbd5e1;
-  --color-sidebar-foreground-active: #ffffff;
-  --color-sidebar-item-active: #1e293b;
-  --color-sidebar-group-title: #ffffff;
+  --color-sidebar: #ffffff;
+  --color-sidebar-foreground: #4f5256;
+  --color-sidebar-foreground-active: #252728;
+  --color-sidebar-item-active: #ebf6e3;
+  --color-sidebar-group-title: #252728;
 
   /* Derivadas dos tokens acima — exigidas pelos primitivos shadcn */
   --color-popover: var(--color-card);
@@ -116,8 +116,9 @@
 
 @layer components {
   /*
-   * DESIGN.md `components.sidebar-item-active`: fundo sidebar-item-active,
-   * texto branco em negrito e barra de 3px vermelho FC (primary) à esquerda.
+   * DESIGN.md `components.sidebar-item-active`: fundo sidebar-item-active
+   * (verde claro, Catálogo 2.0), texto escuro em negrito e barra de 3px
+   * verde (primary) à esquerda.
    */
   .sidebar-item-active {
     background-color: var(--color-sidebar-item-active);
@@ -128,16 +129,18 @@
 
   /*
    * Rolagem do menu lateral: quando os grupos não cabem na altura da tela, a
-   * barra de rolagem padrão do navegador (clara e larga) aparecia sobre o
-   * fundo azul-marinho e parecia "invadir" o menu. Barra fina e escura, no
-   * tom do próprio menu, que só se destaca ao passar o mouse.
+   * barra de rolagem padrão do navegador (larga e genérica) aparecia sobre o
+   * fundo claro do menu e parecia "invadir" ele. Barra fina, discreta no
+   * estado parado e mais visível ao passar o mouse (sidebar-foreground —
+   * --color-sidebar-item-active vira um verde claro de mais com o rail
+   * claro do Catálogo 2.0, invisível contra o fundo branco).
    */
   .sidebar-scroll {
     scrollbar-width: thin;
-    scrollbar-color: var(--color-sidebar-item-active) transparent;
+    scrollbar-color: color-mix(in oklab, var(--color-sidebar-foreground) 35%, transparent) transparent;
   }
   .sidebar-scroll:hover {
-    scrollbar-color: color-mix(in oklab, var(--color-sidebar-foreground) 45%, transparent) transparent;
+    scrollbar-color: var(--color-sidebar-foreground) transparent;
   }
   .sidebar-scroll::-webkit-scrollbar {
     width: 6px;
@@ -146,10 +149,10 @@
     background: transparent;
   }
   .sidebar-scroll::-webkit-scrollbar-thumb {
-    background-color: var(--color-sidebar-item-active);
+    background-color: color-mix(in oklab, var(--color-sidebar-foreground) 35%, transparent);
     border-radius: 9999px;
   }
   .sidebar-scroll:hover::-webkit-scrollbar-thumb {
-    background-color: color-mix(in oklab, var(--color-sidebar-foreground) 45%, transparent);
+    background-color: var(--color-sidebar-foreground);
   }
 }

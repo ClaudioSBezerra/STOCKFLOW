@@ -793,3 +793,15 @@ status: open
 - source_spec: `spec-19-1-tokens-base-catalogo-2-0.md`
   summary: `--color-primary` (verde `#68a439`) com `--color-primary-foreground` branco não atinge contraste AA (~3,02:1) para texto normal; mesmo vale para `--color-secondary-foreground` sobre `--color-secondary` (~3,84:1).
   evidence: Confirmado matematicamente (fórmula WCAG) e confirmado que o FB_APU05 usa a mesma combinação em produção (tailwind.config.js, --primary/--primary-foreground). Claudio decidiu manter igual ao FB_APU05 (2026-11-12) — trade-off aceito conscientemente para paridade visual com o padrão da empresa, não é um bug a corrigir nesta story.
+
+- source_spec: `spec-19-2-menu-lateral-rail-claro.md`
+  summary: Acrescentar `border-r border-border` no `<aside>` do menu fixo (desktop) e trocar `border-sidebar-item-active` por `border-border` no `SheetContent` da gaveta mobile, em `AppShell.tsx`.
+  evidence: Spec original passou de ~1850 tokens estimados (acima do teto de 1600); usuário escolheu [S] Split. Esses dois ajustes de borda são polimento visual independente (separador entre menu e conteúdo) — não bloqueiam o core da conversão do menu (cores + distinção hover/ativo em `MenuLateral.tsx`/`index.css`), que fica como o escopo principal desta story.
+
+- source_spec: `spec-19-2-menu-lateral-rail-claro.md`
+  summary: Cabeçalhos de grupo (`GrupoExpandido`/`GrupoRecolhido`) só recebem `hover:bg-*`, nunca um `hover:text-*` correspondente, ao contrário dos itens de link (`classesItem`) e do botão de recolher, que recebem os dois.
+  evidence: Achado pela revisão (blind-hunter). Confirmado que é pré-existente ao Epic 17 (o cabeçalho de grupo nunca teve hover de texto, só de fundo) — não foi introduzido pela Story 19.2, só ficou mais visível porque hoje os tokens de texto (`sidebar-group-title`/`foreground`) coincidem em hex.
+
+- source_spec: `spec-19-2-menu-lateral-rail-claro.md`
+  summary: Nenhum teste automatizado fixa a separação hover-vs-ativo (`hover:bg-border` vs `sidebar-item-active`) que esta story introduziu — só o regex `ATIVO` pré-existente é reusado.
+  evidence: Achado pela revisão (blind-hunter): um teste futuro que remova por engano o guard `!ativo`/`!temAtivo` (reintroduzindo o bug do hover "apagando" o item ativo, já corrigido nesta story) não seria pego por nenhum teste hoje.
