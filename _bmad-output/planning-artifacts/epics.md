@@ -2711,7 +2711,9 @@ As a usuário do stockflow,
 I want que telas de cadastro/edição e diálogos de confirmação usem os tokens do Catálogo 2.0,
 So that toda interação de escrita reflita a nova identidade visual.
 
-**Acceptance Criteria:**
+**Resolução (2026-11-12):** mesmo achado da Story 19.3 — varredura em `CadastroProdutoSection.tsx`, `EditarProdutoDialog.tsx`, `ConfirmDialog.tsx`, `ImportacaoProdutosSection.tsx` e uma varredura geral em todo `frontend/src` (`grep` por hex literal) não encontrou NENHUMA cor hardcoded fora de teste em todo o projeto. O único `bg-black`/`text-white` existente (`CadastroProdutoSection.tsx:711`) é o overlay de tela cheia do scanner de câmera — intencionalmente neutro, fora do escopo de tema claro/escuro. Nada a implementar; os tokens já herdados da Story 19.1 cobrem 100% dos formulários/diálogos.
+
+**Acceptance Criteria (histórico, superadas pela resolução acima):**
 
 **Given** um formulário de cadastro/edição (ex. Cadastrar Produto, Editar Produto)
 **When** esta story é concluída
