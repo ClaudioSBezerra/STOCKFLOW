@@ -1320,6 +1320,491 @@ func DecidirPedido(db *sql.DB, empresaID string, pedidoID, decisorID, papelDecis
 	return det, nil
 }
 
+// --- Aprovação em lote por Gestor — Story 20.3 (Epic 20), spec-20-3 -------
+//
+// DecidirLotePedidos é o caminho PARALELO a DecidirPedido para decidir
+// Pedidos de Transferência (Story 20.1) e de Baixa (Story 20.2) — os únicos
+// dois tipos que DecidirPedido recusa (ErrPedidoTipoNaoSuportado). RBAC
+// (`gestor`/`adm`, nível maior que o `almoxarife` de DecidirPedido) é
+// responsabilidade exclusiva de RequireRole na rota (Always, spec-20-3) —
+// esta função não recebe nem checa papel.
+
+// itemLotePedido é a leitura crua de uma linha de `pedido_itens` usada só
+// dentro de DecidirLotePedidos — mesmo papel de itemPedidoParaDecisao, mais
+// `EstoqueDestinoID` (preenchido só para `tipo='transferencia'`, Story 20.1).
+type itemLotePedido struct {
+	ProdutoID        string
+	ProdutoNome      string
+	CategoriaNome    string
+	EstoqueID        string
+	EstoqueNome      string
+	Quantidade       float64
+	EstoqueDestinoID sql.NullString
+}
+
+// pedidoLoteContexto agrega, por Pedido do lote, o `tipo` já validado e o
+// snapshot de itens lido dentro da transação — montado ANTES de travar
+// qualquer par (AD-10), consumido depois por decidirUmPedidoDoLoteTx.
+type pedidoLoteContexto struct {
+	ID    string
+	Tipo  string
+	Itens []itemLotePedido
+}
+
+// DecidirLotePedidos aprova ou rejeita, numa ÚNICA transação, TODOS os
+// Pedidos de `pedidoIDs` (POST /api/pedidos/decisao-lote, Story 20.3,
+// spec-20-3) — molde de DecidirPedido, mas iterando vários Pedidos em vez de
+// um só, e aceitando SÓ `tipo IN ('transferencia', 'baixa')`.
+//
+// `pedidoIDs` vazio -> &ErroPedidoValidacao (400), nada consultado.
+//
+// ANTES de qualquer `tx.Begin()` (Always, spec-20-3): cada id da lista é
+// consultado por `tipo` — inexistente/malformado/outra Empresa ->
+// ErrPedidoNaoEncontrado (mesmo colapso de DecidirPedido); `tipo` fora de
+// {transferencia, baixa} (inclusive `retirada`, ausente ou legado) rejeita A
+// LISTA INTEIRA com &ErroPedidoValidacao (400) — nenhum Pedido da lista é
+// tocado, nem os que seriam válidos.
+//
+// Dentro da ÚNICA transação do lote: os ids são ordenados (determinístico,
+// evita deadlock entre lotes concorrentes que compartilhem um Pedido) e o
+// snapshot de itens de CADA Pedido é lido; o conjunto COMPLETO de pares
+// (produto, estoque) de TODOS os itens de TODOS os Pedidos — origem de todo
+// item, e também o destino de cada item de Transferência (a Transferência
+// credita lá) — entra junto em travarSaldoParesTx (AD-10, ordenado), nunca
+// pedido-a-pedido com commits parciais (Always, spec-20-3). Só para
+// `aprovar=true`: rejeição nunca toca produto_estoque/lotes, mesmo molde de
+// DecidirPedido.
+//
+// Por Pedido (decidirUmPedidoDoLoteTx): a própria linha de `pedidos` é
+// travada (`FOR UPDATE`) e seu status revalidado ANTES de debitar — um
+// Pedido que outra requisição concorrente já decidiu nesse intervalo (a
+// trava serializa com ela) é PULADO (reportado com o status JÁ decidido,
+// lido de volta por lerPedidoDetalheTx) em vez de abortar o lote inteiro
+// (Always, spec-20-3: "falha isolada não trava o resto", mesma filosofia já
+// aplicada a nível de item). Um Pedido realmente decidido agora segue o
+// MESMO algoritmo de DecidirPedido: por item,
+// `quantidadeAprovada := min(solicitada, reserva do PRÓPRIO Pedido, saldo
+// físico do par)`; se `> 0`, debita por consumirFEFOTx (FEFO único,
+// fefo.go) e, por fonte consumida, credita o destino (creditarLoteDestinoTx,
+// movimentacoes.go) SÓ para `tipo='transferencia'` e grava 1 Movimentação
+// (`tipo='transferencia'` ou `'baixa'`, conforme o Pedido) via
+// inserirMovimentacaoConsumoTx — a MESMA mecânica física de
+// RegistrarTransferencia/RegistrarBaixa, nunca duplicada (Approach,
+// spec-20-3). Rejeição: zera `quantidade_aprovada` de todos os itens, sem
+// tocar saldo.
+//
+// Sucesso: devolve `[]PedidoDetalhe` na MESMA ordem de `pedidoIDs`
+// (deduplicada, preservando a primeira ocorrência) — cada um já com o
+// status final (decidido agora OU já decidido antes) e os itens. Nenhum
+// Pedido de `tipo='retirada'` chega a ser tocado por esta função; o caminho
+// de DecidirPedido continua inteiramente intocado (Never, spec-20-3).
+func DecidirLotePedidos(db *sql.DB, empresaID, decisorID string, pedidoIDs []string, aprovar bool) ([]PedidoDetalhe, error) {
+	if len(pedidoIDs) == 0 {
+		return nil, &ErroPedidoValidacao{Mensagem: "selecione ao menos um pedido para decidir em lote"}
+	}
+
+	// Dedup preservando a ordem de chegada — o mesmo id duplicado na lista
+	// nunca deve ser processado duas vezes (dupla decisão/débito): a trava
+	// FOR UPDATE de decidirUmPedidoDoLoteTx já tornaria a segunda ocorrência
+	// seguramente um "pulado" (veria o próprio UPDATE da primeira ocorrência
+	// dentro da MESMA transação), mas dedupar de saída evita até esse
+	// trabalho redundante e mantém a resposta com 1 entrada por Pedido.
+	idsUnicos := make([]string, 0, len(pedidoIDs))
+	vistos := make(map[string]bool, len(pedidoIDs))
+	for _, id := range pedidoIDs {
+		if vistos[id] {
+			continue
+		}
+		vistos[id] = true
+		idsUnicos = append(idsUnicos, id)
+	}
+
+	// Guard crítico (Always, spec-20-3): ANTES de abrir a transação,
+	// `tipo` de CADA id é validado — qualquer id com tipo fora de
+	// {transferencia, baixa} rejeita a lista inteira, nada gravado nem para
+	// os ids que seriam válidos.
+	tipos := make(map[string]string, len(idsUnicos))
+	const selectTipo = `SELECT tipo FROM pedidos WHERE id = $1 AND empresa_id = $2`
+	for _, id := range idsUnicos {
+		var tipo string
+		if err := db.QueryRow(selectTipo, id, empresaID).Scan(&tipo); err != nil {
+			var pqErr *pq.Error
+			if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
+				return nil, ErrPedidoNaoEncontrado
+			}
+			return nil, fmt.Errorf("falha ao consultar tipo do pedido %s no lote: %w", id, err)
+		}
+		if tipo != "transferencia" && tipo != "baixa" {
+			return nil, &ErroPedidoValidacao{Mensagem: "o lote só pode conter Pedidos de Transferência ou de Baixa"}
+		}
+		tipos[id] = tipo
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("falha ao iniciar transação de decisão em lote: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
+
+	// Ordem determinística dos ids do lote (não a ordem de chegada do
+	// cliente) — evita deadlock entre dois lotes concorrentes que
+	// compartilhem um Pedido, mesmo espírito do AD-10 já aplicado abaixo aos
+	// pares (produto, estoque).
+	idsOrdenados := append([]string(nil), idsUnicos...)
+	sort.Strings(idsOrdenados)
+
+	// Snapshot de itens de TODOS os Pedidos do lote, lido uma única vez,
+	// ANTES de qualquer trava de produto_estoque — monta também o conjunto
+	// COMPLETO de pares (produto, estoque) do LOTE INTEIRO: a origem de todo
+	// item e, para Transferência, também o destino (ela credita lá).
+	const selectItensLote = `
+		SELECT produto_id, produto_nome, categoria_nome, estoque_id, estoque_nome, quantidade, estoque_destino_id
+		FROM pedido_itens WHERE pedido_id = $1 AND empresa_id = $2 ORDER BY produto_id, estoque_id`
+	contextos := make(map[string]*pedidoLoteContexto, len(idsOrdenados))
+	var pares []ParSaldo
+	for _, id := range idsOrdenados {
+		rows, err := tx.Query(selectItensLote, id, empresaID)
+		if err != nil {
+			return nil, fmt.Errorf("falha ao listar itens do pedido %s no lote: %w", id, err)
+		}
+		ctx := &pedidoLoteContexto{ID: id, Tipo: tipos[id]}
+		for rows.Next() {
+			var it itemLotePedido
+			if err := rows.Scan(
+				&it.ProdutoID, &it.ProdutoNome, &it.CategoriaNome,
+				&it.EstoqueID, &it.EstoqueNome, &it.Quantidade, &it.EstoqueDestinoID,
+			); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("falha ao ler item do pedido %s no lote: %w", id, err)
+			}
+			ctx.Itens = append(ctx.Itens, it)
+			pares = append(pares, ParSaldo{ProdutoID: it.ProdutoID, EstoqueID: it.EstoqueID})
+			if ctx.Tipo == "transferencia" && it.EstoqueDestinoID.Valid {
+				pares = append(pares, ParSaldo{ProdutoID: it.ProdutoID, EstoqueID: it.EstoqueDestinoID.String})
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("falha ao iterar itens do pedido %s no lote: %w", id, err)
+		}
+		rows.Close()
+		contextos[id] = ctx
+	}
+
+	// AD-10: trava o conjunto COMPLETO de pares do LOTE INTEIRO ANTES de ler
+	// reserva/saldo e de qualquer escrita — só para `aprovar=true`
+	// (rejeição nunca toca produto_estoque/lotes, mesmo molde de
+	// DecidirPedido).
+	if aprovar && len(pares) > 0 {
+		if err := travarSaldoParesTx(tx, empresaID, pares); err != nil {
+			return nil, fmt.Errorf("falha ao travar saldo dos pares do lote: %w", err)
+		}
+	}
+
+	resultado := make([]PedidoDetalhe, 0, len(idsOrdenados))
+	porID := make(map[string]PedidoDetalhe, len(idsOrdenados))
+	for _, id := range idsOrdenados {
+		det, pulado, err := decidirUmPedidoDoLoteTx(tx, empresaID, decisorID, contextos[id], aprovar)
+		if err != nil {
+			return nil, err
+		}
+		if pulado {
+			// Outra requisição concorrente já decidiu este Pedido entre a
+			// validação de tipo (antes do tx.Begin()) e a trava FOR UPDATE
+			// dentro desta transação — reportado com o status JÁ decidido,
+			// sem abortar os demais Pedidos do lote (Always, spec-20-3).
+			det, err = lerPedidoDetalheTx(tx, empresaID, id)
+			if err != nil {
+				return nil, err
+			}
+		}
+		porID[id] = det
+	}
+	// Devolve na ordem de chegada do cliente (idsUnicos), não na ordem
+	// determinística de locks (idsOrdenados) — a ordenação por lock é só um
+	// detalhe interno de concorrência, nunca deveria vazar pra UI.
+	for _, id := range idsUnicos {
+		resultado = append(resultado, porID[id])
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("falha ao commitar decisão em lote: %w", err)
+	}
+	return resultado, nil
+}
+
+// decidirUmPedidoDoLoteTx decide UM Pedido dentro da transação compartilhada
+// do lote (DecidirLotePedidos) — molde do corpo de DecidirPedido a partir da
+// trava de pares (já feita pelo chamador, para o LOTE INTEIRO), mais o
+// branch por `ctx.Tipo` que falta em DecidirPedido (que só decide
+// `retirada`). Devolve `pulado=true` (sem erro) quando a trava FOR UPDATE
+// abaixo encontra o Pedido já fora de `pendente` — o chamador relê o estado
+// atual e segue para o próximo Pedido do lote, nunca aborta a transação.
+func decidirUmPedidoDoLoteTx(tx *sql.Tx, empresaID, decisorID string, ctx *pedidoLoteContexto, aprovar bool) (PedidoDetalhe, bool, error) {
+	// Trava a própria linha de `pedidos` ANTES de debitar: serializa com
+	// qualquer outra decisão concorrente sobre o MESMO Pedido (outro lote,
+	// por exemplo) — quem chega depois vê aqui o status já atualizado pela
+	// primeira transação a comitar, sem precisar desfazer débito nenhum
+	// (diferente de DecidirPedido, que só descobre a corrida no UPDATE
+	// final e por isso processa um Pedido só por transação).
+	var statusAtual string
+	const lockPedido = `SELECT status FROM pedidos WHERE id = $1 AND empresa_id = $2 FOR UPDATE`
+	if err := tx.QueryRow(lockPedido, ctx.ID, empresaID).Scan(&statusAtual); err != nil {
+		return PedidoDetalhe{}, false, fmt.Errorf("falha ao travar pedido %s no lote: %w", ctx.ID, err)
+	}
+	if statusAtual != "pendente" {
+		return PedidoDetalhe{}, true, nil
+	}
+
+	novoStatus := "rejeitado"
+	itensResposta := make([]PedidoItem, 0, len(ctx.Itens))
+
+	if aprovar {
+		const selectReserva = `
+			SELECT quantidade FROM reservas_pedido_item
+			WHERE pedido_id = $1 AND produto_id = $2 AND estoque_id = $3 AND empresa_id = $4`
+		const updateItem = `
+			UPDATE pedido_itens SET quantidade_aprovada = $1
+			WHERE pedido_id = $2 AND produto_id = $3 AND estoque_id = $4 AND empresa_id = $5`
+
+		totalmenteAprovado := true
+		for _, it := range ctx.Itens {
+			var reserva float64
+			if err := tx.QueryRow(selectReserva, ctx.ID, it.ProdutoID, it.EstoqueID, empresaID).Scan(&reserva); err != nil {
+				if !errors.Is(err, sql.ErrNoRows) {
+					return PedidoDetalhe{}, false, fmt.Errorf("falha ao ler reserva do item no lote: %w", err)
+				}
+				reserva = 0
+			}
+			fisico, err := saldoFisicoParTx(tx, empresaID, it.ProdutoID, it.EstoqueID)
+			if err != nil {
+				return PedidoDetalhe{}, false, err
+			}
+
+			// Mesma revalidação de DecidirPedido: min(solicitada, reserva
+			// do PRÓPRIO Pedido, saldo físico do par) — nunca o saldo
+			// livre.
+			quantidadeAprovada := arredondar3(it.Quantidade)
+			if r := arredondar3(reserva); r < quantidadeAprovada {
+				quantidadeAprovada = r
+			}
+			if f := arredondar3(fisico); f < quantidadeAprovada {
+				quantidadeAprovada = f
+			}
+			if quantidadeAprovada < 0 {
+				quantidadeAprovada = 0
+			}
+			if quantidadeAprovada < arredondar3(it.Quantidade) {
+				totalmenteAprovado = false
+				slog.Warn("aprovação em lote reduziu a quantidade de um item",
+					"pedido_id", ctx.ID, "produto_id", it.ProdutoID, "estoque_id", it.EstoqueID,
+					"solicitada", it.Quantidade, "reserva", reserva, "saldo_fisico", fisico,
+					"aprovada", quantidadeAprovada)
+			} else {
+				quantidadeAprovada = it.Quantidade
+			}
+
+			if quantidadeAprovada > 0 {
+				consumos, err := consumirFEFOTx(tx, empresaID, it.ProdutoID, it.EstoqueID, quantidadeAprovada)
+				if err != nil {
+					return PedidoDetalhe{}, false, fmt.Errorf("falha ao debitar saldo por FEFO no lote: %w", err)
+				}
+				var estoqueDestinoPtr *string
+				if ctx.Tipo == "transferencia" {
+					// Invariante: todo item de um Pedido tipo=transferencia
+					// DEVE ter estoque_destino_id preenchido
+					// (SubmeterPedidoTransferencia sempre grava — não há
+					// CHECK no banco garantindo isso, deferred-work
+					// conhecido). Falhar ALTO aqui em vez de seguir com
+					// string vazia (`it.EstoqueDestinoID.String` quando
+					// `!Valid` é `""`) — nunca criar/creditar um lote num
+					// "estoque" inexistente.
+					if !it.EstoqueDestinoID.Valid {
+						return PedidoDetalhe{}, false, fmt.Errorf(
+							"invariante violada: item de transferência (pedido %s, produto %s, estoque %s) sem estoque_destino_id",
+							ctx.ID, it.ProdutoID, it.EstoqueID,
+						)
+					}
+					destino := it.EstoqueDestinoID.String
+					estoqueDestinoPtr = &destino
+				}
+				for _, c := range consumos {
+					// Transferência credita o destino preservando a validade
+					// da fonte (MESMA função de RegistrarTransferencia,
+					// nunca duplicada); Baixa não tem destino.
+					if ctx.Tipo == "transferencia" {
+						if err := creditarLoteDestinoTx(tx, empresaID, it.ProdutoID, *estoqueDestinoPtr, c); err != nil {
+							return PedidoDetalhe{}, false, err
+						}
+					}
+					if _, err := inserirMovimentacaoConsumoTx(tx, empresaID, ctx.Tipo, it.ProdutoID, it.EstoqueID, estoqueDestinoPtr, decisorID, c); err != nil {
+						return PedidoDetalhe{}, false, err
+					}
+				}
+			}
+			if _, err := tx.Exec(updateItem, quantidadeAprovada, ctx.ID, it.ProdutoID, it.EstoqueID, empresaID); err != nil {
+				return PedidoDetalhe{}, false, fmt.Errorf("falha ao gravar quantidade aprovada do item no lote: %w", err)
+			}
+
+			itensResposta = append(itensResposta, PedidoItem{
+				ProdutoID:          it.ProdutoID,
+				ProdutoNome:        it.ProdutoNome,
+				CategoriaNome:      it.CategoriaNome,
+				EstoqueID:          it.EstoqueID,
+				EstoqueNome:        it.EstoqueNome,
+				Quantidade:         it.Quantidade,
+				QuantidadeAprovada: &quantidadeAprovada,
+			})
+		}
+
+		if totalmenteAprovado {
+			novoStatus = "aprovado"
+		} else {
+			novoStatus = "parcialmente_aprovado"
+		}
+	} else {
+		const zerarItens = `UPDATE pedido_itens SET quantidade_aprovada = 0 WHERE pedido_id = $1 AND empresa_id = $2`
+		if _, err := tx.Exec(zerarItens, ctx.ID, empresaID); err != nil {
+			return PedidoDetalhe{}, false, fmt.Errorf("falha ao zerar quantidade aprovada na rejeição em lote: %w", err)
+		}
+		for _, it := range ctx.Itens {
+			zero := 0.0
+			itensResposta = append(itensResposta, PedidoItem{
+				ProdutoID:          it.ProdutoID,
+				ProdutoNome:        it.ProdutoNome,
+				CategoriaNome:      it.CategoriaNome,
+				EstoqueID:          it.EstoqueID,
+				EstoqueNome:        it.EstoqueNome,
+				Quantidade:         it.Quantidade,
+				QuantidadeAprovada: &zero,
+			})
+		}
+	}
+
+	var det PedidoDetalhe
+	var observacao sql.NullString
+	var decididoPor sql.NullString
+	var decididoEm sql.NullTime
+	var centroCustoDecisao sql.NullString
+	const registrarDecisao = `
+		UPDATE pedidos SET status = $2, decidido_por = $3, decidido_em = now()
+		WHERE id = $1 AND status = 'pendente' AND empresa_id = $4
+		RETURNING id, usuario_id, solicitante, COALESCE(obra_centro_custo, ''), observacao, status, criado_em, decidido_por, decidido_em, tipo,
+		  (SELECT cc.nome FROM centros_custo cc WHERE cc.id = pedidos.centro_custo_id AND cc.empresa_id = pedidos.empresa_id)`
+	if err := tx.QueryRow(registrarDecisao, ctx.ID, novoStatus, decisorID, empresaID).Scan(
+		&det.ID, &det.UsuarioID, &det.Solicitante, &det.ObraCentroCusto,
+		&observacao, &det.Status, &det.CriadoEm, &decididoPor, &decididoEm, &det.Tipo, &centroCustoDecisao,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Inalcançável sob a trava FOR UPDATE acima (já confirmamos
+			// `pendente` há poucas linhas, na MESMA transação, sem ninguém
+			// mais capaz de mexer nesta linha enquanto a seguramos) — mantido
+			// por paridade defensiva com DecidirPedido.
+			return PedidoDetalhe{}, true, nil
+		}
+		return PedidoDetalhe{}, false, fmt.Errorf("falha ao registrar decisão do pedido %s no lote: %w", ctx.ID, err)
+	}
+	if err := liberarReservasPedidoTx(tx, empresaID, ctx.ID); err != nil {
+		return PedidoDetalhe{}, false, err
+	}
+	if observacao.Valid {
+		det.Observacao = &observacao.String
+	}
+	if centroCustoDecisao.Valid {
+		det.CentroCustoNome = &centroCustoDecisao.String
+	}
+	if decididoPor.Valid {
+		det.DecididoPor = &decididoPor.String
+	}
+	if decididoEm.Valid {
+		det.DecididoEm = &decididoEm.Time
+	}
+
+	sort.Slice(itensResposta, func(i, j int) bool {
+		return itensResposta[i].ProdutoNome < itensResposta[j].ProdutoNome
+	})
+	det.Itens = itensResposta
+
+	return det, false, nil
+}
+
+// lerPedidoDetalheTx relê o cabeçalho + itens do Pedido `pedidoID` DENTRO da
+// transação do lote — usado só por DecidirLotePedidos quando
+// decidirUmPedidoDoLoteTx devolve `pulado=true` (já decidido por outra
+// requisição concorrente): o chamador precisa reportar o status REAL desse
+// Pedido na resposta do lote, não um erro. Molde do SELECT de
+// BuscarPedidoProprio (cabeçalho com `cc.nome` e itens com
+// inativo/produtoCodigo ao vivo), mais `decidido_por`/`decidido_em` — a
+// mesma auditoria que o RETURNING de decidirUmPedidoDoLoteTx expõe para um
+// Pedido decidido agora, para a resposta do lote nunca distinguir "decidido
+// agora" de "já estava decidido" pela forma dos dois objetos.
+func lerPedidoDetalheTx(tx *sql.Tx, empresaID, pedidoID string) (PedidoDetalhe, error) {
+	var det PedidoDetalhe
+	var observacao sql.NullString
+	var decididoPor sql.NullString
+	var decididoEm sql.NullTime
+	var centroCusto sql.NullString
+	const selectPedido = `
+		SELECT p.id, p.usuario_id, p.solicitante, COALESCE(p.obra_centro_custo, ''), p.observacao, p.status, p.criado_em, p.decidido_por, p.decidido_em, p.tipo, cc.nome
+		FROM pedidos p
+		LEFT JOIN centros_custo cc ON cc.id = p.centro_custo_id AND cc.empresa_id = p.empresa_id
+		WHERE p.id = $1 AND p.empresa_id = $2`
+	if err := tx.QueryRow(selectPedido, pedidoID, empresaID).Scan(
+		&det.ID, &det.UsuarioID, &det.Solicitante, &det.ObraCentroCusto,
+		&observacao, &det.Status, &det.CriadoEm, &decididoPor, &decididoEm, &det.Tipo, &centroCusto,
+	); err != nil {
+		return PedidoDetalhe{}, fmt.Errorf("falha ao reler pedido %s já decidido no lote: %w", pedidoID, err)
+	}
+	if observacao.Valid {
+		det.Observacao = &observacao.String
+	}
+	if centroCusto.Valid {
+		det.CentroCustoNome = &centroCusto.String
+	}
+	if decididoPor.Valid {
+		det.DecididoPor = &decididoPor.String
+	}
+	if decididoEm.Valid {
+		det.DecididoEm = &decididoEm.Time
+	}
+
+	const selectItens = `
+		SELECT pi.produto_id, pi.produto_nome, pi.categoria_nome, pi.estoque_id, pi.estoque_nome, pi.quantidade, pi.quantidade_aprovada,
+		       COALESCE(pr.inativado_em IS NOT NULL, false), pr.codigo
+		FROM pedido_itens pi
+		LEFT JOIN produtos pr ON pr.id = pi.produto_id AND pr.empresa_id = pi.empresa_id
+		WHERE pi.pedido_id = $1 AND pi.empresa_id = $2 ORDER BY pi.produto_nome`
+	rows, err := tx.Query(selectItens, pedidoID, empresaID)
+	if err != nil {
+		return PedidoDetalhe{}, fmt.Errorf("falha ao listar itens do pedido %s já decidido no lote: %w", pedidoID, err)
+	}
+	defer rows.Close()
+
+	det.Itens = make([]PedidoItem, 0)
+	for rows.Next() {
+		var it PedidoItem
+		var quantidadeAprovada sql.NullFloat64
+		var codigo sql.NullString
+		if err := rows.Scan(
+			&it.ProdutoID, &it.ProdutoNome, &it.CategoriaNome,
+			&it.EstoqueID, &it.EstoqueNome, &it.Quantidade, &quantidadeAprovada, &it.Inativo, &codigo,
+		); err != nil {
+			return PedidoDetalhe{}, fmt.Errorf("falha ao ler item do pedido %s já decidido no lote: %w", pedidoID, err)
+		}
+		if quantidadeAprovada.Valid {
+			it.QuantidadeAprovada = &quantidadeAprovada.Float64
+		}
+		if codigo.Valid {
+			it.ProdutoCodigo = &codigo.String
+		}
+		det.Itens = append(det.Itens, it)
+	}
+	if err := rows.Err(); err != nil {
+		return PedidoDetalhe{}, fmt.Errorf("falha ao iterar itens do pedido %s já decidido no lote: %w", pedidoID, err)
+	}
+	return det, nil
+}
+
 // --- Recibo do Pedido em PDF — Story 7.6 (Epic 7, Pedidos de Retirada), ----
 // --- spec-7-6 ---------------------------------------------------------------
 //

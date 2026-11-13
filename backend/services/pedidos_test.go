@@ -3264,3 +3264,433 @@ func TestDecidirPedido_RecusaPedidoDeBaixa(t *testing.T) {
 		t.Errorf("saldo não deveria mudar, got %v, want 10", q)
 	}
 }
+
+// --- DecidirLotePedidos (Story 20.3, Epic 20, spec-20-3) ------------------
+
+// TestDecidirLotePedidos_ListaVazia cobre a linha "Lote vazio" da I/O Matrix:
+// `pedidoIds: []` -> &ErroPedidoValidacao (400), nada consultado.
+func TestDecidirLotePedidos_ListaVazia(t *testing.T) {
+	db := testDB(t)
+	gestorID := semearConta(t, db, "Lote Vazio Gestor", "lote-vazio-gestor@empresa.com", PapelGestor, 0)
+
+	_, err := DecidirLotePedidos(db, empresaTeste, gestorID, nil, true)
+	var erroValidacao *ErroPedidoValidacao
+	if !errors.As(err, &erroValidacao) {
+		t.Fatalf("erro = %v, want *ErroPedidoValidacao", err)
+	}
+}
+
+// TestDecidirLotePedidos_IdInexistenteOuDeOutraEmpresa cobre o achado de
+// revisão (findings do triplo-review pós-story): a pré-checagem de tipo
+// (ANTES de tx.Begin()) não tinha nenhuma cobertura para um id inexistente
+// ou de outra Empresa dentro de `pedidoIds` — mesmo colapso de
+// ErrPedidoNaoEncontrado já usado por DecidirPedido/BuscarPedidoProprio
+// (AD-20, nunca revela existência de Pedido alheio).
+func TestDecidirLotePedidos_IdInexistenteOuDeOutraEmpresa(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	gestorID := semearConta(t, db, "Lote IdRuim Gestor", "lote-idruim-gestor@empresa.com", PapelGestor, 0)
+	usuarioID := semearConta(t, db, "Lote IdRuim Usuario", "lote-idruim-usuario@empresa.com", PapelUsuario, 1)
+
+	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Lote IdRuim Baixa", 10)
+	pedidoValido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 3)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
+	}
+
+	outraEmpresa := criarEmpresaDeTeste(t, db, "outra-empresa-lote-idruim", "777888990099", "Outra Empresa Lote IdRuim")
+	usuarioOutra := semearContaNaEmpresa(t, db, outraEmpresa.ID, "IdRuim Outra Empresa", "idruim-outra@outra.com", PapelUsuario)
+	pedidoAlheio := inserirPedidoDireto(t, db, outraEmpresa.ID, usuarioOutra, "pendente")
+
+	casos := map[string][]string{
+		"id inexistente (UUID válido, nenhum Pedido)": {pedidoValido.ID, "00000000-0000-0000-0000-000000000000"},
+		"id malformado (não-UUID)":                     {pedidoValido.ID, "nao-e-um-uuid"},
+		"id de outra Empresa":                          {pedidoValido.ID, pedidoAlheio},
+	}
+	for nome, ids := range casos {
+		t.Run(nome, func(t *testing.T) {
+			_, err := DecidirLotePedidos(db, empresaTeste, gestorID, ids, true)
+			if !errors.Is(err, ErrPedidoNaoEncontrado) {
+				t.Fatalf("erro = %v, want ErrPedidoNaoEncontrado", err)
+			}
+		})
+	}
+
+	// Nenhum dos casos acima gravou nada, nem no Pedido válido da MESMA
+	// lista (a pré-checagem de tipo roda ANTES de qualquer tx.Begin()).
+	var status string
+	if err := db.QueryRow(`SELECT status FROM pedidos WHERE id = $1`, pedidoValido.ID).Scan(&status); err != nil {
+		t.Fatalf("reler status: %v", err)
+	}
+	if status != "pendente" {
+		t.Errorf("status do pedido válido = %q, want pendente (nada gravado)", status)
+	}
+}
+
+// TestDecidirLotePedidos_RetiradaMisturada_RejeitaListaInteira cobre a linha
+// "Lote com retirada misturado" da I/O Matrix: um dos ids é `tipo=retirada`
+// -> o LOTE INTEIRO é rejeitado com &ErroPedidoValidacao (400), nada
+// gravado — nem o Pedido de Baixa que seria válido sozinho. Também prova o
+// Never de spec-20-3: DecidirPedido (retirada) continua INTOCADO por esta
+// story — o mesmo Pedido de retirada decide normalmente depois, por
+// DecidirPedido, fora do lote.
+func TestDecidirLotePedidos_RetiradaMisturada_RejeitaListaInteira(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	gestorID := semearConta(t, db, "Lote Misto Retirada Gestor", "lote-misto-retirada-gestor@empresa.com", PapelGestor, 0)
+
+	// Pedido de retirada pendente (molde de seedPedidoViaServico, mas
+	// direto pela camada de serviço sem a dança HTTP).
+	usuarioRetirada := semearConta(t, db, "Lote Misto Retirada Usuario", "lote-misto-retirada-usuario@empresa.com", PapelUsuario, 1)
+	// seedProdutoComSaldo já semeia uma conta almoxarife própria (derivada
+	// do nome do Estoque) — reaproveitada abaixo como decisor de
+	// DecidirPedido, em vez de semear uma segunda conta com e-mail
+	// coincidente (mesmo padrão de TestDecidirPedido_RecusaPedidoDeTransferencia).
+	produtoRetiradaID, estoqueRetiradaID, almoxID := seedProdutoComSaldo(t, db, "Lote Misto Retirada", 10)
+	if _, err := AdicionarItemCarrinho(db, empresaTeste, usuarioRetirada, produtoRetiradaID, estoqueRetiradaID, 2); err != nil {
+		t.Fatalf("seed AdicionarItemCarrinho: %v", err)
+	}
+	pedidoRetirada, err := SubmeterPedido(db, empresaTeste, usuarioRetirada, "Fulano", "Obra X", "")
+	if err != nil {
+		t.Fatalf("seed SubmeterPedido: %v", err)
+	}
+
+	// Pedido de Baixa pendente, que seria válido sozinho.
+	produtoBaixaID, estoqueBaixaID, _ := seedProdutoComSaldo(t, db, "Lote Misto Baixa", 10)
+	pedidoBaixa, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioRetirada, "Fulano", "Obra X", "", produtoBaixaID, estoqueBaixaID, 3)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
+	}
+
+	_, err = DecidirLotePedidos(db, empresaTeste, gestorID, []string{pedidoBaixa.ID, pedidoRetirada.ID}, true)
+	var erroValidacao *ErroPedidoValidacao
+	if !errors.As(err, &erroValidacao) {
+		t.Fatalf("erro = %v, want *ErroPedidoValidacao", err)
+	}
+
+	for _, id := range []string{pedidoBaixa.ID, pedidoRetirada.ID} {
+		var status string
+		if err := db.QueryRow(`SELECT status FROM pedidos WHERE id = $1`, id).Scan(&status); err != nil {
+			t.Fatalf("ler status de %s: %v", id, err)
+		}
+		if status != "pendente" {
+			t.Errorf("pedido %s: status = %q, want pendente (lote inteiro rejeitado, nada gravado)", id, status)
+		}
+	}
+	if q := saldoProdutoEstoque(t, db, produtoBaixaID, estoqueBaixaID); q != 10 {
+		t.Errorf("saldo da Baixa não deveria mudar, got %v, want 10", q)
+	}
+	if q := saldoProdutoEstoque(t, db, produtoRetiradaID, estoqueRetiradaID); q != 10 {
+		t.Errorf("saldo da retirada não deveria mudar, got %v, want 10", q)
+	}
+
+	// Never de spec-20-3: DecidirPedido (retirada) continua intocado — o
+	// Pedido de retirada decide normalmente fora do lote.
+	det, err := DecidirPedido(db, empresaTeste, pedidoRetirada.ID, almoxID, PapelAlmoxarife, true)
+	if err != nil {
+		t.Fatalf("DecidirPedido (fora do lote) erro inesperado: %v", err)
+	}
+	if det.Status != "aprovado" {
+		t.Errorf("status do pedido de retirada = %q, want aprovado", det.Status)
+	}
+}
+
+// TestDecidirLotePedidos_MistoTransferenciaEBaixa_Aprovado cobre a linha
+// "Lote válido misto" da I/O Matrix: 1 Transferência + 1 Baixa, saldo
+// suficiente -> ambos `aprovado`, cada um executando a MESMA mecânica física
+// do botão direto correspondente (FEFO + crédito no destino preservando
+// validade para Transferência; só FEFO para Baixa) — nenhum debita/credita
+// duas vezes.
+func TestDecidirLotePedidos_MistoTransferenciaEBaixa_Aprovado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	gestorID := semearConta(t, db, "Lote Misto OK Gestor", "lote-misto-ok-gestor@empresa.com", PapelGestor, 0)
+	usuarioID := semearConta(t, db, "Lote Misto OK Usuario", "lote-misto-ok-usuario@empresa.com", PapelUsuario, 1)
+
+	produtoTransfID, estoqueOrigemID, _ := seedProdutoComSaldo(t, db, "Lote Misto OK Transf", 10)
+	estoqueDestinoID := criarEstoqueDestinoTeste(t, db, "Lote Misto OK Transf Destino")
+	pedidoTransf, err := SubmeterPedidoTransferencia(
+		db, empresaTeste, usuarioID, "Fulano", "Obra X", "",
+		produtoTransfID, estoqueOrigemID, estoqueDestinoID, 6,
+	)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoTransferencia: %v", err)
+	}
+
+	produtoBaixaID, estoqueBaixaID, _ := seedProdutoComSaldo(t, db, "Lote Misto OK Baixa", 10)
+	pedidoBaixa, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra Y", "", produtoBaixaID, estoqueBaixaID, 4)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
+	}
+
+	resultado, err := DecidirLotePedidos(db, empresaTeste, gestorID, []string{pedidoTransf.ID, pedidoBaixa.ID}, true)
+	if err != nil {
+		t.Fatalf("DecidirLotePedidos erro inesperado: %v", err)
+	}
+	if len(resultado) != 2 {
+		t.Fatalf("len(resultado) = %d, want 2", len(resultado))
+	}
+	// Devolvido na mesma ordem de entrada.
+	if resultado[0].ID != pedidoTransf.ID || resultado[1].ID != pedidoBaixa.ID {
+		t.Fatalf("ordem do resultado não preservou a ordem de entrada: %+v", resultado)
+	}
+	for _, det := range resultado {
+		if det.Status != "aprovado" {
+			t.Errorf("pedido %s: status = %q, want aprovado", det.ID, det.Status)
+		}
+		if len(det.Itens) != 1 || det.Itens[0].QuantidadeAprovada == nil {
+			t.Fatalf("pedido %s: itens = %+v, want 1 item decidido", det.ID, det.Itens)
+		}
+	}
+
+	// Transferência: origem debitada, destino creditado, exatamente 1
+	// Movimentação tipo=transferencia.
+	if q := saldoProdutoEstoque(t, db, produtoTransfID, estoqueOrigemID); q != 4 {
+		t.Errorf("saldo da origem = %v, want 4 (10 - 6)", q)
+	}
+	var qtdDestino float64
+	if err := db.QueryRow(`SELECT COALESCE(SUM(quantidade), 0) FROM lotes WHERE produto_id = $1 AND estoque_id = $2`, produtoTransfID, estoqueDestinoID).Scan(&qtdDestino); err != nil {
+		t.Fatalf("ler lotes do destino: %v", err)
+	}
+	if qtdDestino != 6 {
+		t.Errorf("saldo do destino = %v, want 6", qtdDestino)
+	}
+	movsTransf := movsDoProduto(t, db, produtoTransfID)
+	if len(movsTransf) != 1 || movsTransf[0].Tipo != "transferencia" || movsTransf[0].Quantidade != 6 || !movsTransf[0].Destino.Valid {
+		t.Errorf("movimentações da transferência = %+v, want 1 transferencia(6) com destino", movsTransf)
+	}
+
+	// Baixa: só debita, exatamente 1 Movimentação tipo=baixa, sem destino.
+	if q := saldoProdutoEstoque(t, db, produtoBaixaID, estoqueBaixaID); q != 6 {
+		t.Errorf("saldo da baixa = %v, want 6 (10 - 4)", q)
+	}
+	movsBaixa := movsDoProduto(t, db, produtoBaixaID)
+	if len(movsBaixa) != 1 || movsBaixa[0].Tipo != "baixa" || movsBaixa[0].Quantidade != 4 || movsBaixa[0].Destino.Valid {
+		t.Errorf("movimentações da baixa = %+v, want 1 baixa(4) sem destino", movsBaixa)
+	}
+
+	// Reservas liberadas dos dois.
+	if n := contarReservas(t, db, pedidoTransf.ID); n != 0 {
+		t.Errorf("reservas da transferência = %d, want 0", n)
+	}
+	if n := contarReservas(t, db, pedidoBaixa.ID); n != 0 {
+		t.Errorf("reservas da baixa = %d, want 0", n)
+	}
+}
+
+// TestDecidirLotePedidos_ItemParcial_RestoDoLoteSeguiNormal cobre a linha
+// "Saldo caiu entre envio e aprovação" da I/O Matrix: o saldo físico de 1
+// pedido do lote cai abaixo do reservado -> esse pedido (e só esse) sai
+// `parcialmente_aprovado`; o resto do lote segue `aprovado` normalmente.
+func TestDecidirLotePedidos_ItemParcial_RestoDoLoteSeguiNormal(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	gestorID := semearConta(t, db, "Lote Parcial Gestor", "lote-parcial-gestor@empresa.com", PapelGestor, 0)
+	usuarioID := semearConta(t, db, "Lote Parcial Usuario", "lote-parcial-usuario@empresa.com", PapelUsuario, 1)
+
+	produtoA, estoqueA, _ := seedProdutoComSaldo(t, db, "Lote Parcial A", 10)
+	pedidoA, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoA, estoqueA, 8)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa A: %v", err)
+	}
+	produtoB, estoqueB, _ := seedProdutoComSaldo(t, db, "Lote Parcial B", 10)
+	pedidoB, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra Y", "", produtoB, estoqueB, 5)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa B: %v", err)
+	}
+
+	// Saldo físico de A cai para 3 (abaixo dos 8 reservados) ANTES da
+	// decisão — mesmo molde de TestDecidirPedidoHandler_200AprovacaoParcial.
+	if _, err := db.Exec(`UPDATE produto_estoque SET quantidade = 3 WHERE produto_id = $1 AND estoque_id = $2`, produtoA, estoqueA); err != nil {
+		t.Fatalf("seed: reduzir saldo real de A: %v", err)
+	}
+
+	resultado, err := DecidirLotePedidos(db, empresaTeste, gestorID, []string{pedidoA.ID, pedidoB.ID}, true)
+	if err != nil {
+		t.Fatalf("DecidirLotePedidos erro inesperado: %v", err)
+	}
+	if len(resultado) != 2 {
+		t.Fatalf("len(resultado) = %d, want 2", len(resultado))
+	}
+	if resultado[0].Status != "parcialmente_aprovado" || resultado[0].Itens[0].QuantidadeAprovada == nil || *resultado[0].Itens[0].QuantidadeAprovada != 3 {
+		t.Errorf("pedido A = %+v, want parcialmente_aprovado com 3", resultado[0])
+	}
+	if resultado[1].Status != "aprovado" || resultado[1].Itens[0].QuantidadeAprovada == nil || *resultado[1].Itens[0].QuantidadeAprovada != 5 {
+		t.Errorf("pedido B = %+v, want aprovado com 5", resultado[1])
+	}
+}
+
+// TestDecidirLotePedidos_PedidoJaDecidido_PuladoSemAbortarLote cobre a linha
+// "Pedido já decidido por outra requisição" da I/O Matrix: 1 dos ids do lote
+// já não está mais `pendente` (decidido por outra requisição concorrente,
+// simulado aqui por um UPDATE direto) -> é PULADO (reportado com o status
+// JÁ gravado), sem abortar os demais pedidos do lote (não é erro de lote).
+func TestDecidirLotePedidos_PedidoJaDecidido_PuladoSemAbortarLote(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	// Dois Gestores distintos: gestor1 decide o primeiro pedido "de
+	// verdade" (fora do lote que o teste quer provar); gestor2 é quem
+	// chama o lote que encontra esse mesmo pedido já decidido — nomes
+	// diferentes em `decidido_por` provam que o lote NUNCA sobrescreve a
+	// decisão original (Revisão de código, achado #4: o pulado precisa
+	// reportar EXATAMENTE o que foi gravado da primeira vez, não um
+	// placeholder).
+	gestor1ID := semearConta(t, db, "Lote Pulado Gestor1", "lote-pulado-gestor1@empresa.com", PapelGestor, 0)
+	gestor2ID := semearConta(t, db, "Lote Pulado Gestor2", "lote-pulado-gestor2@empresa.com", PapelGestor, 1)
+	usuarioID := semearConta(t, db, "Lote Pulado Usuario", "lote-pulado-usuario@empresa.com", PapelUsuario, 2)
+
+	// Saldo de 4 (exatamente o solicitado) -> a decisão real de gestor1
+	// abaixo aprova TOTALMENTE, com um `quantidadeAprovada` previsível para
+	// comparar byte a byte com o que o lote de gestor2 relê depois.
+	produtoJaDecidido, estoqueJaDecidido, _ := seedProdutoComSaldo(t, db, "Lote Pulado JaDecidido", 4)
+	pedidoJaDecidido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "obs-ja-decidido", produtoJaDecidido, estoqueJaDecidido, 4)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa (já decidido): %v", err)
+	}
+	// Decisão REAL (não um UPDATE sintético) — simula a "outra requisição
+	// concorrente" que decidiu este Pedido ANTES do lote de gestor2 abaixo
+	// existir: debita saldo de verdade, grava quantidade_aprovada e
+	// decidido_por/decidido_em de verdade. O resultado desta chamada é o
+	// GROUND TRUTH que a leitura "pulada" do próximo lote precisa igualar.
+	decididoAntes, err := DecidirLotePedidos(db, empresaTeste, gestor1ID, []string{pedidoJaDecidido.ID}, true)
+	if err != nil {
+		t.Fatalf("decisão real prévia de pedidoJaDecidido: %v", err)
+	}
+	if len(decididoAntes) != 1 || decididoAntes[0].Status != "aprovado" {
+		t.Fatalf("seed: decisão prévia = %+v, want 1 item aprovado", decididoAntes)
+	}
+	ground := decididoAntes[0]
+
+	produtoNormal, estoqueNormal, _ := seedProdutoComSaldo(t, db, "Lote Pulado Normal", 10)
+	pedidoNormal, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra Y", "", produtoNormal, estoqueNormal, 3)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa (normal): %v", err)
+	}
+
+	resultado, err := DecidirLotePedidos(db, empresaTeste, gestor2ID, []string{pedidoJaDecidido.ID, pedidoNormal.ID}, true)
+	if err != nil {
+		t.Fatalf("DecidirLotePedidos erro inesperado (pedido já decidido nunca aborta o lote): %v", err)
+	}
+	if len(resultado) != 2 {
+		t.Fatalf("len(resultado) = %d, want 2", len(resultado))
+	}
+	pulado := resultado[0]
+	if pulado.ID != pedidoJaDecidido.ID {
+		t.Fatalf("resultado[0].ID = %q, want %q (pedido já decidido deve vir na posição de entrada)", pulado.ID, pedidoJaDecidido.ID)
+	}
+	if pulado.Status != "aprovado" {
+		t.Errorf("pedido já decidido: Status = %q, want %q (ground truth da decisão real)", pulado.Status, ground.Status)
+	}
+	// O "pulado" nunca é decidido por gestor2 — continua com a auditoria da
+	// decisão REAL de gestor1, nunca sobrescrita pelo lote que só o
+	// reportou.
+	if pulado.DecididoPor == nil || *pulado.DecididoPor != gestor1ID {
+		t.Errorf("pedido já decidido: DecididoPor = %v, want %q (gestor1, nunca gestor2)", pulado.DecididoPor, gestor1ID)
+	}
+	if ground.DecididoPor == nil || pulado.DecididoPor == nil || *pulado.DecididoPor != *ground.DecididoPor {
+		t.Errorf("pedido já decidido: DecididoPor = %v, want igual ao ground truth %v", pulado.DecididoPor, ground.DecididoPor)
+	}
+	if ground.DecididoEm == nil || pulado.DecididoEm == nil || !pulado.DecididoEm.Equal(*ground.DecididoEm) {
+		t.Errorf("pedido já decidido: DecididoEm = %v, want igual ao ground truth %v", pulado.DecididoEm, ground.DecididoEm)
+	}
+	if pulado.CentroCustoNome != nil || ground.CentroCustoNome != nil {
+		t.Errorf("pedido já decidido: CentroCustoNome = %v (ground %v), want nil nos dois (Baixa nunca escolhe Centro de Custo cadastrado)", pulado.CentroCustoNome, ground.CentroCustoNome)
+	}
+	if pulado.Observacao == nil || *pulado.Observacao != "obs-ja-decidido" {
+		t.Errorf("pedido já decidido: Observacao = %v, want \"obs-ja-decidido\" (snapshot do envio, preservado)", pulado.Observacao)
+	}
+	if len(pulado.Itens) != 1 || len(ground.Itens) != 1 {
+		t.Fatalf("pedido já decidido: Itens = %+v (ground %+v), want 1 item nos dois", pulado.Itens, ground.Itens)
+	}
+	itemPulado, itemGround := pulado.Itens[0], ground.Itens[0]
+	if itemPulado.ProdutoID != itemGround.ProdutoID || itemPulado.EstoqueID != itemGround.EstoqueID ||
+		itemPulado.Quantidade != itemGround.Quantidade {
+		t.Errorf("pedido já decidido: item = %+v, want igual ao ground truth %+v", itemPulado, itemGround)
+	}
+	if itemPulado.QuantidadeAprovada == nil || itemGround.QuantidadeAprovada == nil ||
+		*itemPulado.QuantidadeAprovada != *itemGround.QuantidadeAprovada {
+		t.Errorf("pedido já decidido: QuantidadeAprovada = %v, want igual ao ground truth %v", itemPulado.QuantidadeAprovada, itemGround.QuantidadeAprovada)
+	}
+	if itemPulado.QuantidadeAprovada == nil || *itemPulado.QuantidadeAprovada != 4 {
+		t.Errorf("pedido já decidido: QuantidadeAprovada = %v, want 4 (saldo = solicitado)", itemPulado.QuantidadeAprovada)
+	}
+
+	if resultado[1].ID != pedidoNormal.ID || resultado[1].Status != "aprovado" {
+		t.Errorf("pedido normal = %+v, want status=aprovado (resto do lote segue normal)", resultado[1])
+	}
+	if resultado[1].DecididoPor == nil || *resultado[1].DecididoPor != gestor2ID {
+		t.Errorf("pedido normal: DecididoPor = %v, want %q (gestor2, decidido AGORA por este lote)", resultado[1].DecididoPor, gestor2ID)
+	}
+
+	// O pedido já decidido não foi tocado de novo por este segundo lote:
+	// saldo igual ao que a decisão real de gestor1 já havia deixado (4 - 4
+	// = 0), nunca debitado uma segunda vez.
+	if q := saldoProdutoEstoque(t, db, produtoJaDecidido, estoqueJaDecidido); q != 0 {
+		t.Errorf("saldo do pedido já decidido = %v, want 0 (debitado uma única vez, pela decisão real)", q)
+	}
+	if n := contarMovimentacoes(t, db, produtoJaDecidido); n != 1 {
+		t.Errorf("movimentações do produto já decidido = %d, want 1 (nunca debitado 2x)", n)
+	}
+}
+
+// TestDecidirLotePedidos_DecisoesConcorrentesSoAPrimeiraDebita cobre a
+// cobertura de concorrência pedida por spec-20-3 (Tasks & Acceptance): 2
+// decisões em lote simultâneas sobre o MESMO pedido (cada uma num lote de 1)
+// nunca debitam duas vezes — exatamente uma delas decide de verdade (1
+// Movimentação, saldo debitado uma vez); a outra vê o mesmo pedido já
+// decidido e o reporta sem erro (nunca aborta, nunca duplica o débito).
+func TestDecidirLotePedidos_DecisoesConcorrentesSoAPrimeiraDebita(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	gestorID := semearConta(t, db, "Lote Corrida Gestor", "lote-corrida-gestor@empresa.com", PapelGestor, 0)
+	usuarioID := semearConta(t, db, "Lote Corrida Usuario", "lote-corrida-usuario@empresa.com", PapelUsuario, 1)
+
+	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Lote Corrida", 10)
+	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 4)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var res1, res2 []PedidoDetalhe
+	var err1, err2 error
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		res1, err1 = DecidirLotePedidos(db, empresaTeste, gestorID, []string{pedido.ID}, true)
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		res2, err2 = DecidirLotePedidos(db, empresaTeste, gestorID, []string{pedido.ID}, true)
+	}()
+	close(start)
+	wg.Wait()
+
+	if err1 != nil {
+		t.Fatalf("lote 1 erro inesperado: %v", err1)
+	}
+	if err2 != nil {
+		t.Fatalf("lote 2 erro inesperado: %v", err2)
+	}
+	if len(res1) != 1 || len(res2) != 1 {
+		t.Fatalf("res1=%+v res2=%+v, want 1 item cada", res1, res2)
+	}
+	if res1[0].Status != "aprovado" || res2[0].Status != "aprovado" {
+		t.Fatalf("res1=%+v res2=%+v, want status=aprovado nas duas respostas (a perdedora relê o mesmo resultado final)", res1, res2)
+	}
+
+	if q := saldoProdutoEstoque(t, db, produtoID, estoqueID); q != 6 {
+		t.Errorf("saldo = %v, want 6 (10 - 4, debitado uma única vez)", q)
+	}
+	movs := movsDoProduto(t, db, produtoID)
+	if len(movs) != 1 {
+		t.Fatalf("movimentações = %+v, want exatamente 1 (nunca debitado duas vezes)", movs)
+	}
+	if n := contarReservas(t, db, pedido.ID); n != 0 {
+		t.Errorf("reservas = %d, want 0", n)
+	}
+}

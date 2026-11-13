@@ -599,7 +599,7 @@ describe('FilaPedidosSection', () => {
     expect(screen.queryByRole('button', { name: 'Aprovar' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Rejeitar' })).not.toBeInTheDocument();
     expect(
-      screen.getByText('Este tipo de Pedido ainda não tem aprovação implementada nesta versão.'),
+      screen.getByText('Use a Aprovação em lote para decidir este tipo de Pedido.'),
     ).toBeInTheDocument();
   });
 

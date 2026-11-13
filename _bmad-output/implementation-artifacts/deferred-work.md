@@ -841,3 +841,31 @@ status: open
 - source_spec: `spec-20-2-pedido-de-baixa-de-estoque.md`
   summary: `PedidoBaixaPage.tsx` usa um `<textarea>` cru com classes Tailwind duplicadas inline pro campo "Observação", em vez de um componente de formulário compartilhado.
   evidence: Achado pela revisão (blind-hunter). Polimento de consistência, sem efeito funcional.
+
+- source_spec: `spec-20-3-aprovacao-em-lote-por-gestor.md`
+  summary: `DecidirLotePedidos` não tem limite máximo de ids em `pedidoIds` — um lote arbitrariamente grande trava `FOR UPDATE` em todos os pares (produto, estoque) e todas as linhas de `pedidos` do lote inteiro numa única transação; "Selecionar todos" no frontend não tem teto nem aviso correspondente.
+  evidence: Achado por 2 revisores independentes (blind-hunter, edge-case-hunter). Ferramenta interna de uso controlado (poucos Gestores, lotes realisticamente pequenos) — risco real só em escala, vale um teto explícito (ex. 200) numa passada futura dedicada.
+
+- source_spec: `spec-20-3-aprovacao-em-lote-por-gestor.md`
+  summary: A pré-checagem de `tipo` (um `SELECT` por id, fora da transação) e a leitura de itens do lote (um `tx.Query` por id, dentro da transação) são N+1 — escalam linearmente com o tamanho do lote em vez de um `WHERE id = ANY($1)` só.
+  evidence: Achado pela revisão (blind-hunter). Performance, não correção; mesma régua de baixo risco do item anterior (lotes pequenos na prática).
+
+- source_spec: `spec-20-3-aprovacao-em-lote-por-gestor.md`
+  summary: `DecidirLotePedidosHandler` publica um evento realtime `pedidos` para TODO pedido do lote, inclusive os "pulados" (já decididos por outra requisição concorrente) — gera refetch desnecessário no cliente para pedidos que esta chamada não tocou de fato.
+  evidence: Achado pela revisão (blind-hunter + verification-gap). Comportamento intencional e documentado pelo próprio código como inofensivo/idempotente; revisitar só se virar problema medido de tráfego em produção.
+
+- source_spec: `spec-20-3-aprovacao-em-lote-por-gestor.md`
+  summary: Os diálogos de confirmação ("Aprovar/Rejeitar N pedido(s)?") mostram só a contagem bruta, sem discriminar quantos são Transferência vs. Baixa nem um resumo de produto/quantidade.
+  evidence: Achado pela revisão (blind-hunter). Nicety de UX, não exigido pelas ACs desta story.
+
+- source_spec: `spec-20-3-aprovacao-em-lote-por-gestor.md`
+  summary: `mensagemResultadoLote` só relata contagens agregadas ("X aprovado(s), Y parcialmente aprovado(s)"); depois que a lista pendente recarrega, não há como ver qual pedido específico saiu parcialmente aprovado nem por quanto, direto nesta tela.
+  evidence: Achado pela revisão (blind-hunter). O detalhe existe no pedido individual (Meus Pedidos/Fila); só falta nesta tela de lote.
+
+- source_spec: `spec-20-3-aprovacao-em-lote-por-gestor.md`
+  summary: Se um Pedido do lote deixasse de existir entre a pré-checagem de `tipo` (fora da transação) e a trava `FOR UPDATE` (dentro dela), o erro cai no branch genérico (500) em vez de `ErrPedidoNaoEncontrado` (404).
+  evidence: Achado pelo edge-case-hunter. Hoje inalcançável na prática — não existe nenhuma funcionalidade de cancelar/excluir Pedido neste sistema — gap de paridade defensiva com `DecidirPedido`, não um risco real atual.
+
+- source_spec: `spec-20-3-aprovacao-em-lote-por-gestor.md`
+  summary: `AprovacaoLotePage` rebusca o detalhe completo de TODOS os pedidos pendentes (`Promise.all`) a cada evento SSE `pedidos` recebido, mesmo quando o evento não tem nada a ver com os pedidos já listados nesta tela.
+  evidence: Achado pela revisão (blind-hunter). Ineficiência, não incorreção; mesma régua de baixo risco dos demais itens de escala desta story (poucos Gestores, poucos pedidos pendentes de cada vez na prática).

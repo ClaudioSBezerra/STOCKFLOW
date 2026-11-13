@@ -486,8 +486,9 @@ export function FilaPedidosSection() {
               Rejeitar some para esses tipos (em vez de deixar o Gestor
               clicar e levar um erro confuso), com um texto curto explicando
               por quê. `tipo` ausente (fixtures/pedidos anteriores a esta
-              story) conta como 'retirada'. Só a Story 20.3 habilita decidir
-              estes tipos. */}
+              story) conta como 'retirada'. Story 20.3: Transferência/Baixa
+              decidem pela tela "Aprovação em lote" (`gestor`+), não aqui —
+              NUNCA um botão individual (Code Map de spec-20-3). */}
           {detalheDe?.status === 'pendente' &&
             (!detalheDe.tipo || detalheDe.tipo === 'retirada' ? (
               <div className="flex justify-end gap-2 pt-2">
@@ -509,7 +510,7 @@ export function FilaPedidosSection() {
               </div>
             ) : (
               <p className="text-label text-muted-foreground pt-2">
-                Este tipo de Pedido ainda não tem aprovação implementada nesta versão.
+                Use a Aprovação em lote para decidir este tipo de Pedido.
               </p>
             ))}
         </DialogContent>

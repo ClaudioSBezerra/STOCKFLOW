@@ -2023,3 +2023,343 @@ func TestPedidosHandlers_CampoTipoNoJSON_Baixa(t *testing.T) {
 		t.Errorf("GET /api/pedidos/%s: Tipo = %q, want baixa", pedidoBaixa.ID, respDetalhe.Pedido.Tipo)
 	}
 }
+
+// --- DecidirLotePedidosHandler (Story 20.3, Epic 20, spec-20-3) -----------
+//
+// POST /api/pedidos/decisao-lote -> RequireAuth -> RequireRole(gestor) ->
+// handler. Molde de postDecisaoPedido acima, trocando RequireRole(almoxarife)
+// por RequireRole(gestor) — nível de acesso MAIOR (requisito explícito do
+// usuário: "o gerente tem que aprovar").
+
+func postDecisaoLotePedidos(db *sql.DB, authHeader, body string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /e/{slug}/api/pedidos/decisao-lote",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelGestor)(
+					DecidirLotePedidosHandler(db, realtime.NewRegistry())))))
+	var r *http.Request
+	if body != "" {
+		r = httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/pedidos/decisao-lote", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+	} else {
+		r = httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/pedidos/decisao-lote", nil)
+	}
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+// TestDecidirLotePedidosHandler_200LoteMisto cobre a linha "Lote válido
+// misto" na fronteira HTTP: um Gestor aprova 1 Transferência + 1 Baixa numa
+// chamada só -> 200, os dois `aprovado`.
+func TestDecidirLotePedidosHandler_200LoteMisto(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "H203 Lote Gestor", "h-lote-gestor@empresa.com", "senha-123456", "gestor")
+	tokenGestor := tokenDeLogin(t, db, "h-lote-gestor@empresa.com", "senha-123456")
+	dono, _ := seedContaComumECarrinho(t, db, "H203 Lote Dono", "h-lote-dono@empresa.com")
+
+	produtoTransfID, estoqueOrigemID, estoqueDestinoID := seedPedidoTransferenciaViaServico(t, db, "H203 Lote Transf", 10)
+	pedidoTransf, err := services.SubmeterPedidoTransferencia(db, empresaTeste, dono, "Fulano", "Obra X", "", produtoTransfID, estoqueOrigemID, estoqueDestinoID, 5)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoTransferencia: %v", err)
+	}
+	produtoBaixaID, estoqueBaixaID := seedProdutoComSaldoHandler(t, db, "H203 Lote Baixa", 10)
+	pedidoBaixa, err := services.SubmeterPedidoBaixa(db, empresaTeste, dono, "Fulano", "Obra Y", "", produtoBaixaID, estoqueBaixaID, 3)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
+	}
+
+	body := `{"pedidoIds":["` + pedidoTransf.ID + `","` + pedidoBaixa.ID + `"],"aprovar":true}`
+	w := postDecisaoLotePedidos(db, "Bearer "+tokenGestor, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Pedidos []services.PedidoDetalhe `json:"pedidos"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if len(resp.Pedidos) != 2 {
+		t.Fatalf("pedidos = %+v, want 2", resp.Pedidos)
+	}
+	for _, p := range resp.Pedidos {
+		if p.Status != "aprovado" {
+			t.Errorf("pedido %s: status = %q, want aprovado", p.ID, p.Status)
+		}
+	}
+}
+
+// TestDecidirLotePedidosHandler_400ListaVazia cobre a linha "Lote vazio" na
+// fronteira HTTP -> 400 VALIDATION_ERROR.
+func TestDecidirLotePedidosHandler_400ListaVazia(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "H203 Vazio Gestor", "h-lote-vazio-gestor@empresa.com", "senha-123456", "gestor")
+	tokenGestor := tokenDeLogin(t, db, "h-lote-vazio-gestor@empresa.com", "senha-123456")
+
+	w := postDecisaoLotePedidos(db, "Bearer "+tokenGestor, `{"pedidoIds":[],"aprovar":true}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "VALIDATION_ERROR" {
+		t.Errorf("code = %q, want VALIDATION_ERROR", env.Error.Code)
+	}
+}
+
+// TestDecidirLotePedidosHandler_400RetiradaMisturada cobre a linha "Lote com
+// retirada misturado" na fronteira HTTP -> 400 VALIDATION_ERROR, nada
+// gravado.
+func TestDecidirLotePedidosHandler_400RetiradaMisturada(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "H203 Misto Gestor", "h-lote-misto-gestor@empresa.com", "senha-123456", "gestor")
+	tokenGestor := tokenDeLogin(t, db, "h-lote-misto-gestor@empresa.com", "senha-123456")
+	dono, _ := seedContaComumECarrinho(t, db, "H203 Misto Dono", "h-lote-misto-dono@empresa.com")
+
+	pedidoRetirada := seedPedidoViaServico(t, db, dono, "H203 Misto Retirada", 1)
+	produtoBaixaID, estoqueBaixaID := seedProdutoComSaldoHandler(t, db, "H203 Misto Baixa", 10)
+	pedidoBaixa, err := services.SubmeterPedidoBaixa(db, empresaTeste, dono, "Fulano", "Obra Y", "", produtoBaixaID, estoqueBaixaID, 3)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
+	}
+
+	body := `{"pedidoIds":["` + pedidoBaixa.ID + `","` + pedidoRetirada.ID + `"],"aprovar":true}`
+	w := postDecisaoLotePedidos(db, "Bearer "+tokenGestor, body)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "VALIDATION_ERROR" {
+		t.Errorf("code = %q, want VALIDATION_ERROR", env.Error.Code)
+	}
+
+	var status string
+	if err := db.QueryRow(`SELECT status FROM pedidos WHERE id = $1`, pedidoBaixa.ID).Scan(&status); err != nil {
+		t.Fatalf("reler status: %v", err)
+	}
+	if status != "pendente" {
+		t.Errorf("status do pedido de baixa = %q, want pendente (lote inteiro rejeitado)", status)
+	}
+}
+
+// TestDecidirLotePedidosHandler_403PapelAlmoxarife cobre a linha "Papel
+// abaixo de gestor" na fronteira HTTP: `almoxarife` — que decide Pedidos de
+// retirada por POST /api/pedidos/{id}/decisao — NÃO alcança o nível
+// MAIOR exigido por esta rota -> 403, nada gravado.
+func TestDecidirLotePedidosHandler_403PapelAlmoxarife(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	dono, _ := seedContaComumECarrinho(t, db, "H203 Papel Almox Dono", "h-lote-papel-almox-dono@empresa.com")
+	criarContaComPapel(t, db, "H203 Papel Almox", "h-lote-papel-almox@empresa.com", "senha-123456", "almoxarife")
+	tokenAlmox := tokenDeLogin(t, db, "h-lote-papel-almox@empresa.com", "senha-123456")
+
+	produtoBaixaID, estoqueBaixaID := seedProdutoComSaldoHandler(t, db, "H203 Papel Almox Baixa", 10)
+	pedidoBaixa, err := services.SubmeterPedidoBaixa(db, empresaTeste, dono, "Fulano", "Obra Y", "", produtoBaixaID, estoqueBaixaID, 3)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
+	}
+
+	w := postDecisaoLotePedidos(db, "Bearer "+tokenAlmox, `{"pedidoIds":["`+pedidoBaixa.ID+`"],"aprovar":true}`)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body=%s)", w.Code, w.Body.String())
+	}
+
+	var status string
+	if err := db.QueryRow(`SELECT status FROM pedidos WHERE id = $1`, pedidoBaixa.ID).Scan(&status); err != nil {
+		t.Fatalf("reler status: %v", err)
+	}
+	if status != "pendente" {
+		t.Errorf("status = %q, want pendente (nenhuma escrita antes do service)", status)
+	}
+}
+
+// TestDecidirLotePedidosHandler_PublicaEventoNoSucesso cobre o achado de
+// revisão (findings do triplo-review pós-story): nenhum teste existente de
+// DecidirLotePedidosHandler assinava o registry pra provar os eventos
+// realtime publicados — molde EXATO de
+// TestDecidirPedidoHandler_PublicaEventoNoSucesso, mas com um lote MISTO (2
+// decididos agora + 1 já "pulado" por já estar decidido antes da chamada):
+// publica 1 evento `pedidos` por Pedido da RESPOSTA (inclusive o pulado, de
+// propósito — ver comentário do handler) + 1 evento `produtos` por Produto
+// ÚNICO entre todos os itens (dedup: o Pedido pulado reaproveita o MESMO
+// Produto da Transferência, então só 2 eventos `produtos` no total, não 3).
+func TestDecidirLotePedidosHandler_PublicaEventoNoSucesso(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "H203 Evento Gestor", "h-lote-evento-gestor@empresa.com", "senha-123456", "gestor")
+	tokenGestor := tokenDeLogin(t, db, "h-lote-evento-gestor@empresa.com", "senha-123456")
+	dono, _ := seedContaComumECarrinho(t, db, "H203 Evento Dono", "h-lote-evento-dono@empresa.com")
+
+	// Transferência pendente, decidida agora -> aprovado.
+	produtoTransfID, estoqueOrigemID, estoqueDestinoID := seedPedidoTransferenciaViaServico(t, db, "H203 Evento Transf", 10)
+	pedidoTransf, err := services.SubmeterPedidoTransferencia(db, empresaTeste, dono, "Fulano", "Obra X", "", produtoTransfID, estoqueOrigemID, estoqueDestinoID, 5)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoTransferencia: %v", err)
+	}
+
+	// Baixa pendente, decidida agora -> aprovado (Produto DIFERENTE do de
+	// cima — prova que o dedup de eventos `produtos` não colapsa produtos
+	// distintos).
+	produtoBaixaID, estoqueBaixaID := seedProdutoComSaldoHandler(t, db, "H203 Evento Baixa", 10)
+	pedidoBaixa, err := services.SubmeterPedidoBaixa(db, empresaTeste, dono, "Fulano", "Obra Y", "", produtoBaixaID, estoqueBaixaID, 3)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
+	}
+
+	// Pedido "pulado" — já decidido ANTES desta chamada (simulado por
+	// UPDATE direto, mesmo molde de
+	// TestDecidirLotePedidos_PedidoJaDecidido_PuladoSemAbortarLote),
+	// reaproveitando o MESMO Produto/Estoque da Transferência acima (origem)
+	// para testar o dedup de eventos `produtos`.
+	pedidoPulado, err := services.SubmeterPedidoBaixa(db, empresaTeste, dono, "Fulano", "Obra Z", "", produtoTransfID, estoqueOrigemID, 2)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa (pulado): %v", err)
+	}
+	if _, err := db.Exec(`UPDATE pedidos SET status = 'rejeitado', decidido_por = $2 WHERE id = $1`, pedidoPulado.ID, dono); err != nil {
+		t.Fatalf("seed: marcar pedidoPulado como já decidido: %v", err)
+	}
+
+	registro := realtime.NewRegistry()
+	eventos, cancelar := registro.Subscribe(empresaTeste)
+	defer cancelar()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /e/{slug}/api/pedidos/decisao-lote",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelGestor)(
+					DecidirLotePedidosHandler(db, registro)))))
+
+	body := `{"pedidoIds":["` + pedidoTransf.ID + `","` + pedidoBaixa.ID + `","` + pedidoPulado.ID + `"],"aprovar":true}`
+	r := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/pedidos/decisao-lote", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer "+tokenGestor)
+	w := httptest.NewRecorder()
+
+	// 3 eventos `pedidos` (um por Pedido da resposta, inclusive o pulado) +
+	// 2 eventos `produtos` (dedup: produtoTransfID aparece 2x na resposta —
+	// Transferência e o Pedido pulado — mas só 1 evento) = 5 no total, MAIS
+	// do que o buffer de 4 por assinante (realtime.eventoBufferSize) — o
+	// handler publica tudo de uma vez, síncrono, ANTES de devolver a
+	// resposta; se o teste só lesse o canal DEPOIS de `mux.ServeHTTP`
+	// retornar, o 5º Publish (não-bloqueante) já teria sido descartado por
+	// buffer cheio (mesma semântica de "assinante lento" do Registry, nunca
+	// um bug do handler). Por isso o `ServeHTTP` roda numa goroutine própria
+	// e o dreno do canal começa EM PARALELO — o mesmo padrão que o
+	// consumidor real (StreamRealtimeHandler) segue.
+	const totalEsperado = 5
+	recebidos := make([]struct {
+		Resource string
+		ID       string
+		Change   string
+	}, 0, totalEsperado)
+
+	servidoCh := make(chan struct{})
+	go func() {
+		defer close(servidoCh)
+		mux.ServeHTTP(w, r)
+	}()
+
+	for len(recebidos) < totalEsperado {
+		select {
+		case ev := <-eventos:
+			recebidos = append(recebidos, struct {
+				Resource string
+				ID       string
+				Change   string
+			}{ev.Resource, ev.ID, ev.Change})
+		case <-time.After(time.Second):
+			t.Fatalf("recebeu só %d de %d eventos esperados em 1s: %+v", len(recebidos), totalEsperado, recebidos)
+		}
+	}
+	<-servidoCh
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+
+	eventosPedidos := map[string]string{}
+	eventosProdutos := map[string]bool{}
+	for _, ev := range recebidos {
+		switch ev.Resource {
+		case "pedidos":
+			eventosPedidos[ev.ID] = ev.Change
+		case "produtos":
+			eventosProdutos[ev.ID] = true
+		default:
+			t.Errorf("evento de resource inesperado: %+v", ev)
+		}
+	}
+
+	if got, want := eventosPedidos[pedidoTransf.ID], "aprovado"; got != want {
+		t.Errorf("evento pedidos[%s] = %q, want %q", pedidoTransf.ID, got, want)
+	}
+	if got, want := eventosPedidos[pedidoBaixa.ID], "aprovado"; got != want {
+		t.Errorf("evento pedidos[%s] = %q, want %q", pedidoBaixa.ID, got, want)
+	}
+	if got, want := eventosPedidos[pedidoPulado.ID], "rejeitado"; got != want {
+		t.Errorf("evento pedidos[%s] (pulado) = %q, want %q (status já gravado antes da chamada, reportado)", pedidoPulado.ID, got, want)
+	}
+	if len(eventosPedidos) != 3 {
+		t.Errorf("eventos pedidos = %+v, want 3 entradas", eventosPedidos)
+	}
+
+	if !eventosProdutos[produtoTransfID] {
+		t.Errorf("faltou evento produtos[%s] (Transferência + pulado, dedup)", produtoTransfID)
+	}
+	if !eventosProdutos[produtoBaixaID] {
+		t.Errorf("faltou evento produtos[%s] (Baixa)", produtoBaixaID)
+	}
+	if len(eventosProdutos) != 2 {
+		t.Errorf("eventos produtos = %+v, want 2 entradas (dedup de produtoTransfID repetido)", eventosProdutos)
+	}
+}
+
+// TestDecidirLotePedidosHandler_400PayloadInvalido cobre `aprovar` ausente/
+// nulo -> 400 VALIDATION_ERROR (nunca uma rejeição silenciosa do lote
+// inteiro) — mesmo molde de decisaoPedidoRequest.
+func TestDecidirLotePedidosHandler_400PayloadInvalido(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "H203 Payload Gestor", "h-lote-payload-gestor@empresa.com", "senha-123456", "gestor")
+	tokenGestor := tokenDeLogin(t, db, "h-lote-payload-gestor@empresa.com", "senha-123456")
+
+	for _, body := range []string{`{}`, `{"pedidoIds":["x"],"aprovar":null}`, `not-json`} {
+		w := postDecisaoLotePedidos(db, "Bearer "+tokenGestor, body)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("body=%s: status = %d, want 400 (body=%s)", body, w.Code, w.Body.String())
+		}
+	}
+}
+
+// TestDecidirLotePedidosHandler_400MensagensDistintas cobre o achado de
+// revisão (findings do triplo-review pós-story): JSON malformado e `aprovar`
+// ausente/nulo são causas DISTINTAS e devem devolver mensagens DISTINTAS no
+// 400 — nunca o mesmo "payload inválido" genérico para as duas, que
+// impediria quem consome a API de diferenciá-las.
+func TestDecidirLotePedidosHandler_400MensagensDistintas(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "H203 Mensagens Gestor", "h-lote-mensagens-gestor@empresa.com", "senha-123456", "gestor")
+	tokenGestor := tokenDeLogin(t, db, "h-lote-mensagens-gestor@empresa.com", "senha-123456")
+
+	wMalformado := postDecisaoLotePedidos(db, "Bearer "+tokenGestor, `not-json`)
+	if wMalformado.Code != http.StatusBadRequest {
+		t.Fatalf("JSON malformado: status = %d, want 400 (body=%s)", wMalformado.Code, wMalformado.Body.String())
+	}
+	envMalformado := decodeErro(t, wMalformado.Body.Bytes())
+
+	wSemAprovar := postDecisaoLotePedidos(db, "Bearer "+tokenGestor, `{"pedidoIds":["x"]}`)
+	if wSemAprovar.Code != http.StatusBadRequest {
+		t.Fatalf("aprovar ausente: status = %d, want 400 (body=%s)", wSemAprovar.Code, wSemAprovar.Body.String())
+	}
+	envSemAprovar := decodeErro(t, wSemAprovar.Body.Bytes())
+
+	if envMalformado.Error.Message == envSemAprovar.Error.Message {
+		t.Errorf("as duas causas devolveram a MESMA mensagem (%q) — devem ser distintas", envMalformado.Error.Message)
+	}
+}

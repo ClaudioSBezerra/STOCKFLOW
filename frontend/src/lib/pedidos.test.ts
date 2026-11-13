@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
   buscarPedido,
   buscarReciboPedidoBlob,
+  decidirLotePedidos,
   decidirPedido,
   listarFilaPedidos,
   listarPedidos,
@@ -201,6 +202,69 @@ describe('decidirPedido', () => {
 
     await expect(decidirPedido('p-1', true)).rejects.toThrow(
       'Não foi possível registrar a decisão agora. Tente novamente em instantes.',
+    );
+  });
+});
+
+describe('decidirLotePedidos', () => {
+  it('POST /api/pedidos/decisao-lote com {pedidoIds, aprovar}, Authorization e Content-Type, devolve os pedidos do corpo', async () => {
+    const decididos = [
+      { ...RESUMO, id: 'p-1', status: 'aprovado', itens: [] },
+      { ...RESUMO, id: 'p-2', status: 'aprovado', itens: [] },
+    ];
+    fetchMock.mockReturnValue(respostaOk({ pedidos: decididos }));
+
+    const pedidos = await decidirLotePedidos(['p-1', 'p-2'], true);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/pedidos/decisao-lote');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toMatchObject({
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer token-de-teste',
+    });
+    expect(JSON.parse(init.body)).toEqual({ pedidoIds: ['p-1', 'p-2'], aprovar: true });
+    expect(pedidos).toEqual(decididos);
+  });
+
+  it('envia {"aprovar":false} para rejeição em lote', async () => {
+    fetchMock.mockReturnValue(respostaOk({ pedidos: [] }));
+
+    await decidirLotePedidos(['p-1'], false);
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual({ pedidoIds: ['p-1'], aprovar: false });
+  });
+
+  it('devolve [] quando o corpo não traz pedidos', async () => {
+    fetchMock.mockReturnValue(respostaOk({}));
+    expect(await decidirLotePedidos(['p-1'], true)).toEqual([]);
+  });
+
+  it('propaga a mensagem de erro do servidor num 400 (lote com retirada misturado)', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({
+        error: { code: 'VALIDATION_ERROR', message: 'o lote só pode conter Pedidos de Transferência ou de Baixa' },
+      }),
+    });
+
+    await expect(decidirLotePedidos(['p-1'], true)).rejects.toThrow(
+      'o lote só pode conter Pedidos de Transferência ou de Baixa',
+    );
+  });
+
+  it('cai no fallback específico do lote quando a resposta não-ok não traz error.message', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({}),
+    });
+
+    await expect(decidirLotePedidos(['p-1'], true)).rejects.toThrow(
+      'Não foi possível registrar a decisão do lote agora. Tente novamente em instantes.',
     );
   });
 });

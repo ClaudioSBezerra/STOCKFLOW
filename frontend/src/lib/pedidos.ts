@@ -261,6 +261,38 @@ export async function decidirPedido(id: string, aprovar: boolean): Promise<Pedid
   return body.pedido;
 }
 
+const MENSAGEM_ERRO_DECISAO_LOTE =
+  'Não foi possível registrar a decisão do lote agora. Tente novamente em instantes.';
+
+/**
+ * Aprova ou rejeita, numa única chamada, TODOS os Pedidos de Transferência
+ * e/ou Baixa de `pedidoIds` (Story 20.3, Epic 20, spec-20-3) — caminho
+ * PARALELO a `decidirPedido`, só para `gestor`/`adm` (o servidor revalida o
+ * papel a cada requisição via `RequireRole`, nunca cacheado no cliente).
+ * Devolve `PedidoDetalhe[]` na mesma ordem de `pedidoIds` — cada um já com o
+ * status final (decidido agora OU já decidido antes por outra requisição
+ * concorrente, reportado em vez de abortar o lote). Resposta não-ok propaga
+ * `body.error?.message` do servidor (400 VALIDATION_ERROR para lista vazia
+ * ou com algum id de Pedido de retirada misturado, 403 para papel abaixo de
+ * `gestor`) ou o fallback acima.
+ */
+export async function decidirLotePedidos(
+  pedidoIds: string[],
+  aprovar: boolean,
+): Promise<PedidoDetalhe[]> {
+  const res = await fetch(apiUrl('/api/pedidos/decisao-lote'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ pedidoIds, aprovar }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+    throw new Error(body.error?.message ?? MENSAGEM_ERRO_DECISAO_LOTE);
+  }
+  const body = (await res.json()) as { pedidos: PedidoDetalhe[] };
+  return body.pedidos ?? [];
+}
+
 /**
  * Baixa o recibo em PDF de um Pedido já decidido (Story 7.6, spec-7-6) — só
  * dono OU `almoxarife`+ (mesmo padrão AD-8 de `buscarPedido`, decidido

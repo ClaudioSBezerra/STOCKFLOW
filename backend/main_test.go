@@ -1833,6 +1833,117 @@ func TestNewMux_ProdutosTransferenciaRotaCarregaRequireRole(t *testing.T) {
 	})
 }
 
+// TestNewMux_PedidosDecisaoLoteRotaCarregaRequireRole prova, despachando pela
+// mesma instância de newMux usada por main() (Story 20.3, spec-20-3), que
+// POST /api/pedidos/decisao-lote está atrás de RequireRole(PapelGestor) — um
+// nível MAIOR que o `almoxarife` de POST /api/pedidos/{id}/decisao: token
+// `almoxarife` -> 403 FORBIDDEN; token `gestor` passa do gate (200 de
+// verdade, nunca 403). Molde de TestNewMux_ProdutosBaixaRotaCarregaRequireRole/
+// TestNewMux_ProdutosTransferenciaRotaCarregaRequireRole.
+//
+// Sem este caso, remover ou trocar `middleware.RequireRole(services.PapelGestor)`
+// de POST /api/pedidos/decisao-lote por `PapelAlmoxarife` (copy-paste do
+// padrão de decisão individual) deixaria a suíte verde — os testes de
+// handlers/pedidos_test.go despacham por um mux construído à mão com o
+// RequireRole já fixado em PapelGestor, então nunca exercitam o que main.go
+// realmente registrou.
+func TestNewMux_PedidosDecisaoLoteRotaCarregaRequireRole(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate usuarios: %v", err)
+	}
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, produto_historico, mesclagens_duplicatas, carrinho_itens, pedido_itens, reservas_pedido_item, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
+		t.Fatalf("truncate produtos: %v", err)
+	}
+
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	fotosDir := t.TempDir()
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, fotosDir)
+
+	const senha = "senha-123456"
+	segredos := map[string]string{}
+
+	despachar := func(token, corpo string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/pedidos/decisao-lote", strings.NewReader(corpo))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	seedContaMux(t, db, "pedidos-lote-almox@empresa.com", "almoxarife", senha, segredos)
+	seedContaMux(t, db, "pedidos-lote-gestor@empresa.com", "gestor", senha, segredos)
+
+	var categoriaID string
+	if err := db.QueryRow(`SELECT id FROM categorias WHERE codigo = '04.001' AND empresa_id = $1`, empresaTeste).Scan(&categoriaID); err != nil {
+		t.Fatalf("buscar categoria de seed: %v", err)
+	}
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Mux Decisao Lote")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	produto, err := criarProdutoComSaldo(db, empresaTeste, services.CriarProdutoInput{
+		UnidadeMedida: "un",
+		TemplateID:    templateGenericoIDMux(t, db),
+		Nome:          "Produto Mux Decisao Lote",
+		CategoriaID:   categoriaID,
+	}, estoque.ID, 10)
+	if err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+	var usuarioAlmoxID string
+	if err := db.QueryRow(`SELECT id FROM usuarios WHERE email = $1`, "pedidos-lote-almox@empresa.com").Scan(&usuarioAlmoxID); err != nil {
+		t.Fatalf("buscar id da conta almoxarife de seed: %v", err)
+	}
+
+	t.Run("papel almoxarife -> 403 FORBIDDEN (gate exige gestor+)", func(t *testing.T) {
+		pedido, err := services.SubmeterPedidoBaixa(db, empresaTeste, usuarioAlmoxID, "Fulano", "Obra X", "", produto.ID, estoque.ID, 1)
+		if err != nil {
+			t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
+		}
+		token := tokenDeMux(t, mux, "pedidos-lote-almox@empresa.com", senha, segredos)
+		w := despachar(token, `{"pedidoIds":["`+pedido.ID+`"],"aprovar":true}`)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusForbidden, w.Body.String())
+		}
+		var env struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+			t.Fatalf("decode envelope: %v", err)
+		}
+		if env.Error.Code != "FORBIDDEN" {
+			t.Errorf("code = %q, want FORBIDDEN", env.Error.Code)
+		}
+		var status string
+		if err := db.QueryRow(`SELECT status FROM pedidos WHERE id = $1`, pedido.ID).Scan(&status); err != nil {
+			t.Fatalf("reler status: %v", err)
+		}
+		if status != "pendente" {
+			t.Errorf("status = %q, want pendente (nenhuma escrita antes do gate)", status)
+		}
+	})
+
+	t.Run("gestor passa do gate (nunca 403)", func(t *testing.T) {
+		pedido, err := services.SubmeterPedidoBaixa(db, empresaTeste, usuarioAlmoxID, "Fulano", "Obra Y", "", produto.ID, estoque.ID, 1)
+		if err != nil {
+			t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
+		}
+		token := tokenDeMux(t, mux, "pedidos-lote-gestor@empresa.com", senha, segredos)
+		w := despachar(token, `{"pedidoIds":["`+pedido.ID+`"],"aprovar":true}`)
+		if w.Code == http.StatusForbidden {
+			t.Fatalf("status = %d, want != 403 (body=%s)", w.Code, w.Body.String())
+		}
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+		}
+	})
+}
+
 // TestNewMux_MovimentacoesRotaCarregaRequireRole prova, despachando pela
 // mesma instância de newMux usada por main() (Story 5.3), que
 // GET /api/movimentacoes está atrás de RequireRole(almoxarife): token

@@ -423,6 +423,99 @@ func DecidirPedidoHandler(db *sql.DB, registro *realtime.Registry) http.HandlerF
 	}
 }
 
+// decisaoLotePedidosRequest é o corpo aceito por POST
+// /api/pedidos/decisao-lote (Story 20.3, Epic 20, spec-20-3). `Aprovar` é um
+// ponteiro DE PROPÓSITO — mesmo molde de decisaoPedidoRequest acima: um
+// corpo `{}`/`{"aprovar":null}` decodifica sem erro e, com um `bool` puro,
+// viraria silenciosamente `aprovar=false` (rejeição involuntária do lote
+// inteiro). Nil -> 400 VALIDATION_ERROR.
+type decisaoLotePedidosRequest struct {
+	PedidoIDs []string `json:"pedidoIds"`
+	Aprovar   *bool    `json:"aprovar"`
+}
+
+// DecidirLotePedidosHandler expõe POST /api/pedidos/decisao-lote (Story
+// 20.3, Epic 20, spec-20-3), registrado em newMux atrás de
+// RequireAuth(db,jwtSecret)(RequireRole(services.PapelGestor)(...)) — nível
+// de acesso MAIOR que o `almoxarife` de DecidirPedidoHandler (requisito
+// explícito do usuário: "o gerente tem que aprovar"). RequireRole roda a
+// CADA requisição, nunca cacheado — esta função não faz checagem de papel
+// adicional.
+//
+// Lê `{"pedidoIds": [...], "aprovar": bool}` sob http.MaxBytesReader — corpo
+// malformado OU sem a chave `aprovar` (nil) -> 400 VALIDATION_ERROR. Sucesso
+// -> `200 {"pedidos": [PedidoDetalhe, ...]}` (um por id, na mesma ordem
+// enviada), publicando `{"resource":"pedidos","id":<pedido>,"change":<novo
+// status>}` por Pedido REALMENTE decidido agora nesta chamada (nunca para
+// um Pedido pulado por já estar decidido — nenhuma mudança de estado
+// aconteceu por esta requisição) + um evento `produtos` (`updated`) por
+// Produto único entre todos os itens decididos agora — mesmo padrão de
+// DecidirPedidoHandler.
+func DecidirLotePedidosHandler(db *sql.DB, registro *realtime.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		usuario, ok := middleware.UsuarioDaSessao(r.Context())
+		if !ok {
+			slog.Error("DecidirLotePedidosHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
+		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
+		var req decisaoLotePedidosRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			// Revisão de código (findings do triplo-review): mensagem
+			// DIFERENTE da de `aprovar` ausente logo abaixo — um corpo que
+			// nem decodifica (JSON malformado) é uma causa distinta de um
+			// corpo válido só sem a chave obrigatória; quem consome a API
+			// precisa distinguir as duas.
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "corpo da requisição malformado")
+			return
+		}
+		if req.Aprovar == nil {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "campo \"aprovar\" é obrigatório")
+			return
+		}
+
+		pedidos, err := services.DecidirLotePedidos(db, empresa.ID, usuario.ID, req.PedidoIDs, *req.Aprovar)
+		var erroValidacao *services.ErroPedidoValidacao
+		switch {
+		case err == nil:
+			produtoIDs := make([]string, 0)
+			for _, pedido := range pedidos {
+				// Pedido pulado (já decidido antes desta chamada): o único
+				// sinal disponível aqui é `decididoPor`/`decididoEm` já
+				// preenchidos mesmo sem o cliente ter mandado nada — não dá
+				// pra distinguir com certeza "decidido agora" de "já estava
+				// decidido" só pela forma da resposta (de propósito, ver
+				// services.lerPedidoDetalheTx). Publicar o evento mesmo
+				// assim é inofensivo (idempotente — o canal só pede um
+				// refetch) e mantém qualquer tela aberta do Pedido
+				// atualizada, então este handler publica para TODOS os
+				// Pedidos da resposta, não só os decididos agora.
+				registro.Publish(empresa.ID, "pedidos", realtime.Evento{ID: pedido.ID, Change: pedido.Status})
+				for _, it := range pedido.Itens {
+					produtoIDs = append(produtoIDs, it.ProdutoID)
+				}
+			}
+			for _, produtoID := range idsUnicos(produtoIDs) {
+				registro.Publish(empresa.ID, "produtos", realtime.Evento{ID: produtoID, Change: "updated"})
+			}
+			escreverJSON(w, http.StatusOK, map[string]any{"pedidos": pedidos})
+		case errors.Is(err, services.ErrPedidoNaoEncontrado):
+			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "pedido não encontrado")
+		case errors.As(err, &erroValidacao):
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
+		default:
+			slog.Error("falha ao decidir lote de pedidos", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao decidir o lote de pedidos")
+		}
+	}
+}
+
 // BuscarPedidoHandler expõe GET /api/pedidos/{id} (Story 7.3, spec-7-3),
 // registrado em newMux atrás SÓ de RequireAuth. Devolve o cabeçalho + os
 // itens em snapshot do Pedido `{id}` se o solicitante for o dono da sessão

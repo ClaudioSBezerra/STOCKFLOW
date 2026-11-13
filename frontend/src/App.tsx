@@ -18,6 +18,7 @@ import { RedefinirSenhaPage } from '@/pages/RedefinirSenhaPage';
 import { ConfiguracoesPage } from '@/pages/ConfiguracoesPage';
 import { EstoquesPage } from '@/pages/EstoquesPage';
 import { PedidosFilaPage } from '@/pages/PedidosFilaPage';
+import { AprovacaoLotePage } from '@/pages/AprovacaoLotePage';
 import { LancarSaldoPage } from '@/pages/LancarSaldoPage';
 import { MovimentacoesPage } from '@/pages/MovimentacoesPage';
 import { DuplicatasPage } from '@/pages/DuplicatasPage';
@@ -151,6 +152,7 @@ export const router = createBrowserRouter(
         { path: 'pedidos/transferencia', element: <PedidoTransferenciaPage /> },
         { path: 'pedidos/baixa', element: <PedidoBaixaPage /> },
         { path: 'pedidos/fila', element: <PedidosFilaPage /> },
+        { path: 'pedidos/aprovacao-lote', element: <AprovacaoLotePage /> },
         { path: 'configuracoes', element: <ConfiguracoesPage /> },
         { path: 'estoques', element: <EstoquesPage /> },
         { path: 'estoques/lancar-saldo', element: <LancarSaldoPage /> },

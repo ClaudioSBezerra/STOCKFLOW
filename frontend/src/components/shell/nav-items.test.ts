@@ -49,6 +49,7 @@ describe('nav-items: grupos e papéis', () => {
       '/pedidos/transferencia',
       '/pedidos/baixa',
       '/pedidos/fila',
+      '/pedidos/aprovacao-lote',
       '/estoques',
       '/estoques/lancar-saldo',
       '/estoques/movimentacoes',
@@ -86,10 +87,24 @@ describe('nav-items: grupos e papéis', () => {
     expect(ids).toEqual(['catalogo', 'pedidos', 'estoque', 'qualidade']);
   });
 
-  it('gestor vê só Usuários, Convites e Promoções em Administração; sem Cadastros', () => {
+  it('gestor vê só Usuários, Convites e Promoções em Administração; sem Cadastros; e Aprovação em lote em Pedidos', () => {
     const grupos = gruposVisiveis(navGrupos, 'gestor');
     expect(grupos.map((g) => g.id)).toEqual(['catalogo', 'pedidos', 'estoque', 'qualidade', 'administracao']);
+    const pedidos = grupos.find((g) => g.id === 'pedidos');
+    expect(pedidos?.itens.map((i) => i.id)).toEqual([
+      'meus-pedidos',
+      'pedido-transferencia',
+      'pedido-baixa',
+      'fila-aprovacao',
+      'aprovacao-lote',
+    ]);
     expect(grupos[4].itens.map((i) => i.id)).toEqual(['usuarios', 'convites', 'promocoes']);
+  });
+
+  it('almoxarife não vê Aprovação em lote (papelMinimo: gestor)', () => {
+    const pedidos = gruposVisiveis(navGrupos, 'almoxarife').find((g) => g.id === 'pedidos');
+    expect(pedidos?.itens.some((i) => i.id === 'aprovacao-lote')).toBe(false);
+    expect(pedidos?.itens.some((i) => i.id === 'fila-aprovacao')).toBe(true);
   });
 
   it('adm vê todos os itens', () => {

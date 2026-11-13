@@ -922,6 +922,18 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.DecidirPedidoHandler(db, registro))))
 
+	// Aprovação em lote por Gestor — Story 20.3 (Epic 20), spec-20-3.
+	// Caminho PARALELO ao POST acima, SÓ para `tipo IN ('transferencia',
+	// 'baixa')` (DecidirPedido continua exclusivo de `retirada`, intocado).
+	// RequireRole(PapelGestor) — nível de acesso MAIOR que o `almoxarife`
+	// acima (requisito explícito do usuário: "o gerente tem que aprovar"),
+	// revalidado a CADA requisição, nunca cacheado. Decide vários Pedidos
+	// numa ÚNICA transação; publica no canal `pedidos` por Pedido da
+	// resposta (novo status).
+	registrar("POST /e/{slug}/api/pedidos/decisao-lote", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelGestor)(
+			handlers.DecidirLotePedidosHandler(db, registro))))
+
 	// Exportação dos próprios dados pessoais — Story 8.1 (Epic 8,
 	// Privacidade/LGPD), spec-8-1. Atrás SÓ de RequireAuth — SEM
 	// RequireRole: qualquer papel autenticado exporta os PRÓPRIOS dados,
