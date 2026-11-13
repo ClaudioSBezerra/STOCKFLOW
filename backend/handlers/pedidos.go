@@ -108,9 +108,12 @@ func SubmeterPedidoHandler(db *sql.DB, registro *realtime.Registry) http.Handler
 // /api/pedidos/transferencia (Story 20.1, Epic 20, spec-20-1) — envio DIRETO
 // de 1 item (sem Carrinho), tela própria. `usuarioId` nunca é lido do corpo
 // (Always, mesmo padrão de submeterPedidoRequest) — a identidade vem sempre
-// de middleware.UsuarioDaSessao.
+// de middleware.UsuarioDaSessao. `solicitante` também NÃO é lido do corpo
+// (requisito do usuário, pós-revisão, mesmo molde de
+// submeterPedidoBaixaRequest: "Solicitante é o usuário logado, não precisa
+// pedir") — o handler resolve `usuario.Nome` da sessão e o passa direto ao
+// service, nunca aceitando um valor vindo da requisição.
 type submeterPedidoTransferenciaRequest struct {
-	Solicitante      string  `json:"solicitante"`
 	ObraCentroCusto  string  `json:"obraCentroCusto"`
 	Observacao       string  `json:"observacao"`
 	ProdutoID        string  `json:"produtoId"`
@@ -122,16 +125,21 @@ type submeterPedidoTransferenciaRequest struct {
 // SubmeterPedidoTransferenciaHandler expõe POST /api/pedidos/transferencia
 // (Story 20.1, Epic 20, spec-20-1): envia um Pedido de Transferência entre
 // Filiais `pendente` — reserva dura só da ORIGEM, nunca debita/credita saldo
-// físico (isso é a Story 20.3). Molde EXATO de SubmeterPedidoHandler:
-// registrado atrás SÓ de RequireAuth (mesmo mínimo de papel do Pedido de
-// retirada — qualquer conta autenticada `usuario`+ envia seu próprio
-// Pedido). `201 {"pedido": {...}}` no sucesso, publicando
+// físico (isso é a Story 20.3). Molde de SubmeterPedidoBaixaHandler: registrado
+// atrás SÓ de RequireAuth (mesmo mínimo de papel do Pedido de retirada/Baixa —
+// qualquer conta autenticada `usuario`+ envia seu próprio Pedido).
+// `solicitante` é SEMPRE `usuario.Nome` da sessão (middleware.UsuarioDaSessao)
+// — nunca aceito do corpo da requisição (requisito do usuário, pós-revisão,
+// mesmo molde de SubmeterPedidoBaixaHandler). `201 {"pedido": {...}}` no
+// sucesso, publicando
 // `{"resource":"pedidos","id":<novo>,"change":"created"}` no canal
 // `pedidos` + um evento `produtos` (`updated`) para o único Produto do
 // Pedido (Story 11.3: o envio reserva saldo, atualiza detalhes abertos).
 // `400 VALIDATION_ERROR` para campos ausentes/vazios (inclusive
 // produtoId/estoqueOrigemId/estoqueDestinoId e origem==destino/destino
-// inexistente — Always, spec-20-1: nunca colapsa em 409);
+// inexistente — Always, spec-20-1: nunca colapsa em 409; `obraCentroCusto`
+// ausente/vazio NÃO está nesta lista — Story 20.1 pós-revisão, mesmo molde do
+// Pedido de Baixa, campo opcional);
 // `409 CONFLICT` para disponibilidade insuficiente na origem;
 // `409 PRODUTO_INATIVO` para Produto inativo (mesmo código do Pedido de
 // retirada).
@@ -156,7 +164,7 @@ func SubmeterPedidoTransferenciaHandler(db *sql.DB, registro *realtime.Registry)
 		}
 
 		pedido, err := services.SubmeterPedidoTransferencia(
-			db, empresa.ID, usuario.ID, req.Solicitante, req.ObraCentroCusto, req.Observacao,
+			db, empresa.ID, usuario.ID, usuario.Nome, req.ObraCentroCusto, req.Observacao,
 			req.ProdutoID, req.EstoqueOrigemID, req.EstoqueDestinoID, req.Quantidade,
 		)
 		var erroValidacao *services.ErroPedidoValidacao

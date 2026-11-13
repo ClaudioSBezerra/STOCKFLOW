@@ -1245,7 +1245,7 @@ func TestSubmeterPedidoTransferenciaHandler_201(t *testing.T) {
 	_, token := seedContaComumECarrinho(t, db, "Usuario Transf H 201", "transf-h-201-usuario@empresa.com")
 	produtoID, estoqueOrigemID, estoqueDestinoID := seedPedidoTransferenciaViaServico(t, db, "Canteiro Transf H 201", 10)
 
-	corpo := `{"solicitante":"Fulano de Tal","obraCentroCusto":"Obra Norte","produtoId":"` + produtoID +
+	corpo := `{"obraCentroCusto":"Obra Norte","produtoId":"` + produtoID +
 		`","estoqueOrigemId":"` + estoqueOrigemID + `","estoqueDestinoId":"` + estoqueDestinoID + `","quantidade":5}`
 	w := postPedidoTransferencia(db, "Bearer "+token, corpo)
 	if w.Code != http.StatusCreated {
@@ -1263,6 +1263,9 @@ func TestSubmeterPedidoTransferenciaHandler_201(t *testing.T) {
 	if resp.Pedido.Tipo != "transferencia" {
 		t.Errorf("Tipo = %q, want transferencia", resp.Pedido.Tipo)
 	}
+	if resp.Pedido.Solicitante != "Usuario Transf H 201" {
+		t.Errorf("Solicitante = %q, want %q (nome da sessão autenticada)", resp.Pedido.Solicitante, "Usuario Transf H 201")
+	}
 
 	var nItens int
 	if err := db.QueryRow(`SELECT count(*) FROM pedido_itens WHERE pedido_id = $1 AND estoque_destino_id = $2`, resp.Pedido.ID, estoqueDestinoID).Scan(&nItens); err != nil {
@@ -1270,6 +1273,70 @@ func TestSubmeterPedidoTransferenciaHandler_201(t *testing.T) {
 	}
 	if nItens != 1 {
 		t.Errorf("pedido_itens com estoque_destino_id = %d linhas, want 1", nItens)
+	}
+}
+
+// TestSubmeterPedidoTransferenciaHandler_IgnoraSolicitanteDoCorpo prova que
+// um cliente mal-intencionado (ou um client antigo que ainda envie
+// `solicitante` no corpo) NUNCA consegue gravar um nome diferente do usuário
+// autenticado — o campo nem existe mais em `submeterPedidoTransferenciaRequest`,
+// o decode simplesmente ignora a chave extra. Mesmo molde de
+// TestSubmeterPedidoBaixaHandler_IgnoraSolicitanteDoCorpo.
+func TestSubmeterPedidoTransferenciaHandler_IgnoraSolicitanteDoCorpo(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	_, token := seedContaComumECarrinho(t, db, "Usuario Transf H IgnoraSolic", "transf-h-ignorasolic@empresa.com")
+	produtoID, estoqueOrigemID, estoqueDestinoID := seedPedidoTransferenciaViaServico(t, db, "Canteiro Transf H IgnoraSolic", 10)
+
+	corpo := `{"solicitante":"Nome Forjado","obraCentroCusto":"Obra X","produtoId":"` + produtoID +
+		`","estoqueOrigemId":"` + estoqueOrigemID + `","estoqueDestinoId":"` + estoqueDestinoID + `","quantidade":1}`
+	w := postPedidoTransferencia(db, "Bearer "+token, corpo)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
+	}
+	var resp struct {
+		Pedido services.Pedido `json:"pedido"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if resp.Pedido.Solicitante != "Usuario Transf H IgnoraSolic" {
+		t.Errorf("Solicitante = %q, want %q (nunca \"Nome Forjado\")", resp.Pedido.Solicitante, "Usuario Transf H IgnoraSolic")
+	}
+}
+
+// TestSubmeterPedidoTransferenciaHandler_201_ObraCentroCustoAusente prova o
+// requisito do usuário (pós-revisão): "obraCentroCusto" ausente/vazio nunca
+// bloqueia o envio -> 201, `ObraCentroCusto` volta "" (NULL no banco). Mesmo
+// molde de TestSubmeterPedidoBaixaHandler_201_ObraCentroCustoAusente.
+func TestSubmeterPedidoTransferenciaHandler_201_ObraCentroCustoAusente(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	_, token := seedContaComumECarrinho(t, db, "Usuario Transf H SemObra", "transf-h-semobra@empresa.com")
+	produtoID, estoqueOrigemID, estoqueDestinoID := seedPedidoTransferenciaViaServico(t, db, "Canteiro Transf H SemObra", 10)
+
+	corpo := `{"produtoId":"` + produtoID + `","estoqueOrigemId":"` + estoqueOrigemID +
+		`","estoqueDestinoId":"` + estoqueDestinoID + `","quantidade":1}`
+	w := postPedidoTransferencia(db, "Bearer "+token, corpo)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
+	}
+	var resp struct {
+		Pedido services.Pedido `json:"pedido"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if resp.Pedido.ObraCentroCusto != "" {
+		t.Errorf("ObraCentroCusto = %q, want \"\"", resp.Pedido.ObraCentroCusto)
+	}
+
+	var obraNoBanco sql.NullString
+	if err := db.QueryRow(`SELECT obra_centro_custo FROM pedidos WHERE id = $1`, resp.Pedido.ID).Scan(&obraNoBanco); err != nil {
+		t.Fatalf("ler obra_centro_custo: %v", err)
+	}
+	if obraNoBanco.Valid {
+		t.Errorf("obra_centro_custo no banco = %+v, want NULL", obraNoBanco)
 	}
 }
 
@@ -1291,7 +1358,7 @@ func TestSubmeterPedidoTransferenciaHandler_PublicaEventoNoSucesso(t *testing.T)
 		comEmpresa(db,
 			middleware.RequireAuth(db, testJWTSecret)(SubmeterPedidoTransferenciaHandler(db, registro))))
 
-	corpo := `{"solicitante":"Fulano","obraCentroCusto":"Obra X","produtoId":"` + produtoID +
+	corpo := `{"obraCentroCusto":"Obra X","produtoId":"` + produtoID +
 		`","estoqueOrigemId":"` + estoqueOrigemID + `","estoqueDestinoId":"` + estoqueDestinoID + `","quantidade":1}`
 	r := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/pedidos/transferencia", strings.NewReader(corpo))
 	r.Header.Set("Content-Type", "application/json")
@@ -1328,10 +1395,10 @@ func TestSubmeterPedidoTransferenciaHandler_400CamposVazios(t *testing.T) {
 	produtoID, estoqueOrigemID, estoqueDestinoID := seedPedidoTransferenciaViaServico(t, db, "Canteiro Transf H 400", 10)
 
 	casos := map[string]string{
-		"produtoId vazio":        `{"solicitante":"Fulano","obraCentroCusto":"Obra X","produtoId":"","estoqueOrigemId":"` + estoqueOrigemID + `","estoqueDestinoId":"` + estoqueDestinoID + `","quantidade":1}`,
-		"estoqueOrigemId vazio":  `{"solicitante":"Fulano","obraCentroCusto":"Obra X","produtoId":"` + produtoID + `","estoqueOrigemId":"","estoqueDestinoId":"` + estoqueDestinoID + `","quantidade":1}`,
-		"estoqueDestinoId vazio": `{"solicitante":"Fulano","obraCentroCusto":"Obra X","produtoId":"` + produtoID + `","estoqueOrigemId":"` + estoqueOrigemID + `","estoqueDestinoId":"","quantidade":1}`,
-		"origem == destino":      `{"solicitante":"Fulano","obraCentroCusto":"Obra X","produtoId":"` + produtoID + `","estoqueOrigemId":"` + estoqueOrigemID + `","estoqueDestinoId":"` + estoqueOrigemID + `","quantidade":1}`,
+		"produtoId vazio":        `{"obraCentroCusto":"Obra X","produtoId":"","estoqueOrigemId":"` + estoqueOrigemID + `","estoqueDestinoId":"` + estoqueDestinoID + `","quantidade":1}`,
+		"estoqueOrigemId vazio":  `{"obraCentroCusto":"Obra X","produtoId":"` + produtoID + `","estoqueOrigemId":"","estoqueDestinoId":"` + estoqueDestinoID + `","quantidade":1}`,
+		"estoqueDestinoId vazio": `{"obraCentroCusto":"Obra X","produtoId":"` + produtoID + `","estoqueOrigemId":"` + estoqueOrigemID + `","estoqueDestinoId":"","quantidade":1}`,
+		"origem == destino":      `{"obraCentroCusto":"Obra X","produtoId":"` + produtoID + `","estoqueOrigemId":"` + estoqueOrigemID + `","estoqueDestinoId":"` + estoqueOrigemID + `","quantidade":1}`,
 	}
 	for nome, corpo := range casos {
 		t.Run(nome, func(t *testing.T) {
@@ -1355,7 +1422,7 @@ func TestSubmeterPedidoTransferenciaHandler_409DisponibilidadeInsuficiente(t *te
 	_, token := seedContaComumECarrinho(t, db, "Usuario Transf H 409", "transf-h-409-usuario@empresa.com")
 	produtoID, estoqueOrigemID, estoqueDestinoID := seedPedidoTransferenciaViaServico(t, db, "Canteiro Transf H 409", 3)
 
-	corpo := `{"solicitante":"Fulano","obraCentroCusto":"Obra X","produtoId":"` + produtoID +
+	corpo := `{"obraCentroCusto":"Obra X","produtoId":"` + produtoID +
 		`","estoqueOrigemId":"` + estoqueOrigemID + `","estoqueDestinoId":"` + estoqueDestinoID + `","quantidade":4}`
 	w := postPedidoTransferencia(db, "Bearer "+token, corpo)
 	if w.Code != http.StatusConflict {
@@ -1373,7 +1440,7 @@ func TestSubmeterPedidoTransferenciaHandler_401SemToken(t *testing.T) {
 	db := testDB(t)
 	limparProdutosHandler(t, db)
 
-	w := postPedidoTransferencia(db, "", `{"solicitante":"Fulano","obraCentroCusto":"Obra X"}`)
+	w := postPedidoTransferencia(db, "", `{"obraCentroCusto":"Obra X"}`)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
 	}
@@ -1528,7 +1595,7 @@ func TestSubmeterPedidoTransferenciaHandler_409ProdutoInativo(t *testing.T) {
 		t.Fatalf("seed inativação: %v", err)
 	}
 
-	corpo := `{"solicitante":"Fulano","obraCentroCusto":"Obra X","produtoId":"` + produtoID +
+	corpo := `{"obraCentroCusto":"Obra X","produtoId":"` + produtoID +
 		`","estoqueOrigemId":"` + estoqueOrigemID + `","estoqueDestinoId":"` + estoqueDestinoID + `","quantidade":1}`
 	w := postPedidoTransferencia(db, "Bearer "+token, corpo)
 	if w.Code != http.StatusConflict {
@@ -1579,7 +1646,7 @@ func TestSubmeterPedidoTransferenciaHandler_400DestinoInexistenteOuOutraEmpresa(
 	}
 	for nome, estoqueDestino := range casos {
 		t.Run(nome, func(t *testing.T) {
-			corpo := `{"solicitante":"Fulano","obraCentroCusto":"Obra X","produtoId":"` + produtoID +
+			corpo := `{"obraCentroCusto":"Obra X","produtoId":"` + produtoID +
 				`","estoqueOrigemId":"` + estoqueOrigemID + `","estoqueDestinoId":"` + estoqueDestino + `","quantidade":1}`
 			w := postPedidoTransferencia(db, "Bearer "+token, corpo)
 			if w.Code != http.StatusBadRequest {

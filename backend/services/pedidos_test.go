@@ -2445,6 +2445,86 @@ func TestSubmeterPedidoTransferencia_Sucesso(t *testing.T) {
 	}
 }
 
+// TestSubmeterPedidoTransferencia_ObraCentroCustoOpcional prova o requisito
+// do usuário (pós-revisão, mesmo molde de
+// TestSubmeterPedidoBaixa_ObraCentroCustoOpcional): "Obra/Centro de Custo"
+// deixa de ser obrigatório também no Pedido de Transferência — vazio/só
+// espaços NÃO é &ErroPedidoValidacao, grava NULL na coluna
+// (migrations/000058) e `pedido.ObraCentroCusto` volta "" (nunca quebra o
+// Scan).
+func TestSubmeterPedidoTransferencia_ObraCentroCustoOpcional(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Usuario Transf SemObra", "transf-semobra@empresa.com", PapelUsuario, 0)
+	produtoID, estoqueOrigemID, _ := seedProdutoComSaldo(t, db, "Transf SemObra", 10)
+	estoqueDestinoID := criarEstoqueDestinoTeste(t, db, "Transf SemObra Destino")
+
+	pedido, err := SubmeterPedidoTransferencia(
+		db, empresaTeste, usuarioID, "Fulano", "   ", "",
+		produtoID, estoqueOrigemID, estoqueDestinoID, 5,
+	)
+	if err != nil {
+		t.Fatalf("SubmeterPedidoTransferencia erro inesperado: %v", err)
+	}
+	if pedido.ObraCentroCusto != "" {
+		t.Errorf("ObraCentroCusto = %q, want \"\"", pedido.ObraCentroCusto)
+	}
+
+	var obraNoBanco sql.NullString
+	if err := db.QueryRow(`SELECT obra_centro_custo FROM pedidos WHERE id = $1`, pedido.ID).Scan(&obraNoBanco); err != nil {
+		t.Fatalf("ler obra_centro_custo: %v", err)
+	}
+	if obraNoBanco.Valid {
+		t.Errorf("obra_centro_custo no banco = %+v, want NULL", obraNoBanco)
+	}
+
+	// GET /api/pedidos (ListarPedidosProprios) e GET /api/pedidos/{id}
+	// (BuscarPedidoProprio) nunca quebram ao reler esta linha com
+	// obra_centro_custo NULL (COALESCE nas duas queries).
+	resumos, err := ListarPedidosProprios(db, empresaTeste, usuarioID, "")
+	if err != nil {
+		t.Fatalf("ListarPedidosProprios: %v", err)
+	}
+	achou := false
+	for _, r := range resumos {
+		if r.ID == pedido.ID {
+			achou = true
+			if r.ObraCentroCusto != "" {
+				t.Errorf("ListarPedidosProprios: ObraCentroCusto = %q, want \"\"", r.ObraCentroCusto)
+			}
+		}
+	}
+	if !achou {
+		t.Fatal("Pedido semeado não apareceu em ListarPedidosProprios")
+	}
+
+	detalhe, err := BuscarPedidoProprio(db, empresaTeste, pedido.ID, usuarioID, PapelUsuario)
+	if err != nil {
+		t.Fatalf("BuscarPedidoProprio: %v", err)
+	}
+	if detalhe.ObraCentroCusto != "" {
+		t.Errorf("BuscarPedidoProprio: ObraCentroCusto = %q, want \"\"", detalhe.ObraCentroCusto)
+	}
+
+	fila, err := ListarPedidosFila(db, empresaTeste, "")
+	if err != nil {
+		t.Fatalf("ListarPedidosFila: %v", err)
+	}
+	achouNaFila := false
+	for _, r := range fila {
+		if r.ID == pedido.ID {
+			achouNaFila = true
+			if r.ObraCentroCusto != "" {
+				t.Errorf("ListarPedidosFila: ObraCentroCusto = %q, want \"\"", r.ObraCentroCusto)
+			}
+		}
+	}
+	if !achouNaFila {
+		t.Fatal("Pedido semeado não apareceu em ListarPedidosFila")
+	}
+}
+
 // TestSubmeterPedidoTransferencia_DisponibilidadeInsuficiente prova a linha
 // "Disponível insuficiente" da I/O Matrix: pedir mais que o disponível na
 // origem -> nada gravado, ErroPedidoIndisponivel (409).

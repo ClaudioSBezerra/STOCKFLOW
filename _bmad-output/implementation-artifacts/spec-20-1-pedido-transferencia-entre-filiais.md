@@ -79,6 +79,7 @@ context: ['{project-root}/_bmad-output/implementation-artifacts/epic-20-context.
 
 - **2026-11-12, revisão (loop 1), bad_spec:** 2 revisores independentes (verification-gap, edge-case-hunter) confirmaram que `DecidirPedido`/a Fila, SEM NENHUMA mudança, aprovariam um Pedido de Transferência pendente debitando a origem por FEFO como baixa física (`consumirFEFOTx` + Movimentação `"baixa"`) sem creditar o destino nenhum — perda de estoque real na primeira vez que alguém clicasse "Aprovar". Causa raiz: o "Never" original ("nunca tocar `DecidirPedido`") não previu que o fluxo de aprovação JÁ EXISTENTE seria imediatamente alcançável pelo novo `tipo`. Emendado: `DecidirPedido` ganha um guard (ver Always) que recusa decidir qualquer Pedido `tipo != 'retirada'`, sem implementar nenhuma lógica de aprovação nova — consistente com o restante do "Never" (só Story 20.3 implementa decisão de verdade). Produto inativo não bloqueado (blind-hunter + edge-case-hunter) e falta de validação de campos vazios (blind-hunter) também corrigidos nesta mesma rodada, mesma causa raiz de categoria (Tasks incompletas). **KEEP:** todo o desenho original (reserva dura, só a origem, nunca debitar/creditar na solicitação, envio direto sem carrinho) se manteve correto e sobrevive tal qual.
 - **2026-11-12, revisão (loop 1), patch (mesma rodada):** testes HTTP do handler ausentes, teste do `TipoPedidoBadge` ausente nos 2 pontos de uso, `estoqueDestinoId` não resetado na UI quando empata com a origem escolhida depois, risco de `setState` após desmontar no fetch de Estoques, parsing manual de quantidade com vírgula/separador de milhar (trocado por `<input type="number">` nativo), Filial não exibida nas opções de Estoque — todos de baixo risco, incluídos na mesma rodada de re-derivação para não abrir um novo loop só para eles.
+- **2026-11-13, retrofit pós-entrega (pedido direto do usuário, fora do ciclo de revisão):** 3 ajustes de UX trazidos pela Story 20.2 (que nasceu depois e já os incorporou) foram retroaplicados aqui para as duas telas ficarem consistentes: (1) `solicitante` deixa de vir do corpo da requisição — `SubmeterPedidoTransferenciaHandler` resolve da sessão (`middleware.UsuarioDaSessao`), igual à Baixa; (2) "Obra / centro de custo" deixa de ser obrigatório — nova migration `000058` troca o CHECK da `000057` (que só liberava NULL pra `tipo='baixa'`) por um que também libera pra `'transferencia'`, mantendo só o Pedido de retirada (Epic 7) como obrigatório; (3) a tela mostra "Disponível: N" da origem ao selecionar Produto+Estoque, reaproveitando a mesma leitura de `GET /api/produtos/{id}` → `porEstoque[].disponivel` já usada na Baixa. Testes novos espelhando os equivalentes da spec-20-2. Suíte completa (backend `-p 1 ./...` e frontend `vitest run`) verde.
 
 ## Verification
 
@@ -104,6 +105,17 @@ context: ['{project-root}/_bmad-output/implementation-artifacts/epic-20-context.
 
 - `DecidirPedido` recusa decidir qualquer Pedido `tipo != 'retirada'`, antes de qualquer trava
   [`pedidos.go:919`](../../backend/services/pedidos.go#L919)
+
+**Retrofit (2026-11-13 — solicitante da sessão, obra opcional, saldo disponível)**
+
+- Migration: amplia o CHECK da `000057` pra também aceitar NULL em `tipo='transferencia'`
+  [`000058_obra_centro_custo_opcional_tambem_transferencia.up.sql:1`](../../backend/migrations/000058_obra_centro_custo_opcional_tambem_transferencia.up.sql#L1)
+
+- Handler nunca confia em `solicitante` do corpo — resolve da sessão
+  [`pedidos.go`](../../backend/handlers/pedidos.go)
+
+- Tela: sem campo Solicitante, Obra opcional, saldo disponível da origem
+  [`PedidoTransferenciaPage.tsx`](../../frontend/src/pages/PedidoTransferenciaPage.tsx)
 
 - Sentinela do guard, mapeado para 409 no handler de decisão
   [`pedidos.go:133`](../../backend/services/pedidos.go#L133)

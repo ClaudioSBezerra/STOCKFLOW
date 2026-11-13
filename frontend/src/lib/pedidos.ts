@@ -130,10 +130,16 @@ export async function listarFilaPedidos(status?: StatusPedido): Promise<PedidoRe
 const MENSAGEM_ERRO_TRANSFERENCIA =
   'Não foi possível enviar o pedido de transferência agora. Tente novamente em instantes.';
 
-/** Corpo de POST /api/pedidos/transferencia (Story 20.1, Epic 20, spec-20-1). */
+/**
+ * Corpo de POST /api/pedidos/transferencia (Story 20.1, Epic 20, spec-20-1).
+ * SEM `solicitante` (requisito do usuário, pós-revisão, mesmo molde de
+ * SubmeterPedidoBaixaInput: "Solicitante é o usuário logado, não precisa
+ * pedir") — o servidor resolve o nome da sessão autenticada, nunca aceito do
+ * corpo. `obraCentroCusto` é OPCIONAL (requisito do usuário, pós-revisão,
+ * mesmo molde de SubmeterPedidoBaixaInput).
+ */
 export interface SubmeterPedidoTransferenciaInput {
-  solicitante: string;
-  obraCentroCusto: string;
+  obraCentroCusto?: string;
   observacao?: string;
   produtoId: string;
   estoqueOrigemId: string;
@@ -145,10 +151,11 @@ export interface SubmeterPedidoTransferenciaInput {
  * Envia um Pedido de Transferência entre Filiais (Story 20.1, Epic 20,
  * spec-20-1) — 1 item só, enviado DIRETO (sem passar pelo Carrinho). Reserva
  * dura só da ORIGEM; nunca debita/credita saldo físico (isso é a Story
- * 20.3). Resposta não-ok propaga `body.error?.message` do servidor (400
- * VALIDATION_ERROR para campos vazios/origem==destino/destino inválido, 409
- * CONFLICT para disponibilidade insuficiente, 409 PRODUTO_INATIVO para
- * Produto inativo) ou o fallback acima.
+ * 20.3). `solicitante` é sempre o usuário logado, resolvido pelo servidor —
+ * este módulo nunca o envia. Resposta não-ok propaga `body.error?.message` do
+ * servidor (400 VALIDATION_ERROR para campos vazios/origem==destino/destino
+ * inválido, 409 CONFLICT para disponibilidade insuficiente, 409
+ * PRODUTO_INATIVO para Produto inativo) ou o fallback acima.
  */
 export async function submeterPedidoTransferencia(
   input: SubmeterPedidoTransferenciaInput,

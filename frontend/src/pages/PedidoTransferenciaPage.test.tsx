@@ -7,14 +7,6 @@ const toastSuccess = vi.hoisted(() => vi.fn());
 const toastError = vi.hoisted(() => vi.fn());
 vi.mock('sonner', () => ({ toast: { success: toastSuccess, error: toastError } }));
 
-// usuario.nome é o valor inicial (editável) do campo "Solicitante" — mesmo
-// molde de CarrinhoPage.test.tsx.
-vi.mock('@/lib/auth', () => ({
-  useAuth: () => ({
-    usuario: { id: 'u1', nome: 'Maria Operária', email: 'maria@empresa.com', papel: 'usuario' },
-  }),
-}));
-
 vi.mock('@/lib/session', () => ({
   getAccessToken: () => 'token-de-teste',
 }));
@@ -58,10 +50,21 @@ const PRODUTOS = [
   },
 ];
 
+// Detalhe mínimo de GET /api/produtos/p-1 — só o que a página lê
+// (porEstoque[].{estoqueId,disponivel}), mesmo formato de PedidoBaixaPage.test.tsx.
+const DETALHE_PRODUTO_P1 = {
+  id: 'p-1',
+  porEstoque: [
+    { estoqueId: 'e-1', estoqueNome: 'Almoxarifado Central', quantidade: 20, reservada: 12, disponivel: 8 },
+    { estoqueId: 'e-2', estoqueNome: 'Canteiro A', quantidade: 0, reservada: 0, disponivel: 0 },
+  ],
+};
+
 function stubFetchPadrao() {
   return stubFetch((url) => {
     if (url === '/api/estoques') return jsonOk({ estoques: ESTOQUES });
     if (url.startsWith('/api/produtos/busca')) return jsonOk({ produtos: PRODUTOS });
+    if (url === '/api/produtos/p-1') return jsonOk(DETALHE_PRODUTO_P1);
     throw new Error(`URL inesperada: ${url}`);
   });
 }
@@ -88,8 +91,6 @@ async function preencherFormularioCompleto(user: ReturnType<typeof userEvent.set
   await user.click(await screen.findByRole('option', { name: /Canteiro A/ }));
 
   await user.type(screen.getByLabelText(/Quantidade/), '5');
-  await user.clear(screen.getByLabelText('Obra / centro de custo'));
-  await user.type(screen.getByLabelText('Obra / centro de custo'), 'Obra Norte');
 }
 
 afterEach(() => {
@@ -98,11 +99,12 @@ afterEach(() => {
 });
 
 describe('PedidoTransferenciaPage', () => {
-  it('renderiza o formulário e carrega a lista de Estoques (com o nome da Filial em cada opção)', async () => {
+  it('renderiza o formulário (sem campo Solicitante) e carrega a lista de Estoques (com o nome da Filial em cada opção)', async () => {
     stubFetchPadrao();
     render(<PedidoTransferenciaPage />);
 
     expect(screen.getByRole('heading', { name: 'Pedido de Transferência entre Filiais' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Solicitante')).not.toBeInTheDocument();
     await aguardarEstoquesCarregados();
 
     await userEvent.setup().click(screen.getByRole('combobox', { name: 'Estoque origem' }));
@@ -123,6 +125,52 @@ describe('PedidoTransferenciaPage', () => {
     // O campo de busca é substituído pelo produto escolhido + "Trocar produto".
     expect(screen.queryByLabelText('Produto')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Trocar produto' })).toBeInTheDocument();
+  });
+
+  it('mostra o saldo disponível da ORIGEM assim que Produto e Estoque origem estão selecionados', async () => {
+    stubFetchPadrao();
+    const user = userEvent.setup();
+    render(<PedidoTransferenciaPage />);
+    await aguardarEstoquesCarregados();
+    await preencherAteProduto(user);
+
+    await user.click(screen.getByRole('combobox', { name: 'Estoque origem' }));
+    await user.click(await screen.findByRole('option', { name: /Almoxarifado Central/ }));
+
+    expect(await screen.findByText('Disponível: 8')).toBeInTheDocument();
+  });
+
+  it('Estoque origem sem nenhuma linha de saldo para o Produto mostra disponível 0', async () => {
+    stubFetchPadrao();
+    const user = userEvent.setup();
+    render(<PedidoTransferenciaPage />);
+    await aguardarEstoquesCarregados();
+    await preencherAteProduto(user);
+
+    await user.click(screen.getByRole('combobox', { name: 'Estoque origem' }));
+    await user.click(await screen.findByRole('option', { name: /Canteiro A/ }));
+
+    expect(await screen.findByText('Disponível: 0')).toBeInTheDocument();
+  });
+
+  it('falha ao carregar o saldo disponível mostra alerta inline, sem travar o resto do formulário', async () => {
+    stubFetch((url) => {
+      if (url === '/api/estoques') return jsonOk({ estoques: ESTOQUES });
+      if (url.startsWith('/api/produtos/busca')) return jsonOk({ produtos: PRODUTOS });
+      if (url === '/api/produtos/p-1') return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    const user = userEvent.setup();
+    render(<PedidoTransferenciaPage />);
+    await aguardarEstoquesCarregados();
+    await preencherAteProduto(user);
+
+    await user.click(screen.getByRole('combobox', { name: 'Estoque origem' }));
+    await user.click(await screen.findByRole('option', { name: /Almoxarifado Central/ }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Não foi possível carregar o saldo disponível agora.',
+    );
   });
 
   it('Estoque destino nunca lista a opção já escolhida como origem; trocar a origem reseta um destino que empata com ela', async () => {
@@ -146,7 +194,7 @@ describe('PedidoTransferenciaPage', () => {
     expect(screen.getByRole('combobox', { name: 'Estoque destino' })).toHaveTextContent('Selecione o destino');
   });
 
-  it('submete com sucesso: chama submeterPedidoTransferencia com o corpo esperado, mostra toast e limpa o formulário', async () => {
+  it('submete com sucesso: chama submeterPedidoTransferencia SEM solicitante, com obraCentroCusto vazio quando não preenchido; mostra toast e limpa o formulário', async () => {
     stubFetchPadrao();
     submeterPedidoTransferenciaMock.mockResolvedValue({
       id: 'ped-1',
@@ -161,8 +209,7 @@ describe('PedidoTransferenciaPage', () => {
 
     await waitFor(() => expect(submeterPedidoTransferenciaMock).toHaveBeenCalledTimes(1));
     expect(submeterPedidoTransferenciaMock).toHaveBeenCalledWith({
-      solicitante: 'Maria Operária',
-      obraCentroCusto: 'Obra Norte',
+      obraCentroCusto: '',
       observacao: '',
       produtoId: 'p-1',
       estoqueOrigemId: 'e-1',
@@ -209,7 +256,7 @@ describe('PedidoTransferenciaPage', () => {
     );
   });
 
-  it('botão de envio fica desabilitado até Produto, Estoque origem, Estoque destino, quantidade > 0, solicitante e obra estarem preenchidos', async () => {
+  it('botão de envio fica desabilitado até Produto, Estoque origem, Estoque destino e quantidade > 0 estarem preenchidos — Obra/centro de custo NUNCA bloqueia', async () => {
     stubFetchPadrao();
     const user = userEvent.setup();
     render(<PedidoTransferenciaPage />);
@@ -230,10 +277,22 @@ describe('PedidoTransferenciaPage', () => {
     expect(botao).toBeDisabled();
 
     await user.type(screen.getByLabelText(/Quantidade/), '5');
-    expect(botao).toBeDisabled();
-
-    await user.clear(screen.getByLabelText('Obra / centro de custo'));
-    await user.type(screen.getByLabelText('Obra / centro de custo'), 'Obra Norte');
     expect(botao).toBeEnabled();
+  });
+
+  it('envia com Obra/centro de custo preenchida quando o usuário escolhe preencher', async () => {
+    stubFetchPadrao();
+    submeterPedidoTransferenciaMock.mockResolvedValue({ id: 'ped-1', status: 'pendente', tipo: 'transferencia' });
+    const user = userEvent.setup();
+    render(<PedidoTransferenciaPage />);
+
+    await preencherFormularioCompleto(user);
+    await user.type(screen.getByLabelText('Obra / centro de custo (opcional)'), 'Obra Norte');
+    await user.click(screen.getByRole('button', { name: 'Enviar pedido de transferência' }));
+
+    await waitFor(() => expect(submeterPedidoTransferenciaMock).toHaveBeenCalledTimes(1));
+    expect(submeterPedidoTransferenciaMock).toHaveBeenCalledWith(
+      expect.objectContaining({ obraCentroCusto: 'Obra Norte' }),
+    );
   });
 });

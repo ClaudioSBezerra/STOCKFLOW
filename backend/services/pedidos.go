@@ -415,8 +415,13 @@ func validarQuantidadePedidoTransferencia(quantidade float64) error {
 // RegistrarTransferencia nem duplica a lógica de débito/crédito FEFO dela).
 //
 // Validação, nesta ordem, ANTES de abrir a transação:
-//   - solicitante/obraCentroCusto trimados e obrigatórios (mesmo molde de
-//     SubmeterPedidoComCentroCusto).
+//   - solicitante trimado e obrigatório (mesmo molde de
+//     SubmeterPedidoComCentroCusto). `obraCentroCusto` é OPCIONAL
+//     (requisito do usuário, pós-revisão, mesmo molde de
+//     SubmeterPedidoBaixa/spec-20-2 — diferente do Pedido de retirada, que
+//     continua exigindo este campo) — vazio após o trim vira NULL, mesmo
+//     molde de `observacao`; migrations/000058 soltou o CHECK que restringia
+//     o NULL a `tipo = 'baixa'` (a coluna já era NULLable desde a 000057).
 //   - produtoID/estoqueOrigemID/estoqueDestinoID trimados: qualquer um
 //     vazio -> &ErroPedidoValidacao (400) — NUNCA colapsa em
 //     ErroPedidoIndisponivel (409), Always de spec-20-1.
@@ -453,10 +458,6 @@ func SubmeterPedidoTransferencia(
 	if solicitanteTrim == "" {
 		return Pedido{}, &ErroPedidoValidacao{Mensagem: "solicitante é obrigatório"}
 	}
-	obraTrim := strings.TrimSpace(obraCentroCusto)
-	if obraTrim == "" {
-		return Pedido{}, &ErroPedidoValidacao{Mensagem: "obra/centro de custo é obrigatório"}
-	}
 	produtoIDTrim := strings.TrimSpace(produtoID)
 	if produtoIDTrim == "" {
 		return Pedido{}, &ErroPedidoValidacao{Mensagem: "produto é obrigatório"}
@@ -474,6 +475,16 @@ func SubmeterPedidoTransferencia(
 	}
 	if strings.EqualFold(estoqueOrigemIDTrim, estoqueDestinoIDTrim) {
 		return Pedido{}, &ErroPedidoValidacao{Mensagem: "estoque de origem e destino devem ser diferentes"}
+	}
+
+	// obraCentroCusto é OPCIONAL no Pedido de Transferência (requisito do
+	// usuário, pós-revisão, mesmo molde de SubmeterPedidoBaixa) — vazio após
+	// o trim vira NULL, mesmo molde de `observacao` logo abaixo;
+	// migrations/000058 soltou o CHECK que restringia o NULL a `tipo =
+	// 'baixa'`.
+	var obraCentroCustoNull sql.NullString
+	if obraTrim := strings.TrimSpace(obraCentroCusto); obraTrim != "" {
+		obraCentroCustoNull = sql.NullString{String: obraTrim, Valid: true}
 	}
 
 	var observacaoNull sql.NullString
@@ -559,11 +570,16 @@ func SubmeterPedidoTransferencia(
 
 	var pedido Pedido
 	var observacaoGravada sql.NullString
+	// COALESCE no RETURNING: `pedido.ObraCentroCusto` é `string` (não
+	// ponteiro, mesmo campo lido pelo Pedido de retirada, que nunca grava
+	// NULL) — um Pedido de Transferência sem Obra/Centro de Custo vira NULL
+	// na coluna (migrations/000058) mas "" aqui, nunca um erro de Scan. Mesmo
+	// molde de SubmeterPedidoBaixa.
 	const insertPedido = `
 		INSERT INTO pedidos (usuario_id, solicitante, obra_centro_custo, observacao, empresa_id, tipo)
 		VALUES ($1, $2, $3, $4, $5, 'transferencia')
-		RETURNING id, usuario_id, solicitante, obra_centro_custo, observacao, status, criado_em, tipo`
-	if err := tx.QueryRow(insertPedido, usuarioID, solicitanteTrim, obraTrim, observacaoNull, empresaID).Scan(
+		RETURNING id, usuario_id, solicitante, COALESCE(obra_centro_custo, ''), observacao, status, criado_em, tipo`
+	if err := tx.QueryRow(insertPedido, usuarioID, solicitanteTrim, obraCentroCustoNull, observacaoNull, empresaID).Scan(
 		&pedido.ID, &pedido.UsuarioID, &pedido.Solicitante, &pedido.ObraCentroCusto,
 		&observacaoGravada, &pedido.Status, &pedido.CriadoEm, &pedido.Tipo,
 	); err != nil {
@@ -791,10 +807,11 @@ func ListarPedidosProprios(db *sql.DB, empresaID string, usuarioID, filtroStatus
 	// migration 000026) e nunca precisa de `empresa_id` — `pedido_id` já
 	// identifica a linha sozinho.
 	// COALESCE(p.obra_centro_custo, ''): um Pedido de Baixa (Story 20.2,
-	// migrations/000057) pode gravar NULL aqui — r.ObraCentroCusto é
-	// `string`, não ponteiro, mesmo campo lido pelos demais tipos (que nunca
-	// gravam NULL); sem o COALESCE, escanear uma linha de Baixa sem Obra
-	// quebraria esta leitura com um erro de Scan.
+	// migrations/000057) OU de Transferência (Story 20.1, migrations/000058)
+	// pode gravar NULL aqui — r.ObraCentroCusto é `string`, não ponteiro,
+	// mesmo campo lido pelo Pedido de retirada (que nunca grava NULL); sem o
+	// COALESCE, escanear uma linha de Baixa/Transferência sem Obra quebraria
+	// esta leitura com um erro de Scan.
 	q := `
 		SELECT p.id, p.usuario_id, p.solicitante, COALESCE(p.obra_centro_custo, ''), p.observacao, p.status, p.criado_em, p.tipo,
 		       (SELECT count(*) FROM pedido_itens pi WHERE pi.pedido_id = p.id), cc.nome
@@ -855,7 +872,7 @@ func ListarPedidosFila(db *sql.DB, empresaID string, filtroStatus string) ([]Ped
 
 	// Mesmo escopo por Empresa na subquery de contagem — ver o comentário
 	// equivalente em ListarPedidosProprios. Mesmo COALESCE(obra_centro_custo,
-	// '') de ListarPedidosProprios (Story 20.2, migrations/000057).
+	// '') de ListarPedidosProprios (Story 20.2/20.1, migrations/000057/000058).
 	q := `
 		SELECT p.id, p.usuario_id, p.solicitante, COALESCE(p.obra_centro_custo, ''), p.observacao, p.status, p.criado_em, p.tipo,
 		       COALESCE(i.qtd, 0), cc.nome
@@ -941,7 +958,7 @@ func BuscarPedidoProprio(db *sql.DB, empresaID string, pedidoID, usuarioID, pape
 	var observacao sql.NullString
 	var centroCusto sql.NullString
 	// Mesmo COALESCE(obra_centro_custo, '') de ListarPedidosProprios/Fila
-	// (Story 20.2, migrations/000057).
+	// (Story 20.2/20.1, migrations/000057/000058).
 	const selectPedido = `
 		SELECT p.id, p.usuario_id, p.solicitante, COALESCE(p.obra_centro_custo, ''), p.observacao, p.status, p.criado_em, p.tipo, cc.nome
 		FROM pedidos p
