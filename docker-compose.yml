@@ -112,14 +112,14 @@ services:
       retries: 5
       start_period: 10s
 
-  # Cloudflare Tunnel (21/10, migração de segurança) — scaffold DORMENTE,
-  # mesmo padrão já aplicado em FB_APU05/FB_FAROL/FB_SMARTPICK. Sem
-  # CLOUDFLARE_TUNNEL_TOKEN setado no Coolify, este container só reinicia
-  # sozinho, sem afetar `api`/`web`/`db`. Sem `networks:` explícito aqui de
-  # propósito — mesmo padrão do resto deste arquivo: todos os serviços
-  # entram na rede default do compose automaticamente.
+  # Cloudflare Tunnel (21/10, migração de segurança) — já ATIVO em produção
+  # (CLOUDFLARE_TUNNEL_TOKEN configurado no Coolify; confirmado em
+  # 2026-11-13, 4 conexões vivas com o edge da Cloudflare). Sem o token, este
+  # container reinicia sozinho, sem afetar `api`/`web`/`db`. Sem `networks:`
+  # explícito aqui de propósito — mesmo padrão do resto deste arquivo: todos
+  # os serviços entram na rede default do compose automaticamente.
   #
-  # Passo a passo (manual, painel Cloudflare):
+  # Passo a passo (manual, painel Cloudflare, caso precise recriar o túnel):
   #   1. Zero Trust -> Networks -> Tunnels -> Create a tunnel, nome ex.
   #      "stockflow-prod".
   #   2. Copiar o token gerado e setar CLOUDFLARE_TUNNEL_TOKEN no Coolify.
@@ -133,6 +133,18 @@ services:
     container_name: stockflow-cloudflared-prod
     restart: always
     command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    # A imagem não tem shell nem wget/curl (só o binário `cloudflared`), então
+    # o healthcheck de `web` acima (CMD-SHELL + wget) não serve aqui.
+    # `cloudflared tunnel ready` existe exatamente pra isso: chama o próprio
+    # endpoint `/ready` do servidor de métricas do processo (padrão
+    # `0.0.0.0:20241`, mesma porta vista no log de start) e devolve exit code
+    # 0/1 de acordo — testado manualmente em produção antes de entrar aqui.
+    healthcheck:
+      test: ['CMD', 'cloudflared', 'tunnel', '--metrics', '127.0.0.1:20241', 'ready']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     depends_on:
       web:
         condition: service_healthy
