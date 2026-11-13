@@ -1707,8 +1707,19 @@ func decidirUmPedidoDoLoteTx(tx *sql.Tx, empresaID, decisorID string, ctx *pedid
 		const selectReserva = `
 			SELECT quantidade FROM reservas_pedido_item
 			WHERE pedido_id = $1 AND produto_id = $2 AND estoque_id = $3 AND empresa_id = $4`
+		// Snapshot de preço/unidade (Story 20.5, spec-20-5): gravado junto
+		// com `quantidade_aprovada`, na MESMA transação, lido de `produtos`
+		// da MESMA Empresa — o PDF da Pré-Nota nunca relê preço/unidade do
+		// cadastro atual (nomes, sim: Spec Change Log de spec-20-5).
+		// UMA subquery de linha (não UPDATE ... FROM) lê `produtos` uma vez
+		// só e, para um Produto sem linha, devolve NULL nas duas colunas sem
+		// nunca impedir a gravação da quantidade ("—" no documento). O
+		// UPDATE equivalente de DecidirPedido (retirada) continua intocado
+		// (Never, spec-20-5).
 		const updateItem = `
-			UPDATE pedido_itens SET quantidade_aprovada = $1
+			UPDATE pedido_itens SET quantidade_aprovada = $1,
+			  (preco_unitario, unidade_medida) = (
+			    SELECT pr.preco_unitario, pr.unidade_medida FROM produtos pr WHERE pr.id = $3 AND pr.empresa_id = $5)
 			WHERE pedido_id = $2 AND produto_id = $3 AND estoque_id = $4 AND empresa_id = $5`
 
 		totalmenteAprovado := true

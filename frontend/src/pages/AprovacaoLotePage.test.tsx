@@ -23,15 +23,19 @@ vi.mock('@/lib/session', () => ({
 }));
 
 const toastSuccess = vi.hoisted(() => vi.fn());
-vi.mock('sonner', () => ({ toast: { success: toastSuccess, error: vi.fn(), info: vi.fn() } }));
+const toastError = vi.hoisted(() => vi.fn());
+vi.mock('sonner', () => ({ toast: { success: toastSuccess, error: toastError, info: vi.fn() } }));
 
 const listarFilaPedidosMock = vi.hoisted(() => vi.fn());
 const buscarPedidoMock = vi.hoisted(() => vi.fn());
 const decidirLotePedidosMock = vi.hoisted(() => vi.fn());
+const baixarPreNotaPDFMock = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/pedidos', () => ({
   listarFilaPedidos: listarFilaPedidosMock,
   buscarPedido: buscarPedidoMock,
   decidirLotePedidos: decidirLotePedidosMock,
+  baixarPreNotaPDF: baixarPreNotaPDFMock,
+  MENSAGEM_ERRO_PRE_NOTA: 'Não foi possível baixar a Pré-Nota agora. Tente novamente em instantes.',
 }));
 
 // conectarRealtime mockado (molde de FilaPedidosSection.test.tsx): captura
@@ -291,5 +295,97 @@ describe('AprovacaoLotePage', () => {
       expect(screen.getByRole('button', { name: /Aprovar selecionados \(1\)/ })).toBeEnabled(),
     );
     expect(screen.getByRole('button', { name: /Rejeitar selecionados \(1\)/ })).toBeEnabled();
+  });
+});
+
+// --- Story 20.5 (spec-20-5): Pré-Nota no resultado do lote -----------------
+describe('AprovacaoLotePage — Pré-Nota (Story 20.5)', () => {
+  // jsdom não implementa URL.createObjectURL/revokeObjectURL: substituídos
+  // aqui e SEMPRE restaurados no afterEach (mesmo se o teste falhar).
+  const createOriginal = URL.createObjectURL;
+  const revokeOriginal = URL.revokeObjectURL;
+  let cliqueSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    URL.createObjectURL = vi.fn(() => 'blob:pre-nota-teste');
+    URL.revokeObjectURL = vi.fn();
+    cliqueSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    cliqueSpy.mockRestore();
+    URL.createObjectURL = createOriginal;
+    URL.revokeObjectURL = revokeOriginal;
+  });
+
+  const LOTE_COM_PRE_NOTA = () => [
+    { ...detalheDe('p-transf'), status: 'aprovado', preNotaId: 'pn-7', docnum: 7 },
+    { ...detalheDe('p-baixa'), status: 'aprovado', preNotaId: 'pn-7', docnum: 7 },
+  ];
+
+  async function aprovarTodos(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole('checkbox', { name: 'Selecionar todos' }));
+    await user.click(screen.getByRole('button', { name: /Aprovar selecionados/ }));
+    await user.click(await screen.findByRole('button', { name: 'Aprovar' }));
+  }
+
+  it('lote aprovado com Pré-Nota mostra "Pré-Nota nº N" e baixa pre-nota-7.pdf sem sair da página', async () => {
+    decidirLotePedidosMock.mockResolvedValue(LOTE_COM_PRE_NOTA());
+    const blob = new Blob(['%PDF-fake'], { type: 'application/pdf' });
+    baixarPreNotaPDFMock.mockResolvedValue(blob);
+    const user = userEvent.setup();
+    await montarEConectar();
+
+    await aprovarTodos(user);
+
+    expect(await screen.findByText('Pré-Nota nº 7 gerada.')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Baixar Pré-Nota' }));
+
+    await waitFor(() => expect(baixarPreNotaPDFMock).toHaveBeenCalledWith('pn-7'));
+    await waitFor(() => expect(cliqueSpy).toHaveBeenCalled());
+    const link = cliqueSpy.mock.contexts[0] as HTMLAnchorElement;
+    expect(link.download).toBe('pre-nota-7.pdf');
+    expect(URL.createObjectURL).toHaveBeenCalledWith(blob);
+    await waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:pre-nota-teste'));
+    expect(toastError).not.toHaveBeenCalled();
+    // Continua na tela da Aprovação em lote.
+    expect(screen.getByRole('heading', { name: 'Aprovação em lote' })).toBeInTheDocument();
+  });
+
+  it('decisão seguinte que FALHA mantém o link da Pré-Nota anterior', async () => {
+    decidirLotePedidosMock.mockResolvedValueOnce(LOTE_COM_PRE_NOTA());
+    const user = userEvent.setup();
+    await montarEConectar();
+
+    await aprovarTodos(user);
+    expect(await screen.findByText('Pré-Nota nº 7 gerada.')).toBeInTheDocument();
+
+    decidirLotePedidosMock.mockRejectedValueOnce(new Error('falha no segundo lote'));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Aprovar selecionados \(0\)/ })).toBeInTheDocument(),
+    );
+    await aprovarTodos(user);
+
+    expect(await screen.findByText('falha no segundo lote')).toBeInTheDocument();
+    expect(screen.getByText('Pré-Nota nº 7 gerada.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Baixar Pré-Nota' })).toBeInTheDocument();
+  });
+
+  it('lote rejeitado (sem Pré-Nota) não mostra Pré-Nota nem botão de download', async () => {
+    decidirLotePedidosMock.mockResolvedValue([
+      { ...detalheDe('p-baixa'), status: 'rejeitado', preNotaId: null, docnum: null },
+    ]);
+    const user = userEvent.setup();
+    await montarEConectar();
+
+    await user.click(
+      screen.getByRole('checkbox', { name: /Selecionar pedido de Bruno Costa/ }),
+    );
+    await user.click(screen.getByRole('button', { name: /Rejeitar selecionados/ }));
+    await user.click(await screen.findByRole('button', { name: 'Rejeitar' }));
+
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
+    expect(screen.queryByText(/Pré-Nota nº/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Baixar Pré-Nota' })).not.toBeInTheDocument();
   });
 });

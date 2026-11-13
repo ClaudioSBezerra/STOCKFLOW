@@ -934,6 +934,15 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 		middleware.RequireRole(services.PapelGestor)(
 			handlers.DecidirLotePedidosHandler(db, registro))))
 
+	// Documento impresso da Pré-Nota — Story 20.5 (Epic 20), spec-20-5.
+	// Mesmo gate da aprovação em lote que gera a Pré-Nota:
+	// RequireAuth + RequireRole(PapelGestor) (almoxarife/usuario -> 403).
+	// Isolamento por Empresa no service: outra Empresa/inexistente/malformado
+	// -> 404, mesmo colapso do recibo de Pedido.
+	registrar("GET /e/{slug}/api/pre-notas/{id}/pdf", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelGestor)(
+			handlers.BaixarPreNotaPDFHandler(db))))
+
 	// Exportação dos próprios dados pessoais — Story 8.1 (Epic 8,
 	// Privacidade/LGPD), spec-8-1. Atrás SÓ de RequireAuth — SEM
 	// RequireRole: qualquer papel autenticado exporta os PRÓPRIOS dados,

@@ -17,6 +17,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"stockflow/backend/middleware"
 	"stockflow/backend/realtime"
@@ -589,6 +590,40 @@ func BaixarReciboPedidoHandler(db *sql.DB) http.HandlerFunc {
 		default:
 			slog.Error("falha ao gerar recibo do pedido", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao gerar recibo do pedido")
+		}
+	}
+}
+
+// BaixarPreNotaPDFHandler expõe GET /api/pre-notas/{id}/pdf (Story 20.5,
+// spec-20-5), registrado em newMux atrás de RequireAuth +
+// RequireRole(PapelGestor) — papel abaixo de `gestor` -> 403 antes de chegar
+// aqui. Molde EXATO de BaixarReciboPedidoHandler: Pré-Nota de outra Empresa,
+// id inexistente ou malformado colapsam no MESMO `404 NOT_FOUND`. Sucesso ->
+// `200`, `Content-Type: application/pdf`, `Content-Disposition: attachment;
+// filename="pre-nota-{docnum}.pdf"`.
+func BaixarPreNotaPDFHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
+		pdf, docnum, err := services.GerarPreNotaPDF(db, empresa.ID, r.PathValue("id"))
+		switch {
+		case err == nil:
+			w.Header().Set("Content-Type", "application/pdf")
+			w.Header().Set("Content-Disposition", `attachment; filename="pre-nota-`+strconv.Itoa(docnum)+`.pdf"`)
+			// Documento com dados fiscais: nunca cacheado em proxy/navegador,
+			// e nunca reinterpretado como outro tipo pelo navegador.
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(pdf)
+		case errors.Is(err, services.ErrPreNotaNaoEncontrada):
+			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "pré-nota não encontrada")
+		default:
+			slog.Error("falha ao gerar PDF da pré-nota", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao gerar PDF da pré-nota")
 		}
 	}
 }

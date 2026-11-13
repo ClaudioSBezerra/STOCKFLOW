@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
+  baixarPreNotaPDF,
   buscarPedido,
   buscarReciboPedidoBlob,
   decidirLotePedidos,
@@ -316,6 +317,62 @@ describe('buscarReciboPedidoBlob', () => {
 
     await expect(buscarReciboPedidoBlob('p-1')).rejects.toThrow(
       'Não foi possível baixar o recibo agora. Tente novamente em instantes.',
+    );
+  });
+});
+
+// Story 20.5 (spec-20-5): download do PDF da Pré-Nota — molde de
+// buscarReciboPedidoBlob.
+describe('baixarPreNotaPDF', () => {
+  it('GET /api/pre-notas/{id}/pdf com Authorization e devolve o Blob do corpo', async () => {
+    const blob = new Blob(['%PDF-fake'], { type: 'application/pdf' });
+    fetchMock.mockReturnValue(Promise.resolve({ ok: true, blob: async () => blob }));
+
+    const resultado = await baixarPreNotaPDF('pn-1');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/pre-notas/pn-1/pdf');
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer token-de-teste' });
+    expect(resultado).toBe(blob);
+  });
+
+  it('propaga a mensagem de erro do servidor (403 papel insuficiente)', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 403,
+      json: async () => ({ error: { code: 'FORBIDDEN', message: 'permissão insuficiente' } }),
+    });
+
+    await expect(baixarPreNotaPDF('pn-1')).rejects.toThrow('permissão insuficiente');
+  });
+
+  it('erro de rede (fetch rejeitando) vira a mensagem amigável, nunca "Failed to fetch"', async () => {
+    fetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await expect(baixarPreNotaPDF('pn-1')).rejects.toThrow(
+      'Não foi possível baixar a Pré-Nota agora. Tente novamente em instantes.',
+    );
+  });
+
+  it('falha ao ler o corpo (res.blob rejeitando) vira a mensagem amigável', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      blob: async () => {
+        throw new TypeError('network error');
+      },
+    });
+
+    await expect(baixarPreNotaPDF('pn-1')).rejects.toThrow(
+      'Não foi possível baixar a Pré-Nota agora. Tente novamente em instantes.',
+    );
+  });
+
+  it('cai no fallback específico da Pré-Nota quando a resposta não-ok não traz error.message', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
+
+    await expect(baixarPreNotaPDF('pn-1')).rejects.toThrow(
+      'Não foi possível baixar a Pré-Nota agora. Tente novamente em instantes.',
     );
   });
 });

@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/
 import { Checkbox } from '@/components/ui/checkbox';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { TipoPedidoBadge } from '@/components/pedidos/TipoPedidoBadge';
+import { BaixarPreNotaButton } from '@/components/pedidos/BaixarPreNotaButton';
 import { formatarQuantidade } from '@/components/catalogo/formatacao';
 import { conectarRealtime, type StatusRealtime } from '@/lib/realtime/client';
 import { useAuth } from '@/lib/auth';
@@ -66,6 +67,19 @@ function mensagemResultadoLote(pedidos: PedidoDetalhe[]): string {
   if (contagem.rejeitado) partes.push(`${contagem.rejeitado} rejeitado(s)`);
   if (contagem.pendente) partes.push(`${contagem.pendente} ainda pendente(s)`);
   return partes.length > 0 ? `Lote decidido: ${partes.join(', ')}.` : 'Lote decidido.';
+}
+
+/**
+ * Pré-Nota gerada pelo lote (Story 20.4/20.5): todo Pedido decidido AGORA
+ * num lote aprovado aponta para a MESMA Pré-Nota — basta o primeiro com
+ * `preNotaId`. Rejeição ou lote 100% "pulado" não gera Pré-Nota -> null.
+ */
+function preNotaDoResultado(
+  pedidos: PedidoDetalhe[],
+): { id: string; docnum: number | null } | null {
+  const comPreNota = pedidos.find((p) => p.preNotaId);
+  if (!comPreNota?.preNotaId) return null;
+  return { id: comPreNota.preNotaId, docnum: comPreNota.docnum ?? null };
 }
 
 function AprovacaoLoteConteudo() {
@@ -231,6 +245,12 @@ function AprovacaoLoteConteudo() {
   );
   const [decidindo, setDecidindo] = useState(false);
   const [erroDecisao, setErroDecisao] = useState<string | null>(null);
+  // preNotaGerada (Story 20.5): Pré-Nota do ÚLTIMO lote decidido com sucesso
+  // nesta tela — só é substituída (ou limpa, numa rejeição) quando uma nova
+  // decisão dá certo; uma decisão que falha nunca some com o link anterior.
+  const [preNotaGerada, setPreNotaGerada] = useState<{ id: string; docnum: number | null } | null>(
+    null,
+  );
 
   async function decidirSelecionados(aprovar: boolean) {
     if (decidindo || selecionados.size === 0) {
@@ -241,6 +261,7 @@ function AprovacaoLoteConteudo() {
     try {
       const resultado = await decidirLotePedidos(Array.from(selecionados), aprovar);
       setSelecionados(new Set());
+      setPreNotaGerada(preNotaDoResultado(resultado));
       toast.success(mensagemResultadoLote(resultado));
       await carregar();
     } catch (err) {
@@ -278,6 +299,17 @@ function AprovacaoLoteConteudo() {
 
         {!carregou && !erroCarregar && (
           <output className="text-body text-muted-foreground">Carregando pendentes...</output>
+        )}
+
+        {preNotaGerada && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border p-3">
+            <output aria-live="polite" className="text-body">
+              {preNotaGerada.docnum !== null
+                ? `Pré-Nota nº ${preNotaGerada.docnum} gerada.`
+                : 'Pré-Nota gerada.'}
+            </output>
+            <BaixarPreNotaButton preNotaId={preNotaGerada.id} docnum={preNotaGerada.docnum} />
+          </div>
         )}
 
         {vazio && <p className="text-body text-muted-foreground">{MENSAGEM_VAZIO}</p>}

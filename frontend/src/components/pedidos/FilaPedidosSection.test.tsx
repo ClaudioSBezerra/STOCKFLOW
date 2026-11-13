@@ -14,6 +14,7 @@ const buscarPedidoMock = vi.hoisted(() => vi.fn());
 const decidirPedidoMock = vi.hoisted(() => vi.fn());
 const buscarReciboPedidoBlobMock = vi.hoisted(() => vi.fn());
 const buscarIndicadoresPedidosMock = vi.hoisted(() => vi.fn());
+const baixarPreNotaPDFMock = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/pedidos', () => ({
   listarFilaPedidos: listarFilaPedidosMock,
   buscarPedido: buscarPedidoMock,
@@ -21,6 +22,21 @@ vi.mock('@/lib/pedidos', () => ({
   buscarReciboPedidoBlob: buscarReciboPedidoBlobMock,
   buscarIndicadoresPedidos: buscarIndicadoresPedidosMock,
   MENSAGEM_ERRO_RECIBO: 'Não foi possível baixar o recibo agora. Tente novamente em instantes.',
+  baixarPreNotaPDF: baixarPreNotaPDFMock,
+  MENSAGEM_ERRO_PRE_NOTA: 'Não foi possível baixar a Pré-Nota agora. Tente novamente em instantes.',
+}));
+
+// useAuth() (Story 20.5): só o botão "Baixar Pré-Nota" lê o papel — gate
+// `gestor`+. Configurável por teste.
+const authState = vi.hoisted(() => ({ papel: 'gestor' as string }));
+vi.mock('@/lib/auth', () => ({
+  useAuth: () => ({
+    estado: 'autenticado',
+    usuario: { id: '1', nome: 'Ator', email: 'ator@empresa.com', papel: authState.papel },
+    definirSessao: vi.fn(),
+    atualizarUsuario: vi.fn(),
+    logout: vi.fn(),
+  }),
 }));
 
 // conectarRealtime mockado (molde de MeusPedidosSection.test.tsx): captura
@@ -76,6 +92,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.clearAllMocks();
+  authState.papel = 'gestor';
 });
 
 describe('FilaPedidosSection', () => {
@@ -998,5 +1015,79 @@ describe('FilaPedidosSection — faixa de indicadores (Story 17.4)', () => {
     expect(badgeTransferencia).toBeInTheDocument();
     expect(badgeTransferencia.closest('span')?.querySelector('svg')).toBeInTheDocument();
     expect(screen.queryAllByText('Transferência')).toHaveLength(1);
+  });
+});
+
+// --- Story 20.5 (spec-20-5): "Baixar Pré-Nota" no Dialog de detalhe --------
+describe('FilaPedidosSection — Pré-Nota (Story 20.5)', () => {
+  const COM_PRE_NOTA = { ...PEDIDOS[1], tipo: 'baixa', preNotaId: 'pn-1', docnum: 7 };
+  // jsdom não implementa URL.createObjectURL/revokeObjectURL: substituídos
+  // aqui e SEMPRE restaurados no afterEach (mesmo se o teste falhar).
+  const createOriginal = URL.createObjectURL;
+  const revokeOriginal = URL.revokeObjectURL;
+  let cliqueSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    URL.createObjectURL = vi.fn(() => 'blob:pre-nota-teste');
+    URL.revokeObjectURL = vi.fn();
+    cliqueSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    cliqueSpy.mockRestore();
+    URL.createObjectURL = createOriginal;
+    URL.revokeObjectURL = revokeOriginal;
+  });
+
+  async function abrirDetalheComPreNota(pedidos: unknown[]) {
+    listarFilaPedidosMock.mockResolvedValue(pedidos);
+    render(<FilaPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText(/Obra Sul/);
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole('button', { name: /^Ver itens do pedido de Bruno Costa — Obra Sul/ }),
+    );
+    await screen.findByRole('button', { name: 'Baixar recibo' });
+    return user;
+  }
+
+  it('gestor vê "Baixar Pré-Nota" num Pedido com Pré-Nota e baixa pre-nota-7.pdf sem sair da página', async () => {
+    const blob = new Blob(['%PDF-fake'], { type: 'application/pdf' });
+    baixarPreNotaPDFMock.mockResolvedValue(blob);
+
+    const user = await abrirDetalheComPreNota([COM_PRE_NOTA]);
+    await user.click(screen.getByRole('button', { name: 'Baixar Pré-Nota' }));
+
+    await waitFor(() => expect(baixarPreNotaPDFMock).toHaveBeenCalledWith('pn-1'));
+    await waitFor(() => expect(cliqueSpy).toHaveBeenCalled());
+    const link = cliqueSpy.mock.contexts[0] as HTMLAnchorElement;
+    expect(link.download).toBe('pre-nota-7.pdf');
+    expect(URL.createObjectURL).toHaveBeenCalledWith(blob);
+    await waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:pre-nota-teste'));
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it('falha ao baixar a Pré-Nota mostra toast.error com a mensagem do servidor', async () => {
+    baixarPreNotaPDFMock.mockRejectedValue(new Error('pré-nota não encontrada'));
+
+    const user = await abrirDetalheComPreNota([COM_PRE_NOTA]);
+    await user.click(screen.getByRole('button', { name: 'Baixar Pré-Nota' }));
+
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith('pré-nota não encontrada'));
+    expect(cliqueSpy).not.toHaveBeenCalled();
+  });
+
+  it('papel abaixo de gestor (almoxarife) NÃO vê "Baixar Pré-Nota"', async () => {
+    authState.papel = 'almoxarife';
+    await abrirDetalheComPreNota([COM_PRE_NOTA]);
+    expect(screen.queryByRole('button', { name: 'Baixar Pré-Nota' })).not.toBeInTheDocument();
+  });
+
+  it('Pedido sem Pré-Nota não mostra "Baixar Pré-Nota", nem para gestor', async () => {
+    await abrirDetalheComPreNota([PEDIDOS[1]]);
+    expect(screen.queryByRole('button', { name: 'Baixar Pré-Nota' })).not.toBeInTheDocument();
   });
 });

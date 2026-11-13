@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -2409,5 +2410,191 @@ func TestDecidirLotePedidosHandler_400MensagensDistintas(t *testing.T) {
 
 	if envMalformado.Error.Message == envSemAprovar.Error.Message {
 		t.Errorf("as duas causas devolveram a MESMA mensagem (%q) — devem ser distintas", envMalformado.Error.Message)
+	}
+}
+
+// --- BaixarPreNotaPDFHandler (Story 20.5, Epic 20, spec-20-5) -------------
+//
+// GET /api/pre-notas/{id}/pdf -> RequireAuth -> RequireRole(gestor) ->
+// handler. Mesma composição de newMux (main.go).
+
+func getPreNotaPDF(db *sql.DB, authHeader, id string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /e/{slug}/api/pre-notas/{id}/pdf",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelGestor)(
+					BaixarPreNotaPDFHandler(db)))))
+	r := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/pre-notas/"+id+"/pdf", nil)
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+// seedPreNotaViaServico aprova em lote 1 Pedido de Baixa e devolve
+// (preNotaID, docnum).
+func seedPreNotaViaServico(t *testing.T, db *sql.DB, gestorID, donoID, nome string) (string, int) {
+	t.Helper()
+	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, nome, 10)
+	pedido, err := services.SubmeterPedidoBaixa(db, empresaTeste, donoID, "Fulano", "Obra Y", "", produtoID, estoqueID, 3)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
+	}
+	res, err := services.DecidirLotePedidos(db, empresaTeste, gestorID, []string{pedido.ID}, true)
+	if err != nil {
+		t.Fatalf("seed DecidirLotePedidos: %v", err)
+	}
+	if res[0].PreNotaID == nil || res[0].Docnum == nil {
+		t.Fatalf("seed: lote sem Pré-Nota: %+v", res[0])
+	}
+	return *res[0].PreNotaID, *res[0].Docnum
+}
+
+// TestBaixarPreNotaPDFHandler_200Gestor: 200, application/pdf, nome do
+// arquivo com o docnum, corpo inicia com %PDF-.
+func TestBaixarPreNotaPDFHandler_200Gestor(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	gestorID := criarContaComPapel(t, db, "H205 PDF Gestor", "h-prenota-pdf-gestor@empresa.com", "senha-123456", "gestor")
+	tokenGestor := tokenDeLogin(t, db, "h-prenota-pdf-gestor@empresa.com", "senha-123456")
+	dono, _ := seedContaComumECarrinho(t, db, "H205 PDF Dono", "h-prenota-pdf-dono@empresa.com")
+	preNotaID, docnum := seedPreNotaViaServico(t, db, gestorID, dono, "H205 PDF Baixa")
+
+	w := getPreNotaPDF(db, "Bearer "+tokenGestor, preNotaID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/pdf" {
+		t.Errorf("Content-Type = %q, want application/pdf", ct)
+	}
+	want := `attachment; filename="pre-nota-` + strconv.Itoa(docnum) + `.pdf"`
+	if cd := w.Header().Get("Content-Disposition"); cd != want {
+		t.Errorf("Content-Disposition = %q, want %q", cd, want)
+	}
+	if cc := w.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", cc)
+	}
+	if xcto := w.Header().Get("X-Content-Type-Options"); xcto != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", xcto)
+	}
+	if !bytes.HasPrefix(w.Body.Bytes(), []byte("%PDF-")) {
+		t.Errorf("corpo não começa com %%PDF-")
+	}
+}
+
+// TestBaixarPreNotaPDFHandler_403Almoxarife cobre "Papel insuficiente".
+func TestBaixarPreNotaPDFHandler_403Almoxarife(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	gestorID := criarContaComPapel(t, db, "H205 403 Gestor", "h-prenota-403-gestor@empresa.com", "senha-123456", "gestor")
+	criarContaComPapel(t, db, "H205 403 Almox", "h-prenota-403-almox@empresa.com", "senha-123456", "almoxarife")
+	tokenAlmox := tokenDeLogin(t, db, "h-prenota-403-almox@empresa.com", "senha-123456")
+	dono, _ := seedContaComumECarrinho(t, db, "H205 403 Dono", "h-prenota-403-dono@empresa.com")
+	preNotaID, _ := seedPreNotaViaServico(t, db, gestorID, dono, "H205 403 Baixa")
+
+	w := getPreNotaPDF(db, "Bearer "+tokenAlmox, preNotaID)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body=%s)", w.Code, w.Body.String())
+	}
+	if bytes.HasPrefix(w.Body.Bytes(), []byte("%PDF-")) {
+		t.Error("PDF gerado para papel insuficiente")
+	}
+}
+
+// TestBaixarPreNotaPDFHandler_404IdInexistenteOuMalformado cobre "Outra
+// Empresa / inexistente" na fronteira HTTP (o caso "outra Empresa" é coberto
+// no service, TestMontarPreNotaConteudo_NaoEncontrada).
+func TestBaixarPreNotaPDFHandler_404IdInexistenteOuMalformado(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "H205 404 Gestor", "h-prenota-404-gestor@empresa.com", "senha-123456", "gestor")
+	token := tokenDeLogin(t, db, "h-prenota-404-gestor@empresa.com", "senha-123456")
+
+	for _, id := range []string{"nao-e-uuid", "00000000-0000-0000-0000-000000000000"} {
+		w := getPreNotaPDF(db, "Bearer "+token, id)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("id %q: status = %d, want 404 (body=%s)", id, w.Code, w.Body.String())
+			continue
+		}
+		if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "NOT_FOUND" {
+			t.Errorf("id %q: code = %q, want NOT_FOUND", id, env.Error.Code)
+		}
+	}
+}
+
+// TestBaixarPreNotaPDFHandler_401SemToken: sem Authorization -> 401.
+func TestBaixarPreNotaPDFHandler_401SemToken(t *testing.T) {
+	db := testDB(t)
+	w := getPreNotaPDF(db, "", "00000000-0000-0000-0000-000000000000")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+// TestBaixarPreNotaPDFHandler_403Usuario: papel `usuario` -> 403, nada gerado.
+func TestBaixarPreNotaPDFHandler_403Usuario(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	gestorID := criarContaComPapel(t, db, "H205 403U Gestor", "h-prenota-403u-gestor@empresa.com", "senha-123456", "gestor")
+	dono, tokenDono := seedContaComumECarrinho(t, db, "H205 403U Dono", "h-prenota-403u-dono@empresa.com")
+	preNotaID, _ := seedPreNotaViaServico(t, db, gestorID, dono, "H205 403U Baixa")
+
+	w := getPreNotaPDF(db, "Bearer "+tokenDono, preNotaID)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body=%s)", w.Code, w.Body.String())
+	}
+	if bytes.HasPrefix(w.Body.Bytes(), []byte("%PDF-")) {
+		t.Error("PDF gerado para papel usuario")
+	}
+}
+
+// TestBaixarPreNotaPDFHandler_404OutraEmpresa: Pré-Nota que existe, mas em
+// OUTRA Empresa, pedida pelo Gestor de empresaTeste -> 404 (mesmo colapso de
+// id inexistente), nada gerado.
+func TestBaixarPreNotaPDFHandler_404OutraEmpresa(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "H205 Isol Gestor", "h-prenota-isol-gestor@empresa.com", "senha-123456", "gestor")
+	token := tokenDeLogin(t, db, "h-prenota-isol-gestor@empresa.com", "senha-123456")
+
+	const slugAlheia = "h-prenota-pdf-alheia"
+	remover := func() {
+		if _, err := db.Exec(`DELETE FROM pre_notas WHERE empresa_id IN (SELECT id FROM empresas WHERE slug = $1)`, slugAlheia); err != nil {
+			t.Fatalf("limpar pre_notas da empresa alheia: %v", err)
+		}
+		removerEmpresaPlataformaHandlers(t, db, slugAlheia)
+	}
+	remover()
+	t.Cleanup(remover)
+	var alheiaID string
+	if err := db.QueryRow(
+		`INSERT INTO empresas (nome_fantasia, razao_social, cnpj, logradouro, numero, bairro, cidade, cep, uf, slug)
+		 VALUES ('PreNota PDF Alheia', 'PreNota PDF Alheia LTDA', '99888777012255', 'Rua', '1', 'Centro', 'Recife', '50000000', 'PE', $1)
+		 RETURNING id`, slugAlheia,
+	).Scan(&alheiaID); err != nil {
+		t.Fatalf("criar empresa alheia: %v", err)
+	}
+	var gestorAlheio, preNotaAlheia string
+	if err := db.QueryRow(
+		`INSERT INTO usuarios (nome, email, senha_hash, papel, email_verificado, ativo, empresa_id)
+		 VALUES ('Gestor Alheio', 'h-prenota-pdf-alheio@alheia.com', 'hash', 'gestor', true, true, $1) RETURNING id`, alheiaID,
+	).Scan(&gestorAlheio); err != nil {
+		t.Fatalf("criar gestor alheio: %v", err)
+	}
+	if err := db.QueryRow(
+		`INSERT INTO pre_notas (empresa_id, docnum, decidido_por) VALUES ($1, 1, $2) RETURNING id`, alheiaID, gestorAlheio,
+	).Scan(&preNotaAlheia); err != nil {
+		t.Fatalf("criar pré-nota alheia: %v", err)
+	}
+
+	w := getPreNotaPDF(db, "Bearer "+token, preNotaAlheia)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "NOT_FOUND" {
+		t.Errorf("code = %q, want NOT_FOUND", env.Error.Code)
 	}
 }

@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-29-2026 14:50
-last_updated: 09-29-2026 13:50
+last_updated: 11-13-2026 18:30
 project: stockflow
 project_key: NOKEY
 tracking_system: file-system
@@ -174,3 +174,19 @@ development_status:
   18-2-bloqueio-total-quando-o-trial-vence: done
   18-3-dono-da-plataforma-estende-ou-isenta-o-trial: done
   epic-18-retrospective: optional
+
+  epic-19: done
+  19-1-tokens-base-do-catálogo-2-0-no-tailwind-v4: done
+  19-2-menu-lateral-e-topo-no-novo-padrão-visual: done
+  19-3-páginas-de-lista-no-novo-padrão-visual: done
+  19-4-formulários-e-diálogos-no-novo-padrão-visual: done
+  19-5-validação-visual-final-e-limpeza: done
+  epic-19-retrospective: optional
+
+  epic-20: done
+  20-1-pedido-de-transferência-entre-filiais-solicitar: done
+  20-2-pedido-de-baixa-de-estoque-solicitar: done
+  20-3-aprovação-em-lote-por-gestor: done
+  20-4-geração-de-pré-nota-docnum-ao-aprovar-lote: done
+  20-5-documento-impresso-da-pré-nota: done
+  epic-20-retrospective: optional

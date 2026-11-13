@@ -57,6 +57,11 @@ interface PedidoCabecalho {
   // depois.
   decididoPor: string | null;
   decididoEm: string | null;
+  // preNotaId/docnum (Story 20.4/20.5): preenchidos só quando o Pedido foi
+  // aprovado em lote e ganhou uma Pré-Nota; null/ausente caso contrário
+  // (opcionais para tolerar fixtures anteriores à Story 20.4).
+  preNotaId?: string | null;
+  docnum?: number | null;
 }
 
 export interface PedidoResumo extends PedidoCabecalho {
@@ -311,6 +316,39 @@ export async function buscarReciboPedidoBlob(id: string): Promise<Blob> {
     throw new Error(body.error?.message ?? MENSAGEM_ERRO_RECIBO);
   }
   return res.blob();
+}
+
+export const MENSAGEM_ERRO_PRE_NOTA =
+  'Não foi possível baixar a Pré-Nota agora. Tente novamente em instantes.';
+
+/**
+ * Baixa o PDF da Pré-Nota `preNotaId` (Story 20.5, spec-20-5) — GET
+ * /api/pre-notas/{id}/pdf, só `gestor`+ (o servidor revalida o papel:
+ * 403 abaixo disso; 404 para Pré-Nota de outra Empresa/inexistente). Molde
+ * EXATO de `buscarReciboPedidoBlob`: devolve o `Blob` puro, SEM lógica de
+ * DOM — quem cria/clica/remove o `<a download>` é o componente chamador.
+ */
+export async function baixarPreNotaPDF(preNotaId: string): Promise<Blob> {
+  // Falha de rede (`fetch` rejeitando) ou do corpo (`res.blob()`) nunca
+  // vaza a mensagem crua do navegador ("Failed to fetch") — sempre a
+  // amigável; só a `error.message` do servidor é repassada como veio.
+  let res: Response;
+  try {
+    res = await fetch(apiUrl(`/api/pre-notas/${encodeURIComponent(preNotaId)}/pdf`), {
+      headers: authHeaders(),
+    });
+  } catch {
+    throw new Error(MENSAGEM_ERRO_PRE_NOTA);
+  }
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+    throw new Error(body.error?.message ?? MENSAGEM_ERRO_PRE_NOTA);
+  }
+  try {
+    return await res.blob();
+  } catch {
+    throw new Error(MENSAGEM_ERRO_PRE_NOTA);
+  }
 }
 
 const MENSAGEM_ERRO_INDICADORES =

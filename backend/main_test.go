@@ -4237,3 +4237,79 @@ func TestRunMigrations_RecuperaDirty49SemNadaAplicado(t *testing.T) {
 		t.Errorf("restrição da 000049 após a recuperação: n = %d, err = %v, want 1", n, err)
 	}
 }
+
+// TestNewMux_PreNotaPDFRotaCarregaRequireRoleGestor prova, pela mesma
+// instância de newMux usada por main() (Story 20.5), que
+// GET /api/pre-notas/{id}/pdf está atrás de RequireRole(gestor):
+// `almoxarife` -> 403 FORBIDDEN; `gestor` passa do gate e chega ao handler
+// (404 para um id inexistente — nunca 403).
+func TestNewMux_PreNotaPDFRotaCarregaRequireRoleGestor(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate usuarios: %v", err)
+	}
+
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, t.TempDir())
+
+	const senha = "senha-123456"
+	segredos := map[string]string{}
+	seedContaMux(t, db, "prenota-pdf-almox@empresa.com", "almoxarife", senha, segredos)
+	seedContaMux(t, db, "prenota-pdf-gestor@empresa.com", "gestor", senha, segredos)
+
+	despachar := func(token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/pre-notas/00000000-0000-0000-0000-000000000000/pdf", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	// Login do gestor (com MFA) UMA vez só: o mesmo código TOTP não é aceito
+	// duas vezes na mesma janela (proteção contra replay).
+	tokenGestor := tokenDeMux(t, mux, "prenota-pdf-gestor@empresa.com", senha, segredos)
+
+	t.Run("almoxarife -> 403", func(t *testing.T) {
+		w := despachar(tokenDeMux(t, mux, "prenota-pdf-almox@empresa.com", senha, segredos))
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403 (body=%s)", w.Code, w.Body.String())
+		}
+	})
+	t.Run("gestor passa do gate (404 id inexistente)", func(t *testing.T) {
+		w := despachar(tokenGestor)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (body=%s)", w.Code, w.Body.String())
+		}
+	})
+	t.Run("gestor baixa uma Pré-Nota real (200 application/pdf)", func(t *testing.T) {
+		var gestorID, preNotaID string
+		if err := db.QueryRow(`SELECT id FROM usuarios WHERE email = 'prenota-pdf-gestor@empresa.com'`).Scan(&gestorID); err != nil {
+			t.Fatalf("ler gestor: %v", err)
+		}
+		// Pré-Nota sem Pedido vinculado: o documento sai com "Nenhum item
+		// movimentado" — basta para provar a rota de ponta a ponta.
+		if err := db.QueryRow(
+			`INSERT INTO pre_notas (empresa_id, docnum, decidido_por)
+			 VALUES ($1, (SELECT COALESCE(MAX(docnum), 0) + 1000 FROM pre_notas WHERE empresa_id = $1), $2) RETURNING id`,
+			empresaTeste, gestorID,
+		).Scan(&preNotaID); err != nil {
+			t.Fatalf("seed pré-nota: %v", err)
+		}
+		t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM pre_notas WHERE id = $1`, preNotaID) })
+
+		req := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/pre-notas/"+preNotaID+"/pdf", nil)
+		req.Header.Set("Authorization", "Bearer "+tokenGestor)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+		}
+		if ct := w.Header().Get("Content-Type"); ct != "application/pdf" {
+			t.Errorf("Content-Type = %q, want application/pdf", ct)
+		}
+		if !strings.HasPrefix(w.Body.String(), "%PDF-") {
+			t.Error("corpo não é um PDF")
+		}
+	})
+}

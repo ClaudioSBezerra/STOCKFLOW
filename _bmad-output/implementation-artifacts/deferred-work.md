@@ -881,3 +881,19 @@ status: open
 - source_spec: `spec-20-4-geracao-de-pre-nota-docnum-ao-aprovar-lote.md`
   summary: Nenhum trigger/constraint no banco impede que `pedidos.pre_nota_id` seja reatribuído ou que uma `pre_nota` seja editada depois de criada — o invariante de "registro só-acrescenta" (nunca editado) é garantido só por disciplina de código, não pelo banco.
   evidence: Achado pela revisão (blind-hunter). Mesma classe de risco de outros invariantes já aceitos como convenção de código no projeto (ex. `quantidade_aprovada`); um trigger dedicado é um esforço maior que não foi pedido pelas ACs desta story.
+
+- source_spec: `spec-20-5-documento-impresso-da-pre-nota.md`
+  summary: O PDF da Pré-Nota não repete o cabeçalho (nº da Pré-Nota, Empresa) nem numera as páginas ("Página X de Y") quando o documento quebra em várias páginas.
+  evidence: Achado pela revisão (blind-hunter). Numeração "de Y" exige renderizar em duas passadas no gopdf; Pré-Notas de lote costumam caber numa página na prática.
+
+- source_spec: `spec-20-5-documento-impresso-da-pre-nota.md`
+  summary: Cada linha da Pré-Nota não mostra de qual Pedido veio, nem a obra/observação do Pedido — dificulta conciliar o documento com os Pedidos numa auditoria.
+  evidence: Achado pela revisão (blind-hunter). Não pedido pelas ACs; vale decidir com a equipe da Ferreira Costa que campos de rastreio o documento precisa.
+
+- source_spec: `spec-20-5-documento-impresso-da-pre-nota.md`
+  summary: Download da Pré-Nota não é registrado em auditoria (quem baixou qual Pré-Nota e quando), embora o documento contenha nomes de pessoas (LGPD).
+  evidence: Achado pela revisão (blind-hunter). O recibo de Pedido já existente também não audita downloads — mesma lacuna, tratar as duas juntas.
+
+- source_spec: `spec-20-5-documento-impresso-da-pre-nota.md`
+  summary: Não existe uma tela pra listar/rebaixar Pré-Notas; depois de sair da tela de Aprovação em lote, só dá pra baixar abrindo um Pedido vinculado.
+  evidence: Achado pela revisão (blind-hunter). Explicitamente fora de escopo desta story (Never da spec); candidata a uma story futura.

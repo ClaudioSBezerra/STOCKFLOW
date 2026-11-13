@@ -20,6 +20,7 @@ import { conectarRealtime, type StatusRealtime } from '@/lib/realtime/client';
 import { formatarQuantidade } from '@/components/catalogo/formatacao';
 import { StatusPedidoBadge } from '@/components/pedidos/StatusPedidoBadge';
 import { TipoPedidoBadge } from '@/components/pedidos/TipoPedidoBadge';
+import { BaixarPreNotaButton } from '@/components/pedidos/BaixarPreNotaButton';
 import { FaixaIndicadores } from '@/components/lista/FaixaIndicadores';
 import {
   buscarIndicadoresPedidos,
@@ -388,7 +389,12 @@ export function MeusPedidosSection() {
           )}
 
           {(detalheDe?.status === 'aprovado' || detalheDe?.status === 'parcialmente_aprovado') && (
-            <div className="flex justify-end pt-2">
+            <div className="flex justify-end gap-2 pt-2">
+              {/* Story 20.5: Pedido aprovado em lote tem Pré-Nota — botão
+                  irmão, só para `gestor`+ (gate dentro do próprio botão). */}
+              {detalheDe.preNotaId && (
+                <BaixarPreNotaButton preNotaId={detalheDe.preNotaId} docnum={detalheDe.docnum} />
+              )}
               <Button
                 type="button"
                 variant="outline"
