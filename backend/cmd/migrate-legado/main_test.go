@@ -584,6 +584,9 @@ func TestMigrarEstoques_EmpresaSemFilialAborta(t *testing.T) {
 	const slug = "migrate-legado-sem-filial"
 	limpar := func() {
 		_, _ = alvo.Exec(`DELETE FROM contadores_produto WHERE empresa_id IN (SELECT id FROM empresas WHERE slug = $1)`, slug)
+		// Story 20.4 (spec-20-4): `contadores_pre_nota` nasce junto com TODA
+		// Empresa, mesmo molde/razão do contador de código acima.
+		_, _ = alvo.Exec(`DELETE FROM contadores_pre_nota WHERE empresa_id IN (SELECT id FROM empresas WHERE slug = $1)`, slug)
 		_, _ = alvo.Exec(`DELETE FROM empresas WHERE slug = $1`, slug)
 	}
 	limpar()
@@ -620,6 +623,9 @@ func TestMigrarEstoques_EmpresaSemFilialTudoMapeado(t *testing.T) {
 	const slug = "migrate-legado-mapeado-sem-filial"
 	limpar := func() {
 		_, _ = alvo.Exec(`DELETE FROM contadores_produto WHERE empresa_id IN (SELECT id FROM empresas WHERE slug = $1)`, slug)
+		// Story 20.4 (spec-20-4): `contadores_pre_nota` nasce junto com TODA
+		// Empresa, mesmo molde/razão do contador de código acima.
+		_, _ = alvo.Exec(`DELETE FROM contadores_pre_nota WHERE empresa_id IN (SELECT id FROM empresas WHERE slug = $1)`, slug)
 		_, _ = alvo.Exec(`DELETE FROM empresas WHERE slug = $1`, slug)
 	}
 	limpar()

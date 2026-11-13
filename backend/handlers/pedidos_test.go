@@ -2095,6 +2095,54 @@ func TestDecidirLotePedidosHandler_200LoteMisto(t *testing.T) {
 	}
 }
 
+// TestDecidirLotePedidosHandler_200RespostaTrazPreNotaIdEDocnumCamelCase
+// cobre o achado de revisão (Story 20.4): a resposta JSON de
+// POST /api/pedidos/decisao-lote traz as chaves camelCase `preNotaId`/
+// `docnum` preenchidas pro Pedido recém-decidido, na MESMA resposta que gera
+// a Pré-Nota (não só numa releitura posterior).
+func TestDecidirLotePedidosHandler_200RespostaTrazPreNotaIdEDocnumCamelCase(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "H204 PreNota Gestor", "h-prenota-gestor@empresa.com", "senha-123456", "gestor")
+	tokenGestor := tokenDeLogin(t, db, "h-prenota-gestor@empresa.com", "senha-123456")
+	dono, _ := seedContaComumECarrinho(t, db, "H204 PreNota Dono", "h-prenota-dono@empresa.com")
+
+	produtoBaixaID, estoqueBaixaID := seedProdutoComSaldoHandler(t, db, "H204 PreNota Baixa", 10)
+	pedidoBaixa, err := services.SubmeterPedidoBaixa(db, empresaTeste, dono, "Fulano", "Obra Y", "", produtoBaixaID, estoqueBaixaID, 3)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
+	}
+
+	body := `{"pedidoIds":["` + pedidoBaixa.ID + `"],"aprovar":true}`
+	w := postDecisaoLotePedidos(db, "Bearer "+tokenGestor, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+
+	// Decodifica como JSON cru (map, não services.PedidoDetalhe) pra
+	// confirmar as chaves EXATAS que chegam na resposta — decodificar direto
+	// num struct Go casaria "prenotaid"/"PreNotaID" por case-insensitive
+	// fallback do encoding/json, escondendo um erro de tag.
+	var raw struct {
+		Pedidos []map[string]any `json:"pedidos"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if len(raw.Pedidos) != 1 {
+		t.Fatalf("pedidos = %+v, want 1", raw.Pedidos)
+	}
+	pedido := raw.Pedidos[0]
+	preNotaID, temPreNotaID := pedido["preNotaId"]
+	docnum, temDocnum := pedido["docnum"]
+	if !temPreNotaID || preNotaID == nil {
+		t.Errorf("resposta sem a chave \"preNotaId\" preenchida: %+v", pedido)
+	}
+	if !temDocnum || docnum == nil {
+		t.Errorf("resposta sem a chave \"docnum\" preenchida: %+v", pedido)
+	}
+}
+
 // TestDecidirLotePedidosHandler_400ListaVazia cobre a linha "Lote vazio" na
 // fronteira HTTP -> 400 VALIDATION_ERROR.
 func TestDecidirLotePedidosHandler_400ListaVazia(t *testing.T) {

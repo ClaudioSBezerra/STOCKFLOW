@@ -102,6 +102,9 @@ func semearLegado(t *testing.T, db *sql.DB, nomes ...string) (empresaID string, 
 			`DELETE FROM nomenclatura_templates WHERE empresa_id = $1`,
 			`DELETE FROM filiais WHERE empresa_id = $1`,
 			`DELETE FROM contadores_produto WHERE empresa_id = $1`,
+			// Story 20.4 (spec-20-4): `contadores_pre_nota` nasce junto com
+			// TODA Empresa, mesmo molde/razão de `contadores_produto` acima.
+			`DELETE FROM contadores_pre_nota WHERE empresa_id = $1`,
 			`DELETE FROM empresas WHERE id = $1`,
 		} {
 			if _, err := db.Exec(stmt, empresaID); err != nil {

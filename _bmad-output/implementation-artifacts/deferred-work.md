@@ -869,3 +869,15 @@ status: open
 - source_spec: `spec-20-3-aprovacao-em-lote-por-gestor.md`
   summary: `AprovacaoLotePage` rebusca o detalhe completo de TODOS os pedidos pendentes (`Promise.all`) a cada evento SSE `pedidos` recebido, mesmo quando o evento não tem nada a ver com os pedidos já listados nesta tela.
   evidence: Achado pela revisão (blind-hunter). Ineficiência, não incorreção; mesma régua de baixo risco dos demais itens de escala desta story (poucos Gestores, poucos pedidos pendentes de cada vez na prática).
+
+- source_spec: `spec-20-4-geracao-de-pre-nota-docnum-ao-aprovar-lote.md`
+  summary: `InserirEmpresa`/`ProvisionarEmpresa` usa `ON CONFLICT (empresa_id) DO NOTHING` ao criar a linha de `contadores_pre_nota` — se a função fosse chamada duas vezes pra mesma Empresa (retry, bug, corrida), a segunda chamada vira um no-op silencioso, sem log nem erro.
+  evidence: Achado pela revisão (blind-hunter). Mesmo padrão já aceito pra `contadores_produto` (mesma linha, mesmo `ON CONFLICT`) — não é regressão desta story, só herda o risco já existente.
+
+- source_spec: `spec-20-4-geracao-de-pre-nota-docnum-ao-aprovar-lote.md`
+  summary: A down-migration de `000059` derruba `pre_notas` incondicionalmente, sem nenhum aviso sobre a perda de dados — uma vez que existam Pré-Notas reais em produção, reverter essa migration destrói o histórico de docnum/aprovação permanentemente.
+  evidence: Achado pela revisão (blind-hunter). Mesmo precedente já aceito da migration 000057 (Story 20.2) — down-migrations raramente rodam neste projeto, risco só se materializa se alguém reverter essa migration específica com dados reais já gravados.
+
+- source_spec: `spec-20-4-geracao-de-pre-nota-docnum-ao-aprovar-lote.md`
+  summary: Nenhum trigger/constraint no banco impede que `pedidos.pre_nota_id` seja reatribuído ou que uma `pre_nota` seja editada depois de criada — o invariante de "registro só-acrescenta" (nunca editado) é garantido só por disciplina de código, não pelo banco.
+  evidence: Achado pela revisão (blind-hunter). Mesma classe de risco de outros invariantes já aceitos como convenção de código no projeto (ex. `quantidade_aprovada`); um trigger dedicado é um esforço maior que não foi pedido pelas ACs desta story.

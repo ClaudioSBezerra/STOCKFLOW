@@ -126,6 +126,15 @@ func removerEmpresaDeTeste(t *testing.T, db *sql.DB, slug string) {
 		`DELETE FROM centros_custo WHERE empresa_id = $1`,
 		`DELETE FROM filiais WHERE empresa_id = $1`,
 		`DELETE FROM contadores_produto WHERE empresa_id = $1`,
+		// Story 20.4 (spec-20-4): `contadores_pre_nota` nasce junto com TODA
+		// Empresa (InserirEmpresa/ProvisionarEmpresa), mesmo molde/razão de
+		// `contadores_produto` acima. `pre_notas` também tem FK para
+		// `empresas`, sem CASCADE — achado de revisão: um teste que gere uma
+		// Pré-Nota (depois de já limpar os Pedidos que a referenciam, por sua
+		// própria conta — mesmo padrão de produtos/estoques desta suíte) e
+		// então chame este helper precisa dela limpa aqui também.
+		`DELETE FROM pre_notas WHERE empresa_id = $1`,
+		`DELETE FROM contadores_pre_nota WHERE empresa_id = $1`,
 		`DELETE FROM empresas WHERE id = $1`,
 	} {
 		if _, err := db.Exec(stmt, id); err != nil {

@@ -59,6 +59,15 @@ type Pedido struct {
 	// de retirada comum na Fila/Meus Pedidos — DecidirPedido recusa decidir
 	// qualquer Pedido com `tipo != 'retirada'` (ver guard abaixo).
 	Tipo string `json:"tipo"`
+	// PreNotaID/Docnum (Story 20.4, spec-20-4): nil enquanto o Pedido nunca
+	// foi vinculado a uma Pré-Nota (pendente, rejeitado, retirada, ou
+	// decidido fora de lote via DecidirPedido — Pré-Nota só existe para
+	// aprovação em lote, DecidirLotePedidos). Lidos ao vivo por LEFT JOIN com
+	// `pre_notas` nos SELECTs de ListarPedidosProprios/ListarPedidosFila/
+	// BuscarPedidoProprio — exposição mínima pra Story 20.5 (documento
+	// impresso) ter o que referenciar; nenhum uso de UI ainda nesta story.
+	PreNotaID *string `json:"preNotaId"`
+	Docnum    *int    `json:"docnum"`
 }
 
 // PedidoItem é uma linha do SNAPSHOT imutável em `pedido_itens` (AD-17,
@@ -812,11 +821,15 @@ func ListarPedidosProprios(db *sql.DB, empresaID string, usuarioID, filtroStatus
 	// mesmo campo lido pelo Pedido de retirada (que nunca grava NULL); sem o
 	// COALESCE, escanear uma linha de Baixa/Transferência sem Obra quebraria
 	// esta leitura com um erro de Scan.
+	// LEFT JOIN pre_notas (Story 20.4, spec-20-4): `pn.id`/`pn.docnum` vêm
+	// NULL para todo Pedido sem Pré-Nota (pendente, rejeitado, retirada, ou
+	// decidido fora de lote) — exposição mínima pra Story 20.5 referenciar.
 	q := `
 		SELECT p.id, p.usuario_id, p.solicitante, COALESCE(p.obra_centro_custo, ''), p.observacao, p.status, p.criado_em, p.tipo,
-		       (SELECT count(*) FROM pedido_itens pi WHERE pi.pedido_id = p.id), cc.nome
+		       (SELECT count(*) FROM pedido_itens pi WHERE pi.pedido_id = p.id), cc.nome, pn.id, pn.docnum
 		FROM pedidos p
 		LEFT JOIN centros_custo cc ON cc.id = p.centro_custo_id AND cc.empresa_id = p.empresa_id
+		LEFT JOIN pre_notas pn ON pn.id = p.pre_nota_id
 		WHERE p.usuario_id = $1 AND p.empresa_id = $2`
 	args := []any{usuarioID, empresaID}
 	if filtroStatus != "" {
@@ -836,9 +849,11 @@ func ListarPedidosProprios(db *sql.DB, empresaID string, usuarioID, filtroStatus
 		var r PedidoResumo
 		var observacao sql.NullString
 		var centroCusto sql.NullString
+		var preNotaID sql.NullString
+		var docnum sql.NullInt64
 		if err := rows.Scan(
 			&r.ID, &r.UsuarioID, &r.Solicitante, &r.ObraCentroCusto,
-			&observacao, &r.Status, &r.CriadoEm, &r.Tipo, &r.QtdItens, &centroCusto,
+			&observacao, &r.Status, &r.CriadoEm, &r.Tipo, &r.QtdItens, &centroCusto, &preNotaID, &docnum,
 		); err != nil {
 			return nil, fmt.Errorf("falha ao ler linha de pedido próprio: %w", err)
 		}
@@ -847,6 +862,13 @@ func ListarPedidosProprios(db *sql.DB, empresaID string, usuarioID, filtroStatus
 		}
 		if centroCusto.Valid {
 			r.CentroCustoNome = &centroCusto.String
+		}
+		if preNotaID.Valid {
+			r.PreNotaID = &preNotaID.String
+		}
+		if docnum.Valid {
+			d := int(docnum.Int64)
+			r.Docnum = &d
 		}
 		resumos = append(resumos, r)
 	}
@@ -873,11 +895,14 @@ func ListarPedidosFila(db *sql.DB, empresaID string, filtroStatus string) ([]Ped
 	// Mesmo escopo por Empresa na subquery de contagem — ver o comentário
 	// equivalente em ListarPedidosProprios. Mesmo COALESCE(obra_centro_custo,
 	// '') de ListarPedidosProprios (Story 20.2/20.1, migrations/000057/000058).
+	// LEFT JOIN pre_notas (Story 20.4, spec-20-4) — ver comentário equivalente
+	// em ListarPedidosProprios.
 	q := `
 		SELECT p.id, p.usuario_id, p.solicitante, COALESCE(p.obra_centro_custo, ''), p.observacao, p.status, p.criado_em, p.tipo,
-		       COALESCE(i.qtd, 0), cc.nome
+		       COALESCE(i.qtd, 0), cc.nome, pn.id, pn.docnum
 		FROM pedidos p
 		LEFT JOIN centros_custo cc ON cc.id = p.centro_custo_id AND cc.empresa_id = p.empresa_id
+		LEFT JOIN pre_notas pn ON pn.id = p.pre_nota_id
 		LEFT JOIN (
 			SELECT pedido_id, count(*) AS qtd FROM pedido_itens WHERE empresa_id = $1 GROUP BY pedido_id
 		) i ON i.pedido_id = p.id
@@ -900,9 +925,11 @@ func ListarPedidosFila(db *sql.DB, empresaID string, filtroStatus string) ([]Ped
 		var r PedidoResumo
 		var observacao sql.NullString
 		var centroCusto sql.NullString
+		var preNotaID sql.NullString
+		var docnum sql.NullInt64
 		if err := rows.Scan(
 			&r.ID, &r.UsuarioID, &r.Solicitante, &r.ObraCentroCusto,
-			&observacao, &r.Status, &r.CriadoEm, &r.Tipo, &r.QtdItens, &centroCusto,
+			&observacao, &r.Status, &r.CriadoEm, &r.Tipo, &r.QtdItens, &centroCusto, &preNotaID, &docnum,
 		); err != nil {
 			return nil, fmt.Errorf("falha ao ler linha da fila de pedidos: %w", err)
 		}
@@ -911,6 +938,13 @@ func ListarPedidosFila(db *sql.DB, empresaID string, filtroStatus string) ([]Ped
 		}
 		if centroCusto.Valid {
 			r.CentroCustoNome = &centroCusto.String
+		}
+		if preNotaID.Valid {
+			r.PreNotaID = &preNotaID.String
+		}
+		if docnum.Valid {
+			d := int(docnum.Int64)
+			r.Docnum = &d
 		}
 		resumos = append(resumos, r)
 	}
@@ -957,16 +991,21 @@ func BuscarPedidoProprio(db *sql.DB, empresaID string, pedidoID, usuarioID, pape
 	var det PedidoDetalhe
 	var observacao sql.NullString
 	var centroCusto sql.NullString
+	var preNotaID sql.NullString
+	var docnum sql.NullInt64
 	// Mesmo COALESCE(obra_centro_custo, '') de ListarPedidosProprios/Fila
-	// (Story 20.2/20.1, migrations/000057/000058).
+	// (Story 20.2/20.1, migrations/000057/000058). LEFT JOIN pre_notas
+	// (Story 20.4, spec-20-4) — ver comentário equivalente em
+	// ListarPedidosProprios.
 	const selectPedido = `
-		SELECT p.id, p.usuario_id, p.solicitante, COALESCE(p.obra_centro_custo, ''), p.observacao, p.status, p.criado_em, p.tipo, cc.nome
+		SELECT p.id, p.usuario_id, p.solicitante, COALESCE(p.obra_centro_custo, ''), p.observacao, p.status, p.criado_em, p.tipo, cc.nome, pn.id, pn.docnum
 		FROM pedidos p
 		LEFT JOIN centros_custo cc ON cc.id = p.centro_custo_id AND cc.empresa_id = p.empresa_id
+		LEFT JOIN pre_notas pn ON pn.id = p.pre_nota_id
 		WHERE p.id = $1 AND p.empresa_id = $2`
 	if err := db.QueryRow(selectPedido, pedidoID, empresaID).Scan(
 		&det.ID, &det.UsuarioID, &det.Solicitante, &det.ObraCentroCusto,
-		&observacao, &det.Status, &det.CriadoEm, &det.Tipo, &centroCusto,
+		&observacao, &det.Status, &det.CriadoEm, &det.Tipo, &centroCusto, &preNotaID, &docnum,
 	); err != nil {
 		var pqErr *pq.Error
 		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
@@ -979,6 +1018,13 @@ func BuscarPedidoProprio(db *sql.DB, empresaID string, pedidoID, usuarioID, pape
 	}
 	if centroCusto.Valid {
 		det.CentroCustoNome = &centroCusto.String
+	}
+	if preNotaID.Valid {
+		det.PreNotaID = &preNotaID.String
+	}
+	if docnum.Valid {
+		d := int(docnum.Int64)
+		det.Docnum = &d
 	}
 
 	if det.UsuarioID != usuarioID && RankPapel(papel) < RankPapel(PapelAlmoxarife) {
@@ -1351,6 +1397,33 @@ type pedidoLoteContexto struct {
 	Itens []itemLotePedido
 }
 
+// proximoDocnumPreNota gera o próximo `docnum` sequencial de Pré-Nota para
+// `empresaID` (Story 20.4, spec-20-4) — MESMO molde exato de
+// proximoCodigoProduto (produtos.go), avançando atomicamente
+// `contadores_pre_nota.ultimo_numero` via `UPDATE ... RETURNING`, DENTRO da
+// transação `tx` do chamador. Mais simples que o contador de Produto: um
+// `docnum` nunca tem equivalente de código legado/importado por planilha,
+// então não precisa de `GREATEST` contra um `MAX()` de outra tabela — só o
+// incremento puro. Nunca faz lazy-init da linha do contador — a ausência de
+// linha (`sql.ErrNoRows`) é um estado impossível em produção (toda Empresa
+// nasce com sua linha via InserirEmpresa, AD-26) e vira erro interno.
+func proximoDocnumPreNota(tx *sql.Tx, empresaID string) (int, error) {
+	var numero int
+	err := tx.QueryRow(
+		`UPDATE contadores_pre_nota SET ultimo_numero = ultimo_numero + 1
+		  WHERE empresa_id = $1
+		RETURNING ultimo_numero`,
+		empresaID,
+	).Scan(&numero)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, fmt.Errorf("contador de docnum de pré-nota ausente para a empresa %s", empresaID)
+		}
+		return 0, fmt.Errorf("falha ao gerar próximo docnum de pré-nota: %w", err)
+	}
+	return numero, nil
+}
+
 // DecidirLotePedidos aprova ou rejeita, numa ÚNICA transação, TODOS os
 // Pedidos de `pedidoIDs` (POST /api/pedidos/decisao-lote, Story 20.3,
 // spec-20-3) — molde de DecidirPedido, mas iterando vários Pedidos em vez de
@@ -1392,6 +1465,12 @@ type pedidoLoteContexto struct {
 // RegistrarTransferencia/RegistrarBaixa, nunca duplicada (Approach,
 // spec-20-3). Rejeição: zera `quantidade_aprovada` de todos os itens, sem
 // tocar saldo.
+//
+// Pré-Nota (Story 20.4, spec-20-4): se `aprovar` e ao menos 1 Pedido foi
+// decidido DE FATO por esta chamada (nunca um "pulado"), gera UMA Pré-Nota
+// com `docnum` sequencial e vincula `pedidos.pre_nota_id` só nesses Pedidos
+// — a resposta devolvida já reflete esse vínculo (PreNotaID/Docnum
+// preenchidos), nunca exigindo uma releitura.
 //
 // Sucesso: devolve `[]PedidoDetalhe` na MESMA ordem de `pedidoIDs`
 // (deduplicada, preservando a primeira ocorrência) — cada um já com o
@@ -1501,8 +1580,13 @@ func DecidirLotePedidos(db *sql.DB, empresaID, decisorID string, pedidoIDs []str
 		}
 	}
 
-	resultado := make([]PedidoDetalhe, 0, len(idsOrdenados))
 	porID := make(map[string]PedidoDetalhe, len(idsOrdenados))
+	// idsDecididosAgora (Story 20.4, spec-20-4): só os ids que ESTA chamada
+	// decidiu de fato (pulado=false) — nunca um "pulado" (já decidido por
+	// outra requisição/transação antes, que já tem sua própria Pré-Nota de
+	// quando foi decidido de verdade). Só populado quando `aprovar` (a
+	// rejeição nunca gera Pré-Nota).
+	var idsDecididosAgora []string
 	for _, id := range idsOrdenados {
 		det, pulado, err := decidirUmPedidoDoLoteTx(tx, empresaID, decisorID, contextos[id], aprovar)
 		if err != nil {
@@ -1517,12 +1601,72 @@ func DecidirLotePedidos(db *sql.DB, empresaID, decisorID string, pedidoIDs []str
 			if err != nil {
 				return nil, err
 			}
+		} else if aprovar {
+			// Checagem defensiva (achado de revisão, Story 20.4): só lincula
+			// à Pré-Nota um status que decidirUmPedidoDoLoteTx de fato pode
+			// devolver para `pulado=false` hoje — nunca confiar só no
+			// booleano `pulado`, que quebraria silenciosamente se um status
+			// novo aparecesse ali no futuro.
+			switch det.Status {
+			case "aprovado", "parcialmente_aprovado":
+				idsDecididosAgora = append(idsDecididosAgora, id)
+			default:
+				return nil, fmt.Errorf(
+					"invariante violada: pedido %s decidido agora em lote aprovado com status inesperado %q (esperado aprovado ou parcialmente_aprovado)",
+					id, det.Status,
+				)
+			}
 		}
 		porID[id] = det
 	}
+
+	// Pré-Nota (Story 20.4, spec-20-4): só quando o lote foi aprovado E ao
+	// menos 1 Pedido foi decidido DE FATO por esta chamada (nunca um
+	// "pulado") — um lote 100% pulado não tem nada de novo a documentar, o
+	// `docnum` não avança (Always: "zero Pré-Nota se zero decididos agora").
+	// Rejeição (`aprovar=false`) nunca chega aqui (idsDecididosAgora fica
+	// sempre vazio nesse caso). Gerado DENTRO da MESMA transação do lote,
+	// ANTES do Commit — um lote que falhar depois nunca deixa um `docnum`
+	// avançado sem Pedido nenhum vinculado.
+	if len(idsDecididosAgora) > 0 {
+		docnum, err := proximoDocnumPreNota(tx, empresaID)
+		if err != nil {
+			return nil, err
+		}
+		var preNotaID string
+		const inserirPreNota = `
+			INSERT INTO pre_notas (empresa_id, docnum, decidido_por)
+			VALUES ($1, $2, $3)
+			RETURNING id`
+		if err := tx.QueryRow(inserirPreNota, empresaID, docnum, decisorID).Scan(&preNotaID); err != nil {
+			return nil, fmt.Errorf("falha ao gravar pré-nota do lote: %w", err)
+		}
+		const vincularPedidos = `
+			UPDATE pedidos SET pre_nota_id = $1
+			WHERE empresa_id = $2 AND id = ANY($3)`
+		if _, err := tx.Exec(vincularPedidos, preNotaID, empresaID, pq.Array(idsDecididosAgora)); err != nil {
+			return nil, fmt.Errorf("falha ao vincular pedidos à pré-nota do lote: %w", err)
+		}
+		// Achado de revisão (3 revisores independentes, Story 20.4): sem
+		// isto, a resposta desta MESMA chamada (a que cria a Pré-Nota)
+		// devolvia PreNotaID/Docnum sempre nil — só uma releitura posterior
+		// (ListarPedidosProprios/Fila, BuscarPedidoProprio) mostrava o
+		// vínculo. `porID` é atualizado aqui, ANTES de montar `resultado`
+		// abaixo, para que a resposta já reflita o vínculo recém-gravado.
+		for _, id := range idsDecididosAgora {
+			det := porID[id]
+			det.PreNotaID = &preNotaID
+			det.Docnum = &docnum
+			porID[id] = det
+		}
+	}
+
 	// Devolve na ordem de chegada do cliente (idsUnicos), não na ordem
 	// determinística de locks (idsOrdenados) — a ordenação por lock é só um
-	// detalhe interno de concorrência, nunca deveria vazar pra UI.
+	// detalhe interno de concorrência, nunca deveria vazar pra UI. Montado
+	// só AGORA, depois do bloco de Pré-Nota acima, pra já incluir
+	// PreNotaID/Docnum nos Pedidos recém-vinculados.
+	resultado := make([]PedidoDetalhe, 0, len(idsUnicos))
 	for _, id := range idsUnicos {
 		resultado = append(resultado, porID[id])
 	}

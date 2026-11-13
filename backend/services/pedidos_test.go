@@ -3298,7 +3298,26 @@ func TestDecidirLotePedidos_IdInexistenteOuDeOutraEmpresa(t *testing.T) {
 		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
 	}
 
+	// Achado de revisão (Story 20.4): este teste criava a Empresa extra e
+	// nunca a removia — toda segunda execução contra o mesmo banco de teste
+	// quebrava com slug duplicado. Remove ANTES (recupera uma execução
+	// anterior interrompida) e DEPOIS via t.Cleanup.
+	removerEmpresaDeTeste(t, db, "outra-empresa-lote-idruim")
 	outraEmpresa := criarEmpresaDeTeste(t, db, "outra-empresa-lote-idruim", "777888990099", "Outra Empresa Lote IdRuim")
+	t.Cleanup(func() { removerEmpresaDeTeste(t, db, "outra-empresa-lote-idruim") })
+	// LIFO: roda ANTES do removerEmpresaDeTeste acima — pedido e conta são
+	// dados de negócio que o helper genérico não apaga (mesmo padrão de
+	// TestSubmeterPedidoBaixa_ProdutoOuEstoqueDeOutraEmpresa).
+	t.Cleanup(func() {
+		for _, stmt := range []string{
+			`DELETE FROM pedidos WHERE empresa_id = $1`,
+			`DELETE FROM usuarios WHERE empresa_id = $1`,
+		} {
+			if _, err := db.Exec(stmt, outraEmpresa.ID); err != nil {
+				t.Fatalf("limpeza da outra empresa [%s]: %v", stmt, err)
+			}
+		}
+	})
 	usuarioOutra := semearContaNaEmpresa(t, db, outraEmpresa.ID, "IdRuim Outra Empresa", "idruim-outra@outra.com", PapelUsuario)
 	pedidoAlheio := inserirPedidoDireto(t, db, outraEmpresa.ID, usuarioOutra, "pendente")
 
@@ -3692,5 +3711,636 @@ func TestDecidirLotePedidos_DecisoesConcorrentesSoAPrimeiraDebita(t *testing.T) 
 	}
 	if n := contarReservas(t, db, pedido.ID); n != 0 {
 		t.Errorf("reservas = %d, want 0", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Story 20.4 (Epic 20, Pré-Nota/docnum ao aprovar lote), spec-20-4: cobre a
+// I/O Matrix da spec inteira + concorrência (2 lotes da mesma Empresa em
+// paralelo -> docnum sem colisão; 2 Empresas em paralelo -> contagem
+// independente).
+
+// preNotaDoPedido lê o estado da Pré-Nota vinculada a `pedidoID` (Story
+// 20.4) direto do banco — `ok=false` quando `pedidos.pre_nota_id` é NULL
+// (Pedido nunca vinculado a nenhuma Pré-Nota).
+func preNotaDoPedido(t *testing.T, db *sql.DB, pedidoID string) (preNotaID string, docnum int, decididoPor string, ok bool) {
+	t.Helper()
+	var pn sql.NullString
+	if err := db.QueryRow(`SELECT pre_nota_id FROM pedidos WHERE id = $1`, pedidoID).Scan(&pn); err != nil {
+		t.Fatalf("ler pre_nota_id do pedido %s: %v", pedidoID, err)
+	}
+	if !pn.Valid {
+		return "", 0, "", false
+	}
+	if err := db.QueryRow(`SELECT docnum, decidido_por FROM pre_notas WHERE id = $1`, pn.String).Scan(&docnum, &decididoPor); err != nil {
+		t.Fatalf("ler pré-nota %s: %v", pn.String, err)
+	}
+	return pn.String, docnum, decididoPor, true
+}
+
+// contadorPreNota lê `contadores_pre_nota.ultimo_numero` da Empresa — nunca
+// assumido como 0, já que a tabela nunca é truncada entre testes (mesmo
+// padrão de contadores_produto, produtos_test.go).
+func contadorPreNota(t *testing.T, db *sql.DB, empresaID string) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(`SELECT ultimo_numero FROM contadores_pre_nota WHERE empresa_id = $1`, empresaID).Scan(&n); err != nil {
+		t.Fatalf("ler contadores_pre_nota da empresa %s: %v", empresaID, err)
+	}
+	return n
+}
+
+func contarPreNotas(t *testing.T, db *sql.DB, empresaID string) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM pre_notas WHERE empresa_id = $1`, empresaID).Scan(&n); err != nil {
+		t.Fatalf("contar pre_notas da empresa %s: %v", empresaID, err)
+	}
+	return n
+}
+
+// TestDecidirLotePedidos_GeraPreNota_TodosDecididosAgora cobre a linha "Lote
+// aprovado, todos decididos agora" da I/O Matrix: 3 Pedidos pendentes,
+// aprovar=true -> 1 Pré-Nota nova só, docnum sequencial, vinculada aos 3.
+func TestDecidirLotePedidos_GeraPreNota_TodosDecididosAgora(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	gestorID := semearConta(t, db, "PreNota Todos Gestor", "prenota-todos-gestor@empresa.com", PapelGestor, 0)
+	usuarioID := semearConta(t, db, "PreNota Todos Usuario", "prenota-todos-usuario@empresa.com", PapelUsuario, 1)
+
+	var pedidoIDs []string
+	for _, nome := range []string{"PreNota Todos A", "PreNota Todos B", "PreNota Todos C"} {
+		produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, nome, 10)
+		pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 2)
+		if err != nil {
+			t.Fatalf("seed SubmeterPedidoBaixa (%s): %v", nome, err)
+		}
+		pedidoIDs = append(pedidoIDs, pedido.ID)
+	}
+
+	contadorAntes := contadorPreNota(t, db, empresaTeste)
+
+	resultado, err := DecidirLotePedidos(db, empresaTeste, gestorID, pedidoIDs, true)
+	if err != nil {
+		t.Fatalf("DecidirLotePedidos erro inesperado: %v", err)
+	}
+	if len(resultado) != 3 {
+		t.Fatalf("len(resultado) = %d, want 3", len(resultado))
+	}
+
+	preNotaIDs := make(map[string]bool, 3)
+	var docnum int
+	for _, det := range resultado {
+		id, dn, decididoPor, ok := preNotaDoPedido(t, db, det.ID)
+		if !ok {
+			t.Fatalf("pedido %s sem pré-nota vinculada, want vinculado", det.ID)
+		}
+		preNotaIDs[id] = true
+		docnum = dn
+		if decididoPor != gestorID {
+			t.Errorf("decidido_por da pré-nota = %q, want %q", decididoPor, gestorID)
+		}
+	}
+	if len(preNotaIDs) != 1 {
+		t.Errorf("pré-notas distintas vinculadas ao lote = %d, want 1 (uma só, pro lote inteiro)", len(preNotaIDs))
+	}
+	if docnum != contadorAntes+1 {
+		t.Errorf("docnum = %d, want %d (contador antes + 1)", docnum, contadorAntes+1)
+	}
+}
+
+// TestDecidirLotePedidos_PreNotaSoComDecididosNestaChamada cobre a linha
+// "Lote aprovado, misto decidido+pulado" da I/O Matrix: A é decidido de
+// verdade ANTES (ganha sua própria Pré-Nota); um segundo lote mistura A
+// (agora pulado) com B (decidido agora) -> a nova Pré-Nota só cobre B; a de A
+// fica intocada.
+func TestDecidirLotePedidos_PreNotaSoComDecididosNestaChamada(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	gestor1ID := semearConta(t, db, "PreNota Misto Gestor1", "prenota-misto-gestor1@empresa.com", PapelGestor, 0)
+	gestor2ID := semearConta(t, db, "PreNota Misto Gestor2", "prenota-misto-gestor2@empresa.com", PapelGestor, 1)
+	usuarioID := semearConta(t, db, "PreNota Misto Usuario", "prenota-misto-usuario@empresa.com", PapelUsuario, 2)
+
+	produtoA, estoqueA, _ := seedProdutoComSaldo(t, db, "PreNota Misto A", 10)
+	pedidoA, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoA, estoqueA, 3)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa A: %v", err)
+	}
+	// Decisão real prévia, isolada — simula "já decidido por outra
+	// transação" antes do lote misto abaixo existir; gera a PRÓPRIA Pré-Nota
+	// de A.
+	if _, err := DecidirLotePedidos(db, empresaTeste, gestor1ID, []string{pedidoA.ID}, true); err != nil {
+		t.Fatalf("decisão prévia de A: %v", err)
+	}
+	preNotaAntigaID, docnumAntigo, _, ok := preNotaDoPedido(t, db, pedidoA.ID)
+	if !ok {
+		t.Fatalf("pedido A deveria ter pré-nota da decisão prévia")
+	}
+
+	produtoB, estoqueB, _ := seedProdutoComSaldo(t, db, "PreNota Misto B", 10)
+	pedidoB, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra Y", "", produtoB, estoqueB, 4)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa B: %v", err)
+	}
+
+	resultado, err := DecidirLotePedidos(db, empresaTeste, gestor2ID, []string{pedidoA.ID, pedidoB.ID}, true)
+	if err != nil {
+		t.Fatalf("DecidirLotePedidos erro inesperado: %v", err)
+	}
+	if len(resultado) != 2 {
+		t.Fatalf("len(resultado) = %d, want 2", len(resultado))
+	}
+
+	// A (pulado nesta chamada) mantém a Pré-Nota ANTIGA, intocada.
+	preNotaAID, docnumA, _, ok := preNotaDoPedido(t, db, pedidoA.ID)
+	if !ok || preNotaAID != preNotaAntigaID || docnumA != docnumAntigo {
+		t.Errorf("pedido A: pré-nota = %q (docnum %d), want a antiga %q (docnum %d) intocada", preNotaAID, docnumA, preNotaAntigaID, docnumAntigo)
+	}
+
+	// B (decidido agora) ganha uma Pré-Nota NOVA, diferente da de A.
+	preNotaBID, docnumB, decididoPorB, ok := preNotaDoPedido(t, db, pedidoB.ID)
+	if !ok {
+		t.Fatalf("pedido B deveria ter uma pré-nota nova")
+	}
+	if preNotaBID == preNotaAID {
+		t.Errorf("pedido B ganhou a MESMA pré-nota do pulado A (%q), want uma nova só com os decididos nesta chamada", preNotaBID)
+	}
+	if docnumB <= docnumA {
+		t.Errorf("docnum de B = %d, want > %d (docnum de A, já emitido antes)", docnumB, docnumA)
+	}
+	if decididoPorB != gestor2ID {
+		t.Errorf("decidido_por da pré-nota de B = %q, want %q (gestor2)", decididoPorB, gestor2ID)
+	}
+}
+
+// TestDecidirLotePedidos_LoteTotalmentePulado_NenhumaPreNotaNova cobre a
+// linha "Lote 100% pulado" da I/O Matrix: o único id do lote já tinha sido
+// decidido antes -> nenhuma Pré-Nota nova, `docnum` não avança.
+func TestDecidirLotePedidos_LoteTotalmentePulado_NenhumaPreNotaNova(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	gestor1ID := semearConta(t, db, "PreNota Pulado Gestor1", "prenota-pulado-gestor1@empresa.com", PapelGestor, 0)
+	gestor2ID := semearConta(t, db, "PreNota Pulado Gestor2", "prenota-pulado-gestor2@empresa.com", PapelGestor, 1)
+	usuarioID := semearConta(t, db, "PreNota Pulado Usuario", "prenota-pulado-usuario@empresa.com", PapelUsuario, 2)
+
+	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "PreNota Pulado", 10)
+	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 3)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
+	}
+	if _, err := DecidirLotePedidos(db, empresaTeste, gestor1ID, []string{pedido.ID}, true); err != nil {
+		t.Fatalf("decisão prévia: %v", err)
+	}
+
+	contadorAntes := contadorPreNota(t, db, empresaTeste)
+	preNotasAntes := contarPreNotas(t, db, empresaTeste)
+
+	// Lote inteiro 100% pulado: o único id já foi decidido acima.
+	resultado, err := DecidirLotePedidos(db, empresaTeste, gestor2ID, []string{pedido.ID}, true)
+	if err != nil {
+		t.Fatalf("DecidirLotePedidos erro inesperado: %v", err)
+	}
+	if len(resultado) != 1 {
+		t.Fatalf("len(resultado) = %d, want 1", len(resultado))
+	}
+
+	if contadorDepois := contadorPreNota(t, db, empresaTeste); contadorDepois != contadorAntes {
+		t.Errorf("contador de docnum avançou de %d para %d num lote 100%% pulado, want inalterado", contadorAntes, contadorDepois)
+	}
+	if preNotasDepois := contarPreNotas(t, db, empresaTeste); preNotasDepois != preNotasAntes {
+		t.Errorf("pré-notas = %d, want %d (nenhuma nova num lote 100%% pulado)", preNotasDepois, preNotasAntes)
+	}
+}
+
+// TestDecidirLotePedidos_Rejeitado_NenhumaPreNotaGerada cobre a linha "Lote
+// rejeitado" da I/O Matrix: aprovar=false, mesmo com vários Pedidos no lote
+// -> nenhuma Pré-Nota é gerada, docnum não avança.
+func TestDecidirLotePedidos_Rejeitado_NenhumaPreNotaGerada(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	gestorID := semearConta(t, db, "PreNota Rejeitado Gestor", "prenota-rejeitado-gestor@empresa.com", PapelGestor, 0)
+	usuarioID := semearConta(t, db, "PreNota Rejeitado Usuario", "prenota-rejeitado-usuario@empresa.com", PapelUsuario, 1)
+
+	var pedidoIDs []string
+	for _, nome := range []string{"PreNota Rejeitado A", "PreNota Rejeitado B"} {
+		produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, nome, 10)
+		pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 2)
+		if err != nil {
+			t.Fatalf("seed SubmeterPedidoBaixa (%s): %v", nome, err)
+		}
+		pedidoIDs = append(pedidoIDs, pedido.ID)
+	}
+
+	contadorAntes := contadorPreNota(t, db, empresaTeste)
+	preNotasAntes := contarPreNotas(t, db, empresaTeste)
+
+	resultado, err := DecidirLotePedidos(db, empresaTeste, gestorID, pedidoIDs, false)
+	if err != nil {
+		t.Fatalf("DecidirLotePedidos erro inesperado: %v", err)
+	}
+	if len(resultado) != 2 {
+		t.Fatalf("len(resultado) = %d, want 2", len(resultado))
+	}
+	for _, det := range resultado {
+		if det.Status != "rejeitado" {
+			t.Errorf("pedido %s: status = %q, want rejeitado", det.ID, det.Status)
+		}
+		if _, _, _, ok := preNotaDoPedido(t, db, det.ID); ok {
+			t.Errorf("pedido %s: tem pré-nota vinculada, want nenhuma (lote rejeitado nunca gera Pré-Nota)", det.ID)
+		}
+	}
+	if contadorDepois := contadorPreNota(t, db, empresaTeste); contadorDepois != contadorAntes {
+		t.Errorf("contador de docnum avançou de %d para %d num lote rejeitado, want inalterado", contadorAntes, contadorDepois)
+	}
+	if preNotasDepois := contarPreNotas(t, db, empresaTeste); preNotasDepois != preNotasAntes {
+		t.Errorf("pré-notas = %d, want %d (nenhuma nova num lote rejeitado)", preNotasDepois, preNotasAntes)
+	}
+}
+
+// TestDecidirLotePedidos_DoisLotesSequenciais_DocnumCrescente cobre a linha
+// "Dois lotes em sequência, mesma Empresa" da I/O Matrix: duas aprovações
+// consecutivas -> docnum estritamente crescente, sem gap nem repetição.
+func TestDecidirLotePedidos_DoisLotesSequenciais_DocnumCrescente(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	gestorID := semearConta(t, db, "PreNota Sequencial Gestor", "prenota-sequencial-gestor@empresa.com", PapelGestor, 0)
+	usuarioID := semearConta(t, db, "PreNota Sequencial Usuario", "prenota-sequencial-usuario@empresa.com", PapelUsuario, 1)
+
+	produtoA, estoqueA, _ := seedProdutoComSaldo(t, db, "PreNota Sequencial A", 10)
+	pedidoA, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoA, estoqueA, 2)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa A: %v", err)
+	}
+	produtoB, estoqueB, _ := seedProdutoComSaldo(t, db, "PreNota Sequencial B", 10)
+	pedidoB, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra Y", "", produtoB, estoqueB, 2)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa B: %v", err)
+	}
+
+	if _, err := DecidirLotePedidos(db, empresaTeste, gestorID, []string{pedidoA.ID}, true); err != nil {
+		t.Fatalf("lote 1: %v", err)
+	}
+	if _, err := DecidirLotePedidos(db, empresaTeste, gestorID, []string{pedidoB.ID}, true); err != nil {
+		t.Fatalf("lote 2: %v", err)
+	}
+
+	_, docnumA, _, okA := preNotaDoPedido(t, db, pedidoA.ID)
+	_, docnumB, _, okB := preNotaDoPedido(t, db, pedidoB.ID)
+	if !okA || !okB {
+		t.Fatalf("ambos deveriam ter pré-nota: okA=%v okB=%v", okA, okB)
+	}
+	if docnumB != docnumA+1 {
+		t.Errorf("docnum do lote 2 = %d, want %d (docnum do lote 1 + 1, sem gap nem repetição)", docnumB, docnumA+1)
+	}
+}
+
+// TestDecidirLotePedidos_PreNotaConcorrenciaMesmaEmpresa_DocnumSemColisao
+// prova que dois lotes concorrentes da MESMA Empresa (sobre Pedidos
+// distintos, nunca a mesma linha) nunca colidem nem repetem docnum — mesmo
+// molde de concorrência de TestDecidirLotePedidos_DecisoesConcorrentesSoAPrimeiraDebita,
+// mas sobre 2 Pedidos diferentes (prova o contador atômico, não a trava de
+// Pedido único).
+func TestDecidirLotePedidos_PreNotaConcorrenciaMesmaEmpresa_DocnumSemColisao(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	gestorID := semearConta(t, db, "PreNota Corrida Gestor", "prenota-corrida-gestor@empresa.com", PapelGestor, 0)
+	usuarioID := semearConta(t, db, "PreNota Corrida Usuario", "prenota-corrida-usuario@empresa.com", PapelUsuario, 1)
+
+	produtoA, estoqueA, _ := seedProdutoComSaldo(t, db, "PreNota Corrida A", 10)
+	pedidoA, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoA, estoqueA, 2)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa A: %v", err)
+	}
+	produtoB, estoqueB, _ := seedProdutoComSaldo(t, db, "PreNota Corrida B", 10)
+	pedidoB, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra Y", "", produtoB, estoqueB, 2)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa B: %v", err)
+	}
+
+	contadorAntes := contadorPreNota(t, db, empresaTeste)
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var err1, err2 error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		_, err1 = DecidirLotePedidos(db, empresaTeste, gestorID, []string{pedidoA.ID}, true)
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		_, err2 = DecidirLotePedidos(db, empresaTeste, gestorID, []string{pedidoB.ID}, true)
+	}()
+	close(start)
+	wg.Wait()
+
+	if err1 != nil {
+		t.Fatalf("lote 1: %v", err1)
+	}
+	if err2 != nil {
+		t.Fatalf("lote 2: %v", err2)
+	}
+
+	_, docnumA, _, okA := preNotaDoPedido(t, db, pedidoA.ID)
+	_, docnumB, _, okB := preNotaDoPedido(t, db, pedidoB.ID)
+	if !okA || !okB {
+		t.Fatalf("ambos deveriam ter pré-nota: okA=%v okB=%v", okA, okB)
+	}
+	if docnumA == docnumB {
+		t.Fatalf("docnumA=%d docnumB=%d: colidiram, want distintos", docnumA, docnumB)
+	}
+	esperados := map[int]bool{contadorAntes + 1: true, contadorAntes + 2: true}
+	if !esperados[docnumA] || !esperados[docnumB] {
+		t.Errorf("docnumA=%d docnumB=%d, want exatamente {%d, %d} (sem gap nem repetição)", docnumA, docnumB, contadorAntes+1, contadorAntes+2)
+	}
+}
+
+// TestDecidirLotePedidos_DuasEmpresasConcorrentes_DocnumIndependente cobre a
+// linha "Duas Empresas aprovando ao mesmo tempo" da I/O Matrix: lotes
+// concorrentes de Empresas diferentes -> cada uma numera a partir do próprio
+// maior docnum, nunca misturando contagem.
+func TestDecidirLotePedidos_DuasEmpresasConcorrentes_DocnumIndependente(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	gestorID := semearConta(t, db, "PreNota DuasEmpresas Gestor", "prenota-duasempresas-gestor@empresa.com", PapelGestor, 0)
+	usuarioID := semearConta(t, db, "PreNota DuasEmpresas Usuario", "prenota-duasempresas-usuario@empresa.com", PapelUsuario, 1)
+	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "PreNota DuasEmpresas", 10)
+	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 2)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa (empresa 1): %v", err)
+	}
+
+	outraEmpresa := criarEmpresaDeTeste(t, db, "outra-empresa-prenota", "777888990010", "Outra Empresa PreNota")
+	t.Cleanup(func() { removerEmpresaDeTeste(t, db, "outra-empresa-prenota") })
+	// LIFO: os DELETEs abaixo, registrados DEPOIS, rodam ANTES do
+	// removerEmpresaDeTeste acima — pedidos/pre_notas/produtos são dados de
+	// negócio (não seedados por ProvisionarEmpresa), então o próprio teste
+	// os limpa antes de remover a Empresa (mesmo padrão de
+	// TestSubmeterPedidoBaixa_ProdutoOuEstoqueDeOutraEmpresa).
+	t.Cleanup(func() {
+		for _, stmt := range []string{
+			`UPDATE pedidos SET pre_nota_id = NULL WHERE empresa_id = $1`,
+			`DELETE FROM pre_notas WHERE empresa_id = $1`,
+			`DELETE FROM pedido_itens WHERE empresa_id = $1`,
+			`DELETE FROM movimentacoes WHERE empresa_id = $1`,
+			`DELETE FROM pedidos WHERE empresa_id = $1`,
+			`DELETE FROM produto_estoque WHERE produto_id IN (SELECT id FROM produtos WHERE empresa_id = $1)`,
+			`DELETE FROM produtos WHERE empresa_id = $1`,
+			`DELETE FROM estoques WHERE empresa_id = $1`,
+			`DELETE FROM usuarios WHERE empresa_id = $1`,
+		} {
+			if _, err := db.Exec(stmt, outraEmpresa.ID); err != nil {
+				t.Fatalf("limpeza da outra empresa [%s]: %v", stmt, err)
+			}
+		}
+	})
+
+	gestorOutraID := semearContaNaEmpresa(t, db, outraEmpresa.ID, "PreNota DuasEmpresas Gestor Outra", "prenota-duasempresas-gestor-outra@outra.com", PapelGestor)
+	usuarioOutraID := semearContaNaEmpresa(t, db, outraEmpresa.ID, "PreNota DuasEmpresas Usuario Outra", "prenota-duasempresas-usuario-outra@outra.com", PapelUsuario)
+	categoriaOutra := categoriaIDPorCodigoEmpresa(t, db, outraEmpresa.ID, "04.001")
+	estoqueOutra, err := CriarEstoque(db, outraEmpresa.ID, filialTeste(t, db, outraEmpresa.ID), "Estoque PreNota Outra")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque (outra empresa): %v", err)
+	}
+	produtoOutra, err := criarProdutoComSaldo(db, outraEmpresa.ID, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Produto PreNota Outra",
+		CategoriaID:   categoriaOutra,
+		TemplateID:    templateGenericoID(t, db, outraEmpresa.ID),
+	}, estoqueOutra.ID, 10)
+	if err != nil {
+		t.Fatalf("seed criarProdutoComSaldo (outra empresa): %v", err)
+	}
+	pedidoOutra, err := SubmeterPedidoBaixa(db, outraEmpresa.ID, usuarioOutraID, "Fulano", "Obra X", "", produtoOutra.ID, estoqueOutra.ID, 2)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa (outra empresa): %v", err)
+	}
+
+	contadorAntes1 := contadorPreNota(t, db, empresaTeste)
+	contadorAntes2 := contadorPreNota(t, db, outraEmpresa.ID)
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var err1, err2 error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		_, err1 = DecidirLotePedidos(db, empresaTeste, gestorID, []string{pedido.ID}, true)
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		_, err2 = DecidirLotePedidos(db, outraEmpresa.ID, gestorOutraID, []string{pedidoOutra.ID}, true)
+	}()
+	close(start)
+	wg.Wait()
+
+	if err1 != nil {
+		t.Fatalf("lote empresa 1: %v", err1)
+	}
+	if err2 != nil {
+		t.Fatalf("lote empresa 2: %v", err2)
+	}
+
+	_, docnum1, _, ok1 := preNotaDoPedido(t, db, pedido.ID)
+	_, docnum2, _, ok2 := preNotaDoPedido(t, db, pedidoOutra.ID)
+	if !ok1 || !ok2 {
+		t.Fatalf("ambos deveriam ter pré-nota: ok1=%v ok2=%v", ok1, ok2)
+	}
+	if docnum1 != contadorAntes1+1 {
+		t.Errorf("docnum empresa 1 = %d, want %d (contador próprio + 1)", docnum1, contadorAntes1+1)
+	}
+	if docnum2 != contadorAntes2+1 {
+		t.Errorf("docnum empresa 2 = %d, want %d (contador próprio + 1, nunca misturado com a empresa 1)", docnum2, contadorAntes2+1)
+	}
+}
+
+// TestDecidirLotePedidos_ExpoePreNotaIdEDocnumNasLeituras cobre o último item
+// das Tasks de spec-20-4: PreNotaID/Docnum aparecem em
+// ListarPedidosProprios/ListarPedidosFila/BuscarPedidoProprio depois da
+// aprovação em lote (JOIN ao vivo com pre_notas) — nil/ausente enquanto
+// pendente.
+func TestDecidirLotePedidos_ExpoePreNotaIdEDocnumNasLeituras(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	gestorID := semearConta(t, db, "PreNota Exposicao Gestor", "prenota-exposicao-gestor@empresa.com", PapelGestor, 0)
+	usuarioID := semearConta(t, db, "PreNota Exposicao Usuario", "prenota-exposicao-usuario@empresa.com", PapelUsuario, 1)
+
+	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "PreNota Exposicao", 10)
+	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 2)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
+	}
+
+	// Antes de decidido: nenhuma das 3 leituras expõe Pré-Nota.
+	det, err := BuscarPedidoProprio(db, empresaTeste, pedido.ID, usuarioID, PapelUsuario)
+	if err != nil {
+		t.Fatalf("BuscarPedidoProprio (pendente): %v", err)
+	}
+	if det.PreNotaID != nil || det.Docnum != nil {
+		t.Errorf("BuscarPedidoProprio (pendente): PreNotaID=%v Docnum=%v, want nil nos dois", det.PreNotaID, det.Docnum)
+	}
+	proprios, err := ListarPedidosProprios(db, empresaTeste, usuarioID, "")
+	if err != nil {
+		t.Fatalf("ListarPedidosProprios (pendente): %v", err)
+	}
+	if ach := acharResumo(proprios, pedido.ID); ach == nil || ach.PreNotaID != nil || ach.Docnum != nil {
+		t.Errorf("ListarPedidosProprios (pendente): resumo = %+v, want PreNotaID/Docnum nil", ach)
+	}
+	fila, err := ListarPedidosFila(db, empresaTeste, "")
+	if err != nil {
+		t.Fatalf("ListarPedidosFila (pendente): %v", err)
+	}
+	if ach := acharResumo(fila, pedido.ID); ach == nil || ach.PreNotaID != nil || ach.Docnum != nil {
+		t.Errorf("ListarPedidosFila (pendente): resumo = %+v, want PreNotaID/Docnum nil", ach)
+	}
+
+	if _, err := DecidirLotePedidos(db, empresaTeste, gestorID, []string{pedido.ID}, true); err != nil {
+		t.Fatalf("DecidirLotePedidos: %v", err)
+	}
+	preNotaID, docnum, _, ok := preNotaDoPedido(t, db, pedido.ID)
+	if !ok {
+		t.Fatalf("pedido deveria ter pré-nota depois do lote aprovado")
+	}
+
+	det, err = BuscarPedidoProprio(db, empresaTeste, pedido.ID, usuarioID, PapelUsuario)
+	if err != nil {
+		t.Fatalf("BuscarPedidoProprio (decidido): %v", err)
+	}
+	if det.PreNotaID == nil || *det.PreNotaID != preNotaID || det.Docnum == nil || *det.Docnum != docnum {
+		t.Errorf("BuscarPedidoProprio (decidido): PreNotaID=%v Docnum=%v, want %q/%d", det.PreNotaID, det.Docnum, preNotaID, docnum)
+	}
+	proprios, err = ListarPedidosProprios(db, empresaTeste, usuarioID, "")
+	if err != nil {
+		t.Fatalf("ListarPedidosProprios (decidido): %v", err)
+	}
+	if ach := acharResumo(proprios, pedido.ID); ach == nil || ach.PreNotaID == nil || *ach.PreNotaID != preNotaID || ach.Docnum == nil || *ach.Docnum != docnum {
+		t.Errorf("ListarPedidosProprios (decidido): resumo = %+v, want PreNotaID=%q Docnum=%d", ach, preNotaID, docnum)
+	}
+	fila, err = ListarPedidosFila(db, empresaTeste, "")
+	if err != nil {
+		t.Fatalf("ListarPedidosFila (decidido): %v", err)
+	}
+	if ach := acharResumo(fila, pedido.ID); ach == nil || ach.PreNotaID == nil || *ach.PreNotaID != preNotaID || ach.Docnum == nil || *ach.Docnum != docnum {
+		t.Errorf("ListarPedidosFila (decidido): resumo = %+v, want PreNotaID=%q Docnum=%d", ach, preNotaID, docnum)
+	}
+}
+
+// acharResumo acha, por id, a linha de um []PedidoResumo — helper de
+// asserção dos testes de exposição de PreNotaID/Docnum acima.
+func acharResumo(resumos []PedidoResumo, pedidoID string) *PedidoResumo {
+	for i := range resumos {
+		if resumos[i].ID == pedidoID {
+			return &resumos[i]
+		}
+	}
+	return nil
+}
+
+// TestDecidirLotePedidos_RespostaJaTrazPreNotaIdEDocnum cobre o achado de
+// revisão (3 revisores independentes, Story 20.4): a RESPOSTA DA PRÓPRIA
+// chamada que CRIA a Pré-Nota já devolve PreNotaID/Docnum preenchidos pros
+// Pedidos decididos agora — antes desta correção, `resultado`/`porID` eram
+// montados ANTES do bloco que gera a Pré-Nota e faz o UPDATE de
+// `pedidos.pre_nota_id`, então a resposta sempre vinha com os dois nil; só
+// uma releitura posterior (ListarPedidosProprios/Fila, BuscarPedidoProprio)
+// mostrava o valor certo.
+func TestDecidirLotePedidos_RespostaJaTrazPreNotaIdEDocnum(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	gestorID := semearConta(t, db, "PreNota Resposta Gestor", "prenota-resposta-gestor@empresa.com", PapelGestor, 0)
+	usuarioID := semearConta(t, db, "PreNota Resposta Usuario", "prenota-resposta-usuario@empresa.com", PapelUsuario, 1)
+
+	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "PreNota Resposta", 10)
+	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 2)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
+	}
+
+	resultado, err := DecidirLotePedidos(db, empresaTeste, gestorID, []string{pedido.ID}, true)
+	if err != nil {
+		t.Fatalf("DecidirLotePedidos erro inesperado: %v", err)
+	}
+	if len(resultado) != 1 {
+		t.Fatalf("len(resultado) = %d, want 1", len(resultado))
+	}
+	det := resultado[0]
+	if det.PreNotaID == nil || det.Docnum == nil {
+		t.Fatalf("resposta da MESMA chamada que gerou a Pré-Nota: PreNotaID=%v Docnum=%v, want ambos preenchidos (nunca nil até uma releitura)", det.PreNotaID, det.Docnum)
+	}
+
+	// Confere que bate com o que foi de fato gravado — nunca um ponteiro só
+	// preenchido pra passar no teste, com valor incorreto por trás.
+	preNotaIDGravado, docnumGravado, _, ok := preNotaDoPedido(t, db, pedido.ID)
+	if !ok {
+		t.Fatalf("pedido deveria ter pré-nota gravada")
+	}
+	if *det.PreNotaID != preNotaIDGravado {
+		t.Errorf("PreNotaID da resposta = %q, want %q (igual ao gravado)", *det.PreNotaID, preNotaIDGravado)
+	}
+	if *det.Docnum != docnumGravado {
+		t.Errorf("Docnum da resposta = %d, want %d (igual ao gravado)", *det.Docnum, docnumGravado)
+	}
+}
+
+// TestDecidirLotePedidos_MistoAprovadoEParcial_MesmaPreNotaNova cobre o
+// achado de revisão (Story 20.4): um lote que mistura, na MESMA chamada
+// aprovar=true, um Pedido que sai `aprovado` (total) e outro que sai
+// `parcialmente_aprovado` (saldo insuficiente) — os dois caem na MESMA
+// Pré-Nota nova (docnum/PreNotaID iguais), não só lotes uniformes (até aqui
+// só "tudo aprovado" ou "tudo pulado" tinham cobertura).
+func TestDecidirLotePedidos_MistoAprovadoEParcial_MesmaPreNotaNova(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	gestorID := semearConta(t, db, "PreNota MistoStatus Gestor", "prenota-mistostatus-gestor@empresa.com", PapelGestor, 0)
+	usuarioID := semearConta(t, db, "PreNota MistoStatus Usuario", "prenota-mistostatus-usuario@empresa.com", PapelUsuario, 1)
+
+	produtoTotal, estoqueTotal, _ := seedProdutoComSaldo(t, db, "PreNota MistoStatus Total", 10)
+	pedidoTotal, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoTotal, estoqueTotal, 4)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa (total): %v", err)
+	}
+
+	produtoParcial, estoqueParcial, _ := seedProdutoComSaldo(t, db, "PreNota MistoStatus Parcial", 10)
+	pedidoParcial, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra Y", "", produtoParcial, estoqueParcial, 8)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa (parcial): %v", err)
+	}
+	// Saldo físico de Parcial cai para 3 (abaixo dos 8 solicitados/reservados)
+	// ANTES da decisão — mesmo molde de
+	// TestDecidirLotePedidos_ItemParcial_RestoDoLoteSeguiNormal.
+	if _, err := db.Exec(`UPDATE produto_estoque SET quantidade = 3 WHERE produto_id = $1 AND estoque_id = $2`, produtoParcial, estoqueParcial); err != nil {
+		t.Fatalf("seed: reduzir saldo real de Parcial: %v", err)
+	}
+
+	resultado, err := DecidirLotePedidos(db, empresaTeste, gestorID, []string{pedidoTotal.ID, pedidoParcial.ID}, true)
+	if err != nil {
+		t.Fatalf("DecidirLotePedidos erro inesperado: %v", err)
+	}
+	if len(resultado) != 2 {
+		t.Fatalf("len(resultado) = %d, want 2", len(resultado))
+	}
+	if resultado[0].Status != "aprovado" {
+		t.Errorf("pedido total: status = %q, want aprovado", resultado[0].Status)
+	}
+	if resultado[1].Status != "parcialmente_aprovado" {
+		t.Errorf("pedido parcial: status = %q, want parcialmente_aprovado", resultado[1].Status)
+	}
+
+	for i, det := range resultado {
+		if det.PreNotaID == nil || det.Docnum == nil {
+			t.Fatalf("pedido[%d] (%s): PreNotaID=%v Docnum=%v, want ambos preenchidos", i, det.ID, det.PreNotaID, det.Docnum)
+		}
+	}
+	// Os DOIS, apesar de status diferentes, caem na MESMA Pré-Nota nova —
+	// um lote é UMA decisão de produto (Technical Decisions, epic-20-context.md).
+	if *resultado[0].PreNotaID != *resultado[1].PreNotaID {
+		t.Errorf("PreNotaID difere entre aprovado (%q) e parcialmente_aprovado (%q), want igual (MESMA Pré-Nota pro lote inteiro)", *resultado[0].PreNotaID, *resultado[1].PreNotaID)
+	}
+	if *resultado[0].Docnum != *resultado[1].Docnum {
+		t.Errorf("Docnum difere entre aprovado (%d) e parcialmente_aprovado (%d), want igual", *resultado[0].Docnum, *resultado[1].Docnum)
 	}
 }

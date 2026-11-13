@@ -46,6 +46,9 @@ func limparEmpresaDaMigracao(t *testing.T, db *sql.DB, slug string) {
 			`DELETE FROM movimentacoes WHERE empresa_id = $1`,
 			`DELETE FROM pedido_itens WHERE empresa_id = $1`,
 			`DELETE FROM pedidos WHERE empresa_id = $1`,
+			// Story 20.4 (spec-20-4): `pre_notas` só pode ser apagada DEPOIS de
+			// `pedidos` (pedidos.pre_nota_id referencia pre_notas.id).
+			`DELETE FROM pre_notas WHERE empresa_id = $1`,
 			`DELETE FROM produto_estoque WHERE produto_id IN (SELECT id FROM produtos WHERE empresa_id = $1)`,
 			`DELETE FROM produtos WHERE empresa_id = $1`,
 			`DELETE FROM estoques WHERE empresa_id = $1`,
@@ -62,6 +65,9 @@ func limparEmpresaDaMigracao(t *testing.T, db *sql.DB, slug string) {
 			// uma linha lá (AD-26).
 			`DELETE FROM filiais WHERE empresa_id = $1`,
 			`DELETE FROM contadores_produto WHERE empresa_id = $1`,
+			// Story 20.4 (spec-20-4): `contadores_pre_nota` nasce junto com
+			// TODA Empresa, mesmo molde/razão de `contadores_produto` acima.
+			`DELETE FROM contadores_pre_nota WHERE empresa_id = $1`,
 		} {
 			if _, err := db.Exec(stmt, id); err != nil {
 				t.Fatalf("limparEmpresaDaMigracao(%s) [%s]: %v", slug, stmt, err)

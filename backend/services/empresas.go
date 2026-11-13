@@ -394,6 +394,14 @@ func InserirEmpresa(tx *sql.Tx, dados DadosEmpresa) (Empresa, error) {
 	); err != nil {
 		return Empresa{}, fmt.Errorf("falha ao criar contador de código de produto para a empresa: %w", err)
 	}
+	// Contador de docnum de Pré-Nota (Story 20.4, spec-20-4) nasce junto com a
+	// Empresa, MESMO molde/lugar do contador de código de Produto acima —
+	// nunca lazy-init em proximoDocnumPreNota (pedidos.go).
+	if _, err := tx.Exec(
+		`INSERT INTO contadores_pre_nota (empresa_id, ultimo_numero) VALUES ($1, 0) ON CONFLICT (empresa_id) DO NOTHING`, e.ID,
+	); err != nil {
+		return Empresa{}, fmt.Errorf("falha ao criar contador de docnum de pré-nota para a empresa: %w", err)
+	}
 	return e, nil
 }
 

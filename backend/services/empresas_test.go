@@ -238,6 +238,31 @@ func TestProvisionarEmpresa_CriaContadorDeCodigo(t *testing.T) {
 	}
 }
 
+// TestProvisionarEmpresa_CriaContadorDePreNota prova o Always da spec-20-4
+// (Story 20.4): toda Empresa nasce com sua própria linha em
+// `contadores_pre_nota`, `ultimo_numero=0`, na MESMA transação de
+// ProvisionarEmpresa — mesmo molde de TestProvisionarEmpresa_CriaContadorDeCodigo,
+// nunca via lazy-init em proximoDocnumPreNota.
+func TestProvisionarEmpresa_CriaContadorDePreNota(t *testing.T) {
+	db := testDB(t)
+
+	removerEmpresaDeTeste(t, db, "provisionamento-contador-prenota")
+	e := criarEmpresaDeTeste(t, db, "provisionamento-contador-prenota", "778889990006", "Provisionamento Contador PreNota")
+	t.Cleanup(func() { removerEmpresaDeTeste(t, db, "provisionamento-contador-prenota") })
+
+	var n, ultimoNumero int
+	if err := db.QueryRow(`SELECT count(*), coalesce(min(ultimo_numero), -1) FROM contadores_pre_nota WHERE empresa_id = $1`, e.ID).
+		Scan(&n, &ultimoNumero); err != nil {
+		t.Fatalf("contar contador de pré-nota da empresa: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("linhas em contadores_pre_nota para a empresa = %d, want 1", n)
+	}
+	if ultimoNumero != 0 {
+		t.Errorf("ultimo_numero = %d, want 0", ultimoNumero)
+	}
+}
+
 // TestProvisionarEmpresa_NormalizaEValida prova que os dados chegam
 // normalizados ao banco (CNPJ sem máscara, slug canônico) e que uma validação
 // que falha não escreve nada.
@@ -407,6 +432,19 @@ func TestInserirEmpresa_NaoCopiaListas(t *testing.T) {
 	}
 	if contadores != 1 || ultimo != 0 {
 		t.Errorf("contador da Empresa criada por InserirEmpresa: linhas=%d ultimo_numero=%d, want 1 e 0", contadores, ultimo)
+	}
+
+	// Contador de docnum de Pré-Nota (Story 20.4, spec-20-4): mesmo molde do
+	// contador de código de Produto acima — nasce junto com TODA Empresa via
+	// InserirEmpresa, nunca lazy-init em proximoDocnumPreNota.
+	var contadoresPreNota, ultimoPreNota int
+	if err := db.QueryRow(
+		`SELECT count(*), COALESCE(max(ultimo_numero), -1) FROM contadores_pre_nota WHERE empresa_id = $1`, e.ID,
+	).Scan(&contadoresPreNota, &ultimoPreNota); err != nil {
+		t.Fatalf("contar contador de pré-nota: %v", err)
+	}
+	if contadoresPreNota != 1 || ultimoPreNota != 0 {
+		t.Errorf("contador de pré-nota da Empresa criada por InserirEmpresa: linhas=%d ultimo_numero=%d, want 1 e 0", contadoresPreNota, ultimoPreNota)
 	}
 }
 
