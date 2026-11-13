@@ -75,6 +75,12 @@ export const navGrupos: NavGrupo[] = [
         to: '/pedidos/transferencia',
         papelMinimo: 'usuario',
       },
+      {
+        id: 'pedido-baixa',
+        label: 'Pedido de Baixa de Estoque',
+        to: '/pedidos/baixa',
+        papelMinimo: 'usuario',
+      },
       { id: 'fila-aprovacao', label: 'Fila de aprovação', to: '/pedidos/fila', papelMinimo: 'almoxarife' },
     ],
   },

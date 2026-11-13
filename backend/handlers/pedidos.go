@@ -182,6 +182,87 @@ func SubmeterPedidoTransferenciaHandler(db *sql.DB, registro *realtime.Registry)
 	}
 }
 
+// submeterPedidoBaixaRequest é o corpo aceito por POST /api/pedidos/baixa
+// (Story 20.2, Epic 20, spec-20-2) — envio DIRETO de 1 item (sem Carrinho),
+// tela própria, SEM Estoque destino (molde de
+// submeterPedidoTransferenciaRequest, sem `estoqueDestinoId`). `usuarioId`
+// nunca é lido do corpo (Always, mesmo padrão dos demais) — a identidade vem
+// sempre de middleware.UsuarioDaSessao. `solicitante` também NÃO é lido do
+// corpo (requisito do usuário, pós-revisão: "Solicitante é o usuário logado,
+// não precisa pedir") — o handler resolve `usuario.Nome` da sessão e o passa
+// direto ao service, nunca aceitando um valor vindo da requisição.
+type submeterPedidoBaixaRequest struct {
+	ObraCentroCusto string  `json:"obraCentroCusto"`
+	Observacao      string  `json:"observacao"`
+	ProdutoID       string  `json:"produtoId"`
+	EstoqueID       string  `json:"estoqueId"`
+	Quantidade      float64 `json:"quantidade"`
+}
+
+// SubmeterPedidoBaixaHandler expõe POST /api/pedidos/baixa (Story 20.2, Epic
+// 20, spec-20-2): envia um Pedido de Baixa de Estoque `pendente` — reserva
+// dura do par (Produto, Estoque), nunca debita saldo físico (RegistrarBaixa,
+// movimentacoes.go, continua a ação direta sem aprovação; a decisão de
+// verdade é a Story 20.3). Molde de SubmeterPedidoTransferenciaHandler, sem o
+// campo de destino e sem `solicitante` no corpo (requisito do usuário,
+// pós-revisão): registrado atrás SÓ de RequireAuth (mesmo mínimo de papel do
+// Pedido de retirada/Transferência — qualquer conta autenticada `usuario`+
+// envia seu próprio Pedido). `solicitante` é SEMPRE `usuario.Nome` da sessão
+// (middleware.UsuarioDaSessao) — nunca aceito do corpo da requisição.
+// `201 {"pedido": {...}}` no sucesso,
+// publicando `{"resource":"pedidos","id":<novo>,"change":"created"}` no canal
+// `pedidos` + um evento `produtos` (`updated`) para o único Produto do
+// Pedido. `400 VALIDATION_ERROR` para campos ausentes/vazios (inclusive
+// produtoId/estoqueId — Always, spec-20-2: nunca colapsa em 409);
+// `409 CONFLICT` para disponibilidade insuficiente; `409 PRODUTO_INATIVO`
+// para Produto inativo (mesmo código do Pedido de retirada/Transferência).
+func SubmeterPedidoBaixaHandler(db *sql.DB, registro *realtime.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		usuario, ok := middleware.UsuarioDaSessao(r.Context())
+		if !ok {
+			slog.Error("SubmeterPedidoBaixaHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
+		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
+		var req submeterPedidoBaixaRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "payload inválido")
+			return
+		}
+
+		pedido, err := services.SubmeterPedidoBaixa(
+			db, empresa.ID, usuario.ID, usuario.Nome, req.ObraCentroCusto, req.Observacao,
+			req.ProdutoID, req.EstoqueID, req.Quantidade,
+		)
+		var erroValidacao *services.ErroPedidoValidacao
+		var erroIndisponivel *services.ErroPedidoIndisponivel
+		var erroInativo *services.ErroPedidoProdutoInativo
+		switch {
+		case err == nil:
+			registro.Publish(empresa.ID, "pedidos", realtime.Evento{ID: pedido.ID, Change: "created"})
+			for _, produtoID := range idsUnicos(pedido.ProdutoIDs) {
+				registro.Publish(empresa.ID, "produtos", realtime.Evento{ID: produtoID, Change: "updated"})
+			}
+			escreverJSON(w, http.StatusCreated, map[string]any{"pedido": pedido})
+		case errors.As(err, &erroValidacao):
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
+		case errors.As(err, &erroIndisponivel):
+			escreverErro(w, http.StatusConflict, "CONFLICT", erroIndisponivel.Error())
+		case errors.As(err, &erroInativo):
+			escreverErro(w, http.StatusConflict, "PRODUTO_INATIVO", erroInativo.Error())
+		default:
+			slog.Error("falha ao submeter pedido de baixa", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao enviar pedido de baixa")
+		}
+	}
+}
+
 // ListarPedidosHandler expõe GET /api/pedidos (Story 7.3, spec-7-3; escopo
 // `?escopo=todos` da Fila, Story 7.4, spec-7-4), registrado em newMux atrás
 // SÓ de RequireAuth (SEM RequireRole — mesmo mínimo de papel do envio).

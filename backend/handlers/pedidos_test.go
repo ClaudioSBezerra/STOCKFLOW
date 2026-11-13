@@ -1592,3 +1592,367 @@ func TestSubmeterPedidoTransferenciaHandler_400DestinoInexistenteOuOutraEmpresa(
 		})
 	}
 }
+
+// --- SubmeterPedidoBaixaHandler (Story 20.2, Epic 20, spec-20-2) ----------
+
+func postPedidoBaixa(db *sql.DB, authHeader, body string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /e/{slug}/api/pedidos/baixa",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(SubmeterPedidoBaixaHandler(db, realtime.NewRegistry()))))
+	var r *http.Request
+	if body != "" {
+		r = httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/pedidos/baixa", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+	} else {
+		r = httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/pedidos/baixa", nil)
+	}
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+// TestSubmeterPedidoBaixaHandler_201 prova a AC1 na fronteira HTTP: produto
+// com saldo suficiente + campos obrigatórios preenchidos -> 201 com o Pedido
+// `pendente` tipo=baixa. `solicitante` NUNCA é lido do corpo (requisito do
+// usuário, pós-revisão) — o corpo nem o envia; `Solicitante` vem sempre de
+// `usuario.Nome` da sessão.
+func TestSubmeterPedidoBaixaHandler_201(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	_, token := seedContaComumECarrinho(t, db, "Usuario Baixa H 201", "baixa-h-201-usuario@empresa.com")
+	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, "Canteiro Baixa H 201", 10)
+
+	corpo := `{"obraCentroCusto":"Obra Norte","produtoId":"` + produtoID +
+		`","estoqueId":"` + estoqueID + `","quantidade":5}`
+	w := postPedidoBaixa(db, "Bearer "+token, corpo)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
+	}
+	var resp struct {
+		Pedido services.Pedido `json:"pedido"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if resp.Pedido.Status != "pendente" {
+		t.Errorf("Status = %q, want pendente", resp.Pedido.Status)
+	}
+	if resp.Pedido.Tipo != "baixa" {
+		t.Errorf("Tipo = %q, want baixa", resp.Pedido.Tipo)
+	}
+	if resp.Pedido.Solicitante != "Usuario Baixa H 201" {
+		t.Errorf("Solicitante = %q, want %q (nome da sessão autenticada)", resp.Pedido.Solicitante, "Usuario Baixa H 201")
+	}
+
+	var estoqueDestinoID sql.NullString
+	if err := db.QueryRow(`SELECT estoque_destino_id FROM pedido_itens WHERE pedido_id = $1`, resp.Pedido.ID).Scan(&estoqueDestinoID); err != nil {
+		t.Fatalf("ler estoque_destino_id: %v", err)
+	}
+	if estoqueDestinoID.Valid {
+		t.Errorf("estoque_destino_id = %+v, want NULL (Pedido de Baixa nunca tem destino)", estoqueDestinoID)
+	}
+}
+
+// TestSubmeterPedidoBaixaHandler_IgnoraSolicitanteDoCorpo prova que um
+// cliente mal-intencionado (ou um client antigo que ainda envie
+// `solicitante` no corpo) NUNCA consegue gravar um nome diferente do usuário
+// autenticado — o campo nem existe mais em `submeterPedidoBaixaRequest`, o
+// decode simplesmente ignora a chave extra.
+func TestSubmeterPedidoBaixaHandler_IgnoraSolicitanteDoCorpo(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	_, token := seedContaComumECarrinho(t, db, "Usuario Baixa H IgnoraSolic", "baixa-h-ignorasolic@empresa.com")
+	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, "Canteiro Baixa H IgnoraSolic", 10)
+
+	corpo := `{"solicitante":"Nome Forjado","obraCentroCusto":"Obra X","produtoId":"` + produtoID +
+		`","estoqueId":"` + estoqueID + `","quantidade":1}`
+	w := postPedidoBaixa(db, "Bearer "+token, corpo)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
+	}
+	var resp struct {
+		Pedido services.Pedido `json:"pedido"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if resp.Pedido.Solicitante != "Usuario Baixa H IgnoraSolic" {
+		t.Errorf("Solicitante = %q, want %q (nunca \"Nome Forjado\")", resp.Pedido.Solicitante, "Usuario Baixa H IgnoraSolic")
+	}
+}
+
+// TestSubmeterPedidoBaixaHandler_201_ObraCentroCustoAusente prova o
+// requisito do usuário (pós-revisão): "obraCentroCusto" ausente/vazio nunca
+// bloqueia o envio -> 201, `ObraCentroCusto` volta "" (NULL no banco).
+func TestSubmeterPedidoBaixaHandler_201_ObraCentroCustoAusente(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	_, token := seedContaComumECarrinho(t, db, "Usuario Baixa H SemObra", "baixa-h-semobra@empresa.com")
+	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, "Canteiro Baixa H SemObra", 10)
+
+	corpo := `{"produtoId":"` + produtoID + `","estoqueId":"` + estoqueID + `","quantidade":1}`
+	w := postPedidoBaixa(db, "Bearer "+token, corpo)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
+	}
+	var resp struct {
+		Pedido services.Pedido `json:"pedido"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if resp.Pedido.ObraCentroCusto != "" {
+		t.Errorf("ObraCentroCusto = %q, want \"\"", resp.Pedido.ObraCentroCusto)
+	}
+
+	var obraNoBanco sql.NullString
+	if err := db.QueryRow(`SELECT obra_centro_custo FROM pedidos WHERE id = $1`, resp.Pedido.ID).Scan(&obraNoBanco); err != nil {
+		t.Fatalf("ler obra_centro_custo: %v", err)
+	}
+	if obraNoBanco.Valid {
+		t.Errorf("obra_centro_custo no banco = %+v, want NULL", obraNoBanco)
+	}
+}
+
+// TestSubmeterPedidoBaixaHandler_PublicaEventoNoSucesso prova que um envio
+// bem-sucedido publica `{"resource":"pedidos","id":<novo>,"change":"created"}`
+// no canal `pedidos` — molde de TestSubmeterPedidoTransferenciaHandler_PublicaEventoNoSucesso.
+func TestSubmeterPedidoBaixaHandler_PublicaEventoNoSucesso(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	_, token := seedContaComumECarrinho(t, db, "Usuario Baixa H Evento", "baixa-h-evento-usuario@empresa.com")
+	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, "Canteiro Baixa H Evento", 10)
+
+	registro := realtime.NewRegistry()
+	eventos, cancelar := registro.Subscribe(empresaTeste)
+	defer cancelar()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /e/{slug}/api/pedidos/baixa",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(SubmeterPedidoBaixaHandler(db, registro))))
+
+	corpo := `{"obraCentroCusto":"Obra X","produtoId":"` + produtoID +
+		`","estoqueId":"` + estoqueID + `","quantidade":1}`
+	r := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/pedidos/baixa", strings.NewReader(corpo))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
+	}
+	var resp struct {
+		Pedido services.Pedido `json:"pedido"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+
+	select {
+	case ev := <-eventos:
+		if ev.Resource != "pedidos" || ev.ID != resp.Pedido.ID || ev.Change != "created" {
+			t.Fatalf("evento = %+v, want {pedidos %s created}", ev, resp.Pedido.ID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("nenhum evento publicado em 1s após SubmeterPedidoBaixaHandler bem-sucedido")
+	}
+}
+
+// TestSubmeterPedidoBaixaHandler_400CamposVazios cobre o Always de
+// spec-20-2 na fronteira HTTP: produtoId/estoqueId vazios -> 400
+// VALIDATION_ERROR.
+func TestSubmeterPedidoBaixaHandler_400CamposVazios(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	_, token := seedContaComumECarrinho(t, db, "Usuario Baixa H 400", "baixa-h-400-usuario@empresa.com")
+	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, "Canteiro Baixa H 400", 10)
+
+	casos := map[string]string{
+		"produtoId vazio": `{"obraCentroCusto":"Obra X","produtoId":"","estoqueId":"` + estoqueID + `","quantidade":1}`,
+		"estoqueId vazio": `{"obraCentroCusto":"Obra X","produtoId":"` + produtoID + `","estoqueId":"","quantidade":1}`,
+	}
+	for nome, corpo := range casos {
+		t.Run(nome, func(t *testing.T) {
+			w := postPedidoBaixa(db, "Bearer "+token, corpo)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
+			}
+			env := decodeErro(t, w.Body.Bytes())
+			if env.Error.Code != "VALIDATION_ERROR" {
+				t.Errorf("code = %q, want VALIDATION_ERROR", env.Error.Code)
+			}
+		})
+	}
+}
+
+// TestSubmeterPedidoBaixaHandler_400PayloadInvalido prova que um corpo não
+// decodificável -> 400 VALIDATION_ERROR (único ramo de erro do handler ainda
+// sem teste — molde de TestSubmeterPedidoHandler_400PayloadInvalido).
+func TestSubmeterPedidoBaixaHandler_400PayloadInvalido(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	_, token := seedContaComumECarrinho(t, db, "Usuario Baixa H Payload", "baixa-h-payload-usuario@empresa.com")
+
+	w := postPedidoBaixa(db, "Bearer "+token, `{"produtoId":`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "VALIDATION_ERROR" {
+		t.Errorf("code = %q, want VALIDATION_ERROR", env.Error.Code)
+	}
+}
+
+// TestSubmeterPedidoBaixaHandler_409DisponibilidadeInsuficiente cobre a
+// linha "Disponível insuficiente" na fronteira HTTP -> 409 CONFLICT.
+func TestSubmeterPedidoBaixaHandler_409DisponibilidadeInsuficiente(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	_, token := seedContaComumECarrinho(t, db, "Usuario Baixa H 409", "baixa-h-409-usuario@empresa.com")
+	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, "Canteiro Baixa H 409", 3)
+
+	corpo := `{"obraCentroCusto":"Obra X","produtoId":"` + produtoID +
+		`","estoqueId":"` + estoqueID + `","quantidade":4}`
+	w := postPedidoBaixa(db, "Bearer "+token, corpo)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusConflict, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "CONFLICT" {
+		t.Errorf("code = %q, want CONFLICT", env.Error.Code)
+	}
+}
+
+// TestSubmeterPedidoBaixaHandler_409ProdutoInativo cobre, na fronteira HTTP,
+// o Always de spec-20-2: Produto inativo -> 409 PRODUTO_INATIVO (mesmo
+// código do Pedido de retirada/Transferência), nada gravado.
+func TestSubmeterPedidoBaixaHandler_409ProdutoInativo(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	_, token := seedContaComumECarrinho(t, db, "Usuario Baixa H Inativo", "baixa-h-inativo-usuario@empresa.com")
+	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, "Canteiro Baixa H Inativo", 10)
+	if _, err := db.Exec(`UPDATE produtos SET inativado_em = now() WHERE id = $1`, produtoID); err != nil {
+		t.Fatalf("seed inativação: %v", err)
+	}
+
+	corpo := `{"obraCentroCusto":"Obra X","produtoId":"` + produtoID +
+		`","estoqueId":"` + estoqueID + `","quantidade":1}`
+	w := postPedidoBaixa(db, "Bearer "+token, corpo)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusConflict, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "PRODUTO_INATIVO" {
+		t.Errorf("code = %q, want PRODUTO_INATIVO", env.Error.Code)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM pedidos WHERE tipo = 'baixa'`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("pedidos tipo=baixa = %d (err=%v), want 0 (nada gravado)", n, err)
+	}
+}
+
+// TestSubmeterPedidoBaixaHandler_401SemToken cobre a ausência de token ->
+// 401 (molde de TestSubmeterPedidoTransferenciaHandler_401SemToken).
+func TestSubmeterPedidoBaixaHandler_401SemToken(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+
+	w := postPedidoBaixa(db, "", `{"obraCentroCusto":"Obra X"}`)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+}
+
+// TestDecidirPedidoHandler_409PedidoDeBaixaTipoNaoSuportado cobre, na
+// fronteira HTTP, que o guard genérico de DecidirPedido (`tipo !=
+// 'retirada'`) já cobre `'baixa'` sem nenhuma mudança: 409 CONFLICT para
+// aprovar OU rejeitar, status permanece `pendente`.
+func TestDecidirPedidoHandler_409PedidoDeBaixaTipoNaoSuportado(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	dono, _ := seedContaComumECarrinho(t, db, "H201 Baixa TipoNaoSup Dono", "h-baixa-tiponaosup-dono@empresa.com")
+	criarContaComPapel(t, db, "H201 Baixa TipoNaoSup Almox", "h-baixa-tiponaosup-almox@empresa.com", "senha-123456", "almoxarife")
+	tokenAlmox := tokenDeLogin(t, db, "h-baixa-tiponaosup-almox@empresa.com", "senha-123456")
+
+	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, "Canteiro Baixa TipoNaoSup", 10)
+	pedido, err := services.SubmeterPedidoBaixa(db, empresaTeste, dono, "Fulano", "Obra X", "", produtoID, estoqueID, 5)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
+	}
+
+	for _, corpo := range []string{`{"aprovar":true}`, `{"aprovar":false}`} {
+		w := postDecisaoPedido(db, "Bearer "+tokenAlmox, pedido.ID, corpo)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("corpo=%s: status = %d, want %d (body=%s)", corpo, w.Code, http.StatusConflict, w.Body.String())
+		}
+		if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "CONFLICT" {
+			t.Errorf("corpo=%s: code = %q, want CONFLICT", corpo, env.Error.Code)
+		}
+	}
+
+	var status string
+	if err := db.QueryRow(`SELECT status FROM pedidos WHERE id = $1`, pedido.ID).Scan(&status); err != nil {
+		t.Fatalf("reler status: %v", err)
+	}
+	if status != "pendente" {
+		t.Errorf("status = %q, want pendente", status)
+	}
+}
+
+// TestPedidosHandlers_CampoTipoNoJSON_Baixa cobre a fronteira HTTP para o
+// campo `tipo` de um Pedido de Baixa — molde de TestPedidosHandlers_CampoTipoNoJSON
+// (que já cobre retirada/transferencia), confirmando que não falta nenhum
+// SELECT de coluna nova (lacuna da revisão da Story 20.1 — não repetir aqui).
+func TestPedidosHandlers_CampoTipoNoJSON_Baixa(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	usuarioID, token := seedContaComumECarrinho(t, db, "H Tipo JSON Baixa", "h-pedidos-tipo-json-baixa@empresa.com")
+
+	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, "H Tipo JSON Baixa", 10)
+	pedidoBaixa, err := services.SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 1)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
+	}
+
+	w := getPedidos(db, "Bearer "+token, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /api/pedidos: status = %d (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Pedidos []services.PedidoResumo `json:"pedidos"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	achou := false
+	for _, p := range resp.Pedidos {
+		if p.ID == pedidoBaixa.ID {
+			achou = true
+			if p.Tipo != "baixa" {
+				t.Errorf("GET /api/pedidos: Tipo = %q, want baixa", p.Tipo)
+			}
+		}
+	}
+	if !achou {
+		t.Fatalf("Pedido de Baixa semeado não apareceu em GET /api/pedidos")
+	}
+
+	wDetalhe := getPedido(db, "Bearer "+token, pedidoBaixa.ID)
+	if wDetalhe.Code != http.StatusOK {
+		t.Fatalf("GET /api/pedidos/%s: status = %d (body=%s)", pedidoBaixa.ID, wDetalhe.Code, wDetalhe.Body.String())
+	}
+	var respDetalhe struct {
+		Pedido services.PedidoDetalhe `json:"pedido"`
+	}
+	if err := json.Unmarshal(wDetalhe.Body.Bytes(), &respDetalhe); err != nil {
+		t.Fatalf("decode detalhe: %v (body=%s)", err, wDetalhe.Body.String())
+	}
+	if respDetalhe.Pedido.Tipo != "baixa" {
+		t.Errorf("GET /api/pedidos/%s: Tipo = %q, want baixa", pedidoBaixa.ID, respDetalhe.Pedido.Tipo)
+	}
+}

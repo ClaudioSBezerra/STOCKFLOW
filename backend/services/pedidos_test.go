@@ -704,6 +704,43 @@ func TestListarPedidosFila_Vazia(t *testing.T) {
 	}
 }
 
+// TestListarPedidosFila_PedidoDeBaixaSemObraCentroCusto prova a linha
+// achada pela revisão da Story 20.2 (verification-gap): um Pedido de Baixa
+// SEM Obra/Centro de Custo (coluna NULL desde a migration 000057) não
+// quebra `ListarPedidosFila` — o `COALESCE(p.obra_centro_custo, '')` já
+// aplicado na query devolve `ObraCentroCusto = ""`, nunca um erro de Scan.
+func TestListarPedidosFila_PedidoDeBaixaSemObraCentroCusto(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	produtoID, estoqueID, usuarioID := seedProdutoComSaldo(t, db, "Fila Baixa Sem Obra", 10)
+	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "", "", produtoID, estoqueID, 5)
+	if err != nil {
+		t.Fatalf("SubmeterPedidoBaixa erro inesperado: %v", err)
+	}
+
+	lista, err := ListarPedidosFila(db, empresaTeste, "")
+	if err != nil {
+		t.Fatalf("ListarPedidosFila erro: %v", err)
+	}
+	var achado *PedidoResumo
+	for i := range lista {
+		if lista[i].ID == pedido.ID {
+			achado = &lista[i]
+			break
+		}
+	}
+	if achado == nil {
+		t.Fatalf("pedido de baixa %q não apareceu na Fila (lista=%+v)", pedido.ID, lista)
+	}
+	if achado.ObraCentroCusto != "" {
+		t.Errorf("ObraCentroCusto = %q, want \"\" (NULL no banco, COALESCE na leitura)", achado.ObraCentroCusto)
+	}
+	if achado.Tipo != "baixa" {
+		t.Errorf("Tipo = %q, want baixa", achado.Tipo)
+	}
+}
+
 // TestListarPedidosParaSessao_AlmoxarifeEscopoTodos cobre almoxarife+
 // `escopoTodos=true` -> todos os Pedidos da organização, não só os próprios
 // — e, especificamente, a Fila INCLUI também os Pedidos que o próprio
@@ -2701,5 +2738,449 @@ func TestDecidirPedido_RecusaPedidoDeTransferencia(t *testing.T) {
 	}
 	if q := saldoProdutoEstoque(t, db, produtoID, estoqueOrigemID); q != 10 {
 		t.Errorf("saldo da origem não deveria mudar, got %v, want 10", q)
+	}
+}
+
+// --- SubmeterPedidoBaixa (Story 20.2, Epic 20, spec-20-2) ------------------
+
+// pedidoItemBaixaLinha é a leitura crua de uma linha de pedido_itens de um
+// Pedido de Baixa — confirma que estoque_destino_id permanece NULL (Never,
+// spec-20-2).
+type pedidoItemBaixaLinha struct {
+	ProdutoID        string
+	ProdutoNome      string
+	CategoriaNome    string
+	EstoqueID        string
+	EstoqueNome      string
+	Quantidade       float64
+	EstoqueDestinoID sql.NullString
+}
+
+func listarPedidoItensBaixa(t *testing.T, db *sql.DB, pedidoID string) []pedidoItemBaixaLinha {
+	t.Helper()
+	rows, err := db.Query(
+		`SELECT produto_id, produto_nome, categoria_nome, estoque_id, estoque_nome, quantidade, estoque_destino_id
+		 FROM pedido_itens WHERE pedido_id = $1 ORDER BY produto_nome`,
+		pedidoID,
+	)
+	if err != nil {
+		t.Fatalf("falha ao listar pedido_itens (baixa): %v", err)
+	}
+	defer rows.Close()
+	var itens []pedidoItemBaixaLinha
+	for rows.Next() {
+		var it pedidoItemBaixaLinha
+		if err := rows.Scan(&it.ProdutoID, &it.ProdutoNome, &it.CategoriaNome, &it.EstoqueID, &it.EstoqueNome, &it.Quantidade, &it.EstoqueDestinoID); err != nil {
+			t.Fatalf("falha ao ler linha de pedido_itens (baixa): %v", err)
+		}
+		itens = append(itens, it)
+	}
+	return itens
+}
+
+// TestSubmeterPedidoBaixa_Sucesso prova a linha "Solicitação válida" da I/O
+// Matrix de spec-20-2: Pedido `pendente` tipo=baixa, reserva de 5, saldo
+// físico inalterado, SEM estoque_destino_id.
+func TestSubmeterPedidoBaixa_Sucesso(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Usuario Baixa Sucesso", "baixa-sucesso@empresa.com", PapelUsuario, 0)
+	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Baixa Sucesso", 10)
+
+	pedido, err := SubmeterPedidoBaixa(
+		db, empresaTeste, usuarioID, "  Fulano de Tal  ", "  Obra Norte  ", "  urgente  ",
+		produtoID, estoqueID, 5,
+	)
+	if err != nil {
+		t.Fatalf("SubmeterPedidoBaixa erro inesperado: %v", err)
+	}
+	if pedido.ID == "" {
+		t.Error("ID vazio no retorno")
+	}
+	if pedido.Status != "pendente" {
+		t.Errorf("Status = %q, want pendente", pedido.Status)
+	}
+	if pedido.Tipo != "baixa" {
+		t.Errorf("Tipo = %q, want baixa", pedido.Tipo)
+	}
+	if pedido.Solicitante != "Fulano de Tal" {
+		t.Errorf("Solicitante = %q, want trimado", pedido.Solicitante)
+	}
+	if pedido.Observacao == nil || *pedido.Observacao != "urgente" {
+		t.Errorf("Observacao = %v, want \"urgente\"", pedido.Observacao)
+	}
+
+	itens := listarPedidoItensBaixa(t, db, pedido.ID)
+	if len(itens) != 1 {
+		t.Fatalf("len(itens) = %d, want 1", len(itens))
+	}
+	it := itens[0]
+	if it.ProdutoID != produtoID || it.EstoqueID != estoqueID || it.Quantidade != 5 {
+		t.Errorf("item = %+v, want produto=%s estoque=%s quantidade=5", it, produtoID, estoqueID)
+	}
+	if it.EstoqueDestinoID.Valid {
+		t.Errorf("EstoqueDestinoID = %+v, want NULL (Pedido de Baixa nunca tem destino)", it.EstoqueDestinoID)
+	}
+	if it.ProdutoNome == "" || it.CategoriaNome == "" || it.EstoqueNome == "" {
+		t.Errorf("snapshot incompleto: %+v", it)
+	}
+
+	if n := contarReservas(t, db, pedido.ID); n != 1 {
+		t.Errorf("reservas_pedido_item do pedido = %d, want 1", n)
+	}
+
+	// Never (spec-20-2): nunca debita saldo físico na solicitação.
+	if q := saldoProdutoEstoque(t, db, produtoID, estoqueID); q != 10 {
+		t.Errorf("saldo não deveria mudar, got %v, want 10", q)
+	}
+}
+
+// TestSubmeterPedidoBaixa_ObraCentroCustoOpcional prova o requisito do
+// usuário (pós-revisão): "Obra/Centro de Custo" deixa de ser obrigatório no
+// Pedido de Baixa — vazio/só espaços NÃO é &ErroPedidoValidacao, grava NULL
+// na coluna (migrations/000057) e `pedido.ObraCentroCusto` volta "" (nunca
+// quebra o Scan).
+func TestSubmeterPedidoBaixa_ObraCentroCustoOpcional(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Usuario Baixa SemObra", "baixa-semobra@empresa.com", PapelUsuario, 0)
+	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Baixa SemObra", 10)
+
+	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "   ", "", produtoID, estoqueID, 5)
+	if err != nil {
+		t.Fatalf("SubmeterPedidoBaixa erro inesperado: %v", err)
+	}
+	if pedido.ObraCentroCusto != "" {
+		t.Errorf("ObraCentroCusto = %q, want \"\"", pedido.ObraCentroCusto)
+	}
+
+	var obraNoBanco sql.NullString
+	if err := db.QueryRow(`SELECT obra_centro_custo FROM pedidos WHERE id = $1`, pedido.ID).Scan(&obraNoBanco); err != nil {
+		t.Fatalf("ler obra_centro_custo: %v", err)
+	}
+	if obraNoBanco.Valid {
+		t.Errorf("obra_centro_custo no banco = %+v, want NULL", obraNoBanco)
+	}
+
+	// GET /api/pedidos (ListarPedidosProprios) e GET /api/pedidos/{id}
+	// (BuscarPedidoProprio) nunca quebram ao reler esta linha com
+	// obra_centro_custo NULL (COALESCE nas duas queries).
+	resumos, err := ListarPedidosProprios(db, empresaTeste, usuarioID, "")
+	if err != nil {
+		t.Fatalf("ListarPedidosProprios: %v", err)
+	}
+	achou := false
+	for _, r := range resumos {
+		if r.ID == pedido.ID {
+			achou = true
+			if r.ObraCentroCusto != "" {
+				t.Errorf("ListarPedidosProprios: ObraCentroCusto = %q, want \"\"", r.ObraCentroCusto)
+			}
+		}
+	}
+	if !achou {
+		t.Fatal("Pedido semeado não apareceu em ListarPedidosProprios")
+	}
+
+	detalhe, err := BuscarPedidoProprio(db, empresaTeste, pedido.ID, usuarioID, PapelUsuario)
+	if err != nil {
+		t.Fatalf("BuscarPedidoProprio: %v", err)
+	}
+	if detalhe.ObraCentroCusto != "" {
+		t.Errorf("BuscarPedidoProprio: ObraCentroCusto = %q, want \"\"", detalhe.ObraCentroCusto)
+	}
+
+	// ListarPedidosFila (GET /api/pedidos?escopo=todos, Story 7.4) — revisão
+	// pós-Story 20.2: mesmo COALESCE(obra_centro_custo, '') de
+	// ListarPedidosProprios/BuscarPedidoProprio acima, mas ainda sem teste
+	// fixando que a Fila não quebra ao reler esta linha com NULL.
+	fila, err := ListarPedidosFila(db, empresaTeste, "")
+	if err != nil {
+		t.Fatalf("ListarPedidosFila: %v", err)
+	}
+	achouNaFila := false
+	for _, r := range fila {
+		if r.ID == pedido.ID {
+			achouNaFila = true
+			if r.ObraCentroCusto != "" {
+				t.Errorf("ListarPedidosFila: ObraCentroCusto = %q, want \"\"", r.ObraCentroCusto)
+			}
+		}
+	}
+	if !achouNaFila {
+		t.Fatal("Pedido semeado não apareceu em ListarPedidosFila")
+	}
+}
+
+// TestSubmeterPedidoBaixa_DisponibilidadeInsuficiente prova a linha
+// "Disponível insuficiente" da I/O Matrix: pedir mais que o disponível ->
+// nada gravado, ErroPedidoIndisponivel (409).
+func TestSubmeterPedidoBaixa_DisponibilidadeInsuficiente(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Usuario Baixa Insuf", "baixa-insuf@empresa.com", PapelUsuario, 0)
+	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Baixa Insuf", 10)
+
+	antes := contarPedidos(t, db)
+	_, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 11)
+	var erroIndisponivel *ErroPedidoIndisponivel
+	if !errors.As(err, &erroIndisponivel) {
+		t.Fatalf("erro = %v, want *ErroPedidoIndisponivel", err)
+	}
+	if depois := contarPedidos(t, db); depois != antes {
+		t.Errorf("pedidos = %d, want %d (nada gravado)", depois, antes)
+	}
+	if q := saldoProdutoEstoque(t, db, produtoID, estoqueID); q != 10 {
+		t.Errorf("saldo não deveria mudar, got %v, want 10", q)
+	}
+}
+
+// TestSubmeterPedidoBaixa_ProdutoInativoRecusado prova o Always de spec-20-2:
+// Produto inativo é recusado ANTES de travar/reservar saldo — mesma
+// mensagem/tipo de erro do Pedido de retirada/Transferência.
+func TestSubmeterPedidoBaixa_ProdutoInativoRecusado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Usuario Baixa Inativo", "baixa-inativo@empresa.com", PapelUsuario, 0)
+	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Baixa Inativo", 10)
+	if _, err := db.Exec(`UPDATE produtos SET inativado_em = now() WHERE id = $1`, produtoID); err != nil {
+		t.Fatalf("seed inativação: %v", err)
+	}
+
+	antes := contarPedidos(t, db)
+	_, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 1)
+	var erroInativo *ErroPedidoProdutoInativo
+	if !errors.As(err, &erroInativo) {
+		t.Fatalf("erro = %v, want *ErroPedidoProdutoInativo", err)
+	}
+	if len(erroInativo.Itens) != 1 || erroInativo.Itens[0] != "Produto Baixa Inativo" {
+		t.Errorf("Itens = %v, want [%q]", erroInativo.Itens, "Produto Baixa Inativo")
+	}
+	if depois := contarPedidos(t, db); depois != antes {
+		t.Errorf("pedidos = %d, want %d (nada gravado)", depois, antes)
+	}
+}
+
+// TestSubmeterPedidoBaixa_CamposVaziosSaoValidacao prova o Always de
+// spec-20-2: produtoId/estoqueId vazios (string em branco) são
+// &ErroPedidoValidacao (400), NUNCA colapsam em ErroPedidoIndisponivel (409).
+func TestSubmeterPedidoBaixa_CamposVaziosSaoValidacao(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Usuario Baixa Vazios", "baixa-vazios@empresa.com", PapelUsuario, 0)
+	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Baixa Vazios", 10)
+
+	casos := []struct {
+		nome             string
+		produto, estoque string
+	}{
+		{"produto vazio", "   ", estoqueID},
+		{"estoque vazio", produtoID, "  "},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			_, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", c.produto, c.estoque, 1)
+			var erroValidacao *ErroPedidoValidacao
+			if !errors.As(err, &erroValidacao) {
+				t.Fatalf("erro = %v, want *ErroPedidoValidacao", err)
+			}
+		})
+	}
+}
+
+// TestSubmeterPedidoBaixa_ProdutoOuEstoqueDeOutraEmpresa prova, especificamente
+// pro fluxo de Baixa (revisão pós-Story 20.2 — os demais casos de validação
+// já tinham teste dedicado, este não), que um Produto OU um Estoque de OUTRA
+// Empresa colapsam em &ErroPedidoValidacao (400) — nunca revelam a existência
+// do recurso alheio, nunca um 409. Mesmo molde de
+// TestSubmeterPedidoTransferencia_DestinoInexistenteOuOutraEmpresa.
+func TestSubmeterPedidoBaixa_ProdutoOuEstoqueDeOutraEmpresa(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Usuario Baixa OutraEmpresa", "baixa-outraempresa@empresa.com", PapelUsuario, 0)
+	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Baixa OutraEmpresa", 10)
+
+	outraEmpresa := criarEmpresaDeTeste(t, db, "outra-empresa-baixa", "777888990003", "Outra Empresa Baixa")
+	t.Cleanup(func() { removerEmpresaDeTeste(t, db, "outra-empresa-baixa") })
+
+	categoriaAlheia := categoriaIDPorCodigoEmpresa(t, db, outraEmpresa.ID, "04.001")
+	estoqueAlheio, err := CriarEstoque(db, outraEmpresa.ID, filialTeste(t, db, outraEmpresa.ID), "Estoque Alheio Baixa")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque (outra empresa): %v", err)
+	}
+	// removerEmpresaDeTeste (acima) não apaga `estoques`/`produtos` — sem
+	// isto, as FKs bloqueariam o DELETE de `filiais`/`categorias` dentro
+	// dele. t.Cleanup roda em LIFO: estes, registrados DEPOIS, executam
+	// ANTES (mesmo padrão do molde de Transferência).
+	t.Cleanup(func() {
+		if _, err := db.Exec(`DELETE FROM estoques WHERE id = $1`, estoqueAlheio.ID); err != nil {
+			t.Fatalf("limpar estoque alheio: %v", err)
+		}
+	})
+	produtoAlheio, err := criarProdutoComSaldo(db, outraEmpresa.ID, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Produto Alheio Baixa",
+		CategoriaID:   categoriaAlheia,
+		TemplateID:    templateGenericoID(t, db, outraEmpresa.ID),
+	}, estoqueAlheio.ID, 10)
+	if err != nil {
+		t.Fatalf("seed criarProdutoComSaldo (outra empresa): %v", err)
+	}
+	t.Cleanup(func() {
+		// produto_estoque referencia produto_id (FK) — sem apagar essa linha
+		// primeiro, o DELETE de produtos abaixo violaria
+		// produto_estoque_produto_id_fkey (estoque_id não tem FK própria,
+		// mesmo comentário de pedido_itens: Estoques são hard-deletados).
+		if _, err := db.Exec(`DELETE FROM produto_estoque WHERE produto_id = $1`, produtoAlheio.ID); err != nil {
+			t.Fatalf("limpar produto_estoque alheio: %v", err)
+		}
+		if _, err := db.Exec(`DELETE FROM produtos WHERE id = $1`, produtoAlheio.ID); err != nil {
+			t.Fatalf("limpar produto alheio: %v", err)
+		}
+	})
+
+	t.Run("produto de outra empresa", func(t *testing.T) {
+		antes := contarPedidos(t, db)
+		_, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoAlheio.ID, estoqueID, 1)
+		var erroValidacao *ErroPedidoValidacao
+		if !errors.As(err, &erroValidacao) {
+			t.Fatalf("erro = %v, want *ErroPedidoValidacao", err)
+		}
+		if depois := contarPedidos(t, db); depois != antes {
+			t.Errorf("pedidos = %d, want %d (nada gravado)", depois, antes)
+		}
+	})
+
+	t.Run("estoque de outra empresa", func(t *testing.T) {
+		antes := contarPedidos(t, db)
+		_, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueAlheio.ID, 1)
+		var erroValidacao *ErroPedidoValidacao
+		if !errors.As(err, &erroValidacao) {
+			t.Fatalf("erro = %v, want *ErroPedidoValidacao", err)
+		}
+		if depois := contarPedidos(t, db); depois != antes {
+			t.Errorf("pedidos = %d, want %d (nada gravado)", depois, antes)
+		}
+	})
+}
+
+// TestSubmeterPedidoBaixa_QuantidadeInvalida cobre quantidade <= 0 e NaN —
+// mesma cobertura de validarQuantidadePedidoTransferencia (reaproveitada).
+func TestSubmeterPedidoBaixa_QuantidadeInvalida(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Usuario Baixa QtdRuim", "baixa-qtdruim@empresa.com", PapelUsuario, 0)
+	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Baixa QtdRuim", 10)
+
+	for _, q := range []float64{0, -5, math.NaN()} {
+		_, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, q)
+		var erroValidacao *ErroPedidoValidacao
+		if !errors.As(err, &erroValidacao) {
+			t.Errorf("quantidade=%v: erro = %v, want *ErroPedidoValidacao", q, err)
+		}
+	}
+}
+
+// TestSubmeterPedidoBaixa_ConcorrenciaMesmoPar prova a reserva dura sob
+// concorrência (mesmo molde de
+// TestSubmeterPedidoTransferencia_ConcorrenciaMesmoPar): disponível 10, duas
+// solicitações de 6 no MESMO par não podem as duas suceder (12 > 10) — a
+// perdedora vê *ErroPedidoIndisponivel, só a vencedora grava.
+func TestSubmeterPedidoBaixa_ConcorrenciaMesmoPar(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Usuario Baixa Corrida", "baixa-corrida@empresa.com", PapelUsuario, 0)
+	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Baixa Corrida", 10)
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var err1, err2 error
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		_, err1 = SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 6)
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		_, err2 = SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 6)
+	}()
+	close(start)
+	wg.Wait()
+
+	sucesso1, sucesso2 := err1 == nil, err2 == nil
+	if sucesso1 && sucesso2 {
+		t.Fatalf("as duas solicitações de 6 (disponível 10) tiveram sucesso simultâneo: err1=%v err2=%v", err1, err2)
+	}
+	if !sucesso1 && !sucesso2 {
+		t.Fatalf("as duas solicitações falharam — pelo menos uma deveria suceder (10 >= 6): err1=%v err2=%v", err1, err2)
+	}
+	erroPerdedora := err1
+	if sucesso1 {
+		erroPerdedora = err2
+	}
+	var erroIndisponivel *ErroPedidoIndisponivel
+	if !errors.As(erroPerdedora, &erroIndisponivel) {
+		t.Fatalf("erro da perdedora = %v, want *ErroPedidoIndisponivel", erroPerdedora)
+	}
+
+	var totalReservado float64
+	if err := db.QueryRow(
+		`SELECT COALESCE(SUM(quantidade), 0) FROM reservas_pedido_item WHERE produto_id = $1 AND estoque_id = $2`,
+		produtoID, estoqueID,
+	).Scan(&totalReservado); err != nil {
+		t.Fatalf("somar reservas: %v", err)
+	}
+	if totalReservado != 6 {
+		t.Errorf("total reservado = %v, want 6 (só a vencedora gravou)", totalReservado)
+	}
+}
+
+// TestDecidirPedido_RecusaPedidoDeBaixa prova que o guard genérico de
+// DecidirPedido (Story 20.1, Spec Change Log: `tipo != 'retirada'`) já cobre
+// `'baixa'` sem nenhuma mudança adicional — nenhum saldo físico é tocado, a
+// reserva continua intacta, o status continua `pendente`.
+func TestDecidirPedido_RecusaPedidoDeBaixa(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+
+	usuarioID := semearConta(t, db, "Usuario Baixa Decisao", "baixa-decisao@empresa.com", PapelUsuario, 0)
+	// seedProdutoComSaldo já semeia uma conta almoxarife própria (derivada do
+	// nome do Estoque) — reaproveitada aqui como decisor.
+	produtoID, estoqueID, almoxID := seedProdutoComSaldo(t, db, "Baixa Decisao", 10)
+
+	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 6)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
+	}
+
+	for _, aprovar := range []bool{true, false} {
+		if _, err := DecidirPedido(db, empresaTeste, pedido.ID, almoxID, PapelAlmoxarife, aprovar); !errors.Is(err, ErrPedidoTipoNaoSuportado) {
+			t.Errorf("aprovar=%v: erro = %v, want ErrPedidoTipoNaoSuportado", aprovar, err)
+		}
+	}
+
+	var status string
+	if err := db.QueryRow(`SELECT status FROM pedidos WHERE id = $1`, pedido.ID).Scan(&status); err != nil {
+		t.Fatalf("ler status: %v", err)
+	}
+	if status != "pendente" {
+		t.Errorf("status = %q, want pendente (nenhuma decisão real aconteceu)", status)
+	}
+	if n := contarReservas(t, db, pedido.ID); n != 1 {
+		t.Errorf("reservas do pedido = %d, want 1 (intacta)", n)
+	}
+	if q := saldoProdutoEstoque(t, db, produtoID, estoqueID); q != 10 {
+		t.Errorf("saldo não deveria mudar, got %v, want 10", q)
 	}
 }

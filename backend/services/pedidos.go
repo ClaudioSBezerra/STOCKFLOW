@@ -597,6 +597,171 @@ func SubmeterPedidoTransferencia(
 	return pedido, nil
 }
 
+// SubmeterPedidoBaixa envia um Pedido de Baixa de Estoque (Story 20.2, Epic
+// 20, spec-20-2) — tipo irmão do Pedido de Transferência (Story 20.1) e do
+// Pedido de retirada (Epic 7): exatamente 1 item, enviado DIRETO numa tela
+// própria (sem Carrinho), SEM Estoque destino (molde de
+// SubmeterPedidoTransferencia acima, menos o bloco de destino). Reaproveita a
+// MESMA reserva dura do Pedido de retirada
+// (travarSaldoParesTx/saldoDisponivelParTx) — o saldo físico NUNCA é debitado
+// aqui (Never, spec-20-2: isso continua sendo RegistrarBaixa,
+// movimentacoes.go, ação direta sem aprovação, intocada; a decisão de
+// verdade é a Story 20.3; DecidirPedido já recusa qualquer `tipo !=
+// 'retirada'`, cobrindo `'baixa'` sem nenhuma mudança nesta função).
+//
+// Validação, nesta ordem, ANTES de abrir a transação:
+//   - solicitante trimado e obrigatório (mesmo molde de
+//     SubmeterPedidoComCentroCusto). `obraCentroCusto` é OPCIONAL
+//     (requisito do usuário, pós-revisão: diferente do Pedido de
+//     retirada/Transferência, que continuam exigindo este campo) — vazio
+//     após o trim vira NULL, mesmo molde de `observacao`.
+//   - produtoID/estoqueID trimados: qualquer um vazio -> &ErroPedidoValidacao
+//     (400) — NUNCA colapsa em ErroPedidoIndisponivel (409), Always de
+//     spec-20-2.
+//   - quantidade (validarQuantidadePedidoTransferencia, reaproveitada tal
+//     qual).
+//
+// Dentro da transação: resolve produto_nome/categoria_nome (existência do
+// Produto na Empresa, não-excluído) — inexistente/outra Empresa vira
+// &ErroPedidoValidacao; recusarProdutosInativosTx (Always de spec-20-2)
+// recusa Produto inativo ANTES de qualquer trava/reserva de saldo; resolve o
+// nome do Estoque (existência na Empresa) — inexistente/outra Empresa vira
+// &ErroPedidoValidacao. Só então trava e revalida o par (Produto, Estoque) ->
+// &ErroPedidoIndisponivel{Itens: [nome]} (409) se a quantidade exceder o
+// disponível.
+//
+// Sucesso: insere 1 linha em `pedidos` (`tipo='baixa'`), 1 em `pedido_itens`
+// (SEM `estoque_destino_id` — permanece NULL) e 1 reserva em
+// `reservas_pedido_item` — tudo na MESMA transação.
+func SubmeterPedidoBaixa(
+	db *sql.DB, empresaID string,
+	usuarioID, solicitante, obraCentroCusto, observacao string,
+	produtoID, estoqueID string,
+	quantidade float64,
+) (Pedido, error) {
+	solicitanteTrim := strings.TrimSpace(solicitante)
+	if solicitanteTrim == "" {
+		return Pedido{}, &ErroPedidoValidacao{Mensagem: "solicitante é obrigatório"}
+	}
+	produtoIDTrim := strings.TrimSpace(produtoID)
+	if produtoIDTrim == "" {
+		return Pedido{}, &ErroPedidoValidacao{Mensagem: "produto é obrigatório"}
+	}
+	estoqueIDTrim := strings.TrimSpace(estoqueID)
+	if estoqueIDTrim == "" {
+		return Pedido{}, &ErroPedidoValidacao{Mensagem: "estoque é obrigatório"}
+	}
+	if err := validarQuantidadePedidoTransferencia(quantidade); err != nil {
+		return Pedido{}, err
+	}
+
+	// obraCentroCusto é OPCIONAL no Pedido de Baixa (requisito do usuário,
+	// pós-revisão) — vazio após o trim vira NULL, mesmo molde de
+	// `observacao` logo abaixo; `migrations/000057` soltou o NOT NULL da
+	// coluna (compartilhada pelos três tipos de Pedido).
+	var obraCentroCustoNull sql.NullString
+	if obraTrim := strings.TrimSpace(obraCentroCusto); obraTrim != "" {
+		obraCentroCustoNull = sql.NullString{String: obraTrim, Valid: true}
+	}
+
+	var observacaoNull sql.NullString
+	if obsTrim := strings.TrimSpace(observacao); obsTrim != "" {
+		observacaoNull = sql.NullString{String: obsTrim, Valid: true}
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return Pedido{}, fmt.Errorf("falha ao iniciar transação de envio de pedido de baixa: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
+
+	var produtoNome, categoriaNome string
+	const selectProduto = `
+		SELECT p.nome, c.nome FROM produtos p
+		JOIN categorias c ON c.id = p.categoria_id
+		WHERE p.id = $1 AND p.deleted_at IS NULL AND p.empresa_id = $2`
+	if err := tx.QueryRow(selectProduto, produtoIDTrim, empresaID).Scan(&produtoNome, &categoriaNome); err != nil {
+		var pqErr *pq.Error
+		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
+			return Pedido{}, &ErroPedidoValidacao{Mensagem: "produto não encontrado"}
+		}
+		return Pedido{}, fmt.Errorf("falha ao resolver produto do pedido de baixa: %w", err)
+	}
+
+	// Story 16.1 (FR-55): recusa Produto inativo ANTES de qualquer trava de
+	// saldo — reaproveita recusarProdutosInativosTx tal qual (Always,
+	// spec-20-2), para o único Produto deste Pedido.
+	if err := recusarProdutosInativosTx(tx, empresaID, []ItemCarrinho{{ProdutoID: produtoIDTrim, ProdutoNome: produtoNome}}); err != nil {
+		return Pedido{}, err
+	}
+
+	var estoqueNome string
+	const selectEstoque = `SELECT nome FROM estoques WHERE id = $1 AND empresa_id = $2`
+	if err := tx.QueryRow(selectEstoque, estoqueIDTrim, empresaID).Scan(&estoqueNome); err != nil {
+		var pqErr *pq.Error
+		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
+			return Pedido{}, &ErroPedidoValidacao{Mensagem: "estoque não encontrado"}
+		}
+		return Pedido{}, fmt.Errorf("falha ao resolver estoque do pedido de baixa: %w", err)
+	}
+
+	// Reserva dura: trava e revalida o par (Produto, Estoque) — mesma regra
+	// do Pedido de retirada/Transferência (Always, spec-20-2).
+	if err := travarSaldoParesTx(tx, empresaID, []ParSaldo{{ProdutoID: produtoIDTrim, EstoqueID: estoqueIDTrim}}); err != nil {
+		return Pedido{}, fmt.Errorf("falha ao travar saldo no envio do pedido de baixa: %w", err)
+	}
+	disponivel, err := saldoDisponivelParTx(tx, empresaID, produtoIDTrim, estoqueIDTrim)
+	if err != nil {
+		return Pedido{}, fmt.Errorf("falha ao calcular disponível no envio do pedido de baixa: %w", err)
+	}
+	if quantidade > disponivel {
+		return Pedido{}, &ErroPedidoIndisponivel{Itens: []string{produtoNome}}
+	}
+
+	var pedido Pedido
+	var observacaoGravada sql.NullString
+	// COALESCE no RETURNING: `pedido.ObraCentroCusto` é `string` (não
+	// ponteiro, mesmo campo lido por Pedido de retirada/Transferência, que
+	// nunca gravam NULL) — um Pedido de Baixa sem Obra/Centro de Custo vira
+	// NULL na coluna (migrations/000057) mas "" aqui, nunca um erro de Scan.
+	const insertPedido = `
+		INSERT INTO pedidos (usuario_id, solicitante, obra_centro_custo, observacao, empresa_id, tipo)
+		VALUES ($1, $2, $3, $4, $5, 'baixa')
+		RETURNING id, usuario_id, solicitante, COALESCE(obra_centro_custo, ''), observacao, status, criado_em, tipo`
+	if err := tx.QueryRow(insertPedido, usuarioID, solicitanteTrim, obraCentroCustoNull, observacaoNull, empresaID).Scan(
+		&pedido.ID, &pedido.UsuarioID, &pedido.Solicitante, &pedido.ObraCentroCusto,
+		&observacaoGravada, &pedido.Status, &pedido.CriadoEm, &pedido.Tipo,
+	); err != nil {
+		return Pedido{}, fmt.Errorf("falha ao inserir pedido de baixa: %w", err)
+	}
+	if observacaoGravada.Valid {
+		pedido.Observacao = &observacaoGravada.String
+	}
+
+	const insertItem = `
+		INSERT INTO pedido_itens (pedido_id, produto_id, produto_nome, categoria_nome, estoque_id, estoque_nome, quantidade, empresa_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
+	if _, err := tx.Exec(
+		insertItem,
+		pedido.ID, produtoIDTrim, produtoNome, categoriaNome, estoqueIDTrim, estoqueNome, quantidade, empresaID,
+	); err != nil {
+		return Pedido{}, fmt.Errorf("falha ao inserir item do pedido de baixa: %w", err)
+	}
+
+	const insertReserva = `
+		INSERT INTO reservas_pedido_item (pedido_id, produto_id, estoque_id, quantidade, empresa_id)
+		VALUES ($1, $2, $3, $4, $5)`
+	if _, err := tx.Exec(insertReserva, pedido.ID, produtoIDTrim, estoqueIDTrim, quantidade, empresaID); err != nil {
+		return Pedido{}, fmt.Errorf("falha ao reservar saldo do pedido de baixa: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Pedido{}, fmt.Errorf("falha ao commitar envio de pedido de baixa: %w", err)
+	}
+	pedido.ProdutoIDs = []string{produtoIDTrim}
+	return pedido, nil
+}
+
 // ListarPedidosProprios devolve os Pedidos cujo `usuario_id` é `usuarioID`
 // (o da sessão — SEMPRE, para QUALQUER papel; a Fila do Almoxarife com TODOS
 // os Pedidos é a Story 7.4, uma função de leitura à parte), do mais recente
@@ -625,8 +790,13 @@ func ListarPedidosProprios(db *sql.DB, empresaID string, usuarioID, filtroStatus
 	// composta de `pedido_itens` (pedido_id, produto_id, estoque_id;
 	// migration 000026) e nunca precisa de `empresa_id` — `pedido_id` já
 	// identifica a linha sozinho.
+	// COALESCE(p.obra_centro_custo, ''): um Pedido de Baixa (Story 20.2,
+	// migrations/000057) pode gravar NULL aqui — r.ObraCentroCusto é
+	// `string`, não ponteiro, mesmo campo lido pelos demais tipos (que nunca
+	// gravam NULL); sem o COALESCE, escanear uma linha de Baixa sem Obra
+	// quebraria esta leitura com um erro de Scan.
 	q := `
-		SELECT p.id, p.usuario_id, p.solicitante, p.obra_centro_custo, p.observacao, p.status, p.criado_em, p.tipo,
+		SELECT p.id, p.usuario_id, p.solicitante, COALESCE(p.obra_centro_custo, ''), p.observacao, p.status, p.criado_em, p.tipo,
 		       (SELECT count(*) FROM pedido_itens pi WHERE pi.pedido_id = p.id), cc.nome
 		FROM pedidos p
 		LEFT JOIN centros_custo cc ON cc.id = p.centro_custo_id AND cc.empresa_id = p.empresa_id
@@ -684,9 +854,10 @@ func ListarPedidosFila(db *sql.DB, empresaID string, filtroStatus string) ([]Ped
 	}
 
 	// Mesmo escopo por Empresa na subquery de contagem — ver o comentário
-	// equivalente em ListarPedidosProprios.
+	// equivalente em ListarPedidosProprios. Mesmo COALESCE(obra_centro_custo,
+	// '') de ListarPedidosProprios (Story 20.2, migrations/000057).
 	q := `
-		SELECT p.id, p.usuario_id, p.solicitante, p.obra_centro_custo, p.observacao, p.status, p.criado_em, p.tipo,
+		SELECT p.id, p.usuario_id, p.solicitante, COALESCE(p.obra_centro_custo, ''), p.observacao, p.status, p.criado_em, p.tipo,
 		       COALESCE(i.qtd, 0), cc.nome
 		FROM pedidos p
 		LEFT JOIN centros_custo cc ON cc.id = p.centro_custo_id AND cc.empresa_id = p.empresa_id
@@ -769,8 +940,10 @@ func BuscarPedidoProprio(db *sql.DB, empresaID string, pedidoID, usuarioID, pape
 	var det PedidoDetalhe
 	var observacao sql.NullString
 	var centroCusto sql.NullString
+	// Mesmo COALESCE(obra_centro_custo, '') de ListarPedidosProprios/Fila
+	// (Story 20.2, migrations/000057).
 	const selectPedido = `
-		SELECT p.id, p.usuario_id, p.solicitante, p.obra_centro_custo, p.observacao, p.status, p.criado_em, p.tipo, cc.nome
+		SELECT p.id, p.usuario_id, p.solicitante, COALESCE(p.obra_centro_custo, ''), p.observacao, p.status, p.criado_em, p.tipo, cc.nome
 		FROM pedidos p
 		LEFT JOIN centros_custo cc ON cc.id = p.centro_custo_id AND cc.empresa_id = p.empresa_id
 		WHERE p.id = $1 AND p.empresa_id = $2`
@@ -1071,10 +1244,17 @@ func DecidirPedido(db *sql.DB, empresaID string, pedidoID, decisorID, papelDecis
 	var decididoPor sql.NullString
 	var decididoEm sql.NullTime
 	var centroCustoDecisao sql.NullString
+	// COALESCE(obra_centro_custo, ''): hoje este RETURNING só é alcançado
+	// para `tipo = 'retirada'` (o guard acima já recusou qualquer outro tipo
+	// antes de abrir a transação) — nunca NULL na prática. Protegido por
+	// precaução (revisão pós-Story 20.2): o dia em que a Story 20.3 remover
+	// esse guard pra decidir Transferência/Baixa de verdade, este Scan não
+	// quebra com um Pedido de Baixa sem Obra/Centro de Custo. Mesmo molde de
+	// ListarPedidosProprios/ListarPedidosFila/BuscarPedidoProprio acima.
 	const registrarDecisao = `
 		UPDATE pedidos SET status = $2, decidido_por = $3, decidido_em = now()
 		WHERE id = $1 AND status = 'pendente' AND empresa_id = $4
-		RETURNING id, usuario_id, solicitante, obra_centro_custo, observacao, status, criado_em, decidido_por, decidido_em, tipo,
+		RETURNING id, usuario_id, solicitante, COALESCE(obra_centro_custo, ''), observacao, status, criado_em, decidido_por, decidido_em, tipo,
 		  (SELECT cc.nome FROM centros_custo cc WHERE cc.id = pedidos.centro_custo_id AND cc.empresa_id = pedidos.empresa_id)`
 	if err := tx.QueryRow(registrarDecisao, pedidoID, novoStatus, decisorID, empresaID).Scan(
 		&det.ID, &det.UsuarioID, &det.Solicitante, &det.ObraCentroCusto,

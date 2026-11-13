@@ -5,6 +5,7 @@ import {
   decidirPedido,
   listarFilaPedidos,
   listarPedidos,
+  submeterPedidoBaixa,
 } from './pedidos';
 
 vi.mock('@/lib/session', () => ({
@@ -252,5 +253,62 @@ describe('buscarReciboPedidoBlob', () => {
     await expect(buscarReciboPedidoBlob('p-1')).rejects.toThrow(
       'Não foi possível baixar o recibo agora. Tente novamente em instantes.',
     );
+  });
+});
+
+// Revisão pós-Story 20.2: submeterPedidoBaixa precisa nunca vazar um erro
+// cru (TypeError de rede, SyntaxError de JSON inválido) — sempre a mensagem
+// amigável (ou a do servidor, quando houver).
+describe('submeterPedidoBaixa', () => {
+  const INPUT = {
+    obraCentroCusto: 'Obra Norte',
+    observacao: '',
+    produtoId: 'prod-1',
+    estoqueId: 'est-1',
+    quantidade: 5,
+  };
+  const MENSAGEM_FALLBACK =
+    'Não foi possível enviar o pedido de baixa agora. Tente novamente em instantes.';
+
+  it('POST /api/pedidos/baixa com Authorization e devolve o pedido no sucesso', async () => {
+    const pedido = { id: 'ped-1', status: 'pendente', tipo: 'baixa' };
+    fetchMock.mockReturnValue(respostaOk({ pedido }));
+
+    const resultado = await submeterPedidoBaixa(INPUT);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/pedidos/baixa');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer token-de-teste' });
+    expect(JSON.parse(init.body)).toEqual(INPUT);
+    expect(resultado).toEqual(pedido);
+  });
+
+  it('propaga a mensagem de erro do servidor numa resposta não-ok', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({ error: { code: 'CONFLICT', message: 'disponibilidade insuficiente para: X' } }),
+    });
+
+    await expect(submeterPedidoBaixa(INPUT)).rejects.toThrow('disponibilidade insuficiente para: X');
+  });
+
+  it('cai no fallback quando fetch() rejeita (rede offline) — nunca um erro cru', async () => {
+    fetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await expect(submeterPedidoBaixa(INPUT)).rejects.toThrow(MENSAGEM_FALLBACK);
+  });
+
+  it('cai no fallback quando a resposta é ok mas o corpo não é JSON válido — nunca um erro cru', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => {
+        throw new SyntaxError('Unexpected token');
+      },
+    });
+
+    await expect(submeterPedidoBaixa(INPUT)).rejects.toThrow(MENSAGEM_FALLBACK);
   });
 });

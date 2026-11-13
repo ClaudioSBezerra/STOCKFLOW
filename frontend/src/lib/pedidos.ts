@@ -166,6 +166,61 @@ export async function submeterPedidoTransferencia(
   return body.pedido;
 }
 
+const MENSAGEM_ERRO_BAIXA =
+  'Não foi possível enviar o pedido de baixa agora. Tente novamente em instantes.';
+
+/**
+ * Corpo de POST /api/pedidos/baixa (Story 20.2, Epic 20, spec-20-2). SEM
+ * `solicitante` (requisito do usuário, pós-revisão: "Solicitante é o
+ * usuário logado, não precisa pedir") — o servidor resolve o nome da sessão
+ * autenticada, nunca aceito do corpo.
+ */
+export interface SubmeterPedidoBaixaInput {
+  obraCentroCusto?: string;
+  observacao?: string;
+  produtoId: string;
+  estoqueId: string;
+  quantidade: number;
+}
+
+/**
+ * Envia um Pedido de Baixa de Estoque (Story 20.2, Epic 20, spec-20-2) — 1
+ * item só, enviado DIRETO (sem passar pelo Carrinho). Reserva dura do par
+ * (Produto, Estoque); nunca debita saldo físico (RegistrarBaixa,
+ * movimentacoes.go, continua a ação direta sem aprovação). `solicitante` é
+ * sempre o usuário logado, resolvido pelo servidor — este módulo nunca o
+ * envia. Resposta não-ok propaga `body.error?.message` do servidor (400
+ * VALIDATION_ERROR para campos vazios, 409 CONFLICT para disponibilidade
+ * insuficiente, 409 PRODUTO_INATIVO para Produto inativo) ou o fallback
+ * acima.
+ */
+export async function submeterPedidoBaixa(input: SubmeterPedidoBaixaInput): Promise<Pedido> {
+  // Revisão pós-Story 20.2: `fetch()` pode rejeitar sozinho (rede
+  // offline/DNS/etc.) ANTES de qualquer resposta existir — sem este
+  // try/catch, esse erro cru (nunca uma mensagem amigável) vazaria direto
+  // pro chamador. Mesmo cuidado no corpo de sucesso logo abaixo: um `res.ok`
+  // com corpo que não é JSON válido também nunca deve vazar um erro cru.
+  let res: Response;
+  try {
+    res = await fetch(apiUrl('/api/pedidos/baixa'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(input),
+    });
+  } catch {
+    throw new Error(MENSAGEM_ERRO_BAIXA);
+  }
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+    throw new Error(body.error?.message ?? MENSAGEM_ERRO_BAIXA);
+  }
+  const body = (await res.json().catch(() => null)) as { pedido: Pedido } | null;
+  if (!body) {
+    throw new Error(MENSAGEM_ERRO_BAIXA);
+  }
+  return body.pedido;
+}
+
 export async function buscarPedido(id: string): Promise<PedidoDetalhe> {
   const res = await fetch(apiUrl(`/api/pedidos/${encodeURIComponent(id)}`), { headers: authHeaders() });
   if (!res.ok) {

@@ -825,3 +825,19 @@ status: open
 - source_spec: `spec-20-1-pedido-transferencia-entre-filiais.md`
   summary: `PedidoTransferenciaPage` não mostra o saldo disponível do par Produto/Estoque origem antes do envio — o usuário só descobre que falta saldo depois de um 409 do servidor.
   evidence: Achado pela revisão (blind-hunter, rodada 1 e 2). Nicety de UX, não um requisito da AC desta story; outras telas do app (ex. lançamento de saldo) mostram essa informação antecipadamente, vale considerar para consistência futura.
+
+- source_spec: `spec-20-2-pedido-de-baixa-de-estoque.md`
+  summary: A migration 000057 (NOT NULL solto de `obra_centro_custo`) faz backfill de NULL para `''` no down.sql antes de reinstalar o NOT NULL — conflaria "nunca informado" com "informado vazio" se o rollback for de fato executado com Pedidos de Baixa reais já gravados.
+  evidence: Achado pela revisão (blind-hunter). Down-migrations raramente rodam neste projeto; risco só se materializa se alguém reverter essa migration específica com dados reais já na tabela.
+
+- source_spec: `spec-20-2-pedido-de-baixa-de-estoque.md`
+  summary: Nenhum teste de serviço exercita o ramo `solicitante` vazio dentro de `SubmeterPedidoBaixa` — na prática inalcançável via HTTP (o handler sempre usa o nome da sessão), mas o código de validação continua lá.
+  evidence: Achado pela revisão (blind-hunter). Baixo valor: ou remove a validação morta, ou aceita como defesa em profundidade para um futuro chamador direto do service — decisão de estilo, não bug.
+
+- source_spec: `spec-20-2-pedido-de-baixa-de-estoque.md`
+  summary: `obraCentroCusto`/`observacao` não têm limite de tamanho (nem client-side nem server-side) além do teto genérico de bytes do corpo da requisição.
+  evidence: Achado pela revisão (blind-hunter). Mesmo padrão (ausência de limite dedicado) de outros campos de texto livre já existentes no projeto.
+
+- source_spec: `spec-20-2-pedido-de-baixa-de-estoque.md`
+  summary: `PedidoBaixaPage.tsx` usa um `<textarea>` cru com classes Tailwind duplicadas inline pro campo "Observação", em vez de um componente de formulário compartilhado.
+  evidence: Achado pela revisão (blind-hunter). Polimento de consistência, sem efeito funcional.

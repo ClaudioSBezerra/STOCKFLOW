@@ -876,6 +876,16 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	registrar("POST /e/{slug}/api/pedidos/transferencia", middleware.RequireAuth(db, jwtSecret)(
 		handlers.SubmeterPedidoTransferenciaHandler(db, registro)))
 
+	// Pedido de Baixa de Estoque — Story 20.2 (Epic 20), spec-20-2. Atrás só
+	// de RequireAuth, SEM RequireRole: mesmo mínimo de papel do Pedido de
+	// retirada/Transferência acima — qualquer conta autenticada (`usuario`+)
+	// envia seu próprio Pedido. Reserva dura do par (Produto, Estoque), nunca
+	// debita saldo físico (RegistrarBaixa, movimentacoes.go, continua a ação
+	// direta sem aprovação). Publica no canal `pedidos` no sucesso, mesmo
+	// padrão do POST acima.
+	registrar("POST /e/{slug}/api/pedidos/baixa", middleware.RequireAuth(db, jwtSecret)(
+		handlers.SubmeterPedidoBaixaHandler(db, registro)))
+
 	// Consulta de Pedidos próprios — Story 7.3 (Epic 7, Pedidos de Retirada).
 	// Mesma composição só com RequireAuth do POST acima (mux Go 1.22: os três
 	// padrões coexistem). GET /api/pedidos lista os Pedidos do próprio usuário

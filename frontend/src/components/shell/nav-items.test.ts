@@ -47,6 +47,7 @@ describe('nav-items: grupos e papéis', () => {
       '/carrinho',
       '/pedidos',
       '/pedidos/transferencia',
+      '/pedidos/baixa',
       '/pedidos/fila',
       '/estoques',
       '/estoques/lancar-saldo',
@@ -75,6 +76,7 @@ describe('nav-items: grupos e papéis', () => {
       'carrinho',
       'meus-pedidos',
       'pedido-transferencia',
+      'pedido-baixa',
     ]);
     expect(gruposVisiveis(navGrupos, 'usuario').map((g) => g.id)).toEqual(['catalogo', 'pedidos']);
   });
