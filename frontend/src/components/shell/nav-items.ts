@@ -69,6 +69,12 @@ export const navGrupos: NavGrupo[] = [
     icon: ClipboardList,
     itens: [
       { id: 'meus-pedidos', label: 'Meus pedidos', to: '/pedidos', papelMinimo: 'usuario' },
+      {
+        id: 'pedido-transferencia',
+        label: 'Pedido de Transferência entre Filiais',
+        to: '/pedidos/transferencia',
+        papelMinimo: 'usuario',
+      },
       { id: 'fila-aprovacao', label: 'Fila de aprovação', to: '/pedidos/fila', papelMinimo: 'almoxarife' },
     ],
   },

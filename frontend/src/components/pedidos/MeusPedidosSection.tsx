@@ -19,6 +19,7 @@ import { ClipboardList } from 'lucide-react';
 import { conectarRealtime, type StatusRealtime } from '@/lib/realtime/client';
 import { formatarQuantidade } from '@/components/catalogo/formatacao';
 import { StatusPedidoBadge } from '@/components/pedidos/StatusPedidoBadge';
+import { TipoPedidoBadge } from '@/components/pedidos/TipoPedidoBadge';
 import { FaixaIndicadores } from '@/components/lista/FaixaIndicadores';
 import {
   buscarIndicadoresPedidos,
@@ -310,6 +311,7 @@ export function MeusPedidosSection() {
                 </span>
               </div>
               <span className="flex shrink-0 items-center gap-3">
+                <TipoPedidoBadge tipo={pedido.tipo} />
                 <StatusPedidoBadge status={pedido.status} />
                 <Button
                   type="button"

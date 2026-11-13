@@ -27,11 +27,23 @@ import { apiUrl, authHeaders } from '@/lib/api';
 
 export type StatusPedido = 'pendente' | 'aprovado' | 'parcialmente_aprovado' | 'rejeitado';
 
+/**
+ * Tipo do Pedido (Story 20.1, Epic 20): `retirada` (Epic 7, já existente) |
+ * `transferencia` (Story 20.1) | `baixa` (Story 20.2, ainda sem nenhuma tela
+ * que o produza). `TipoPedidoBadge` usa este campo para distinguir o Pedido
+ * de Transferência do Pedido de retirada comum na Fila/Meus Pedidos.
+ */
+export type TipoPedido = 'retirada' | 'transferencia' | 'baixa';
+
 interface PedidoCabecalho {
   id: string;
   usuarioId: string;
   solicitante: string;
   obraCentroCusto: string;
+  // tipo (Story 20.1): opcional só para tolerar mocks/fixtures de teste
+  // anteriores a esta story, que ainda não incluem o campo — ausente é
+  // tratado como 'retirada' (o default do servidor) em todo lugar que o lê.
+  tipo?: TipoPedido;
   // Nome do Centro de Custo cadastrado escolhido no envio (Story 12.3 +
   // decisão do code review); null/ausente quando o Pedido não escolheu um.
   centroCusto?: string | null;
@@ -50,6 +62,13 @@ interface PedidoCabecalho {
 export interface PedidoResumo extends PedidoCabecalho {
   qtdItens: number;
 }
+
+/**
+ * Só o cabeçalho do Pedido, sem itens nem contagem — a projeção devolvida
+ * por POST /api/pedidos/transferencia (Story 20.1, molde de
+ * `services.Pedido` no backend).
+ */
+export type Pedido = PedidoCabecalho;
 
 export interface PedidoItem {
   produtoId: string;
@@ -106,6 +125,45 @@ export async function listarFilaPedidos(status?: StatusPedido): Promise<PedidoRe
   }
   const body = (await res.json()) as { pedidos: PedidoResumo[] };
   return body.pedidos ?? [];
+}
+
+const MENSAGEM_ERRO_TRANSFERENCIA =
+  'Não foi possível enviar o pedido de transferência agora. Tente novamente em instantes.';
+
+/** Corpo de POST /api/pedidos/transferencia (Story 20.1, Epic 20, spec-20-1). */
+export interface SubmeterPedidoTransferenciaInput {
+  solicitante: string;
+  obraCentroCusto: string;
+  observacao?: string;
+  produtoId: string;
+  estoqueOrigemId: string;
+  estoqueDestinoId: string;
+  quantidade: number;
+}
+
+/**
+ * Envia um Pedido de Transferência entre Filiais (Story 20.1, Epic 20,
+ * spec-20-1) — 1 item só, enviado DIRETO (sem passar pelo Carrinho). Reserva
+ * dura só da ORIGEM; nunca debita/credita saldo físico (isso é a Story
+ * 20.3). Resposta não-ok propaga `body.error?.message` do servidor (400
+ * VALIDATION_ERROR para campos vazios/origem==destino/destino inválido, 409
+ * CONFLICT para disponibilidade insuficiente, 409 PRODUTO_INATIVO para
+ * Produto inativo) ou o fallback acima.
+ */
+export async function submeterPedidoTransferencia(
+  input: SubmeterPedidoTransferenciaInput,
+): Promise<Pedido> {
+  const res = await fetch(apiUrl('/api/pedidos/transferencia'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+    throw new Error(body.error?.message ?? MENSAGEM_ERRO_TRANSFERENCIA);
+  }
+  const body = (await res.json()) as { pedido: Pedido };
+  return body.pedido;
 }
 
 export async function buscarPedido(id: string): Promise<PedidoDetalhe> {

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -51,6 +52,13 @@ type Pedido struct {
 	// nenhum. Exibido no detalhe, na Fila e no recibo; o texto livre
 	// `ObraCentroCusto` continua sendo o campo obrigatório.
 	CentroCustoNome *string `json:"centroCusto"`
+	// Tipo (Story 20.1, Epic 20): `retirada` (Epic 7, default — toda linha
+	// gravada antes desta story) | `transferencia` (Story 20.1) | `baixa`
+	// (Story 20.2, ainda sem código que o produza). Usado pelo frontend
+	// (TipoPedidoBadge) para distinguir o Pedido de Transferência do Pedido
+	// de retirada comum na Fila/Meus Pedidos — DecidirPedido recusa decidir
+	// qualquer Pedido com `tipo != 'retirada'` (ver guard abaixo).
+	Tipo string `json:"tipo"`
 }
 
 // PedidoItem é uma linha do SNAPSHOT imutável em `pedido_itens` (AD-17,
@@ -111,6 +119,18 @@ var ErrPedidoNaoEncontrado = errors.New("pedido não encontrado")
 // quando a corrida é detectada). Mapeado para 409 CONFLICT. Molde de
 // ErrSolicitacaoNaoPendente (promocao.go).
 var ErrPedidoNaoPendente = errors.New("pedido não está mais pendente")
+
+// ErrPedidoTipoNaoSuportado indica que DecidirPedido foi chamado para um
+// Pedido cujo `tipo` não é `retirada` (Story 20.1, Epic 20 — guard
+// acrescentado na revisão da Story, Spec Change Log: a Fila existente, SEM
+// este guard, aprovaria um Pedido de Transferência pendente debitando a
+// origem por FEFO como baixa física (mesma mecânica do Pedido de retirada)
+// SEM creditar o destino — perda de estoque real na primeira vez que
+// alguém clicasse "Aprovar"). Checado ANTES de qualquer trava/débito — só
+// a Story 20.3 implementa a decisão de verdade para
+// `transferencia`/`baixa`; até lá, nenhum Pedido desses tipos pode ser
+// aprovado NEM rejeitado pela Fila atual. Mapeado para 409 CONFLICT.
+var ErrPedidoTipoNaoSuportado = errors.New("este tipo de pedido ainda não tem aprovação implementada nesta versão")
 
 // statusPedidoValido fecha o conjunto de valores aceitos no filtro opcional
 // `?status=` de GET /api/pedidos — espelha o CHECK da migração 000027 (Story
@@ -285,11 +305,11 @@ func SubmeterPedidoComCentroCusto(db *sql.DB, empresaID string, usuarioID, solic
 	const insertPedido = `
 		INSERT INTO pedidos (usuario_id, solicitante, obra_centro_custo, observacao, empresa_id, centro_custo_id)
 		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, usuario_id, solicitante, obra_centro_custo, observacao, status, criado_em, centro_custo_id`
+		RETURNING id, usuario_id, solicitante, obra_centro_custo, observacao, status, criado_em, centro_custo_id, tipo`
 	var centroCustoGravado sql.NullString
 	if err := tx.QueryRow(insertPedido, usuarioID, solicitanteTrim, obraTrim, observacaoNull, empresaID, centroCustoNull).Scan(
 		&pedido.ID, &pedido.UsuarioID, &pedido.Solicitante, &pedido.ObraCentroCusto,
-		&observacaoGravada, &pedido.Status, &pedido.CriadoEm, &centroCustoGravado,
+		&observacaoGravada, &pedido.Status, &pedido.CriadoEm, &centroCustoGravado, &pedido.Tipo,
 	); err != nil {
 		return Pedido{}, fmt.Errorf("falha ao inserir pedido: %w", err)
 	}
@@ -367,6 +387,216 @@ func recusarProdutosInativosTx(tx *sql.Tx, empresaID string, itensOrdenados []It
 	return nil
 }
 
+// validarQuantidadePedidoTransferencia é a validação prévia (ANTES de abrir
+// a transação) de `quantidade` para SubmeterPedidoTransferencia — mesmo
+// molde de validarQuantidadeMovimentacao (movimentacoes.go): NaN/±Inf/<=0
+// (inclusive depois de arredondar a 3 casas) e acima de limiteNumeric103
+// (NUMERIC(10,3) de pedido_itens.quantidade) são rejeitados com o mesmo
+// ErroPedidoValidacao (400) usado pelos demais campos desta função — nunca
+// colapsam num 500 de violação de CHECK constraint.
+func validarQuantidadePedidoTransferencia(quantidade float64) error {
+	if math.IsNaN(quantidade) || math.IsInf(quantidade, 0) || quantidade <= 0 || arredondar3(quantidade) <= 0 {
+		return &ErroPedidoValidacao{Mensagem: "quantidade deve ser maior que zero"}
+	}
+	if quantidade > limiteNumeric103 {
+		return &ErroPedidoValidacao{Mensagem: fmt.Sprintf("quantidade deve ser no máximo %s", limiteNumeric103Texto)}
+	}
+	return nil
+}
+
+// SubmeterPedidoTransferencia envia um Pedido de Transferência entre
+// Filiais (Story 20.1, Epic 20, spec-20-1) — um tipo novo ao lado do Pedido
+// de retirada (Epic 7): exatamente 1 item, enviado DIRETO numa tela própria
+// (sem passar pelo Carrinho — Intent/Approach de spec-20-1). Reaproveita a
+// MESMA reserva dura do Pedido de retirada
+// (travarSaldoParesTx/saldoDisponivelParTx, reservas.go), travada só do par
+// (Produto, Estoque ORIGEM) — o saldo físico NUNCA é debitado nem creditado
+// aqui (Never, spec-20-1: isso é a Story 20.3; esta função nunca chama
+// RegistrarTransferencia nem duplica a lógica de débito/crédito FEFO dela).
+//
+// Validação, nesta ordem, ANTES de abrir a transação:
+//   - solicitante/obraCentroCusto trimados e obrigatórios (mesmo molde de
+//     SubmeterPedidoComCentroCusto).
+//   - produtoID/estoqueOrigemID/estoqueDestinoID trimados: qualquer um
+//     vazio -> &ErroPedidoValidacao (400) — NUNCA colapsa em
+//     ErroPedidoIndisponivel (409), Always de spec-20-1.
+//   - quantidade (validarQuantidadePedidoTransferencia acima).
+//   - estoqueOrigemID == estoqueDestinoID (strings.EqualFold, molde de
+//     RegistrarTransferencia, movimentacoes.go:518-520) ->
+//     &ErroPedidoValidacao.
+//
+// Dentro da transação: resolve produto_nome/categoria_nome (existência do
+// Produto na Empresa, não-excluído) — inexistente/outra Empresa também vira
+// &ErroPedidoValidacao; recusarProdutosInativosTx (produtos_inativacao.go,
+// reaproveitada tal qual, Always de spec-20-1) recusa Produto inativo ANTES
+// de qualquer trava/reserva de saldo; resolve o nome do Estoque ORIGEM
+// (existência na Empresa); valida o destino com o MESMO molde do guard de
+// RegistrarTransferencia (movimentacoes.go:538-550: Produto + Estoque
+// destino na MESMA Empresa, `FOR SHARE OF e`) — mas aqui o destino inválido
+// vira &ErroPedidoValidacao (400), nunca ErroQuantidadeIndisponivel/
+// ErroPedidoIndisponivel (409): decisão explícita da I/O Matrix de
+// spec-20-1, diferente do molde original. Só então trava e revalida o par
+// da ORIGEM -> &ErroPedidoIndisponivel{Itens: [nome]} (409) se a
+// quantidade exceder o disponível.
+//
+// Sucesso: insere 1 linha em `pedidos` (`tipo='transferencia'`), 1 em
+// `pedido_itens` (`estoque_id`=ORIGEM, `estoque_destino_id`=DESTINO,
+// snapshot de nome/categoria/estoque como o Pedido de retirada) e 1 reserva
+// em `reservas_pedido_item` (só da ORIGEM) — tudo na MESMA transação.
+func SubmeterPedidoTransferencia(
+	db *sql.DB, empresaID string,
+	usuarioID, solicitante, obraCentroCusto, observacao string,
+	produtoID, estoqueOrigemID, estoqueDestinoID string,
+	quantidade float64,
+) (Pedido, error) {
+	solicitanteTrim := strings.TrimSpace(solicitante)
+	if solicitanteTrim == "" {
+		return Pedido{}, &ErroPedidoValidacao{Mensagem: "solicitante é obrigatório"}
+	}
+	obraTrim := strings.TrimSpace(obraCentroCusto)
+	if obraTrim == "" {
+		return Pedido{}, &ErroPedidoValidacao{Mensagem: "obra/centro de custo é obrigatório"}
+	}
+	produtoIDTrim := strings.TrimSpace(produtoID)
+	if produtoIDTrim == "" {
+		return Pedido{}, &ErroPedidoValidacao{Mensagem: "produto é obrigatório"}
+	}
+	estoqueOrigemIDTrim := strings.TrimSpace(estoqueOrigemID)
+	if estoqueOrigemIDTrim == "" {
+		return Pedido{}, &ErroPedidoValidacao{Mensagem: "estoque de origem é obrigatório"}
+	}
+	estoqueDestinoIDTrim := strings.TrimSpace(estoqueDestinoID)
+	if estoqueDestinoIDTrim == "" {
+		return Pedido{}, &ErroPedidoValidacao{Mensagem: "estoque de destino é obrigatório"}
+	}
+	if err := validarQuantidadePedidoTransferencia(quantidade); err != nil {
+		return Pedido{}, err
+	}
+	if strings.EqualFold(estoqueOrigemIDTrim, estoqueDestinoIDTrim) {
+		return Pedido{}, &ErroPedidoValidacao{Mensagem: "estoque de origem e destino devem ser diferentes"}
+	}
+
+	var observacaoNull sql.NullString
+	if obsTrim := strings.TrimSpace(observacao); obsTrim != "" {
+		observacaoNull = sql.NullString{String: obsTrim, Valid: true}
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return Pedido{}, fmt.Errorf("falha ao iniciar transação de envio de pedido de transferência: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
+
+	var produtoNome, categoriaNome string
+	const selectProduto = `
+		SELECT p.nome, c.nome FROM produtos p
+		JOIN categorias c ON c.id = p.categoria_id
+		WHERE p.id = $1 AND p.deleted_at IS NULL AND p.empresa_id = $2`
+	if err := tx.QueryRow(selectProduto, produtoIDTrim, empresaID).Scan(&produtoNome, &categoriaNome); err != nil {
+		var pqErr *pq.Error
+		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
+			return Pedido{}, &ErroPedidoValidacao{Mensagem: "produto não encontrado"}
+		}
+		return Pedido{}, fmt.Errorf("falha ao resolver produto do pedido de transferência: %w", err)
+	}
+
+	// Story 16.1 (FR-55): recusa Produto inativo ANTES de qualquer trava de
+	// saldo — reaproveita recusarProdutosInativosTx tal qual (Always,
+	// spec-20-1), para o único Produto deste Pedido.
+	if err := recusarProdutosInativosTx(tx, empresaID, []ItemCarrinho{{ProdutoID: produtoIDTrim, ProdutoNome: produtoNome}}); err != nil {
+		return Pedido{}, err
+	}
+
+	var estoqueOrigemNome string
+	const selectEstoqueOrigem = `SELECT nome FROM estoques WHERE id = $1 AND empresa_id = $2`
+	if err := tx.QueryRow(selectEstoqueOrigem, estoqueOrigemIDTrim, empresaID).Scan(&estoqueOrigemNome); err != nil {
+		var pqErr *pq.Error
+		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
+			return Pedido{}, &ErroPedidoValidacao{Mensagem: "estoque de origem não encontrado"}
+		}
+		return Pedido{}, fmt.Errorf("falha ao resolver estoque de origem do pedido de transferência: %w", err)
+	}
+
+	// Guard do destino — molde do guard de RegistrarTransferencia
+	// (movimentacoes.go:538-550): Produto E Estoque destino precisam
+	// existir na MESMA Empresa. `FOR SHARE OF e` serializa com
+	// ExcluirEstoque (FOR UPDATE), mesmo padrão. Diferente de
+	// RegistrarTransferencia: aqui o destino inválido é &ErroPedidoValidacao
+	// (400), nunca uma disponibilidade insuficiente (409) — "Destino
+	// inexistente/outra Empresa" é uma linha própria da I/O Matrix de
+	// spec-20-1.
+	var destinoValido bool
+	const selectDestinoValido = `
+		SELECT EXISTS (
+			SELECT 1 FROM produtos p, estoques e
+			WHERE p.id = $1 AND p.empresa_id = $3 AND p.deleted_at IS NULL
+			  AND e.id = $2 AND e.empresa_id = $3
+			FOR SHARE OF e
+		)`
+	if err := tx.QueryRow(selectDestinoValido, produtoIDTrim, estoqueDestinoIDTrim, empresaID).Scan(&destinoValido); err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation {
+			return Pedido{}, &ErroPedidoValidacao{Mensagem: "estoque de destino não encontrado"}
+		}
+		return Pedido{}, fmt.Errorf("falha ao validar estoque de destino do pedido de transferência: %w", err)
+	}
+	if !destinoValido {
+		return Pedido{}, &ErroPedidoValidacao{Mensagem: "estoque de destino não encontrado"}
+	}
+
+	// Reserva dura: trava e revalida só o par da ORIGEM (Always, spec-20-1
+	// — o destino nunca recebe reserva nem débito nesta story).
+	if err := travarSaldoParesTx(tx, empresaID, []ParSaldo{{ProdutoID: produtoIDTrim, EstoqueID: estoqueOrigemIDTrim}}); err != nil {
+		return Pedido{}, fmt.Errorf("falha ao travar saldo no envio do pedido de transferência: %w", err)
+	}
+	disponivel, err := saldoDisponivelParTx(tx, empresaID, produtoIDTrim, estoqueOrigemIDTrim)
+	if err != nil {
+		return Pedido{}, fmt.Errorf("falha ao calcular disponível no envio do pedido de transferência: %w", err)
+	}
+	if quantidade > disponivel {
+		return Pedido{}, &ErroPedidoIndisponivel{Itens: []string{produtoNome}}
+	}
+
+	var pedido Pedido
+	var observacaoGravada sql.NullString
+	const insertPedido = `
+		INSERT INTO pedidos (usuario_id, solicitante, obra_centro_custo, observacao, empresa_id, tipo)
+		VALUES ($1, $2, $3, $4, $5, 'transferencia')
+		RETURNING id, usuario_id, solicitante, obra_centro_custo, observacao, status, criado_em, tipo`
+	if err := tx.QueryRow(insertPedido, usuarioID, solicitanteTrim, obraTrim, observacaoNull, empresaID).Scan(
+		&pedido.ID, &pedido.UsuarioID, &pedido.Solicitante, &pedido.ObraCentroCusto,
+		&observacaoGravada, &pedido.Status, &pedido.CriadoEm, &pedido.Tipo,
+	); err != nil {
+		return Pedido{}, fmt.Errorf("falha ao inserir pedido de transferência: %w", err)
+	}
+	if observacaoGravada.Valid {
+		pedido.Observacao = &observacaoGravada.String
+	}
+
+	const insertItem = `
+		INSERT INTO pedido_itens (pedido_id, produto_id, produto_nome, categoria_nome, estoque_id, estoque_nome, quantidade, empresa_id, estoque_destino_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+	if _, err := tx.Exec(
+		insertItem,
+		pedido.ID, produtoIDTrim, produtoNome, categoriaNome, estoqueOrigemIDTrim, estoqueOrigemNome, quantidade, empresaID, estoqueDestinoIDTrim,
+	); err != nil {
+		return Pedido{}, fmt.Errorf("falha ao inserir item do pedido de transferência: %w", err)
+	}
+
+	const insertReserva = `
+		INSERT INTO reservas_pedido_item (pedido_id, produto_id, estoque_id, quantidade, empresa_id)
+		VALUES ($1, $2, $3, $4, $5)`
+	if _, err := tx.Exec(insertReserva, pedido.ID, produtoIDTrim, estoqueOrigemIDTrim, quantidade, empresaID); err != nil {
+		return Pedido{}, fmt.Errorf("falha ao reservar saldo do pedido de transferência: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Pedido{}, fmt.Errorf("falha ao commitar envio de pedido de transferência: %w", err)
+	}
+	pedido.ProdutoIDs = []string{produtoIDTrim}
+	return pedido, nil
+}
+
 // ListarPedidosProprios devolve os Pedidos cujo `usuario_id` é `usuarioID`
 // (o da sessão — SEMPRE, para QUALQUER papel; a Fila do Almoxarife com TODOS
 // os Pedidos é a Story 7.4, uma função de leitura à parte), do mais recente
@@ -396,7 +626,7 @@ func ListarPedidosProprios(db *sql.DB, empresaID string, usuarioID, filtroStatus
 	// migration 000026) e nunca precisa de `empresa_id` — `pedido_id` já
 	// identifica a linha sozinho.
 	q := `
-		SELECT p.id, p.usuario_id, p.solicitante, p.obra_centro_custo, p.observacao, p.status, p.criado_em,
+		SELECT p.id, p.usuario_id, p.solicitante, p.obra_centro_custo, p.observacao, p.status, p.criado_em, p.tipo,
 		       (SELECT count(*) FROM pedido_itens pi WHERE pi.pedido_id = p.id), cc.nome
 		FROM pedidos p
 		LEFT JOIN centros_custo cc ON cc.id = p.centro_custo_id AND cc.empresa_id = p.empresa_id
@@ -421,7 +651,7 @@ func ListarPedidosProprios(db *sql.DB, empresaID string, usuarioID, filtroStatus
 		var centroCusto sql.NullString
 		if err := rows.Scan(
 			&r.ID, &r.UsuarioID, &r.Solicitante, &r.ObraCentroCusto,
-			&observacao, &r.Status, &r.CriadoEm, &r.QtdItens, &centroCusto,
+			&observacao, &r.Status, &r.CriadoEm, &r.Tipo, &r.QtdItens, &centroCusto,
 		); err != nil {
 			return nil, fmt.Errorf("falha ao ler linha de pedido próprio: %w", err)
 		}
@@ -456,7 +686,7 @@ func ListarPedidosFila(db *sql.DB, empresaID string, filtroStatus string) ([]Ped
 	// Mesmo escopo por Empresa na subquery de contagem — ver o comentário
 	// equivalente em ListarPedidosProprios.
 	q := `
-		SELECT p.id, p.usuario_id, p.solicitante, p.obra_centro_custo, p.observacao, p.status, p.criado_em,
+		SELECT p.id, p.usuario_id, p.solicitante, p.obra_centro_custo, p.observacao, p.status, p.criado_em, p.tipo,
 		       COALESCE(i.qtd, 0), cc.nome
 		FROM pedidos p
 		LEFT JOIN centros_custo cc ON cc.id = p.centro_custo_id AND cc.empresa_id = p.empresa_id
@@ -484,7 +714,7 @@ func ListarPedidosFila(db *sql.DB, empresaID string, filtroStatus string) ([]Ped
 		var centroCusto sql.NullString
 		if err := rows.Scan(
 			&r.ID, &r.UsuarioID, &r.Solicitante, &r.ObraCentroCusto,
-			&observacao, &r.Status, &r.CriadoEm, &r.QtdItens, &centroCusto,
+			&observacao, &r.Status, &r.CriadoEm, &r.Tipo, &r.QtdItens, &centroCusto,
 		); err != nil {
 			return nil, fmt.Errorf("falha ao ler linha da fila de pedidos: %w", err)
 		}
@@ -540,13 +770,13 @@ func BuscarPedidoProprio(db *sql.DB, empresaID string, pedidoID, usuarioID, pape
 	var observacao sql.NullString
 	var centroCusto sql.NullString
 	const selectPedido = `
-		SELECT p.id, p.usuario_id, p.solicitante, p.obra_centro_custo, p.observacao, p.status, p.criado_em, cc.nome
+		SELECT p.id, p.usuario_id, p.solicitante, p.obra_centro_custo, p.observacao, p.status, p.criado_em, p.tipo, cc.nome
 		FROM pedidos p
 		LEFT JOIN centros_custo cc ON cc.id = p.centro_custo_id AND cc.empresa_id = p.empresa_id
 		WHERE p.id = $1 AND p.empresa_id = $2`
 	if err := db.QueryRow(selectPedido, pedidoID, empresaID).Scan(
 		&det.ID, &det.UsuarioID, &det.Solicitante, &det.ObraCentroCusto,
-		&observacao, &det.Status, &det.CriadoEm, &centroCusto,
+		&observacao, &det.Status, &det.CriadoEm, &det.Tipo, &centroCusto,
 	); err != nil {
 		var pqErr *pq.Error
 		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
@@ -669,9 +899,9 @@ type itemPedidoParaDecisao struct {
 // itens vêm do snapshot lido no início da transação (`itemPedidoParaDecisao`)
 // combinado com `quantidadeAprovada` computado no loop.
 func DecidirPedido(db *sql.DB, empresaID string, pedidoID, decisorID, papelDecisor string, aprovar bool) (PedidoDetalhe, error) {
-	var status string
-	const selectStatus = `SELECT status FROM pedidos WHERE id = $1 AND empresa_id = $2`
-	if err := db.QueryRow(selectStatus, pedidoID, empresaID).Scan(&status); err != nil {
+	var status, tipo string
+	const selectStatus = `SELECT status, tipo FROM pedidos WHERE id = $1 AND empresa_id = $2`
+	if err := db.QueryRow(selectStatus, pedidoID, empresaID).Scan(&status, &tipo); err != nil {
 		var pqErr *pq.Error
 		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
 			return PedidoDetalhe{}, ErrPedidoNaoEncontrado
@@ -680,6 +910,13 @@ func DecidirPedido(db *sql.DB, empresaID string, pedidoID, decisorID, papelDecis
 	}
 	if status != "pendente" {
 		return PedidoDetalhe{}, ErrPedidoNaoPendente
+	}
+	// Story 20.1 (guard crítico, Spec Change Log): nenhum Pedido de tipo
+	// diferente de `retirada` pode ser aprovado NEM rejeitado por esta Fila
+	// — checado ANTES de qualquer trava/débito (nenhuma transação sequer
+	// aberta). Só a Story 20.3 implementa a decisão de verdade por tipo.
+	if tipo != "retirada" {
+		return PedidoDetalhe{}, ErrPedidoTipoNaoSuportado
 	}
 
 	tx, err := db.Begin()
@@ -837,11 +1074,11 @@ func DecidirPedido(db *sql.DB, empresaID string, pedidoID, decisorID, papelDecis
 	const registrarDecisao = `
 		UPDATE pedidos SET status = $2, decidido_por = $3, decidido_em = now()
 		WHERE id = $1 AND status = 'pendente' AND empresa_id = $4
-		RETURNING id, usuario_id, solicitante, obra_centro_custo, observacao, status, criado_em, decidido_por, decidido_em,
+		RETURNING id, usuario_id, solicitante, obra_centro_custo, observacao, status, criado_em, decidido_por, decidido_em, tipo,
 		  (SELECT cc.nome FROM centros_custo cc WHERE cc.id = pedidos.centro_custo_id AND cc.empresa_id = pedidos.empresa_id)`
 	if err := tx.QueryRow(registrarDecisao, pedidoID, novoStatus, decisorID, empresaID).Scan(
 		&det.ID, &det.UsuarioID, &det.Solicitante, &det.ObraCentroCusto,
-		&observacao, &det.Status, &det.CriadoEm, &decididoPor, &decididoEm, &centroCustoDecisao,
+		&observacao, &det.Status, &det.CriadoEm, &decididoPor, &decididoEm, &det.Tipo, &centroCustoDecisao,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			// Outra requisição decidiu este Pedido entre o SELECT inicial e

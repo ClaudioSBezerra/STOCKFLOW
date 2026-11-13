@@ -867,6 +867,15 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	registrar("POST /e/{slug}/api/pedidos", middleware.RequireAuth(db, jwtSecret)(
 		handlers.SubmeterPedidoHandler(db, registro)))
 
+	// Pedido de Transferência entre Filiais — Story 20.1 (Epic 20), spec-20-1.
+	// Atrás só de RequireAuth, SEM RequireRole: mesmo mínimo de papel do
+	// Pedido de retirada acima — qualquer conta autenticada (`usuario`+)
+	// envia seu próprio Pedido. Reserva dura só da ORIGEM, nunca debita nem
+	// credita saldo físico (isso é a Story 20.3). Publica no canal `pedidos`
+	// no sucesso, mesmo padrão do POST acima.
+	registrar("POST /e/{slug}/api/pedidos/transferencia", middleware.RequireAuth(db, jwtSecret)(
+		handlers.SubmeterPedidoTransferenciaHandler(db, registro)))
+
 	// Consulta de Pedidos próprios — Story 7.3 (Epic 7, Pedidos de Retirada).
 	// Mesma composição só com RequireAuth do POST acima (mux Go 1.22: os três
 	// padrões coexistem). GET /api/pedidos lista os Pedidos do próprio usuário

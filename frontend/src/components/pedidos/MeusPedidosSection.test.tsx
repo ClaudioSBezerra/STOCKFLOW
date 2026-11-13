@@ -671,4 +671,23 @@ describe('MeusPedidosSection — faixa de indicadores (Story 17.4)', () => {
     await waitFor(() => expect(buscarIndicadoresPedidosMock).toHaveBeenCalled());
     expect(buscarIndicadoresPedidosMock).not.toHaveBeenCalledWith('todos');
   });
+
+  // Story 20.1 (Epic 20): um Pedido de Transferência pendente aparece com um
+  // rótulo que o distingue do Pedido de retirada comum (AC1, spec-20-1).
+  it('pedido tipo=transferencia exibe o badge "Transferência"; tipo=retirada não exibe nenhum badge de tipo', async () => {
+    listarPedidosMock.mockResolvedValueOnce([
+      { ...PEDIDOS[0], tipo: 'transferencia' },
+      { ...PEDIDOS[1], tipo: 'retirada' },
+    ]);
+    render(<MeusPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText(/Obra Norte/);
+
+    const badgeTransferencia = screen.getByText('Transferência');
+    expect(badgeTransferencia).toBeInTheDocument();
+    expect(badgeTransferencia.closest('span')?.querySelector('svg')).toBeInTheDocument();
+    expect(screen.queryAllByText('Transferência')).toHaveLength(1);
+  });
 });

@@ -19,6 +19,7 @@ import { ClipboardList } from 'lucide-react';
 import { conectarRealtime, type StatusRealtime } from '@/lib/realtime/client';
 import { formatarQuantidade } from '@/components/catalogo/formatacao';
 import { StatusPedidoBadge } from '@/components/pedidos/StatusPedidoBadge';
+import { TipoPedidoBadge } from '@/components/pedidos/TipoPedidoBadge';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { FaixaIndicadores } from '@/components/lista/FaixaIndicadores';
 import {
@@ -358,6 +359,7 @@ export function FilaPedidosSection() {
                 </span>
               </div>
               <span className="flex shrink-0 items-center gap-3">
+                <TipoPedidoBadge tipo={pedido.tipo} />
                 <StatusPedidoBadge status={pedido.status} />
                 <Button
                   type="button"
@@ -479,25 +481,37 @@ export function FilaPedidosSection() {
             </div>
           )}
 
-          {detalheDe?.status === 'pendente' && (
-            <div className="flex justify-end gap-2 pt-2">
-              <Button
-                type="button"
-                variant="destructive"
-                onClick={() => setConfirmacaoPendente('rejeitar')}
-                disabled={decidindoId !== null}
-              >
-                Rejeitar
-              </Button>
-              <Button
-                type="button"
-                onClick={() => setConfirmacaoPendente('aprovar')}
-                disabled={decidindoId !== null}
-              >
-                Aprovar
-              </Button>
-            </div>
-          )}
+          {/* Story 20.1 (Epic 20, revisão de código): DecidirPedido recusa
+              (409) qualquer Pedido com `tipo != 'retirada'` — Aprovar/
+              Rejeitar some para esses tipos (em vez de deixar o Gestor
+              clicar e levar um erro confuso), com um texto curto explicando
+              por quê. `tipo` ausente (fixtures/pedidos anteriores a esta
+              story) conta como 'retirada'. Só a Story 20.3 habilita decidir
+              estes tipos. */}
+          {detalheDe?.status === 'pendente' &&
+            (!detalheDe.tipo || detalheDe.tipo === 'retirada' ? (
+              <div className="flex justify-end gap-2 pt-2">
+                <Button
+                  type="button"
+                  variant="destructive"
+                  onClick={() => setConfirmacaoPendente('rejeitar')}
+                  disabled={decidindoId !== null}
+                >
+                  Rejeitar
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => setConfirmacaoPendente('aprovar')}
+                  disabled={decidindoId !== null}
+                >
+                  Aprovar
+                </Button>
+              </div>
+            ) : (
+              <p className="text-label text-muted-foreground pt-2">
+                Este tipo de Pedido ainda não tem aprovação implementada nesta versão.
+              </p>
+            ))}
         </DialogContent>
       </Dialog>
 

@@ -584,6 +584,34 @@ describe('FilaPedidosSection', () => {
     expect(screen.getByRole('button', { name: 'Rejeitar' })).toBeInTheDocument();
   });
 
+  // Story 20.1 (Epic 20, revisão de código): DecidirPedido recusa (409)
+  // decidir um Pedido com tipo != 'retirada' — Aprovar/Rejeitar somem para
+  // esses tipos, substituídos por um texto curto, em vez de deixar o
+  // Gestor clicar e levar um erro confuso.
+  it('"Ver itens" de um Pedido de Transferência pendente NÃO mostra Aprovar/Rejeitar — mostra um aviso', async () => {
+    // `detalheDe` (o que decide os botões) vem da LINHA da lista
+    // (`listarFilaPedidos`), não da resposta de `buscarPedido` — por isso o
+    // mock a sobrescrever aqui é o da lista.
+    listarFilaPedidosMock.mockResolvedValue([{ ...PEDIDOS[0], tipo: 'transferencia' }, PEDIDOS[1]]);
+    const user = userEvent.setup();
+    await abrirVerItensDoPendente(user);
+
+    expect(screen.queryByRole('button', { name: 'Aprovar' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Rejeitar' })).not.toBeInTheDocument();
+    expect(
+      screen.getByText('Este tipo de Pedido ainda não tem aprovação implementada nesta versão.'),
+    ).toBeInTheDocument();
+  });
+
+  it('"Ver itens" de um Pedido de retirada (tipo explícito) pendente continua mostrando Aprovar/Rejeitar', async () => {
+    listarFilaPedidosMock.mockResolvedValue([{ ...PEDIDOS[0], tipo: 'retirada' }, PEDIDOS[1]]);
+    const user = userEvent.setup();
+    await abrirVerItensDoPendente(user);
+
+    expect(screen.getByRole('button', { name: 'Aprovar' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Rejeitar' })).toBeInTheDocument();
+  });
+
   it('"Ver itens" de um Pedido NÃO-pendente não mostra os botões de decisão', async () => {
     buscarPedidoMock.mockResolvedValue({ ...PEDIDOS[1], itens: [] });
     const user = userEvent.setup();
@@ -951,5 +979,24 @@ describe('FilaPedidosSection — faixa de indicadores (Story 17.4)', () => {
     });
     await waitFor(() => expect(buscarIndicadoresPedidosMock).toHaveBeenCalled());
     expect(buscarIndicadoresPedidosMock).toHaveBeenCalledWith('todos');
+  });
+
+  // Story 20.1 (Epic 20): um Pedido de Transferência pendente aparece com um
+  // rótulo que o distingue do Pedido de retirada comum (AC1, spec-20-1).
+  it('pedido tipo=transferencia exibe o badge "Transferência"; tipo=retirada não exibe nenhum badge de tipo', async () => {
+    listarFilaPedidosMock.mockResolvedValueOnce([
+      { ...PEDIDOS[0], tipo: 'transferencia' },
+      { ...PEDIDOS[1], tipo: 'retirada' },
+    ]);
+    render(<FilaPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText(/Obra Norte/);
+
+    const badgeTransferencia = screen.getByText('Transferência');
+    expect(badgeTransferencia).toBeInTheDocument();
+    expect(badgeTransferencia.closest('span')?.querySelector('svg')).toBeInTheDocument();
+    expect(screen.queryAllByText('Transferência')).toHaveLength(1);
   });
 });

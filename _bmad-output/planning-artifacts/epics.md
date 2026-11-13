@@ -1,5 +1,5 @@
 ---
-stepsCompleted: [1, 1-confirmed, 2, 2-approved, 3, 4-validated, r2-1, r2-1-confirmed, r2-2, r2-2-approved, r2-3, r2-4-validated, r3-1, r3-1-confirmed, r3-2, r3-2-approved, r3-3]
+stepsCompleted: [1, 1-confirmed, 2, 2-approved, 3, 4-validated, r2-1, r2-1-confirmed, r2-2, r2-2-approved, r2-3, r2-4-validated, r3-1, r3-1-confirmed, r3-2, r3-2-approved, r3-3, r4-1, r4-1-confirmed, r4-2, r4-2-approved, r4-3, r4-4-validated]
 inputDocuments:
   - _bmad-output/planning-artifacts/prds/prd-stockflow-2026-08-29/prd.md
   - _bmad-output/planning-artifacts/prds/prd-stockflow-2026-08-29/addendum.md
@@ -94,6 +94,13 @@ FR45 (revisado): EAN-13 único entre os Produtos ativos da Empresa — cadastro,
 FR55: Inativar e reativar Produto — gestor/adm, qualquer motivo (opcional), só sem saldo nem reserva (a recusa diz onde há saldo); o inativo some de Catálogo, busca, leitura por código, exportação, Carrinho, duplicatas/inconsistências, lançamento de saldo e importação, e continua no histórico com a marca "Inativo"; filtro "Inativos" e reativar para gestor/adm.
 FR56: Histórico de alterações do Produto — troca de nome (antes/depois), inativação e reativação registradas com quem e quando, visíveis no detalhe do Produto para almoxarife+.
 FR57: Período de teste de 14 dias com bloqueio automático — toda Empresa real criada a partir de agora ganha 14 dias corridos, herdados pelo Treinamento na criação; esgotado o prazo, nenhuma rota de negócio responde e a pessoa vê uma tela explicando o vencimento; só o Dono da Plataforma estende ou isenta, pela tela de gestão de Empresas; Empresas já existentes não são afetadas.
+FR58: Pedido de Transferência entre Filiais — Usuário solicita a transferência de um Produto/quantidade de um Estoque de origem para um Estoque de destino (potencialmente de outra Filial); fica pendente, sem mexer em saldo nenhum até a decisão. Ponto de entrada separado do botão direto "Transferir" existente.
+FR59: Aprovação em lote de Pedidos de Transferência — um Gestor (papel `gestor` ou acima) seleciona múltiplos Pedidos de Transferência pendentes e aprova/rejeita todos numa única ação; aprovação debita a origem e credita o destino preservando FEFO/validade — mesma mecânica física da Transferência direta já existente, nunca reescrita.
+FR60: Documento de Transferência em PDF — aprovar um lote de Pedidos de Transferência gera um documento impresso único cobrindo todos os pedidos aprovados naquele lote, com Empresa, Filial origem, Filial destino, Produto, Descrição, Quantidade, Unidade de Medida, Valor, Data, Solicitante e Aprovador.
+FR61: Pedido de Baixa de Estoque com aprovação — Usuário solicita a baixa (consumo) de um Produto/quantidade de um Estoque; fica pendente até um Gestor aprovar/rejeitar (individualmente ou em lote, mesma UX do FR59); aprovação debita por FEFO — mesma mecânica física da Baixa direta já existente, nunca reescrita.
+FR62: Convivência com as ações diretas atuais — os botões "Transferir" e "Registrar Baixa" continuam existindo e funcionando sem aprovação durante o período de validação; os Pedidos novos (FR58/FR61) são pontos de entrada separados, nunca substituem nem desativam os atuais nesta entrega.
+FR63: Geração de Pré-Nota ao aprovar lote — quando um Gestor aprova um lote de Pedidos (Transferência ou Baixa), o sistema grava uma Pré-Nota (equivalente ao MIRO do SAP) com um `docnum` sequencial único, vinculada a todos os pedidos daquele lote — gerado dentro da mesma transação da aprovação, sem risco de corrida (mesmo padrão do código sequencial de produto).
+FR64: Impressão como Pré-Nota — o documento impresso de qualquer lote aprovado (Transferência ou Baixa) é tratado/rotulado como "Pré-Nota", exibindo o `docnum` gerado, junto aos campos já definidos por tipo (FR60 para Transferência; os mesmos campos aplicáveis para Baixa, sem Filial destino).
 
 ### NonFunctional Requirements
 
@@ -269,6 +276,13 @@ FR45 (revisado): Epic 16 - EAN-13 único entre Produtos ativos
 FR41 (linha nova): Epic 14 - Cadastro da Empresa pergunta se exige MFA
 FR43 (linha nova): Epic 14 - Treinamento herda a escolha
 FR57: Epic 18 - Período de teste de 14 dias com bloqueio automático
+FR58: Epic 20 - Pedido de Transferência entre Filiais
+FR59: Epic 20 - Aprovação em lote de Pedidos de Transferência por Gestor
+FR60: Epic 20 - Documento de Transferência em PDF por lote aprovado
+FR61: Epic 20 - Pedido de Baixa de Estoque com aprovação de Gestor
+FR62: Epic 20 - Convivência com os botões diretos atuais (Transferir/Registrar Baixa)
+FR63: Epic 20 - Geração de Pré-Nota (docnum sequencial) ao aprovar qualquer lote
+FR64: Epic 20 - Documento impresso tratado como Pré-Nota, exibindo o docnum
 
 ## Epic List
 
@@ -347,6 +361,10 @@ Toda Empresa real criada a partir de agora ganha 14 dias corridos de teste (herd
 ### Epic 19: Catálogo 2.0 — Novo Sistema de Design
 Usuários do stockflow passam a ver a mesma linguagem visual já adotada nos demais sistemas internos da Ferreira Costa (projeto irmão FB_APU05 e futuros): cores, tipografia, espaçamentos, raios e sombras do "Catálogo 2.0 Design System" (Marlos, 2026-11-11). Nenhuma regra de negócio, rota ou fluxo muda — é 100% visual, preservando a arquitetura de navegação do Epic 17. Pedido do usuário (2026-11-12).
 **UX covered:** UX-DR27 a UX-DR35
+
+### Epic 20: Pedido de Transferência e Pedido de Baixa, com Aprovação em Lote e Pré-Nota
+Usuário solicita Transferência entre Filiais ou Baixa de Estoque como um Pedido pendente (sem mexer em saldo); um Gestor aprova/rejeita vários pedidos de uma vez, em lote; a aprovação gera uma Pré-Nota com docnum sequencial (equivalente ao MIRO do SAP) e um documento impresso rotulado "Pré-Nota" com todos os dados fiscais. Os botões diretos "Transferir"/"Registrar Baixa" continuam existindo, sem aprovação, para comparação com a equipe.
+**FRs covered:** FR58, FR59, FR60, FR61, FR62, FR63, FR64
 
 ## Epic 1: Autenticação e Gestão de Acesso
 
@@ -2750,3 +2768,125 @@ So that o Epic 19 seja considerado concluído com segurança.
 **Resolução (2026-11-12):** `npm run build`/`npm test` (1040 testes) limpos. Limpeza de tokens: verificado todo o `@theme` de `index.css` contra uso real no código (incluindo o padrão `var(--color-X)` arbitrário usado por `StatusPedidoBadge.tsx`) — nenhum token específico do sistema antigo ficou órfão (Stories 19.1/19.2 só trocaram valores, nunca nomes). Único token sem uso confirmado (`--color-destructive-foreground`) é um par `-foreground` padrão do shadcn, não lixo desta migração — mantido por convenção, não removido.
 
 **Validação visual com screenshot real NÃO foi possível nesta sessão** — o ambiente não tem `docker compose` nem `chromium-cli` disponíveis para subir a stack completa (backend+banco+navegador headless) e capturar telas autenticadas. A conferência foi feita por leitura de código + cálculo manual de contraste WCAG (ver Design Notes das specs 19.1/19.2) e pela ausência total de cor hardcoded em todo `frontend/src` (grep). Recomendado: Claudio conferir visualmente pelo menos o menu lateral e uma tela de lista no navegador antes de considerar o Epic 19 definitivamente fechado.
+
+## Epic 20: Pedido de Transferência e Pedido de Baixa, com Aprovação em Lote e Pré-Nota
+
+Usuário solicita Transferência entre Filiais ou Baixa de Estoque como um Pedido pendente (sem mexer em saldo); um Gestor aprova/rejeita vários pedidos de uma vez, em lote; a aprovação gera uma Pré-Nota com docnum sequencial (equivalente ao MIRO do SAP) e um documento impresso rotulado "Pré-Nota" com todos os dados fiscais. Os botões diretos "Transferir"/"Registrar Baixa" continuam existindo, sem aprovação, para comparação com a equipe. Pedido do usuário (2026-11-12).
+
+### Story 20.1: Pedido de Transferência entre Filiais (solicitar)
+
+As a usuário do stockflow,
+I want solicitar a transferência de um Produto entre dois Estoques (potencialmente de Filiais diferentes),
+So that o material mude de local sem que eu precise ter permissão de Almoxarife pra mexer direto no saldo.
+
+**Acceptance Criteria:**
+
+**Given** um Produto com saldo disponível num Estoque de origem
+**When** o usuário abre "Pedido de Transferência entre Filiais" e escolhe Produto, Estoque origem, Estoque destino (diferente da origem) e quantidade
+**Then** o sistema cria um Pedido com tipo "transferência", status `pendente`, reservando a quantidade no par (Produto, Estoque origem) — mesma reserva dura do Pedido de retirada atual (Story 11.3), sem debitar nem creditar saldo nenhum ainda
+
+**Given** quantidade pedida maior que o saldo disponível da origem
+**When** o usuário tenta enviar o pedido
+**Then** o sistema rejeita com a mesma mensagem/mecanismo de "disponibilidade insuficiente" já usado no Pedido de retirada
+
+**Given** Estoque de origem e de destino iguais
+**When** o usuário tenta enviar
+**Then** o sistema rejeita (mesma regra já aplicada em `RegistrarTransferencia`)
+
+**Given** um Pedido de Transferência pendente
+**When** ele aparece em listagens de pedidos (Meus Pedidos, Fila)
+**Then** é distinguível visualmente do Pedido de retirada comum (rótulo "Transferência")
+
+### Story 20.2: Pedido de Baixa de Estoque (solicitar)
+
+As a usuário do stockflow,
+I want solicitar a baixa (consumo) de um Produto de um Estoque,
+So that o consumo real só aconteça depois que um Gestor aprovar, em vez de ser uma ação solta de qualquer Almoxarife.
+
+**Acceptance Criteria:**
+
+**Given** um Produto com saldo disponível num Estoque
+**When** o usuário abre "Pedido de Baixa de Estoque" e escolhe Produto, Estoque e quantidade
+**Then** o sistema cria um Pedido com tipo "baixa", status `pendente`, reservando a quantidade no par (Produto, Estoque) — mesma reserva dura do Pedido de retirada
+
+**Given** quantidade pedida maior que o disponível
+**When** o usuário tenta enviar
+**Then** rejeita com a mesma mensagem de disponibilidade insuficiente
+
+**Given** o botão direto "Registrar Baixa" já existente
+**When** esta story é concluída
+**Then** ele continua funcionando exatamente como está, sem nenhuma mudança (FR62) — o Pedido de Baixa é um ponto de entrada novo e separado
+
+### Story 20.3: Aprovação em lote por Gestor
+
+As a Gestor,
+I want ver os Pedidos de Transferência e de Baixa pendentes e aprovar ou rejeitar vários de uma vez, num lote só,
+So that eu não precise decidir um por um quando vários chegam juntos.
+
+**Acceptance Criteria:**
+
+**Given** vários Pedidos de Transferência e/ou Baixa pendentes
+**When** um Gestor (papel `gestor` ou acima) abre a tela de aprovação em lote
+**Then** vê todos os pendentes dos dois tipos, cada um com Solicitante, Produto, quantidade, Estoque(s) envolvido(s) e data
+
+**Given** uma seleção de múltiplos pedidos pendentes (pode misturar Transferência e Baixa)
+**When** o Gestor aprova o lote
+**Then** cada pedido é decidido: Transferência debita a origem e credita o destino por FEFO preservando validade (mesma mecânica de `RegistrarTransferencia`); Baixa debita por FEFO (mesma mecânica de `RegistrarBaixa`) — revalidando a reserva contra o saldo físico no momento da aprovação, igual ao Pedido de retirada hoje
+
+**Given** um papel abaixo de `gestor` (ex. `almoxarife`)
+**When** tenta acessar a aprovação em lote
+**Then** o servidor recusa (403), mesmo que a tela não mostre o botão
+
+**Given** um lote com um item cujo saldo físico caiu abaixo do reservado entre o envio e a aprovação
+**When** o Gestor aprova
+**Then** esse item específico é aprovado parcialmente (mesmo comportamento já documentado do Pedido de retirada atual), sem travar os demais itens/pedidos do lote
+
+**Given** os botões diretos "Transferir" e "Registrar Baixa"
+**When** esta story é concluída
+**Then** continuam funcionando exatamente como hoje, sem gate de aprovação nenhum (FR62)
+
+### Story 20.4: Geração de Pré-Nota (docnum) ao aprovar lote
+
+As a Gestor,
+I want que cada lote aprovado gere um número de documento sequencial (Pré-Nota),
+So that eu consiga rastrear e referenciar aquele conjunto de movimentações como um único documento, igual ao MIRO do SAP.
+
+**Acceptance Criteria:**
+
+**Given** um lote de Pedidos (Transferência e/ou Baixa) aprovado por um Gestor
+**When** a aprovação é commitada
+**Then** o sistema grava uma Pré-Nota com um `docnum` sequencial único por Empresa (mesmo padrão de contador atômico já usado pelo código interno de Produto — nunca colide, nunca repete, mesmo sob aprovações concorrentes), vinculada a todos os Pedidos daquele lote
+
+**Given** dois lotes aprovados em sequência pela mesma Empresa
+**When** os dois commitam
+**Then** os `docnum` são estritamente crescentes, sem gap inesperado nem repetição
+
+**Given** duas Empresas distintas aprovando lotes ao mesmo tempo
+**When** ambos commitam
+**Then** cada Empresa numera a partir do seu próprio maior `docnum`, nunca misturando contagem com outra Empresa
+
+**Given** um lote rejeitado (não aprovado)
+**When** a decisão é commitada
+**Then** nenhuma Pré-Nota é gerada — só aprovação gera Pré-Nota
+
+### Story 20.5: Documento impresso da Pré-Nota
+
+As a Gestor,
+I want baixar/imprimir a Pré-Nota de um lote aprovado,
+So that eu tenha o documento com todos os dados fiscais pra levar pro processo de emissão de NF da Ferreira Costa.
+
+**Acceptance Criteria:**
+
+**Given** uma Pré-Nota já gerada (Story 20.4)
+**When** o Gestor pede o PDF dela
+**Then** o documento é rotulado "Pré-Nota", mostra o `docnum`, a Empresa, a Data, o(s) Solicitante(s) e o Aprovador
+**And** cada item lista Produto, Descrição (nome do produto), Quantidade, Unidade de Medida e Valor (preço unitário do produto no momento da aprovação)
+**And** itens de Transferência também mostram Filial origem e Filial destino; itens de Baixa não mostram Filial destino (não existe)
+
+**Given** uma Pré-Nota de um Pedido já decidido
+**When** alguém sem papel suficiente (abaixo de `gestor`, ou de outra Empresa) tenta baixar o PDF
+**Then** o servidor recusa, mesmo padrão de autorização do recibo de Pedido já existente
+
+**Given** o preço unitário do produto não cadastrado (campo opcional)
+**When** o PDF é gerado
+**Then** o campo Valor aparece como "—" (mesmo tratamento de ausência já usado no detalhe do produto), sem quebrar a geração do documento

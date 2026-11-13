@@ -104,6 +104,84 @@ func SubmeterPedidoHandler(db *sql.DB, registro *realtime.Registry) http.Handler
 	}
 }
 
+// submeterPedidoTransferenciaRequest é o corpo aceito por POST
+// /api/pedidos/transferencia (Story 20.1, Epic 20, spec-20-1) — envio DIRETO
+// de 1 item (sem Carrinho), tela própria. `usuarioId` nunca é lido do corpo
+// (Always, mesmo padrão de submeterPedidoRequest) — a identidade vem sempre
+// de middleware.UsuarioDaSessao.
+type submeterPedidoTransferenciaRequest struct {
+	Solicitante      string  `json:"solicitante"`
+	ObraCentroCusto  string  `json:"obraCentroCusto"`
+	Observacao       string  `json:"observacao"`
+	ProdutoID        string  `json:"produtoId"`
+	EstoqueOrigemID  string  `json:"estoqueOrigemId"`
+	EstoqueDestinoID string  `json:"estoqueDestinoId"`
+	Quantidade       float64 `json:"quantidade"`
+}
+
+// SubmeterPedidoTransferenciaHandler expõe POST /api/pedidos/transferencia
+// (Story 20.1, Epic 20, spec-20-1): envia um Pedido de Transferência entre
+// Filiais `pendente` — reserva dura só da ORIGEM, nunca debita/credita saldo
+// físico (isso é a Story 20.3). Molde EXATO de SubmeterPedidoHandler:
+// registrado atrás SÓ de RequireAuth (mesmo mínimo de papel do Pedido de
+// retirada — qualquer conta autenticada `usuario`+ envia seu próprio
+// Pedido). `201 {"pedido": {...}}` no sucesso, publicando
+// `{"resource":"pedidos","id":<novo>,"change":"created"}` no canal
+// `pedidos` + um evento `produtos` (`updated`) para o único Produto do
+// Pedido (Story 11.3: o envio reserva saldo, atualiza detalhes abertos).
+// `400 VALIDATION_ERROR` para campos ausentes/vazios (inclusive
+// produtoId/estoqueOrigemId/estoqueDestinoId e origem==destino/destino
+// inexistente — Always, spec-20-1: nunca colapsa em 409);
+// `409 CONFLICT` para disponibilidade insuficiente na origem;
+// `409 PRODUTO_INATIVO` para Produto inativo (mesmo código do Pedido de
+// retirada).
+func SubmeterPedidoTransferenciaHandler(db *sql.DB, registro *realtime.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		usuario, ok := middleware.UsuarioDaSessao(r.Context())
+		if !ok {
+			slog.Error("SubmeterPedidoTransferenciaHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
+		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
+		var req submeterPedidoTransferenciaRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "payload inválido")
+			return
+		}
+
+		pedido, err := services.SubmeterPedidoTransferencia(
+			db, empresa.ID, usuario.ID, req.Solicitante, req.ObraCentroCusto, req.Observacao,
+			req.ProdutoID, req.EstoqueOrigemID, req.EstoqueDestinoID, req.Quantidade,
+		)
+		var erroValidacao *services.ErroPedidoValidacao
+		var erroIndisponivel *services.ErroPedidoIndisponivel
+		var erroInativo *services.ErroPedidoProdutoInativo
+		switch {
+		case err == nil:
+			registro.Publish(empresa.ID, "pedidos", realtime.Evento{ID: pedido.ID, Change: "created"})
+			for _, produtoID := range idsUnicos(pedido.ProdutoIDs) {
+				registro.Publish(empresa.ID, "produtos", realtime.Evento{ID: produtoID, Change: "updated"})
+			}
+			escreverJSON(w, http.StatusCreated, map[string]any{"pedido": pedido})
+		case errors.As(err, &erroValidacao):
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
+		case errors.As(err, &erroIndisponivel):
+			escreverErro(w, http.StatusConflict, "CONFLICT", erroIndisponivel.Error())
+		case errors.As(err, &erroInativo):
+			escreverErro(w, http.StatusConflict, "PRODUTO_INATIVO", erroInativo.Error())
+		default:
+			slog.Error("falha ao submeter pedido de transferência", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao enviar pedido de transferência")
+		}
+	}
+}
+
 // ListarPedidosHandler expõe GET /api/pedidos (Story 7.3, spec-7-3; escopo
 // `?escopo=todos` da Fila, Story 7.4, spec-7-4), registrado em newMux atrás
 // SÓ de RequireAuth (SEM RequireRole — mesmo mínimo de papel do envio).
@@ -244,6 +322,11 @@ func DecidirPedidoHandler(db *sql.DB, registro *realtime.Registry) http.HandlerF
 			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "pedido não encontrado")
 		case errors.Is(err, services.ErrPedidoNaoPendente):
 			escreverErro(w, http.StatusConflict, "CONFLICT", "este pedido não está mais pendente")
+		case errors.Is(err, services.ErrPedidoTipoNaoSuportado):
+			// Story 20.1 (guard crítico, Spec Change Log): nenhuma aprovação/
+			// rejeição real acontece para um Pedido de tipo != 'retirada' —
+			// só a Story 20.3 implementa a decisão de verdade por tipo.
+			escreverErro(w, http.StatusConflict, "CONFLICT", services.ErrPedidoTipoNaoSuportado.Error())
 		default:
 			slog.Error("falha ao decidir pedido", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao decidir pedido")

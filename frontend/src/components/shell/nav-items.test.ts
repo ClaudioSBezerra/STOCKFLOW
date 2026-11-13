@@ -46,6 +46,7 @@ describe('nav-items: grupos e papéis', () => {
       '/produtos/importar',
       '/carrinho',
       '/pedidos',
+      '/pedidos/transferencia',
       '/pedidos/fila',
       '/estoques',
       '/estoques/lancar-saldo',
@@ -69,7 +70,12 @@ describe('nav-items: grupos e papéis', () => {
   });
 
   it('papel usuario vê só Produtos, Carrinho e Meus pedidos; Estoque e Qualidade somem', () => {
-    expect(idsVisiveis('usuario')).toEqual(['produtos', 'carrinho', 'meus-pedidos']);
+    expect(idsVisiveis('usuario')).toEqual([
+      'produtos',
+      'carrinho',
+      'meus-pedidos',
+      'pedido-transferencia',
+    ]);
     expect(gruposVisiveis(navGrupos, 'usuario').map((g) => g.id)).toEqual(['catalogo', 'pedidos']);
   });
 

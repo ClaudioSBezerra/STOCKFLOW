@@ -1200,3 +1200,395 @@ func TestBaixarReciboPedidoHandler_401SemToken(t *testing.T) {
 		t.Fatalf("status = %d, want 401", w.Code)
 	}
 }
+
+// --- SubmeterPedidoTransferenciaHandler (Story 20.1, Epic 20, spec-20-1) ---
+
+func postPedidoTransferencia(db *sql.DB, authHeader, body string) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /e/{slug}/api/pedidos/transferencia",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(SubmeterPedidoTransferenciaHandler(db, realtime.NewRegistry()))))
+	var r *http.Request
+	if body != "" {
+		r = httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/pedidos/transferencia", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+	} else {
+		r = httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/pedidos/transferencia", nil)
+	}
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+// seedPedidoTransferenciaViaServico cria um Produto com saldo na origem +
+// um segundo Estoque (destino vazio, nunca recebe saldo) — trio pronto para
+// POST /api/pedidos/transferencia.
+func seedPedidoTransferenciaViaServico(t *testing.T, db *sql.DB, nomeBase string, saldoOrigem float64) (produtoID, estoqueOrigemID, estoqueDestinoID string) {
+	t.Helper()
+	produtoID, estoqueOrigemID = seedProdutoComSaldoHandler(t, db, nomeBase, saldoOrigem)
+	estoqueDestino, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), nomeBase+" Destino")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque (destino, %s): %v", nomeBase, err)
+	}
+	return produtoID, estoqueOrigemID, estoqueDestino.ID
+}
+
+// TestSubmeterPedidoTransferenciaHandler_201 prova a AC1 na fronteira HTTP:
+// produto com saldo suficiente na origem + campos obrigatórios preenchidos
+// -> 201 com o Pedido `pendente` tipo=transferencia.
+func TestSubmeterPedidoTransferenciaHandler_201(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	_, token := seedContaComumECarrinho(t, db, "Usuario Transf H 201", "transf-h-201-usuario@empresa.com")
+	produtoID, estoqueOrigemID, estoqueDestinoID := seedPedidoTransferenciaViaServico(t, db, "Canteiro Transf H 201", 10)
+
+	corpo := `{"solicitante":"Fulano de Tal","obraCentroCusto":"Obra Norte","produtoId":"` + produtoID +
+		`","estoqueOrigemId":"` + estoqueOrigemID + `","estoqueDestinoId":"` + estoqueDestinoID + `","quantidade":5}`
+	w := postPedidoTransferencia(db, "Bearer "+token, corpo)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
+	}
+	var resp struct {
+		Pedido services.Pedido `json:"pedido"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if resp.Pedido.Status != "pendente" {
+		t.Errorf("Status = %q, want pendente", resp.Pedido.Status)
+	}
+	if resp.Pedido.Tipo != "transferencia" {
+		t.Errorf("Tipo = %q, want transferencia", resp.Pedido.Tipo)
+	}
+
+	var nItens int
+	if err := db.QueryRow(`SELECT count(*) FROM pedido_itens WHERE pedido_id = $1 AND estoque_destino_id = $2`, resp.Pedido.ID, estoqueDestinoID).Scan(&nItens); err != nil {
+		t.Fatalf("count pedido_itens: %v", err)
+	}
+	if nItens != 1 {
+		t.Errorf("pedido_itens com estoque_destino_id = %d linhas, want 1", nItens)
+	}
+}
+
+// TestSubmeterPedidoTransferenciaHandler_PublicaEventoNoSucesso prova que um
+// envio bem-sucedido publica `{"resource":"pedidos","id":<novo>,"change":"created"}`
+// no canal `pedidos` — molde de TestSubmeterPedidoHandler_PublicaEventoNoSucesso.
+func TestSubmeterPedidoTransferenciaHandler_PublicaEventoNoSucesso(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	_, token := seedContaComumECarrinho(t, db, "Usuario Transf H Evento", "transf-h-evento-usuario@empresa.com")
+	produtoID, estoqueOrigemID, estoqueDestinoID := seedPedidoTransferenciaViaServico(t, db, "Canteiro Transf H Evento", 10)
+
+	registro := realtime.NewRegistry()
+	eventos, cancelar := registro.Subscribe(empresaTeste)
+	defer cancelar()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /e/{slug}/api/pedidos/transferencia",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(SubmeterPedidoTransferenciaHandler(db, registro))))
+
+	corpo := `{"solicitante":"Fulano","obraCentroCusto":"Obra X","produtoId":"` + produtoID +
+		`","estoqueOrigemId":"` + estoqueOrigemID + `","estoqueDestinoId":"` + estoqueDestinoID + `","quantidade":1}`
+	r := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/pedidos/transferencia", strings.NewReader(corpo))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
+	}
+	var resp struct {
+		Pedido services.Pedido `json:"pedido"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+
+	select {
+	case ev := <-eventos:
+		if ev.Resource != "pedidos" || ev.ID != resp.Pedido.ID || ev.Change != "created" {
+			t.Fatalf("evento = %+v, want {pedidos %s created}", ev, resp.Pedido.ID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("nenhum evento publicado em 1s após SubmeterPedidoTransferenciaHandler bem-sucedido")
+	}
+}
+
+// TestSubmeterPedidoTransferenciaHandler_400CamposVazios cobre o Always de
+// spec-20-1 na fronteira HTTP: produtoId/estoqueOrigemId/estoqueDestinoId
+// vazios -> 400 VALIDATION_ERROR.
+func TestSubmeterPedidoTransferenciaHandler_400CamposVazios(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	_, token := seedContaComumECarrinho(t, db, "Usuario Transf H 400", "transf-h-400-usuario@empresa.com")
+	produtoID, estoqueOrigemID, estoqueDestinoID := seedPedidoTransferenciaViaServico(t, db, "Canteiro Transf H 400", 10)
+
+	casos := map[string]string{
+		"produtoId vazio":        `{"solicitante":"Fulano","obraCentroCusto":"Obra X","produtoId":"","estoqueOrigemId":"` + estoqueOrigemID + `","estoqueDestinoId":"` + estoqueDestinoID + `","quantidade":1}`,
+		"estoqueOrigemId vazio":  `{"solicitante":"Fulano","obraCentroCusto":"Obra X","produtoId":"` + produtoID + `","estoqueOrigemId":"","estoqueDestinoId":"` + estoqueDestinoID + `","quantidade":1}`,
+		"estoqueDestinoId vazio": `{"solicitante":"Fulano","obraCentroCusto":"Obra X","produtoId":"` + produtoID + `","estoqueOrigemId":"` + estoqueOrigemID + `","estoqueDestinoId":"","quantidade":1}`,
+		"origem == destino":      `{"solicitante":"Fulano","obraCentroCusto":"Obra X","produtoId":"` + produtoID + `","estoqueOrigemId":"` + estoqueOrigemID + `","estoqueDestinoId":"` + estoqueOrigemID + `","quantidade":1}`,
+	}
+	for nome, corpo := range casos {
+		t.Run(nome, func(t *testing.T) {
+			w := postPedidoTransferencia(db, "Bearer "+token, corpo)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
+			}
+			env := decodeErro(t, w.Body.Bytes())
+			if env.Error.Code != "VALIDATION_ERROR" {
+				t.Errorf("code = %q, want VALIDATION_ERROR", env.Error.Code)
+			}
+		})
+	}
+}
+
+// TestSubmeterPedidoTransferenciaHandler_409DisponibilidadeInsuficiente cobre
+// a linha "Disponível insuficiente" na fronteira HTTP -> 409 CONFLICT.
+func TestSubmeterPedidoTransferenciaHandler_409DisponibilidadeInsuficiente(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	_, token := seedContaComumECarrinho(t, db, "Usuario Transf H 409", "transf-h-409-usuario@empresa.com")
+	produtoID, estoqueOrigemID, estoqueDestinoID := seedPedidoTransferenciaViaServico(t, db, "Canteiro Transf H 409", 3)
+
+	corpo := `{"solicitante":"Fulano","obraCentroCusto":"Obra X","produtoId":"` + produtoID +
+		`","estoqueOrigemId":"` + estoqueOrigemID + `","estoqueDestinoId":"` + estoqueDestinoID + `","quantidade":4}`
+	w := postPedidoTransferencia(db, "Bearer "+token, corpo)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusConflict, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "CONFLICT" {
+		t.Errorf("code = %q, want CONFLICT", env.Error.Code)
+	}
+}
+
+// TestSubmeterPedidoTransferenciaHandler_401SemToken cobre a ausência de
+// token -> 401 (molde de TestSubmeterPedidoHandler_401SemToken).
+func TestSubmeterPedidoTransferenciaHandler_401SemToken(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+
+	w := postPedidoTransferencia(db, "", `{"solicitante":"Fulano","obraCentroCusto":"Obra X"}`)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+}
+
+// TestDecidirPedidoHandler_409PedidoTipoNaoSuportado cobre o guard CRÍTICO
+// de DecidirPedido (Story 20.1, Spec Change Log) na fronteira HTTP: um
+// Pedido de Transferência pendente não pode ser aprovado NEM rejeitado pela
+// Fila atual -> 409 CONFLICT, status permanece `pendente`.
+func TestDecidirPedidoHandler_409PedidoTipoNaoSuportado(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	dono, _ := seedContaComumECarrinho(t, db, "H201 Transf TipoNaoSup Dono", "h-transf-tiponaosup-dono@empresa.com")
+	criarContaComPapel(t, db, "H201 Transf TipoNaoSup Almox", "h-transf-tiponaosup-almox@empresa.com", "senha-123456", "almoxarife")
+	tokenAlmox := tokenDeLogin(t, db, "h-transf-tiponaosup-almox@empresa.com", "senha-123456")
+
+	produtoID, estoqueOrigemID, estoqueDestinoID := seedPedidoTransferenciaViaServico(t, db, "Canteiro Transf TipoNaoSup", 10)
+	pedido, err := services.SubmeterPedidoTransferencia(db, empresaTeste, dono, "Fulano", "Obra X", "", produtoID, estoqueOrigemID, estoqueDestinoID, 5)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoTransferencia: %v", err)
+	}
+
+	for _, corpo := range []string{`{"aprovar":true}`, `{"aprovar":false}`} {
+		w := postDecisaoPedido(db, "Bearer "+tokenAlmox, pedido.ID, corpo)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("corpo=%s: status = %d, want %d (body=%s)", corpo, w.Code, http.StatusConflict, w.Body.String())
+		}
+		if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "CONFLICT" {
+			t.Errorf("corpo=%s: code = %q, want CONFLICT", corpo, env.Error.Code)
+		}
+	}
+
+	var status string
+	if err := db.QueryRow(`SELECT status FROM pedidos WHERE id = $1`, pedido.ID).Scan(&status); err != nil {
+		t.Fatalf("reler status: %v", err)
+	}
+	if status != "pendente" {
+		t.Errorf("status = %q, want pendente", status)
+	}
+}
+
+// --- Campo `tipo` na fronteira HTTP (Story 20.1, Epic 20, revisão de ------
+// --- código) ---------------------------------------------------------------
+//
+// Até esta rodada só havia cobertura de `tipo` a nível de serviço
+// (services.PedidoResumo/PedidoDetalhe); estes testes confirmam que o JSON
+// devolvido por GET /api/pedidos (escopo próprio e ?escopo=todos) e GET
+// /api/pedidos/{id} realmente carrega "retirada"/"transferencia" — nunca um
+// valor vazio/incorreto por falta de SELECT da coluna nova.
+
+// TestPedidosHandlers_CampoTipoNoJSON cobre a fronteira HTTP: um Pedido de
+// retirada e um de Transferência, do MESMO usuário, aparecem com o `tipo`
+// correto em GET /api/pedidos, GET /api/pedidos?escopo=todos (almoxarife) e
+// GET /api/pedidos/{id}.
+func TestPedidosHandlers_CampoTipoNoJSON(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	usuarioID, token := seedContaComumECarrinho(t, db, "H Tipo JSON", "h-pedidos-tipo-json@empresa.com")
+	criarContaComPapel(t, db, "H Tipo JSON Almox", "h-pedidos-tipo-json-almox@empresa.com", "senha-123456", "almoxarife")
+	tokenAlmox := tokenDeLogin(t, db, "h-pedidos-tipo-json-almox@empresa.com", "senha-123456")
+
+	pedidoRetirada := seedPedidoViaServico(t, db, usuarioID, "H Tipo JSON Retirada", 1)
+
+	produtoID, estoqueOrigemID, estoqueDestinoID := seedPedidoTransferenciaViaServico(t, db, "H Tipo JSON Transf", 10)
+	pedidoTransferencia, err := services.SubmeterPedidoTransferencia(
+		db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueOrigemID, estoqueDestinoID, 1,
+	)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoTransferencia: %v", err)
+	}
+
+	esperado := map[string]string{
+		pedidoRetirada.ID:      "retirada",
+		pedidoTransferencia.ID: "transferencia",
+	}
+
+	// GET /api/pedidos (escopo próprio).
+	w := getPedidos(db, "Bearer "+token, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /api/pedidos: status = %d (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Pedidos []services.PedidoResumo `json:"pedidos"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	if len(resp.Pedidos) != 2 {
+		t.Fatalf("len(pedidos) = %d, want 2", len(resp.Pedidos))
+	}
+	for _, p := range resp.Pedidos {
+		if want, ok := esperado[p.ID]; !ok || p.Tipo != want {
+			t.Errorf("GET /api/pedidos: pedido %s: Tipo = %q, want %q", p.ID, p.Tipo, esperado[p.ID])
+		}
+	}
+
+	// GET /api/pedidos?escopo=todos (almoxarife — Story 7.4).
+	wTodos := getPedidos(db, "Bearer "+tokenAlmox, "escopo=todos")
+	if wTodos.Code != http.StatusOK {
+		t.Fatalf("GET /api/pedidos?escopo=todos: status = %d (body=%s)", wTodos.Code, wTodos.Body.String())
+	}
+	var respTodos struct {
+		Pedidos []services.PedidoResumo `json:"pedidos"`
+	}
+	if err := json.Unmarshal(wTodos.Body.Bytes(), &respTodos); err != nil {
+		t.Fatalf("decode (todos): %v (body=%s)", err, wTodos.Body.String())
+	}
+	vistos := 0
+	for _, p := range respTodos.Pedidos {
+		if want, ok := esperado[p.ID]; ok {
+			vistos++
+			if p.Tipo != want {
+				t.Errorf("GET /api/pedidos?escopo=todos: pedido %s: Tipo = %q, want %q", p.ID, p.Tipo, want)
+			}
+		}
+	}
+	if vistos != 2 {
+		t.Errorf("GET /api/pedidos?escopo=todos: viu %d dos 2 pedidos semeados, want 2", vistos)
+	}
+
+	// GET /api/pedidos/{id} — um por tipo.
+	for id, want := range esperado {
+		wDetalhe := getPedido(db, "Bearer "+token, id)
+		if wDetalhe.Code != http.StatusOK {
+			t.Fatalf("GET /api/pedidos/%s: status = %d (body=%s)", id, wDetalhe.Code, wDetalhe.Body.String())
+		}
+		var respDetalhe struct {
+			Pedido services.PedidoDetalhe `json:"pedido"`
+		}
+		if err := json.Unmarshal(wDetalhe.Body.Bytes(), &respDetalhe); err != nil {
+			t.Fatalf("decode detalhe %s: %v (body=%s)", id, err, wDetalhe.Body.String())
+		}
+		if respDetalhe.Pedido.Tipo != want {
+			t.Errorf("GET /api/pedidos/%s: Tipo = %q, want %q", id, respDetalhe.Pedido.Tipo, want)
+		}
+	}
+}
+
+// --- SubmeterPedidoTransferenciaHandler: ramos faltando (revisão de --------
+// --- código) -----------------------------------------------------------
+
+// TestSubmeterPedidoTransferenciaHandler_409ProdutoInativo cobre, na
+// fronteira HTTP, o Always de spec-20-1 já coberto a nível de serviço por
+// TestSubmeterPedidoTransferencia_ProdutoInativoRecusado: Produto inativo ->
+// 409 PRODUTO_INATIVO (mesmo código do Pedido de retirada), nada gravado.
+func TestSubmeterPedidoTransferenciaHandler_409ProdutoInativo(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	_, token := seedContaComumECarrinho(t, db, "Usuario Transf H Inativo", "transf-h-inativo-usuario@empresa.com")
+	produtoID, estoqueOrigemID, estoqueDestinoID := seedPedidoTransferenciaViaServico(t, db, "Canteiro Transf H Inativo", 10)
+	if _, err := db.Exec(`UPDATE produtos SET inativado_em = now() WHERE id = $1`, produtoID); err != nil {
+		t.Fatalf("seed inativação: %v", err)
+	}
+
+	corpo := `{"solicitante":"Fulano","obraCentroCusto":"Obra X","produtoId":"` + produtoID +
+		`","estoqueOrigemId":"` + estoqueOrigemID + `","estoqueDestinoId":"` + estoqueDestinoID + `","quantidade":1}`
+	w := postPedidoTransferencia(db, "Bearer "+token, corpo)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusConflict, w.Body.String())
+	}
+	env := decodeErro(t, w.Body.Bytes())
+	if env.Error.Code != "PRODUTO_INATIVO" {
+		t.Errorf("code = %q, want PRODUTO_INATIVO", env.Error.Code)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM pedidos WHERE tipo = 'transferencia'`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("pedidos tipo=transferencia = %d (err=%v), want 0 (nada gravado)", n, err)
+	}
+}
+
+// TestSubmeterPedidoTransferenciaHandler_400DestinoInexistenteOuOutraEmpresa
+// cobre, na fronteira HTTP, a linha "Destino inexistente/outra Empresa" da
+// I/O Matrix (já coberta a nível de serviço por
+// TestSubmeterPedidoTransferencia_DestinoInexistenteOuOutraEmpresa): 400
+// VALIDATION_ERROR, nunca 409 — molde dos testes de handler já existentes
+// pro Pedido comum (ex. TestSubmeterPedidoHandler_400CamposAusentes).
+func TestSubmeterPedidoTransferenciaHandler_400DestinoInexistenteOuOutraEmpresa(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	_, token := seedContaComumECarrinho(t, db, "Usuario Transf H DestRuim", "transf-h-destruim-usuario@empresa.com")
+	produtoID, estoqueOrigemID, _ := seedPedidoTransferenciaViaServico(t, db, "Canteiro Transf H DestRuim", 10)
+
+	const slugAlheia = "transf-h-destruim-alheia"
+	removerEmpresaPlataformaHandlers(t, db, slugAlheia)
+	t.Cleanup(func() { removerEmpresaPlataformaHandlers(t, db, slugAlheia) })
+	var alheiaID string
+	if err := db.QueryRow(
+		`INSERT INTO empresas (nome_fantasia, razao_social, cnpj, logradouro, numero, bairro, cidade, cep, uf, slug)
+		 VALUES ('Transf H DestRuim Alheia', 'Transf H DestRuim Alheia LTDA', '99888777012199', 'Rua', '1', 'Centro', 'Recife', '50000000', 'PE', $1)
+		 RETURNING id`, slugAlheia,
+	).Scan(&alheiaID); err != nil {
+		t.Fatalf("criar empresa alheia: %v", err)
+	}
+	filialAlheia := filialTeste(t, db, alheiaID)
+	estoqueAlheio, err := services.CriarEstoque(db, alheiaID, filialAlheia, "Estoque Alheio Transf H DestRuim")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque (outra empresa): %v", err)
+	}
+
+	casos := map[string]string{
+		"inexistente":   "00000000-0000-0000-0000-000000000000",
+		"outra empresa": estoqueAlheio.ID,
+	}
+	for nome, estoqueDestino := range casos {
+		t.Run(nome, func(t *testing.T) {
+			corpo := `{"solicitante":"Fulano","obraCentroCusto":"Obra X","produtoId":"` + produtoID +
+				`","estoqueOrigemId":"` + estoqueOrigemID + `","estoqueDestinoId":"` + estoqueDestino + `","quantidade":1}`
+			w := postPedidoTransferencia(db, "Bearer "+token, corpo)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
+			}
+			env := decodeErro(t, w.Body.Bytes())
+			if env.Error.Code != "VALIDATION_ERROR" {
+				t.Errorf("code = %q, want VALIDATION_ERROR", env.Error.Code)
+			}
+		})
+	}
+}

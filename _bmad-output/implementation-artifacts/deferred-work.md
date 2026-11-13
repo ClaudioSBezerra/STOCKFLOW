@@ -805,3 +805,23 @@ status: open
 - source_spec: `spec-19-2-menu-lateral-rail-claro.md`
   summary: Nenhum teste automatizado fixa a separação hover-vs-ativo (`hover:bg-border` vs `sidebar-item-active`) que esta story introduziu — só o regex `ATIVO` pré-existente é reusado.
   evidence: Achado pela revisão (blind-hunter): um teste futuro que remova por engano o guard `!ativo`/`!temAtivo` (reintroduzindo o bug do hover "apagando" o item ativo, já corrigido nesta story) não seria pego por nenhum teste hoje.
+
+- source_spec: `spec-20-1-pedido-transferencia-entre-filiais.md`
+  summary: `SubmeterPedidoTransferencia` não valida que Estoque origem e destino pertencem a Filiais diferentes — só que são Estoques diferentes (mesma Filial é aceito).
+  evidence: Achado pela revisão (blind-hunter, rodada 2). FR58 diz "potencialmente de Filiais diferentes", não "obrigatoriamente" — não é um bug claro, mas vale uma decisão explícita do usuário/equipe se uma Transferência "entre Filiais" deveria exigir Filiais de fato diferentes.
+
+- source_spec: `spec-20-1-pedido-transferencia-entre-filiais.md`
+  summary: Nenhum CHECK/trigger no banco garante que `estoque_destino_id` seja NULL quando `tipo != 'transferencia'` e NOT NULL quando `tipo = 'transferencia'` — a garantia é só disciplina de código.
+  evidence: Achado pela revisão (blind-hunter, rodada 2). Mesma classe de risco de outras colunas condicionais já existentes no projeto (ex. `quantidade_aprovada`), aceito como padrão do código-base.
+
+- source_spec: `spec-20-1-pedido-transferencia-entre-filiais.md`
+  summary: `ListarPedidosProprios`/`ListarPedidosFila` não ganharam um filtro `?tipo=` — só dá pra distinguir Transferência/Baixa visualmente pelo badge, nunca filtrar a listagem por tipo.
+  evidence: Achado pela revisão (blind-hunter, rodada 2). Relevante principalmente para a Story 20.3 (aprovação em lote, onde filtrar por tipo é mais útil) — não bloqueia esta story.
+
+- source_spec: `spec-20-1-pedido-transferencia-entre-filiais.md`
+  summary: `TipoPedidoBadge` usa o mesmo ícone e cor pra `'transferencia'` e `'baixa'` — distinguíveis só pelo texto do rótulo.
+  evidence: Achado pela revisão (blind-hunter + verification-gap, rodada 2). `'baixa'` ainda não tem nenhum produtor real (Story 20.2) — decidir o visual definitivo faz mais sentido quando essa story existir de verdade.
+
+- source_spec: `spec-20-1-pedido-transferencia-entre-filiais.md`
+  summary: `PedidoTransferenciaPage` não mostra o saldo disponível do par Produto/Estoque origem antes do envio — o usuário só descobre que falta saldo depois de um 409 do servidor.
+  evidence: Achado pela revisão (blind-hunter, rodada 1 e 2). Nicety de UX, não um requisito da AC desta story; outras telas do app (ex. lançamento de saldo) mostram essa informação antecipadamente, vale considerar para consistência futura.
