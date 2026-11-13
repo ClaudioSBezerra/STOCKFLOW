@@ -98,21 +98,6 @@ describe('ConfiguracoesPage — Meu Perfil', () => {
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/promocoes/minha', expect.anything()));
   });
 
-  // Feedback Ferreira Costa (direção, 2026-10-22): "Sair" saiu do dropdown
-  // do topo e passou a viver aqui, dentro de Meu Perfil.
-  it('tem um botão "Sair" que chama logout()', async () => {
-    const user = userEvent.setup();
-    stubFetch((url) => {
-      if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
-      throw new Error(`URL inesperada: ${url}`);
-    });
-
-    render(<ConfiguracoesPage />);
-
-    await user.click(screen.getByRole('button', { name: 'Sair' }));
-    expect(logoutMock).toHaveBeenCalledTimes(1);
-  });
-
   it('usuario sem pendente: botão habilitado com o alvo correto (Almoxarife)', async () => {
     stubFetch((url) => {
       if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });

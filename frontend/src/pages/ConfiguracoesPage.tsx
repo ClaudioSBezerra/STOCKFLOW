@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { LogOut } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/card';
@@ -16,11 +15,11 @@ import { apiUrl, authHeaders } from '@/lib/api';
  * Página "Meu perfil" (`/configuracoes`, Story 1.7; reduzida na Story 17.2).
  * Fica só com o que é da própria pessoa:
  *
- *  - Dados da conta (`nome`/`email`/`papel`) + o botão "Sair" (feedback
- *    Ferreira Costa, direção, 2026-10-22: antes vivia no dropdown do avatar,
- *    no topo direito — mudou para cá, no menu à esquerda) + "Solicitar
- *    promoção" para quem tem papel abaixo de `gestor`
- *    (`GET /api/promocoes/minha`, `POST /api/promocoes`).
+ *  - Dados da conta (`nome`/`email`/`papel`) + "Solicitar promoção" para quem
+ *    tem papel abaixo de `gestor` (`GET /api/promocoes/minha`,
+ *    `POST /api/promocoes`). O botão "Sair" não vive mais aqui (feedback do
+ *    usuário, 2026-11-13: antes vivia nesta página — mudou de novo, agora
+ *    pro menu lateral, logo abaixo de "Meu perfil", `MenuLateral.tsx`).
  *  - "Segurança" (`SegurancaCard`, Stories 1.11/14.1/14.4): minha dupla
  *    autenticação (TOTP) — configurar, e desligar quando a Empresa não exige.
  *  - "Privacidade" (`PrivacidadeSection`, Story 8.1): qualquer papel baixa os
@@ -368,7 +367,7 @@ function SegurancaCard() {
 }
 
 export function ConfiguracoesPage() {
-  const { usuario, logout } = useAuth();
+  const { usuario } = useAuth();
   const papel = usuario?.papel ?? '';
   const alvo = proximoPapel(papel);
 
@@ -452,16 +451,6 @@ export function ConfiguracoesPage() {
               <dd className="text-body">{rotuloPapel(papel)}</dd>
             </div>
           </dl>
-
-          <Button
-            type="button"
-            variant="outline"
-            className="gap-2 self-start"
-            onClick={() => logout()}
-          >
-            <LogOut className="size-4" aria-hidden="true" />
-            Sair
-          </Button>
 
           <div className="flex flex-col gap-2 border-t border-border pt-4">
             <h2 className="text-heading-md">Solicitar promoção</h2>

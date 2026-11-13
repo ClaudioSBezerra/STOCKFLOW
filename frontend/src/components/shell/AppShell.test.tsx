@@ -273,8 +273,9 @@ describe('AppShell — menu lateral', () => {
 
   // "Sair" saiu do topo (feedback Ferreira Costa, direção, 2026-10-22): o
   // avatar do topo direito virou um link direto para "Meu perfil", sem
-  // dropdown nenhum — "Sair" agora vive dentro da própria página de Perfil
-  // (ConfiguracoesPage.test.tsx cobre o clique em si).
+  // dropdown nenhum. "Sair" hoje vive no menu lateral, logo abaixo de "Meu
+  // perfil" (feedback do usuário, 2026-11-13, teste logo abaixo) — nunca de
+  // volta pro topo/num dropdown.
   it('topo: o avatar é um link direto para Meu perfil, sem menu/dropdown', () => {
     renderShell();
 
@@ -282,6 +283,22 @@ describe('AppShell — menu lateral', () => {
     expect(avatar).toHaveAttribute('href', '/configuracoes');
     expect(screen.queryByRole('button', { name: 'Menu da conta' })).not.toBeInTheDocument();
     expect(screen.queryByRole('menuitem', { name: 'Sair' })).not.toBeInTheDocument();
+  });
+
+  it('menu lateral: "Sair" fica logo abaixo de "Meu perfil" e chama logout()', async () => {
+    const user = userEvent.setup();
+    renderShell();
+
+    const perfil = perfilNoRodapeDoMenu();
+    const sair = screen.getByRole('button', { name: 'Sair' });
+    // Mesmo container (rodapé do menu, abaixo da navegação) e logo depois de
+    // "Meu perfil" no DOM — prova a posição relativa pedida, não só a
+    // presença do botão.
+    expect(perfil.parentElement).toBe(sair.parentElement);
+    expect(perfil.compareDocumentPosition(sair) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    await user.click(sair);
+    expect(authState.logout).toHaveBeenCalledTimes(1);
   });
 
   it('o topo tem 56px (topbar-height) e fundo branco', () => {

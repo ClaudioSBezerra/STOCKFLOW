@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom';
-import { ChevronDown, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { ChevronDown, LogOut, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
   DropdownMenu,
@@ -9,6 +9,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { useAuth } from '@/lib/auth';
 import { filtrarNavPorPapel, perfil, type NavGrupo, type NavItem } from './nav-items';
 import type { MenuEstado } from './useMenuEstado';
 
@@ -217,6 +218,7 @@ export function MenuLateral({
 }: MenuLateralProps) {
   const mostrarPerfil = filtrarNavPorPapel([perfil], papel).length > 0;
   const PerfilIcon = perfil.icon;
+  const { logout } = useAuth();
   return (
     <div className="flex h-full min-h-0 flex-col bg-sidebar text-sidebar-foreground">
       <div
@@ -272,7 +274,7 @@ export function MenuLateral({
       </nav>
 
       {mostrarPerfil ? (
-        <div className="shrink-0 border-t border-border px-2 py-2">
+        <div className="flex shrink-0 flex-col gap-1 border-t border-border px-2 py-2">
           {recolhido ? (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -292,6 +294,35 @@ export function MenuLateral({
               <PerfilIcon className="size-5 shrink-0" aria-hidden="true" />
               <span>{perfil.label}</span>
             </NavLink>
+          )}
+
+          {/* Sair (deslocado de ConfiguracoesPage, feedback do usuário,
+              2026-11-13): logo abaixo de "Meu perfil", mesmo acesso rápido
+              nos dois estados do menu — nunca um NavLink (não é navegação,
+              é ação), por isso <button> em vez de <NavLink>. */}
+          {recolhido ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="Sair"
+                  onClick={() => logout()}
+                  className={classesItem(false, 'justify-center px-0')}
+                >
+                  <LogOut className="size-5" aria-hidden="true" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right">Sair</TooltipContent>
+            </Tooltip>
+          ) : (
+            <button
+              type="button"
+              onClick={() => logout()}
+              className={classesItem(false)}
+            >
+              <LogOut className="size-5 shrink-0" aria-hidden="true" />
+              <span>Sair</span>
+            </button>
           )}
         </div>
       ) : null}
