@@ -169,11 +169,14 @@ export function PedidoBaixaPage() {
           return;
         }
         const body = (await res.json()) as {
-          porEstoque?: { estoqueId: string; disponivel: number }[];
+          produto?: { porEstoque?: { estoqueId: string; disponivel: number }[] };
         };
         if (cancelado || !montadoRef.current) return;
         setPorEstoqueDoProduto(
-          (body.porEstoque ?? []).map((e) => ({ estoqueId: e.estoqueId, disponivel: e.disponivel })),
+          (body.produto?.porEstoque ?? []).map((e) => ({
+            estoqueId: e.estoqueId,
+            disponivel: e.disponivel,
+          })),
         );
       })
       .catch(() => {

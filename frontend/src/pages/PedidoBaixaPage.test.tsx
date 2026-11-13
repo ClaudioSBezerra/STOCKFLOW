@@ -52,12 +52,19 @@ const PRODUTOS = [
 
 // Detalhe mínimo de GET /api/produtos/p-1 — só o que a página lê
 // (porEstoque[].{estoqueId,disponivel}), mesmo formato de ProdutoDetalhePage.
+// Envelope `{"produto": ...}` — o MESMO de ObterProdutoHandler
+// (handlers/produtos.go:719): bug real corrigido nesta revisão, o fixture
+// antes testava contra `{porEstoque: [...]}` solto, que nunca é a resposta
+// de verdade — por isso o "Disponível: 0" sempre exibido não quebrava teste
+// nenhum.
 const DETALHE_PRODUTO_P1 = {
-  id: 'p-1',
-  porEstoque: [
-    { estoqueId: 'e-1', estoqueNome: 'Almoxarifado Central', quantidade: 20, reservada: 12, disponivel: 8 },
-    { estoqueId: 'e-2', estoqueNome: 'Canteiro A', quantidade: 0, reservada: 0, disponivel: 0 },
-  ],
+  produto: {
+    id: 'p-1',
+    porEstoque: [
+      { estoqueId: 'e-1', estoqueNome: 'Almoxarifado Central', quantidade: 20, reservada: 12, disponivel: 8 },
+      { estoqueId: 'e-2', estoqueNome: 'Canteiro A', quantidade: 0, reservada: 0, disponivel: 0 },
+    ],
+  },
 };
 
 function stubFetchPadrao() {
