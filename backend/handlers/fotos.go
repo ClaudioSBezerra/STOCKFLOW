@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"image"
 	"image/jpeg"
 	_ "image/png" // registra o decoder PNG em image.Decode (Story 3.5)
@@ -422,11 +423,22 @@ func ServirFotoProdutoHandler(db *sql.DB, fotosDir string) http.HandlerFunc {
 		}
 		defer arquivo.Close()
 
-		w.Header().Set("Content-Type", "image/jpeg")
-		w.WriteHeader(http.StatusOK)
-		if _, err := io.Copy(w, arquivo); err != nil {
-			slog.Error("falha ao servir foto de produto", "error", err)
+		info, err := arquivo.Stat()
+		if err != nil {
+			slog.Error("falha ao ler metadados de foto de produto", "caminho", caminho, "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao servir foto")
+			return
 		}
+
+		// O nome do arquivo carrega o epoch do upload (`<id>-<epoch>.jpg`) e o
+		// conteúdo nunca muda: foto nova = nome novo. Por isso o navegador pode
+		// reaproveitar por 1h sem revalidar; `private` porque a rota exige
+		// autenticação. ETag (tamanho+mtime) e Last-Modified (via ServeContent)
+		// habilitam 304 em revalidações condicionais.
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Header().Set("Cache-Control", "private, max-age=3600")
+		w.Header().Set("ETag", fmt.Sprintf(`"%x-%x"`, info.Size(), info.ModTime().UnixNano()))
+		http.ServeContent(w, r, nomeArquivo, info.ModTime(), arquivo)
 	}
 }
 

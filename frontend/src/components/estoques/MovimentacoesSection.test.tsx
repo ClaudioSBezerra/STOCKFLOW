@@ -111,22 +111,85 @@ describe('MovimentacoesSection', () => {
     expect(screen.getAllByText('Inativo')).toHaveLength(1);
   });
 
-  it('carrega a tabela SÓ quando conectarRealtime chama aoMudarStatus("conectado")', async () => {
+  it('carrega a tabela na montagem (sem esperar o SSE); 1ª conexão não duplica; reconexão e evento recarregam', async () => {
     const fetchMock = stubFetch((url) => {
       if (ehLista(url)) return jsonOk({ movimentacoes: MOVIMENTACOES });
       throw new Error(`URL inesperada: ${url}`);
     });
 
     render(<MovimentacoesSection />);
-
-    // Antes de "conectado", nenhum GET ainda foi disparado — mas há um
-    // indicador de carregamento (não uma tela em branco).
-    expect(chamadasLista(fetchMock)).toBe(0);
     expect(screen.getByText('Carregando movimentações...')).toBeInTheDocument();
+    await screen.findByText(/→ Obra Norte/);
+    expect(chamadasLista(fetchMock)).toBe(1);
 
     act(() => {
       aoMudarStatus('conectado');
     });
+    expect(chamadasLista(fetchMock)).toBe(1);
+
+    act(() => {
+      aoMudarStatus('reconectando');
+    });
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await waitFor(() => expect(chamadasLista(fetchMock)).toBe(2));
+
+    act(() => {
+      aoReceberEvento({ resource: 'movimentacoes', id: 'x', change: 'created' });
+    });
+    await waitFor(() => expect(chamadasLista(fetchMock)).toBe(3));
+  });
+
+  it('1ª conexão recarrega quando a carga inicial falhou', async () => {
+    let n = 0;
+    const fetchMock = stubFetch((url) => {
+      if (ehLista(url)) {
+        n += 1;
+        if (n === 1) return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
+        return jsonOk({ movimentacoes: MOVIMENTACOES });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    render(<MovimentacoesSection />);
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+
+    await waitFor(() => expect(chamadasLista(fetchMock)).toBe(2));
+    expect(await screen.findByText(/→ Obra Norte/)).toBeInTheDocument();
+  });
+
+  it('1ª conexão lenta (>2s desde a montagem) recarrega mesmo com a carga ok', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const fetchMock = stubFetch((url) => {
+        if (ehLista(url)) return jsonOk({ movimentacoes: MOVIMENTACOES });
+        throw new Error(`URL inesperada: ${url}`);
+      });
+      render(<MovimentacoesSection />);
+      await screen.findByText(/→ Obra Norte/);
+      expect(chamadasLista(fetchMock)).toBe(1);
+
+      vi.setSystemTime(Date.now() + 2500);
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+
+      await waitFor(() => expect(chamadasLista(fetchMock)).toBe(2));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('renderiza as linhas da tabela com origem → destino, tipo e usuário', async () => {
+    stubFetch((url) => {
+      if (ehLista(url)) return jsonOk({ movimentacoes: MOVIMENTACOES });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    render(<MovimentacoesSection />);
 
     expect(await screen.findByText(/→ Obra Norte/)).toBeInTheDocument();
     // O indicador de carregamento some depois que as linhas chegam.

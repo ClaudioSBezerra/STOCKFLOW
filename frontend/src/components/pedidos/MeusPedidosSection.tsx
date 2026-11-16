@@ -17,6 +17,7 @@ import {
 } from '@/components/ui/select';
 import { ClipboardList } from 'lucide-react';
 import { conectarRealtime, type StatusRealtime } from '@/lib/realtime/client';
+import { deveRecarregarNaConexao } from '@/lib/realtime/recarregarNaConexao';
 import { formatarQuantidade } from '@/components/catalogo/formatacao';
 import { StatusPedidoBadge } from '@/components/pedidos/StatusPedidoBadge';
 import { TipoPedidoBadge } from '@/components/pedidos/TipoPedidoBadge';
@@ -112,6 +113,8 @@ export function MeusPedidosSection() {
   // troca de filtro, e a carga inicial/refetch precisam do MESMO caminho.
   const filtroRef = useRef<FiltroStatus>(TODOS);
   const seqRef = useRef(0);
+  // Última carga da lista falhou? Decide o recarregamento no 1º 'conectado'.
+  const cargaFalhouRef = useRef(false);
 
   const carregar = useCallback(async () => {
     const seq = ++seqRef.current;
@@ -123,9 +126,11 @@ export function MeusPedidosSection() {
       }
       setPedidos(lista);
       setErroCarregar(null);
+      cargaFalhouRef.current = false;
       setCarregou(true);
     } catch (err) {
       if (seq === seqRef.current) {
+        cargaFalhouRef.current = true;
         setErroCarregar(err instanceof Error ? err.message : MENSAGEM_ERRO_CARREGAR);
       }
     }
@@ -143,6 +148,12 @@ export function MeusPedidosSection() {
   }, []);
 
   useEffect(() => {
+    // Carga imediata, independente do SSE: proxies que seguram o `open` do
+    // EventSource até o 1º keep-alive atrasavam a tela em ~15s.
+    void carregar();
+    void carregarIndicadores();
+    let jaConectou = false;
+    const montadoEm = Date.now();
     const desconectar = conectarRealtime(
       (evento) => {
         if (evento.resource === 'pedidos') {
@@ -154,8 +165,18 @@ export function MeusPedidosSection() {
       (status) => {
         setStatusConexao(status);
         if (status === 'conectado') {
-          void carregar();
-          void carregarIndicadores();
+          const primeiraConexao = !jaConectou;
+          jaConectou = true;
+          if (
+            deveRecarregarNaConexao({
+              primeiraConexao,
+              msDesdeMontagem: Date.now() - montadoEm,
+              ultimaCargaFalhou: cargaFalhouRef.current,
+            })
+          ) {
+            void carregar();
+            void carregarIndicadores();
+          }
         }
       },
     );

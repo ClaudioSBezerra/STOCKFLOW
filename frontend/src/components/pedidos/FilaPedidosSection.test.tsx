@@ -96,19 +96,76 @@ afterEach(() => {
 });
 
 describe('FilaPedidosSection', () => {
-  it('carrega a lista SÓ quando conectarRealtime chama aoMudarStatus("conectado")', async () => {
+  it('carrega a lista na montagem, sem esperar o SSE conectar', async () => {
     render(<FilaPedidosSection />);
 
-    expect(listarFilaPedidosMock).not.toHaveBeenCalled();
     expect(screen.getByText('Carregando pedidos...')).toBeInTheDocument();
+    expect(await screen.findByText(/Obra Norte/)).toBeInTheDocument();
+    expect(listarFilaPedidosMock).toHaveBeenCalledWith(undefined);
+    expect(buscarIndicadoresPedidosMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('Carregando pedidos...')).not.toBeInTheDocument();
+  });
+
+  it('a 1ª conexão do SSE NÃO recarrega; a reconexão recarrega', async () => {
+    render(<FilaPedidosSection />);
+    await screen.findByText(/Obra Norte/);
+    expect(listarFilaPedidosMock).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    expect(listarFilaPedidosMock).toHaveBeenCalledTimes(1);
+    expect(buscarIndicadoresPedidosMock).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      aoMudarStatus('reconectando');
+    });
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await waitFor(() => expect(listarFilaPedidosMock).toHaveBeenCalledTimes(2));
+    expect(buscarIndicadoresPedidosMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('1ª conexão recarrega quando a carga inicial falhou', async () => {
+    listarFilaPedidosMock.mockRejectedValueOnce(new Error('falha inicial'));
+    render(<FilaPedidosSection />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('falha inicial');
 
     act(() => {
       aoMudarStatus('conectado');
     });
 
+    await waitFor(() => expect(listarFilaPedidosMock).toHaveBeenCalledTimes(2));
     expect(await screen.findByText(/Obra Norte/)).toBeInTheDocument();
-    expect(listarFilaPedidosMock).toHaveBeenCalledWith(undefined);
-    expect(screen.queryByText('Carregando pedidos...')).not.toBeInTheDocument();
+  });
+
+  it('1ª conexão lenta (>2s desde a montagem) recarrega mesmo com a carga ok', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      render(<FilaPedidosSection />);
+      expect(await screen.findByText(/Obra Norte/)).toBeInTheDocument();
+      expect(listarFilaPedidosMock).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(Date.now() + 2500);
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+
+      await waitFor(() => expect(listarFilaPedidosMock).toHaveBeenCalledTimes(2));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('evento SSE do canal pedidos recarrega a lista', async () => {
+    render(<FilaPedidosSection />);
+    await screen.findByText(/Obra Norte/);
+
+    act(() => {
+      aoReceberEvento({ resource: 'pedidos', id: 'x', change: 'updated' });
+    });
+    await waitFor(() => expect(listarFilaPedidosMock).toHaveBeenCalledTimes(2));
   });
 
   it('mostra o Centro de custo cadastrado do Pedido no diálogo, não na linha da lista', async () => {

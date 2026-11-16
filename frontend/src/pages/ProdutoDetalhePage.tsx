@@ -27,6 +27,7 @@ import { useAuth } from '@/lib/auth';
 import { useCarrinho } from '@/lib/carrinho';
 import { rankPapel } from '@/components/shell/nav-items';
 import { conectarRealtime, type StatusRealtime } from '@/lib/realtime/client';
+import { deveRecarregarNaConexao } from '@/lib/realtime/recarregarNaConexao';
 import { apiUrl, authHeaders } from '@/lib/api';
 import {
   formatarQuantidade,
@@ -45,17 +46,14 @@ import {
  * mesma formatação de `CatalogoListagem`/`BuscaCatalogo` (`@/components/
  * catalogo/formatacao`).
  *
- * A busca inicial E o refetch pós-reconexão são o MESMO caminho de código:
- * `carregarDetalhe` é chamado a partir de `aoMudarStatus('conectado')`
- * (dispara também na primeira conexão) — nunca de um `useEffect` de mount
- * separado (AD-3: "sempre GET completo ao reconectar", unificar os dois
- * evita dois caminhos divergentes para a mesma responsabilidade). Único
- * segundo gatilho: um fallback de `LIMIAR_FALLBACK_SEM_SSE_MS` (4s) que
- * chama a MESMA `carregarDetalhe` caso o EventSource nunca chegue a
- * 'conectado' (incidente real, 2026-09-04 — proxy em produção que nunca
- * completa o handshake SSE, sem erro visível; tela ficava presa em
- * "Carregando produto..." para sempre). Cancelado assim que 'conectado'
- * chega primeiro; `seqRef` descarta qualquer chamada duplicada. A tela
+ * A busca inicial roda na montagem (e a cada troca de `:id`), SEM esperar o
+ * SSE — proxies reversos podem segurar o `open` do EventSource por ~15s; o
+ * SSE só mantém a tela atualizada. O 1º 'conectado' só recarrega (mesma
+ * `carregarDetalhe`) se a última carga falhou ou a conexão demorou mais de
+ * `LIMIAR_CONEXAO_LENTA_MS` (janela de eventos perdidos); reconexões
+ * posteriores sempre recarregam (AD-3: GET completo ao reconectar).
+ * `seqRef` descarta respostas obsoletas, inclusive as em voo quando o efeito
+ * é limpo (troca de `:id`/desmontagem). A tela
  * assina o canal `produtos` via `conectarRealtime`; um evento sobre o
  * MESMO Produto (`resource==='produtos' && id===<id da rota>`) dispara um
  * refetch completo (mesma `carregarDetalhe`) + `toast.info('Catálogo
@@ -288,10 +286,6 @@ const MENSAGEM_ERRO_REATIVACAO =
 const MENSAGEM_ERRO_LISTAR_ESTOQUES =
   'Não foi possível carregar a lista de estoques. Feche e tente novamente.';
 
-// Ver comentário no useEffect da SSE: fallback de escape para quando o
-// EventSource nunca completa o handshake (incidente real, 2026-09-04).
-const LIMIAR_FALLBACK_SEM_SSE_MS = 4000;
-
 interface EstoqueOpcao {
   id: string;
   nome: string;
@@ -390,6 +384,8 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
   // sequência). A troca de id em si é coberta pelo `key={id}` do wrapper
   // acima, que já descarta a instância inteira.
   const seqRef = useRef(0);
+  // Última carga do detalhe falhou? Decide o recarregamento no 1º 'conectado'.
+  const cargaFalhouRef = useRef(false);
 
   // Revoga todos os Object URLs em cache quando o componente desmonta —
   // mesmo cuidado de CadastroProdutoSection. Como cada produto tem sua
@@ -529,17 +525,20 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
       const res = await fetch(apiUrl(`/api/produtos/${id}`), { headers: authHeaders() });
       if (seq !== seqRef.current) return;
       if (!res.ok) {
+        cargaFalhouRef.current = true;
         setErro(res.status === 404 ? 'nao-encontrado' : 'generico');
         return;
       }
       const data = (await res.json()) as { produto: ProdutoDetalhe };
       if (seq !== seqRef.current) return;
       setProduto(data.produto);
+      cargaFalhouRef.current = false;
       sincronizarReservas(data.produto);
       await carregarFotos(id, seq);
       if (podeVerHistorico) await carregarHistorico(id, seq);
     } catch {
       if (seq === seqRef.current) {
+        cargaFalhouRef.current = true;
         setErro('generico');
       }
     } finally {
@@ -780,20 +779,13 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
   }
 
   useEffect(() => {
-    // Fallback de escape (incidente real, 2026-09-04): em produção, atrás de
-    // certas cadeias de proxy reverso, o EventSource pode nunca completar o
-    // handshake (nem 'open' nem 'error' — a conexão simplesmente não
-    // resolve) — sem isto, a tela ficava presa em "Carregando produto..."
-    // para sempre, sem nenhum erro visível. Não é dado migrado nem bug de
-    // renderização: CatalogoListagem busca por um `useEffect` de mount
-    // próprio e nunca trava; só ProdutoDetalhePage dependia 100% de
-    // 'conectado'. Continua sendo a MESMA `carregarDetalhe` (nenhum caminho
-    // divergente) — só um segundo gatilho, cancelado assim que 'conectado'
-    // chega primeiro. `seqRef` dentro de `carregarDetalhe` já descarta uma
-    // chamada duplicada caso as duas disparem quase juntas.
-    const timerFallback = setTimeout(() => {
-      void carregarDetalhe();
-    }, LIMIAR_FALLBACK_SEM_SSE_MS);
+    // Carga imediata na montagem (e a cada troca de `:id`), independente do
+    // SSE: atrás de proxies que seguram o `open` do EventSource (incidente
+    // 2026-09-04 e lentidão de ~15s medida depois) a tela não pode esperar
+    // 'conectado'. O SSE só mantém a tela atualizada.
+    void carregarDetalhe();
+    let jaConectou = false;
+    const montadoEm = Date.now();
 
     const desconectar = conectarRealtime(
       (evento) => {
@@ -805,13 +797,23 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
       (status) => {
         setStatusConexao(status);
         if (status === 'conectado') {
-          clearTimeout(timerFallback);
-          void carregarDetalhe();
+          const primeiraConexao = !jaConectou;
+          jaConectou = true;
+          if (
+            deveRecarregarNaConexao({
+              primeiraConexao,
+              msDesdeMontagem: Date.now() - montadoEm,
+              ultimaCargaFalhou: cargaFalhouRef.current,
+            })
+          ) {
+            void carregarDetalhe();
+          }
         }
       },
     );
     return () => {
-      clearTimeout(timerFallback);
+      // Invalida respostas em voo: nada do ciclo antigo renderiza depois.
+      seqRef.current += 1;
       desconectar();
     };
   }, [id, carregarDetalhe]);

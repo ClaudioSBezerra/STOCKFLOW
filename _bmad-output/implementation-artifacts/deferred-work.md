@@ -917,3 +917,19 @@ status: open
 - source_spec: `spec-filial-dados-fiscais.md`
   summary: `GET /api/filiais` devolve CNPJ, IE e endereço completo a qualquer conta autenticada (inclusive `usuario`); só o nome é necessário pra escolher a Filial de um Estoque.
   evidence: Achado pela revisão (blind-hunter). São dados cadastrais da própria Empresa do usuário (já visíveis no PDF), mas dá pra enxugar a listagem ou limitar os campos fiscais a `gestor`+.
+
+- source_spec: `correcao-lentidao-telas-realtime` (sem spec; correção avulsa, 2026-11-16)
+  summary: O Catálogo parece buscar cada foto duas vezes na 1ª visita (24 requisições a mais, servidas do cache); não foi investigado.
+  evidence: Observado pelo subagente que mediu a correção de lentidão. Possível efeito de efeito/estado duplicado em `CatalogoListagem.tsx` — vale olhar numa passada de performance do catálogo.
+
+- source_spec: `correcao-lentidao-telas-realtime` (sem spec; correção avulsa, 2026-11-16)
+  summary: Não há indicação visual quando a conexão de tempo real "nunca abre" (proxy segurando o `open`): a tela carrega os dados, mas o usuário não sabe que as atualizações automáticas estão paradas.
+  evidence: Achado pela revisão (blind-hunter). Antes isso se manifestava como tela travada; agora é silencioso. Reaproveitar `statusConexao` para um aviso discreto.
+
+- source_spec: `correcao-lentidao-telas-realtime` (sem spec; correção avulsa, 2026-11-16)
+  summary: A foto removida ou substituída de um produto continua aparecendo por até 1 h no navegador (Cache-Control private, max-age=3600).
+  evidence: Trade-off aceito: o nome do arquivo já muda a cada upload, então só a foto REMOVIDA fica visível até expirar. Reduzir o TTL ou usar `must-revalidate` se incomodar.
+
+- source_spec: `correcao-lentidao-telas-realtime` (sem spec; correção avulsa, 2026-11-16)
+  summary: Reforço opcional de infraestrutura, não aplicado: no `nginx_proxy` compartilhado da AWS (10 sistemas) ligar `http2 on;` no bloco de suprimentos e `proxy_buffering off` na rota `^/e/[^/]+/api/realtime/` — evita o atraso de 15 s do `open` do SSE na origem e o limite de 6 conexões do HTTP/1.1.
+  evidence: Medido: com a correção no código as telas já abrem em ~0,2 s, então o ajuste no nginx compartilhado deixou de ser necessário; fica como defesa extra para quando a infra puder ser alterada com segurança (arquivo /apps/infra-server-fercos-sap/nginx/config/nginx.conf, bind mount).

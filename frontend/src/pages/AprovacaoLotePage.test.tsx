@@ -225,6 +225,62 @@ describe('AprovacaoLotePage', () => {
     ).toBeInTheDocument();
   });
 
+  it('carrega a lista na montagem, sem esperar o SSE; 1ª conexão não duplica; reconexão recarrega', async () => {
+    render(<AprovacaoLotePage />);
+    await screen.findByText('Ana Silva');
+    expect(listarFilaPedidosMock).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    expect(listarFilaPedidosMock).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      aoMudarStatus('reconectando');
+    });
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await waitFor(() => expect(listarFilaPedidosMock).toHaveBeenCalledTimes(2));
+  });
+
+  it('falha na carga inicial mostra o erro sem depender do SSE', async () => {
+    listarFilaPedidosMock.mockRejectedValue(new Error('sessão expirada'));
+    render(<AprovacaoLotePage />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('sessão expirada');
+  });
+
+  it('1ª conexão recarrega quando a carga inicial falhou', async () => {
+    listarFilaPedidosMock.mockRejectedValueOnce(new Error('falha inicial'));
+    render(<AprovacaoLotePage />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('falha inicial');
+
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+
+    await waitFor(() => expect(listarFilaPedidosMock).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('Ana Silva')).toBeInTheDocument();
+  });
+
+  it('1ª conexão lenta (>2s desde a montagem) recarrega mesmo com a carga ok', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      render(<AprovacaoLotePage />);
+      expect(await screen.findByText('Ana Silva')).toBeInTheDocument();
+      expect(listarFilaPedidosMock).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(Date.now() + 2500);
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+
+      await waitFor(() => expect(listarFilaPedidosMock).toHaveBeenCalledTimes(2));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('evento SSE do canal pedidos recarrega a lista', async () => {
     await montarEConectar();
     listarFilaPedidosMock.mockClear();

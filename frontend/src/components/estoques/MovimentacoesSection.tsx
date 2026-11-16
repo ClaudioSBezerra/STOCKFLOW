@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { FaixaIndicadores } from '@/components/lista/FaixaIndicadores';
 import { PilhulaStatus } from '@/components/lista/PilhulaStatus';
 import { conectarRealtime, type StatusRealtime } from '@/lib/realtime/client';
+import { deveRecarregarNaConexao } from '@/lib/realtime/recarregarNaConexao';
 import { formatarQuantidade } from '@/components/catalogo/formatacao';
 import { apiUrl, authHeaders } from '@/lib/api';
 
@@ -126,6 +127,8 @@ export function MovimentacoesSection() {
   // DEPOIS de uma nova é descartada (um refetch por evento SSE não pode ser
   // sobrescrito por uma carga anterior mais lenta).
   const seqRef = useRef(0);
+  // Última carga da lista falhou? Decide o recarregamento no 1º 'conectado'.
+  const cargaFalhouRef = useRef(false);
 
   const seqIndRef = useRef(0);
 
@@ -161,6 +164,7 @@ export function MovimentacoesSection() {
       }
       if (!res.ok) {
         // Dado anterior permanece visível; só o aviso de erro aparece.
+        cargaFalhouRef.current = true;
         setErroCarregar(MENSAGEM_ERRO_CARREGAR);
         return;
       }
@@ -170,15 +174,23 @@ export function MovimentacoesSection() {
       }
       setMovimentacoes(body.movimentacoes ?? []);
       setErroCarregar(null);
+      cargaFalhouRef.current = false;
       setCarregou(true);
     } catch {
       if (seq === seqRef.current) {
+        cargaFalhouRef.current = true;
         setErroCarregar(MENSAGEM_ERRO_CARREGAR);
       }
     }
   }, []);
 
   useEffect(() => {
+    // Carga imediata, independente do SSE: proxies que seguram o `open` do
+    // EventSource até o 1º keep-alive atrasavam a tela em ~15s.
+    void carregar();
+    void carregarIndicadores();
+    let jaConectou = false;
+    const montadoEm = Date.now();
     const desconectar = conectarRealtime(
       (evento) => {
         if (evento.resource === 'movimentacoes') {
@@ -190,8 +202,18 @@ export function MovimentacoesSection() {
       (status) => {
         setStatusConexao(status);
         if (status === 'conectado') {
-          void carregar();
-          void carregarIndicadores();
+          const primeiraConexao = !jaConectou;
+          jaConectou = true;
+          if (
+            deveRecarregarNaConexao({
+              primeiraConexao,
+              msDesdeMontagem: Date.now() - montadoEm,
+              ultimaCargaFalhou: cargaFalhouRef.current,
+            })
+          ) {
+            void carregar();
+            void carregarIndicadores();
+          }
         }
       },
     );
@@ -201,7 +223,7 @@ export function MovimentacoesSection() {
   }, [carregar, carregarIndicadores]);
 
   // Troca de filtro: rebusca lista e indicadores com os mesmos parâmetros. A
-  // carga inicial vem da SSE ('conectado'); o 1º render não dispara aqui.
+  // carga inicial é a da montagem (efeito acima); o 1º render não dispara aqui.
   const primeiroRenderRef = useRef(true);
   useEffect(() => {
     filtrosRef.current = { periodo, tipo, estoque };

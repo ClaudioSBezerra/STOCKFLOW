@@ -216,16 +216,9 @@ const PRODUTO_P2 = {
 };
 
 describe('ProdutoDetalhePage', () => {
-  it('carrega o detalhe SÓ quando conectarRealtime chama aoMudarStatus("conectado") (inclusive a 1ª conexão)', async () => {
+  it('carrega o detalhe na montagem, sem esperar o SSE conectar', async () => {
     stubPadrao();
     renderPagina();
-
-    // Antes de "conectado", nenhum GET de detalhe ainda foi disparado.
-    expect(screen.queryByText('Cabo Flexível 4mm')).not.toBeInTheDocument();
-
-    act(() => {
-      aoMudarStatus('conectado');
-    });
 
     expect(await screen.findByText('Cabo Flexível 4mm')).toBeInTheDocument();
     const codigo = screen.getByText('CAB-004');
@@ -274,52 +267,104 @@ describe('ProdutoDetalhePage', () => {
     expect(screen.getByText('Preço Unitário').nextElementSibling).toHaveTextContent('—');
   });
 
-  it('fallback: busca o detalhe mesmo sem SSE conectar, após o timer de escape (incidente real 2026-09-04)', async () => {
-    vi.useFakeTimers();
+  it('a 1ª conexão do SSE NÃO recarrega o detalhe; a reconexão recarrega', async () => {
+    const fetchMock = stubPadrao();
+    renderPagina();
+    await screen.findByText('Cabo Flexível 4mm');
+    const antes = fetchMock.mock.calls.length;
+
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(fetchMock.mock.calls.length).toBe(antes);
+
+    act(() => {
+      aoMudarStatus('reconectando');
+    });
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(antes));
+  });
+
+  it('1ª conexão recarrega o detalhe quando a carga inicial falhou', async () => {
+    let n = 0;
+    const fetchMock = stubFetch((url) => {
+      if (url === '/api/produtos/p1') {
+        n += 1;
+        if (n === 1) return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
+        return jsonOk({ produto: PRODUTO_DETALHE });
+      }
+      if (url === '/api/produtos/p1/fotos') return jsonOk({ fotos: [] });
+      if (url === '/api/produtos/p1/historico') return jsonOk({ historico: [] });
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    renderPagina();
+    expect(
+      await screen.findByText('Não foi possível carregar o produto agora. Tente novamente em instantes.'),
+    ).toBeInTheDocument();
+
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+
+    expect(await screen.findByText('Cabo Flexível 4mm')).toBeInTheDocument();
+    expect(fetchMock.mock.calls.filter(([u]) => u === '/api/produtos/p1').length).toBe(2);
+  });
+
+  it('1ª conexão lenta (>2s desde a montagem) recarrega o detalhe mesmo com a carga ok', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
     try {
-      stubPadrao();
+      const fetchMock = stubPadrao();
       renderPagina();
+      expect(await screen.findByText('Cabo Flexível 4mm')).toBeInTheDocument();
+      const antes = fetchMock.mock.calls.filter(([u]) => u === '/api/produtos/p1').length;
 
-      // Nunca dispara aoMudarStatus('conectado') neste teste — simula o
-      // EventSource nunca completando o handshake (ex.: proxy em produção
-      // que nunca fecha a conexão nem emite erro).
-      expect(screen.queryByText('Cabo Flexível 4mm')).not.toBeInTheDocument();
-
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(4000);
+      vi.setSystemTime(Date.now() + 2500);
+      act(() => {
+        aoMudarStatus('conectado');
       });
 
-      expect(screen.getByText('Cabo Flexível 4mm')).toBeInTheDocument();
+      await waitFor(() =>
+        expect(fetchMock.mock.calls.filter(([u]) => u === '/api/produtos/p1').length).toBe(antes + 1),
+      );
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('fallback: não refaz a busca se "conectado" já chegou antes do timer de escape', async () => {
-    vi.useFakeTimers();
-    try {
-      const fetchMock = stubPadrao();
-      renderPagina();
+  it('trocar o id com resposta pendente descarta a resposta do produto antigo', async () => {
+    let resolverP1: ((v: { ok: boolean; status?: number; json: () => Promise<unknown> }) => void) | undefined;
+    stubFetch((url) => {
+      if (url === '/api/produtos/p1') {
+        return new Promise((resolve) => {
+          resolverP1 = resolve;
+        });
+      }
+      if (url === '/api/produtos/p1/fotos') return jsonOk({ fotos: [] });
+      if (url === '/api/produtos/p2') return jsonOk({ produto: PRODUTO_P2 });
+      if (url === '/api/produtos/p2/fotos') return jsonOk({ fotos: [] });
+      if (url === '/api/produtos/p2/historico' || url === '/api/produtos/p1/historico') {
+        return jsonOk({ historico: [] });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    const user = userEvent.setup();
+    renderPaginaComNavegacao();
 
-      act(() => {
-        aoMudarStatus('conectado');
-      });
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(0);
-      });
-      expect(screen.getByText('Cabo Flexível 4mm')).toBeInTheDocument();
+    await user.click(screen.getByText('ir para /produtos/p2'));
+    expect(await screen.findByText('Outro Produto')).toBeInTheDocument();
 
-      const chamadasAntes = fetchMock.mock.calls.length;
+    await act(async () => {
+      resolverP1?.({ ok: true, status: 200, json: async () => ({ produto: PRODUTO_DETALHE }) });
+      await new Promise((r) => setTimeout(r, 20));
+    });
 
-      // O timer de escape venceria aqui se não tivesse sido cancelado por
-      // 'conectado' já ter chegado — não deve gerar nenhuma chamada extra.
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(4000);
-      });
-      expect(fetchMock.mock.calls.length).toBe(chamadasAntes);
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(screen.getByText('Outro Produto')).toBeInTheDocument();
+    expect(screen.queryByText('Cabo Flexível 4mm')).not.toBeInTheDocument();
   });
 
   it('produto sem porEstoque mostra o aviso "Sem quantidade registrada por estoque."', async () => {

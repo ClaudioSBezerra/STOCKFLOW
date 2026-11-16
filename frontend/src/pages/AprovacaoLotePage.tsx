@@ -8,6 +8,7 @@ import { TipoPedidoBadge } from '@/components/pedidos/TipoPedidoBadge';
 import { BaixarPreNotaButton } from '@/components/pedidos/BaixarPreNotaButton';
 import { formatarQuantidade } from '@/components/catalogo/formatacao';
 import { conectarRealtime, type StatusRealtime } from '@/lib/realtime/client';
+import { deveRecarregarNaConexao } from '@/lib/realtime/recarregarNaConexao';
 import { useAuth } from '@/lib/auth';
 import { rankPapel } from '@/components/shell/nav-items';
 import {
@@ -104,6 +105,8 @@ function AprovacaoLoteConteudo() {
   const [selecionados, setSelecionados] = useState<Set<string>>(new Set());
 
   const seqRef = useRef(0);
+  // Última carga da lista falhou? Decide o recarregamento no 1º 'conectado'.
+  const cargaFalhouRef = useRef(false);
 
   const carregar = useCallback(async () => {
     const seq = ++seqRef.current;
@@ -113,6 +116,7 @@ function AprovacaoLoteConteudo() {
       if (seq !== seqRef.current) return;
       setPendentes(doLote);
       setErroCarregar(null);
+      cargaFalhouRef.current = false;
       setCarregou(true);
 
       const idsAtuais = new Set(doLote.map((p) => p.id));
@@ -162,12 +166,17 @@ function AprovacaoLoteConteudo() {
       }
     } catch (err) {
       if (seq === seqRef.current) {
+        cargaFalhouRef.current = true;
         setErroCarregar(err instanceof Error ? err.message : MENSAGEM_ERRO_CARREGAR);
       }
     }
   }, []);
 
   useEffect(() => {
+    // Carga imediata, independente do SSE (o `open` pode chegar ~15s depois).
+    void carregar();
+    let jaConectou = false;
+    const montadoEm = Date.now();
     const desconectar = conectarRealtime(
       (evento) => {
         if (evento.resource === 'pedidos') {
@@ -177,7 +186,17 @@ function AprovacaoLoteConteudo() {
       (status) => {
         setStatusConexao(status);
         if (status === 'conectado') {
-          void carregar();
+          const primeiraConexao = !jaConectou;
+          jaConectou = true;
+          if (
+            deveRecarregarNaConexao({
+              primeiraConexao,
+              msDesdeMontagem: Date.now() - montadoEm,
+              ultimaCargaFalhou: cargaFalhouRef.current,
+            })
+          ) {
+            void carregar();
+          }
         }
       },
     );

@@ -89,6 +89,10 @@ func postFotoProduto(db *sql.DB, fotosDir, authHeader, produtoID string, conteud
 // getFotoProduto despacha GET /api/produtos/{id}/fotos/{arquivo} pela MESMA
 // composição de newMux (só RequireAuth, sem RequireRole).
 func getFotoProduto(db *sql.DB, fotosDir, authHeader, produtoID, arquivo string) *httptest.ResponseRecorder {
+	return getFotoProdutoComHeaders(db, fotosDir, authHeader, produtoID, arquivo, nil)
+}
+
+func getFotoProdutoComHeaders(db *sql.DB, fotosDir, authHeader, produtoID, arquivo string, extras map[string]string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /e/{slug}/api/produtos/{id}/fotos/{arquivo}",
 		comEmpresa(db,
@@ -98,6 +102,9 @@ func getFotoProduto(db *sql.DB, fotosDir, authHeader, produtoID, arquivo string)
 	r := httptest.NewRequest(http.MethodGet, prefixoEmpresaTeste+"/api/produtos/"+produtoID+"/fotos/"+arquivo, nil)
 	if authHeader != "" {
 		r.Header.Set("Authorization", authHeader)
+	}
+	for k, v := range extras {
+		r.Header.Set(k, v)
 	}
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
@@ -513,6 +520,60 @@ func TestServirFotoProdutoHandler_QualquerPapelAutenticado(t *testing.T) {
 	wGet := getFotoProduto(db, fotosDir, "Bearer "+tokenUsuario, produtoID, resp.Foto.Nome)
 	if wGet.Code != http.StatusOK {
 		t.Fatalf("GET status = %d, want 200 (body=%s) — visualização deveria ser liberada a qualquer papel", wGet.Code, wGet.Body.String())
+	}
+}
+
+// TestServirFotoProdutoHandler_CacheControlEValidadores prova que a foto sai
+// com Cache-Control privado de 1h, ETag e Last-Modified, e que revalidações
+// condicionais respondem 304 sem corpo.
+func TestServirFotoProdutoHandler_CacheControlEValidadores(t *testing.T) {
+	db := testDB(t)
+	limparProdutosFotos(t, db)
+	fotosDir := t.TempDir()
+	criarContaComPapel(t, db, "Almox Foto Cache", "foto-almox-cache@empresa.com", "senha-123456", "almoxarife")
+	token := "Bearer " + tokenDeLogin(t, db, "foto-almox-cache@empresa.com", "senha-123456")
+	produtoID := criarProdutoParaFotoHandler(t, db, "Produto Foto Cache")
+
+	w := postFotoProduto(db, fotosDir, token, produtoID, construirJPEG(t, 100, 100), "foto.jpg")
+	if w.Code != http.StatusCreated {
+		t.Fatalf("upload: status = %d (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Foto struct {
+			Nome string `json:"nome"`
+		} `json:"foto"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	wGet := getFotoProduto(db, fotosDir, token, produtoID, resp.Foto.Nome)
+	if wGet.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200", wGet.Code)
+	}
+	if got := wGet.Header().Get("Cache-Control"); got != "private, max-age=3600" {
+		t.Errorf("Cache-Control = %q, want %q", got, "private, max-age=3600")
+	}
+	if got := wGet.Header().Get("Content-Type"); got != "image/jpeg" {
+		t.Errorf("Content-Type = %q, want image/jpeg", got)
+	}
+	etag := wGet.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("ETag ausente")
+	}
+	if wGet.Header().Get("Last-Modified") == "" {
+		t.Error("Last-Modified ausente")
+	}
+	if wGet.Body.Len() == 0 {
+		t.Error("corpo vazio no 200")
+	}
+
+	w304 := getFotoProdutoComHeaders(db, fotosDir, token, produtoID, resp.Foto.Nome, map[string]string{"If-None-Match": etag})
+	if w304.Code != http.StatusNotModified {
+		t.Errorf("revalidação com If-None-Match: status = %d, want 304", w304.Code)
+	}
+	if w304.Body.Len() != 0 {
+		t.Error("304 não deve ter corpo")
 	}
 }
 

@@ -92,23 +92,76 @@ afterEach(() => {
 });
 
 describe('MeusPedidosSection', () => {
-  it('carrega a lista SÓ quando conectarRealtime chama aoMudarStatus("conectado")', async () => {
+  it('carrega a lista na montagem, sem esperar o SSE conectar', async () => {
     render(<MeusPedidosSection />);
 
-    expect(listarPedidosMock).not.toHaveBeenCalled();
     expect(screen.getByText('Carregando pedidos...')).toBeInTheDocument();
+    // 'Obra Norte' é único (subtítulo do 1º pedido) — âncora segura quando
+    // ambos os pedidos têm o mesmo solicitante 'Ana Silva'.
+    expect(await screen.findByText(/Obra Norte/)).toBeInTheDocument();
+    expect(screen.getAllByText('Ana Silva')).toHaveLength(2);
+    expect(listarPedidosMock).toHaveBeenCalledWith(undefined);
+    expect(screen.queryByText('Carregando pedidos...')).not.toBeInTheDocument();
+  });
+
+  it('a 1ª conexão do SSE NÃO recarrega; a reconexão recarrega', async () => {
+    render(<MeusPedidosSection />);
+    await screen.findByText(/Obra Norte/);
+    expect(listarPedidosMock).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    expect(listarPedidosMock).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      aoMudarStatus('reconectando');
+    });
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await waitFor(() => expect(listarPedidosMock).toHaveBeenCalledTimes(2));
+  });
+
+  it('1ª conexão recarrega quando a carga inicial falhou', async () => {
+    listarPedidosMock.mockRejectedValueOnce(new Error('falha inicial'));
+    render(<MeusPedidosSection />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('falha inicial');
 
     act(() => {
       aoMudarStatus('conectado');
     });
 
-    // 'Obra Norte' é único (subtítulo do 1º pedido) — âncora segura quando
-    // ambos os pedidos têm o mesmo solicitante 'Ana Silva'.
+    await waitFor(() => expect(listarPedidosMock).toHaveBeenCalledTimes(2));
     expect(await screen.findByText(/Obra Norte/)).toBeInTheDocument();
-    // Ambos os pedidos exibem 'Ana Silva' como título da linha.
-    expect(screen.getAllByText('Ana Silva')).toHaveLength(2);
-    expect(listarPedidosMock).toHaveBeenCalledWith(undefined);
-    expect(screen.queryByText('Carregando pedidos...')).not.toBeInTheDocument();
+  });
+
+  it('1ª conexão lenta (>2s desde a montagem) recarrega mesmo com a carga ok', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      render(<MeusPedidosSection />);
+      expect(await screen.findByText(/Obra Norte/)).toBeInTheDocument();
+      expect(listarPedidosMock).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(Date.now() + 2500);
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+
+      await waitFor(() => expect(listarPedidosMock).toHaveBeenCalledTimes(2));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('evento SSE do canal pedidos recarrega a lista', async () => {
+    render(<MeusPedidosSection />);
+    await screen.findByText(/Obra Norte/);
+
+    act(() => {
+      aoReceberEvento({ resource: 'pedidos', id: 'x', change: 'updated' });
+    });
+    await waitFor(() => expect(listarPedidosMock).toHaveBeenCalledTimes(2));
   });
 
   it('renderiza o badge de status de cada linha com ícone + texto', async () => {
