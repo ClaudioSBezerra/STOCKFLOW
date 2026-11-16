@@ -919,8 +919,8 @@ status: open
   evidence: Achado pela revisão (blind-hunter). São dados cadastrais da própria Empresa do usuário (já visíveis no PDF), mas dá pra enxugar a listagem ou limitar os campos fiscais a `gestor`+.
 
 - source_spec: `correcao-lentidao-telas-realtime` (sem spec; correção avulsa, 2026-11-16)
-  summary: O Catálogo parece buscar cada foto duas vezes na 1ª visita (24 requisições a mais, servidas do cache); não foi investigado.
-  evidence: Observado pelo subagente que mediu a correção de lentidão. Possível efeito de efeito/estado duplicado em `CatalogoListagem.tsx` — vale olhar numa passada de performance do catálogo.
+  summary: RESOLVIDO (não era bug) — o Catálogo parecia buscar cada foto duas vezes na 1ª visita (24 requisições a mais), mas era artefato da medição.
+  evidence: Investigado em 2026-11-16 em navegador real (2.750 produtos, 900 fotos, build de produção): 1ª visita, F5 e volta pelo menu dão 24 pedidos de foto, 24 URLs distintas, grade montada 1x e 1 chamada de catálogo. O script de medição visitava o Catálogo duas vezes e só zerava a contagem depois (24 da rede + 24 do cache). Foi adicionado um teste que trava "montagem inicial = 1 chamada de catálogo + 24 fotos únicas". Ganho real do cache de fotos: 1,08 s na 1ª visita, 0,26 s nas seguintes.
 
 - source_spec: `correcao-lentidao-telas-realtime` (sem spec; correção avulsa, 2026-11-16)
   summary: Não há indicação visual quando a conexão de tempo real "nunca abre" (proxy segurando o `open`): a tela carrega os dados, mas o usuário não sabe que as atualizações automáticas estão paradas.

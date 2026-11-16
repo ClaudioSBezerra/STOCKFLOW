@@ -1598,3 +1598,64 @@ describe('CatalogoListagem — FaixaIndicadores (Story 17.3)', () => {
     );
   });
 });
+
+// Contrato das miniaturas (medição de 2026-11-16, navegador real): uma
+// montagem inicial da grade = 1 chamada de catálogo e 1 busca por foto — a
+// grade só é desenhada com `!carregando`, então qualquer 2ª `carregar`
+// desmontaria os 24 cards e rebuscaria todas as fotos. Trava esse custo.
+describe('CatalogoListagem — miniaturas (sem buscas duplicadas)', () => {
+  const createOriginal = URL.createObjectURL;
+  const revokeOriginal = URL.revokeObjectURL;
+
+  beforeEach(() => {
+    URL.createObjectURL = vi.fn(() => 'blob:miniatura-teste');
+    URL.revokeObjectURL = vi.fn();
+  });
+
+  afterEach(() => {
+    URL.createObjectURL = createOriginal;
+    URL.revokeObjectURL = revokeOriginal;
+  });
+
+  it('a montagem inicial faz 1 chamada de catálogo e busca cada foto uma única vez', async () => {
+    stubMatchMedia(true);
+    const itens = Array.from({ length: 24 }, (_, i) => ({
+      id: `p-${i}`,
+      nome: `Produto ${i}`,
+      codigo: String(i).padStart(6, '0'),
+      ...COLUNAS_ITEM_PADRAO,
+      fotoArquivo: `p-${i}-1.jpg`,
+      categoria: { id: 'c1', codigo: '04.001', nome: 'Construção Civil' },
+      dimensoes: DIMENSOES_NULAS,
+      quantidadeTotal: 1,
+      disponivel: true,
+    }));
+    const chamadas: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => {
+        chamadas.push(url);
+        const json = (corpo: unknown) =>
+          Promise.resolve({ ok: true, json: async () => corpo, blob: async () => new Blob(['x']) });
+        if (url.includes('/fotos/')) return json({});
+        if (url.includes('/catalogo/indicadores')) return json({ itens: 24, comSaldo: 24, semFoto: 0 });
+        if (url.includes('/produtos/catalogo?')) {
+          return json({ produtos: itens, paginacao: { pagina: 1, totalPaginas: 1, total: 24, tamanho: 24 } });
+        }
+        if (url.includes('/categorias')) return json({ categorias: [] });
+        if (url.includes('/estoques')) return json({ estoques: [] });
+        return json({});
+      }),
+    );
+
+    renderCatalogo('');
+    await waitFor(() => expect(chamadas.filter((u) => u.includes('/fotos/'))).toHaveLength(24));
+    // Dá tempo de qualquer 2ª carga/remontagem indevida aparecer.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    const fotos = chamadas.filter((u) => u.includes('/fotos/'));
+    expect(chamadas.filter((u) => u.includes('/produtos/catalogo?'))).toHaveLength(1);
+    expect(fotos).toHaveLength(24);
+    expect(new Set(fotos).size).toBe(24);
+  });
+});
