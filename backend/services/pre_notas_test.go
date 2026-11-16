@@ -281,16 +281,109 @@ func TestMontarPreNotaConteudo_MistaComPrecoAlteradoDepois(t *testing.T) {
 		t.Errorf("transf: FilialOrigem = %q, want filial de origem distinta", transf.FilialOrigem)
 	}
 
-	// Texto impresso a partir do conteúdo montado do banco.
-	texto := strings.Join(linhasPreNota(conteudo), "\n")
-	for _, want := range []string{
-		"Valor unitário: R$ 1.234,50   Valor da linha: R$ 7.407,00",
-		"Total: R$ 7.407,00 (há itens sem valor cadastrado)",
-		"Data: " + conteudo.CriadoEm.In(localPreNota).Format("02/01/2006 15:04"),
-	} {
-		if !strings.Contains(texto, want) {
-			t.Errorf("texto da Pré-Nota sem %q:\n%s", want, texto)
+	if transf.EstoqueOrigem != "PreNota Mista Transf" || transf.EstoqueDestino != "PreNota Mista Destino" {
+		t.Errorf("transf: Estoques = %q -> %q, want PreNota Mista Transf -> PreNota Mista Destino", transf.EstoqueOrigem, transf.EstoqueDestino)
+	}
+	for _, it := range conteudo.Itens {
+		if it.Tipo == "baixa" && (it.EstoqueOrigem != "PreNota Mista Baixa" || it.EstoqueDestino != "") {
+			t.Errorf("baixa: Estoques = %q -> %q, want PreNota Mista Baixa -> vazio", it.EstoqueOrigem, it.EstoqueDestino)
 		}
+	}
+
+	// Layout montado a partir do conteúdo do banco: 2 rotas (Transferência e
+	// Baixa), a Baixa sem destinatário, totais do snapshot.
+	l := layoutDaPreNota(conteudo)
+	if len(l.Rotas) != 2 {
+		t.Fatalf("Rotas = %+v, want 2 (transferência + baixa)", l.Rotas)
+	}
+	var rotaTransf, rotaBaixa *rotaPreNota
+	for i := range l.Rotas {
+		switch l.Rotas[i].Natureza {
+		case "Transferência":
+			rotaTransf = &l.Rotas[i]
+		case "Baixa de estoque":
+			rotaBaixa = &l.Rotas[i]
+		}
+	}
+	if rotaTransf == nil || rotaBaixa == nil {
+		t.Fatalf("Rotas = %+v, want uma Transferência e uma Baixa de estoque", l.Rotas)
+	}
+	if len(rotaTransf.Produtos) != 1 || rotaTransf.Produtos[0].ValorUnitario != "R$ 1.234,50" || rotaTransf.Produtos[0].ValorTotal != "R$ 7.407,00" {
+		t.Errorf("rota Transferência: Produtos = %+v, want 1 item R$ 1.234,50 / R$ 7.407,00", rotaTransf.Produtos)
+	}
+	if rotaTransf.Destinatario == nil || rotaTransf.Destinatario.Estoque != "PreNota Mista Destino" || rotaTransf.Destinatario.Filial != "Filial Destino PreNota" {
+		t.Errorf("rota Transferência: Destinatario = %+v", rotaTransf.Destinatario)
+	}
+	if rotaBaixa.Destinatario != nil || rotaBaixa.SemDestinatario != "BAIXA DE ESTOQUE — consumo, sem destinatário" || len(rotaBaixa.Produtos) != 2 {
+		t.Errorf("rota Baixa = %+v, want sem destinatário e 2 itens", rotaBaixa)
+	}
+	if l.ValorTotal != "R$ 7.407,00 (há itens sem valor cadastrado)" {
+		t.Errorf("ValorTotal = %q", l.ValorTotal)
+	}
+	if want := "Emissão: " + conteudo.CriadoEm.In(localPreNota).Format("02/01/2006 15:04"); l.Emissao != want {
+		t.Errorf("Emissao = %q, want %q", l.Emissao, want)
+	}
+}
+
+// TestMontarPreNotaConteudo_MesmaFilialEstoquesDiferentes cobre "Mesma
+// filial, estoques diferentes": Remetente e Destinatário têm a MESMA Filial,
+// mas o documento mostra de qual Estoque para qual Estoque o material foi.
+func TestMontarPreNotaConteudo_MesmaFilialEstoquesDiferentes(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	gestorID := semearConta(t, db, "PreNota MF Gestor", "prenota-mf-gestor@empresa.com", PapelGestor, 0)
+	usuarioID := semearConta(t, db, "PreNota MF Usuario", "prenota-mf-usuario@empresa.com", PapelUsuario, 1)
+
+	produtoA, origemID, _ := seedProdutoComSaldo(t, db, "PreNota MF Almoxarifado", 20)
+	produtoB, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un",
+		Nome:          "Produto PreNota MF B",
+		CategoriaID:   categoriaIDPorCodigo(t, db, "04.001"),
+		TemplateID:    templateGenericoID(t, db, empresaTeste),
+	}, origemID, 20)
+	if err != nil {
+		t.Fatalf("seed produto B: %v", err)
+	}
+	destino, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "PreNota MF Canteiro")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque destino: %v", err)
+	}
+	pedidoA, err := SubmeterPedidoTransferencia(db, empresaTeste, usuarioID, "Bruno", "", "", produtoA, origemID, destino.ID, 5)
+	if err != nil {
+		t.Fatalf("seed transferência A: %v", err)
+	}
+	pedidoB, err := SubmeterPedidoTransferencia(db, empresaTeste, usuarioID, "Bruno", "", "", produtoB.ID, origemID, destino.ID, 10)
+	if err != nil {
+		t.Fatalf("seed transferência B: %v", err)
+	}
+	resultado, err := DecidirLotePedidos(db, empresaTeste, gestorID, []string{pedidoA.ID, pedidoB.ID}, true)
+	if err != nil {
+		t.Fatalf("DecidirLotePedidos: %v", err)
+	}
+
+	conteudo, err := MontarPreNotaConteudo(db, empresaTeste, preNotaDoResultadoTeste(t, resultado, pedidoA.ID))
+	if err != nil {
+		t.Fatalf("MontarPreNotaConteudo: %v", err)
+	}
+	l := layoutDaPreNota(conteudo)
+	if len(l.Rotas) != 1 {
+		t.Fatalf("Rotas = %+v, want 1 (mesma rota)", l.Rotas)
+	}
+	r := l.Rotas[0]
+	if r.Destinatario == nil {
+		t.Fatalf("rota sem Destinatário: %+v", r)
+	}
+	if r.Remetente.Filial != r.Destinatario.Filial || r.Remetente.Filial == "—" {
+		t.Errorf("Filiais = %q / %q, want a mesma Filial", r.Remetente.Filial, r.Destinatario.Filial)
+	}
+	if r.Remetente.Estoque != "PreNota MF Almoxarifado" || r.Destinatario.Estoque != "PreNota MF Canteiro" {
+		t.Errorf("Estoques = %q -> %q, want PreNota MF Almoxarifado -> PreNota MF Canteiro", r.Remetente.Estoque, r.Destinatario.Estoque)
+	}
+	if len(r.Produtos) != 2 {
+		t.Errorf("Produtos = %+v, want 2", r.Produtos)
+	}
+	if _, err := RenderizarPreNotaPDF(conteudo); err != nil {
+		t.Errorf("RenderizarPreNotaPDF: %v", err)
 	}
 }
 
@@ -366,9 +459,8 @@ func TestMontarPreNotaConteudo_NenhumItemMovimentado(t *testing.T) {
 	if len(conteudo.Itens) != 0 || len(conteudo.Solicitantes) != 0 {
 		t.Errorf("conteúdo = %+v, want sem itens e sem solicitantes", conteudo)
 	}
-	linhas := linhasPreNota(conteudo)
-	if !contemLinha(linhas, "Nenhum item movimentado nesta Pré-Nota") || contemLinha(linhas, "Itens") {
-		t.Errorf("linhas = %q, want mensagem de nenhum item e sem seção Itens", linhas)
+	if l := layoutDaPreNota(conteudo); len(l.Rotas) != 0 || l.ValorTotal != "" {
+		t.Errorf("layout = %+v, want sem rotas e sem total", l)
 	}
 	if _, err := RenderizarPreNotaPDF(conteudo); err != nil {
 		t.Errorf("RenderizarPreNotaPDF sem itens: %v", err)
@@ -436,18 +528,9 @@ func TestGerarPreNotaPDF_PrecoEditadoNaoMudaDocumento(t *testing.T) {
 	}
 }
 
-// --- Texto impresso (funções puras, sem banco) -----------------------------
+// --- Modelo de layout (funções puras, sem banco) ---------------------------
 
 func ptrI64(v int64) *int64 { return &v }
-
-func contemLinha(linhas []string, want string) bool {
-	for _, l := range linhas {
-		if l == want {
-			return true
-		}
-	}
-	return false
-}
 
 // conteudoMistoTeste: 18:04 UTC = 15:04 em São Paulo (UTC-3, sem horário de
 // verão desde 2019).
@@ -461,88 +544,225 @@ func conteudoMistoTeste() PreNotaConteudo {
 		Solicitantes:       []string{"Ana", "Bruno"},
 		Itens: []PreNotaItem{
 			{Tipo: "transferencia", ProdutoCodigo: "000123", Descricao: "Cimento CP-II 50kg", QuantidadeMilesimos: 6000,
-				UnidadeMedida: ptrStr("un"), PrecoCentavos: ptrI64(123450), FilialOrigem: "Recife", FilialDestino: "Natal"},
+				UnidadeMedida: ptrStr("un"), PrecoCentavos: ptrI64(123450), FilialOrigem: "Recife", FilialDestino: "Natal",
+				EstoqueOrigem: "Almoxarifado Central", EstoqueDestino: "Depósito Natal"},
 			{Tipo: "baixa", ProdutoCodigo: "000456", Descricao: "Areia média", QuantidadeMilesimos: 2500,
-				UnidadeMedida: ptrStr("m3"), PrecoCentavos: ptrI64(1001), FilialOrigem: "Recife"},
+				UnidadeMedida: ptrStr("m3"), PrecoCentavos: ptrI64(1001), FilialOrigem: "Recife", EstoqueOrigem: "Almoxarifado Central"},
 		},
 	}
 }
 
-func TestLinhasPreNota_Mista(t *testing.T) {
-	got := linhasPreNota(conteudoMistoTeste())
-	want := []string{
-		"Pré-Nota nº 42",
-		"Empresa: Ferreira Costa & Cia LTDA",
-		"CNPJ: 12.345.678/0001-99",
-		"Data: 13/11/2026 15:04",
-		"Aprovador: Gestor Ávila",
-		"Solicitante(s): Ana, Bruno",
-		"Itens",
-		"1. Produto: 000123   Descrição: Cimento CP-II 50kg   (Transferência)",
-		"Quantidade: 6   Unidade: un   Valor unitário: R$ 1.234,50   Valor da linha: R$ 7.407,00",
-		"Filial origem: Recife   Filial destino: Natal",
-		"2. Produto: 000456   Descrição: Areia média   (Baixa)",
-		// 2,5 × 10,01 = 25,025 -> 25,03 (meio para cima, em inteiros)
-		"Quantidade: 2,5   Unidade: m3   Valor unitário: R$ 10,01   Valor da linha: R$ 25,03",
-		"Filial origem: Recife",
-		"Total: R$ 7.432,03",
-		"Documento interno de controle — não substitui a Nota Fiscal",
+func TestLayoutPreNota_Mista(t *testing.T) {
+	empresa := "Ferreira Costa & Cia LTDA"
+	cnpj := "12.345.678/0001-99"
+	want := layoutPreNota{
+		Empresa: empresa,
+		CNPJ:    cnpj,
+		Numero:  "Nº 000.042",
+		Emissao: "Emissão: 13/11/2026 15:04",
+		Rotas: []rotaPreNota{
+			{
+				Natureza:     "Transferência",
+				Remetente:    partePreNota{Empresa: empresa, CNPJ: cnpj, Filial: "Recife", Estoque: "Almoxarifado Central"},
+				Destinatario: &partePreNota{Empresa: empresa, CNPJ: cnpj, Filial: "Natal", Estoque: "Depósito Natal"},
+				Produtos: []produtoPreNota{
+					{Codigo: "000123", Descricao: "Cimento CP-II 50kg", Unidade: "un", Quantidade: "6", ValorUnitario: "R$ 1.234,50", ValorTotal: "R$ 7.407,00"},
+				},
+				Subtotal: "R$ 7.407,00",
+			},
+			{
+				Natureza:        "Baixa de estoque",
+				Remetente:       partePreNota{Empresa: empresa, CNPJ: cnpj, Filial: "Recife", Estoque: "Almoxarifado Central"},
+				SemDestinatario: "BAIXA DE ESTOQUE — consumo, sem destinatário",
+				Produtos: []produtoPreNota{
+					// 2,5 × 10,01 = 25,025 -> 25,03 (meio para cima, em inteiros)
+					{Codigo: "000456", Descricao: "Areia média", Unidade: "m3", Quantidade: "2,5", ValorUnitario: "R$ 10,01", ValorTotal: "R$ 25,03"},
+				},
+				Subtotal: "R$ 25,03",
+			},
+		},
+		ValorTotal:   "R$ 7.432,03",
+		Aprovador:    "Gestor Ávila",
+		Solicitantes: "Ana, Bruno",
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("linhas =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	if got := layoutDaPreNota(conteudoMistoTeste()); !reflect.DeepEqual(got, want) {
+		t.Errorf("layout =\n%+v\nwant\n%+v", got, want)
 	}
 }
 
-// TestLinhasPreNota_TotaisComItemSemPreco cobre a linha "Totais com item sem
-// preço" da I/O Matrix: R$ 10,00 × 3 + 1 item sem preço.
-func TestLinhasPreNota_TotaisComItemSemPreco(t *testing.T) {
+// conteudoMesmaFilialTeste: linha "Mesma filial, estoques diferentes" da I/O
+// Matrix — 3 transferências Almoxarifado Central -> Canteiro de Obras na
+// MESMA Filial, R$ 12,00 cada, quantidades 5/10/8.
+func conteudoMesmaFilialTeste() PreNotaConteudo {
+	c := PreNotaConteudo{
+		Docnum:             1,
+		EmpresaRazaoSocial: "Fortes Bezerra Tecnologia e Consultoria Ltda",
+		EmpresaCNPJ:        "38149716000128",
+		CriadoEm:           time.Date(2026, 11, 16, 13, 30, 0, 0, time.UTC),
+		Aprovador:          "Claudio Bezerra",
+		Solicitantes:       []string{"Ana Souza"},
+	}
+	itens := []struct {
+		codigo, nome string
+		qtd          int64
+	}{
+		{"000101", "Cimento CP-II 50kg", 5},
+		{"000102", "Argamassa AC-III 20kg", 10},
+		{"000103", "Rejunte flexível cinza 5kg", 8},
+	}
+	for _, it := range itens {
+		c.Itens = append(c.Itens, PreNotaItem{
+			Tipo: "transferencia", ProdutoCodigo: it.codigo, Descricao: it.nome, QuantidadeMilesimos: it.qtd * 1000,
+			UnidadeMedida: ptrStr("un"), PrecoCentavos: ptrI64(1200),
+			FilialOrigem: "FBTECHIA - Treinamento", FilialDestino: "FBTECHIA - Treinamento",
+			EstoqueOrigem: "Almoxarifado Central", EstoqueDestino: "Canteiro de Obras",
+		})
+	}
+	return c
+}
+
+func TestLayoutPreNota_MesmaFilialEstoquesDiferentes(t *testing.T) {
+	l := layoutDaPreNota(conteudoMesmaFilialTeste())
+	if len(l.Rotas) != 1 {
+		t.Fatalf("Rotas = %+v, want 1 bloco de rota", l.Rotas)
+	}
+	r := l.Rotas[0]
+	if r.Remetente.Estoque != "Almoxarifado Central" || r.Destinatario == nil || r.Destinatario.Estoque != "Canteiro de Obras" {
+		t.Errorf("rota = %+v / %+v, want Almoxarifado Central -> Canteiro de Obras", r.Remetente, r.Destinatario)
+	}
+	if r.Remetente.Filial != "FBTECHIA - Treinamento" || r.Destinatario.Filial != "FBTECHIA - Treinamento" {
+		t.Errorf("Filiais = %q / %q", r.Remetente.Filial, r.Destinatario.Filial)
+	}
+	if r.Remetente.CNPJ != "38.149.716/0001-28" || r.Remetente.Empresa != "Fortes Bezerra Tecnologia e Consultoria Ltda" {
+		t.Errorf("Remetente = %+v", r.Remetente)
+	}
+	var totais []string
+	for _, p := range r.Produtos {
+		totais = append(totais, p.ValorTotal)
+	}
+	if !reflect.DeepEqual(totais, []string{"R$ 60,00", "R$ 120,00", "R$ 96,00"}) {
+		t.Errorf("valores das linhas = %v", totais)
+	}
+	if r.Subtotal != "R$ 276,00" || l.ValorTotal != "R$ 276,00" || l.Numero != "Nº 000.001" {
+		t.Errorf("Subtotal/Total/Numero = %q/%q/%q", r.Subtotal, l.ValorTotal, l.Numero)
+	}
+}
+
+// TestLayoutPreNota_RotasMisturadas: 2 transferências de rotas diferentes +
+// 1 Baixa -> 3 blocos, na ordem da 1ª aparição; itens da mesma rota ficam no
+// mesmo bloco mesmo intercalados com outra rota.
+func TestLayoutPreNota_RotasMisturadas(t *testing.T) {
+	transf := func(desc, origem, destino string) PreNotaItem {
+		return PreNotaItem{Tipo: "transferencia", Descricao: desc, QuantidadeMilesimos: 1000,
+			FilialOrigem: "Recife", FilialDestino: "Recife", EstoqueOrigem: origem, EstoqueDestino: destino}
+	}
+	c := PreNotaConteudo{Itens: []PreNotaItem{
+		transf("A", "Central", "Canteiro"),
+		transf("B", "Central", "Obra Norte"),
+		{Tipo: "baixa", Descricao: "C", QuantidadeMilesimos: 1000, FilialOrigem: "Recife", EstoqueOrigem: "Central"},
+		transf("D", "Central", "Canteiro"),
+	}}
+	l := layoutDaPreNota(c)
+	if len(l.Rotas) != 3 {
+		t.Fatalf("Rotas = %+v, want 3", l.Rotas)
+	}
+	type resumo struct {
+		natureza, destino string
+		itens             []string
+	}
+	var got []resumo
+	for _, r := range l.Rotas {
+		destino := r.SemDestinatario
+		if r.Destinatario != nil {
+			destino = r.Destinatario.Estoque
+		}
+		var itens []string
+		for _, p := range r.Produtos {
+			itens = append(itens, p.Descricao)
+		}
+		got = append(got, resumo{r.Natureza, destino, itens})
+	}
+	want := []resumo{
+		{"Transferência", "Canteiro", []string{"A", "D"}},
+		{"Transferência", "Obra Norte", []string{"B"}},
+		{"Baixa de estoque", "BAIXA DE ESTOQUE — consumo, sem destinatário", []string{"C"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("rotas = %+v, want %+v", got, want)
+	}
+	// Todos sem preço: subtotais R$ 0,00 e o total avisa.
+	if l.ValorTotal != "R$ 0,00 (há itens sem valor cadastrado)" {
+		t.Errorf("ValorTotal = %q", l.ValorTotal)
+	}
+}
+
+// TestLayoutPreNota_TotaisComItemSemPreco cobre a linha "Totais com item sem
+// preço" da I/O Matrix de spec-20-5: R$ 10,00 × 3 + 1 item sem preço.
+func TestLayoutPreNota_TotaisComItemSemPreco(t *testing.T) {
 	c := PreNotaConteudo{Docnum: 1, Itens: []PreNotaItem{
 		{Tipo: "baixa", ProdutoCodigo: "1", Descricao: "Com preço", QuantidadeMilesimos: 3000, UnidadeMedida: ptrStr("un"), PrecoCentavos: ptrI64(1000)},
 		{Tipo: "baixa", ProdutoCodigo: "2", Descricao: "Sem preço", QuantidadeMilesimos: 1000},
 	}}
-	linhas := linhasPreNota(c)
-	for _, want := range []string{
-		"Quantidade: 3   Unidade: un   Valor unitário: R$ 10,00   Valor da linha: R$ 30,00",
-		"Quantidade: 1   Unidade: —   Valor unitário: —   Valor da linha: —",
-		"Total: R$ 30,00 (há itens sem valor cadastrado)",
-		RodapePreNota,
-	} {
-		if !contemLinha(linhas, want) {
-			t.Errorf("linhas sem %q:\n%s", want, strings.Join(linhas, "\n"))
+	l := layoutDaPreNota(c)
+	want := []produtoPreNota{
+		{Codigo: "1", Descricao: "Com preço", Unidade: "un", Quantidade: "3", ValorUnitario: "R$ 10,00", ValorTotal: "R$ 30,00"},
+		{Codigo: "2", Descricao: "Sem preço", Unidade: "—", Quantidade: "1", ValorUnitario: "—", ValorTotal: "—"},
+	}
+	if len(l.Rotas) != 1 || !reflect.DeepEqual(l.Rotas[0].Produtos, want) {
+		t.Fatalf("Rotas = %+v, want 1 rota com %+v", l.Rotas, want)
+	}
+	if l.Rotas[0].Subtotal != "R$ 30,00" || l.ValorTotal != "R$ 30,00 (há itens sem valor cadastrado)" {
+		t.Errorf("Subtotal/Total = %q/%q", l.Rotas[0].Subtotal, l.ValorTotal)
+	}
+	// Estoque/Filial ausentes viram "—".
+	if r := l.Rotas[0].Remetente; r.Filial != "—" || r.Estoque != "—" {
+		t.Errorf("Remetente = %+v, want Filial/Estoque —", r)
+	}
+}
+
+func TestLayoutPreNota_SemItensEDadosAusentes(t *testing.T) {
+	got := layoutDaPreNota(PreNotaConteudo{Docnum: 3, CriadoEm: time.Date(2026, 1, 2, 3, 0, 0, 0, time.UTC)})
+	want := layoutPreNota{
+		Empresa:      "—",
+		CNPJ:         "—",
+		Numero:       "Nº 000.003",
+		Emissao:      "Emissão: 02/01/2026 00:00",
+		Aprovador:    "—",
+		Solicitantes: "—",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("layout = %+v, want %+v", got, want)
+	}
+}
+
+func TestLayoutPreNota_TipoDesconhecidoImpressoComoVeio(t *testing.T) {
+	l := layoutDaPreNota(PreNotaConteudo{Itens: []PreNotaItem{{Tipo: "retirada", Descricao: "X", QuantidadeMilesimos: 1000}}})
+	if len(l.Rotas) != 1 || l.Rotas[0].Natureza != "retirada" || l.Rotas[0].Destinatario != nil || l.Rotas[0].SemDestinatario != "—" {
+		t.Errorf("Rotas = %+v, want natureza como veio e sem destinatário", l.Rotas)
+	}
+	if p := l.Rotas[0].Produtos[0]; p.Codigo != "—" {
+		t.Errorf("Codigo = %q, want —", p.Codigo)
+	}
+}
+
+func TestFormatarDocnumPreNota(t *testing.T) {
+	casos := map[int]string{1: "Nº 000.001", 42: "Nº 000.042", 123456: "Nº 123.456", 1234567: "Nº 1.234.567"}
+	for n, want := range casos {
+		if got := formatarDocnumPreNota(n); got != want {
+			t.Errorf("docnum %d = %q, want %q", n, got, want)
 		}
 	}
 }
 
-func TestLinhasPreNota_SemItensEDadosAusentes(t *testing.T) {
-	linhas := linhasPreNota(PreNotaConteudo{Docnum: 3, CriadoEm: time.Date(2026, 1, 2, 3, 0, 0, 0, time.UTC)})
-	want := []string{
-		"Pré-Nota nº 3",
-		"Empresa: —",
-		"CNPJ: —",
-		"Data: 02/01/2026 00:00",
-		"Aprovador: —",
-		"Solicitante(s): —",
-		"Nenhum item movimentado nesta Pré-Nota",
-		RodapePreNota,
-	}
-	if !reflect.DeepEqual(linhas, want) {
-		t.Errorf("linhas =\n%s\nwant\n%s", strings.Join(linhas, "\n"), strings.Join(want, "\n"))
-	}
+// paginasPDFTeste conta as páginas de um PDF gerado pelo gopdf (um objeto
+// "/Type /Page" por página, fora o "/Type /Pages" da árvore).
+func paginasPDFTeste(pdf []byte) int {
+	return bytes.Count(pdf, []byte("/Type /Page\n")) + bytes.Count(pdf, []byte("/Type /Page ")) + bytes.Count(pdf, []byte("/Type /Page/"))
 }
 
-func TestLinhasPreNota_TipoDesconhecidoImpressoComoVeio(t *testing.T) {
-	linhas := linhasPreNota(PreNotaConteudo{Itens: []PreNotaItem{{Tipo: "retirada", Descricao: "X", QuantidadeMilesimos: 1000}}})
-	if !contemLinha(linhas, "1. Produto: —   Descrição: X   (retirada)") {
-		t.Errorf("linhas = %q, want tipo desconhecido impresso como veio", linhas)
-	}
-	if !contemLinha(linhas, "Filial origem: —") {
-		t.Errorf("linhas = %q, want sem Filial destino para tipo desconhecido", linhas)
-	}
-}
-
-// TestRenderizarPreNotaPDF_TextoLongoEMuitosItens: textos longos (quebrados
-// em várias linhas) e muitos itens (várias páginas) ainda geram um PDF
-// válido e determinístico.
+// TestRenderizarPreNotaPDF_TextoLongoEMuitosItens cobre "Muitos itens":
+// textos longos (quebrados dentro da coluna/quadro) e muitos itens em rotas
+// misturadas geram um PDF válido, de várias páginas e determinístico.
 func TestRenderizarPreNotaPDF_TextoLongoEMuitosItens(t *testing.T) {
 	c := conteudoMistoTeste()
 	c.EmpresaRazaoSocial = strings.Repeat("Razão Social Muito Comprida ", 12)
@@ -550,7 +770,8 @@ func TestRenderizarPreNotaPDF_TextoLongoEMuitosItens(t *testing.T) {
 		c.Solicitantes = append(c.Solicitantes, "Solicitante Número "+strings.Repeat("X", i%7))
 	}
 	for i := 0; i < 80; i++ {
-		c.Itens = append(c.Itens, PreNotaItem{Tipo: "baixa", Descricao: strings.Repeat("Descrição longa ", 15), QuantidadeMilesimos: 1500})
+		c.Itens = append(c.Itens, PreNotaItem{Tipo: "baixa", Descricao: strings.Repeat("Descrição longa ", 15), QuantidadeMilesimos: 1500,
+			FilialOrigem: "Recife", EstoqueOrigem: strings.Repeat("Estoque ", i%3+1)})
 	}
 	a, err := RenderizarPreNotaPDF(c)
 	if err != nil {
@@ -562,6 +783,9 @@ func TestRenderizarPreNotaPDF_TextoLongoEMuitosItens(t *testing.T) {
 	}
 	if !bytes.HasPrefix(a, []byte("%PDF-")) || !bytes.Equal(a, b) {
 		t.Error("PDF inválido ou não determinístico")
+	}
+	if n := paginasPDFTeste(a); n < 3 {
+		t.Errorf("páginas = %d, want várias (>= 3)", n)
 	}
 }
 
