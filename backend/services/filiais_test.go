@@ -20,26 +20,26 @@ func TestCriarFilial_ValidacaoDuplicidadeEIsolamento(t *testing.T) {
 	a := criarEmpresaDeTeste(t, db, "filial-a", "778889990101", "Filial A")
 	b := criarEmpresaDeTeste(t, db, "filial-b", "778889990102", "Filial B")
 
-	f, err := CriarFilial(db, a.ID, "  Recife  ")
+	f, err := CriarFilial(db, a.ID, DadosFilial{Nome: "  Recife  "})
 	if err != nil {
 		t.Fatalf("CriarFilial: %v", err)
 	}
 	if f.Nome != "Recife" || f.ID == "" {
 		t.Errorf("filial = %+v", f)
 	}
-	if _, err := CriarFilial(db, a.ID, "recife"); !errors.Is(err, ErrNomeFilialDuplicado) {
+	if _, err := CriarFilial(db, a.ID, DadosFilial{Nome: "recife"}); !errors.Is(err, ErrNomeFilialDuplicado) {
 		t.Errorf("duplicada: erro = %v, want ErrNomeFilialDuplicado", err)
 	}
 	// Mesmo nome em OUTRA Empresa é permitido.
-	if _, err := CriarFilial(db, b.ID, "Recife"); err != nil {
+	if _, err := CriarFilial(db, b.ID, DadosFilial{Nome: "Recife"}); err != nil {
 		t.Errorf("mesmo nome em outra Empresa: %v", err)
 	}
 	for _, nome := range []string{"", "   ", strings.Repeat("x", 256), "a\x00b"} {
-		if _, err := CriarFilial(db, a.ID, nome); !errors.Is(err, ErrFilialValidacao) {
+		if _, err := CriarFilial(db, a.ID, DadosFilial{Nome: nome}); !errors.Is(err, ErrFilialValidacao) {
 			t.Errorf("CriarFilial(%.10q): erro = %v, want ErrFilialValidacao", nome, err)
 		}
 	}
-	if _, err := CriarFilial(db, a.ID, strings.Repeat("é", 255)); err != nil {
+	if _, err := CriarFilial(db, a.ID, DadosFilial{Nome: strings.Repeat("é", 255)}); err != nil {
 		t.Errorf("255 runes deve ser aceito: %v", err)
 	}
 
@@ -100,7 +100,7 @@ func TestCriarEstoque_Filial(t *testing.T) {
 	outra := criarEmpresaDeTeste(t, db, "estoque-filial-outra", "778889990105", "Estoque Filial Outra")
 
 	filialA := filialTeste(t, db, empresaTeste)
-	fb, err := CriarFilial(db, empresaTeste, "Filial B Estoque 12.1")
+	fb, err := CriarFilial(db, empresaTeste, DadosFilial{Nome: "Filial B Estoque 12.1"})
 	if err != nil {
 		if !errors.Is(err, ErrNomeFilialDuplicado) {
 			t.Fatalf("CriarFilial: %v", err)
@@ -335,8 +335,220 @@ func TestEncontrarOuCriarEstoque_LegadoSemFilialEncontradoPorNome(t *testing.T) 
 
 	buscar() // sem Filial na Empresa
 
-	if _, err := CriarFilial(db, emp.ID, "Filial Tardia"); err != nil {
+	if _, err := CriarFilial(db, emp.ID, DadosFilial{Nome: "Filial Tardia"}); err != nil {
 		t.Fatalf("CriarFilial: %v", err)
 	}
 	buscar() // com Filial na Empresa
+}
+
+// --- Dados fiscais da Filial — spec-filial-dados-fiscais --------------------
+
+func enderecoFilialTeste() EnderecoEmpresa {
+	return EnderecoEmpresa{
+		Logradouro: " Av. Recife ", Numero: "1000", Complemento: "Galpão 3",
+		Bairro: "Areias", Cidade: "Recife", CEP: " 50780-000 ", UF: " pe ",
+	}
+}
+
+func TestFilialDadosFiscais_CriarEditarEValidar(t *testing.T) {
+	db := testDB(t)
+	removerEmpresaDeTeste(t, db, "filial-fiscal-a")
+	removerEmpresaDeTeste(t, db, "filial-fiscal-b")
+	t.Cleanup(func() {
+		removerEmpresaDeTeste(t, db, "filial-fiscal-a")
+		removerEmpresaDeTeste(t, db, "filial-fiscal-b")
+	})
+	a := criarEmpresaDeTeste(t, db, "filial-fiscal-a", "778889990201", "Filial Fiscal A")
+	b := criarEmpresaDeTeste(t, db, "filial-fiscal-b", "778889990202", "Filial Fiscal B")
+	cnpj := cnpjDeTeste("778889990002") // mesma raiz (77888999) das Empresas a e b
+	cnpjMascarado := cnpj[0:2] + "." + cnpj[2:5] + "." + cnpj[5:8] + "/" + cnpj[8:12] + "-" + cnpj[12:]
+
+	// Criar só com nome: campos NULL.
+	f, err := CriarFilial(db, a.ID, DadosFilial{Nome: "Só Nome"})
+	if err != nil {
+		t.Fatalf("CriarFilial só nome: %v", err)
+	}
+	if f.CNPJ != nil || f.InscricaoEstadual != nil || f.Endereco != nil {
+		t.Errorf("filial só nome = %+v, want dados fiscais nil", f)
+	}
+	if n := contar(t, db, `SELECT count(*) FROM filiais WHERE id = $1 AND cnpj IS NULL AND inscricao_estadual IS NULL
+		AND logradouro IS NULL AND numero IS NULL AND complemento IS NULL AND bairro IS NULL AND cidade IS NULL
+		AND cep IS NULL AND uf IS NULL`, f.ID); n != 1 {
+		t.Errorf("colunas fiscais não ficaram NULL")
+	}
+
+	// Editar com tudo válido: normalizado (CNPJ/CEP só dígitos, UF maiúscula).
+	e, err := AtualizarFilial(db, a.ID, f.ID, AtualizacaoCompletaFilial(DadosFilial{
+		Nome: " Só Nome Editada ", CNPJ: cnpjMascarado, InscricaoEstadual: " ISENTO ", Endereco: enderecoFilialTeste(),
+	}))
+	if err != nil {
+		t.Fatalf("AtualizarFilial: %v", err)
+	}
+	want := EnderecoEmpresa{Logradouro: "Av. Recife", Numero: "1000", Complemento: "Galpão 3",
+		Bairro: "Areias", Cidade: "Recife", CEP: "50780000", UF: "PE"}
+	if e.Nome != "Só Nome Editada" || e.CNPJ == nil || *e.CNPJ != cnpj || e.InscricaoEstadual == nil ||
+		*e.InscricaoEstadual != "ISENTO" || e.Endereco == nil || *e.Endereco != want {
+		t.Errorf("editada = %+v / endereco %+v", e, e.Endereco)
+	}
+	lista, err := ListarFiliais(db, a.ID)
+	if err != nil {
+		t.Fatalf("ListarFiliais: %v", err)
+	}
+	achou := false
+	for _, x := range lista {
+		if x.ID == f.ID {
+			achou = x.CNPJ != nil && *x.CNPJ == cnpj && x.Endereco != nil && *x.Endereco == want
+		}
+	}
+	if !achou {
+		t.Errorf("listagem não traz os dados fiscais gravados: %+v", lista)
+	}
+
+	// Editar de volta sem nada limpa tudo (substituição completa).
+	if limpa, err := AtualizarFilial(db, a.ID, f.ID, AtualizacaoCompletaFilial(DadosFilial{Nome: "Só Nome Editada"})); err != nil ||
+		limpa.CNPJ != nil || limpa.Endereco != nil || limpa.InscricaoEstadual != nil {
+		t.Errorf("limpar: %+v err=%v", limpa, err)
+	}
+	if _, err := AtualizarFilial(db, a.ID, f.ID, AtualizacaoCompletaFilial(DadosFilial{Nome: "Só Nome Editada", CNPJ: cnpj, Endereco: enderecoFilialTeste()})); err != nil {
+		t.Fatalf("regravar: %v", err)
+	}
+
+	semAlteracao := func(t *testing.T) {
+		t.Helper()
+		if n := contar(t, db, `SELECT count(*) FROM filiais WHERE id = $1 AND nome = 'Só Nome Editada' AND cnpj = $2 AND cidade = 'Recife'`, f.ID, cnpj); n != 1 {
+			t.Errorf("a Filial foi alterada por uma edição recusada")
+		}
+	}
+
+	// CNPJ inválido (dígito verificador) -> ErroDadosFilial, nada gravado.
+	cnpjErrado := cnpj[:13] + string('0'+(cnpj[13]-'0'+1)%10)
+	var erroDados *ErroDadosFilial
+	if _, err := AtualizarFilial(db, a.ID, f.ID, AtualizacaoCompletaFilial(DadosFilial{Nome: "Só Nome Editada", CNPJ: cnpjErrado})); !errors.As(err, &erroDados) {
+		t.Errorf("CNPJ inválido: erro = %v, want ErroDadosFilial", err)
+	}
+	if _, err := CriarFilial(db, a.ID, DadosFilial{Nome: "CNPJ Ruim", CNPJ: cnpjErrado}); !errors.As(err, &erroDados) {
+		t.Errorf("CNPJ inválido na criação: erro = %v", err)
+	}
+	semAlteracao(t)
+
+	// CNPJ repetido na mesma Empresa -> 409; em outra Empresa é permitido.
+	if _, err := CriarFilial(db, a.ID, DadosFilial{Nome: "Outra", CNPJ: cnpj}); !errors.Is(err, ErrCNPJFilialDuplicado) {
+		t.Errorf("CNPJ repetido (criar): erro = %v, want ErrCNPJFilialDuplicado", err)
+	}
+	outra, err := CriarFilial(db, a.ID, DadosFilial{Nome: "Outra"})
+	if err != nil {
+		t.Fatalf("criar outra: %v", err)
+	}
+	if _, err := AtualizarFilial(db, a.ID, outra.ID, AtualizacaoCompletaFilial(DadosFilial{Nome: "Outra", CNPJ: cnpj})); !errors.Is(err, ErrCNPJFilialDuplicado) {
+		t.Errorf("CNPJ repetido (editar): erro = %v, want ErrCNPJFilialDuplicado", err)
+	}
+	if _, err := AtualizarFilial(db, a.ID, outra.ID, AtualizacaoCompletaFilial(DadosFilial{Nome: "só nome editada"})); !errors.Is(err, ErrNomeFilialDuplicado) {
+		t.Errorf("nome repetido (editar): erro = %v, want ErrNomeFilialDuplicado", err)
+	}
+	if _, err := CriarFilial(db, b.ID, DadosFilial{Nome: "Mesma CNPJ outra Empresa", CNPJ: cnpj}); err != nil {
+		t.Errorf("mesmo CNPJ em outra Empresa: %v", err)
+	}
+
+	// Endereço incompleto: só cidade -> lista os obrigatórios.
+	_, err = AtualizarFilial(db, a.ID, f.ID, AtualizacaoCompletaFilial(DadosFilial{Nome: "Só Nome Editada", CNPJ: cnpj,
+		Endereco: EnderecoEmpresa{Cidade: "Recife"}}))
+	if !errors.As(err, &erroDados) {
+		t.Fatalf("endereço incompleto: erro = %v, want ErroDadosFilial", err)
+	}
+	for _, campo := range []string{"logradouro", "número", "bairro", "CEP", "UF"} {
+		if !strings.Contains(erroDados.Mensagem, campo) {
+			t.Errorf("mensagem %q não cita %q", erroDados.Mensagem, campo)
+		}
+	}
+	casosEndereco := map[string]func(*EnderecoEmpresa){
+		"CEP com 7 dígitos": func(e *EnderecoEmpresa) { e.CEP = "5078000" },
+		"UF inexistente":    func(e *EnderecoEmpresa) { e.UF = "XX" },
+		"UF com 3 letras":   func(e *EnderecoEmpresa) { e.UF = "PEE" },
+		"número > 20":       func(e *EnderecoEmpresa) { e.Numero = strings.Repeat("1", 21) },
+	}
+	for nome, mut := range casosEndereco {
+		end := enderecoFilialTeste()
+		mut(&end)
+		if _, err := AtualizarFilial(db, a.ID, f.ID, AtualizacaoCompletaFilial(DadosFilial{Nome: "Só Nome Editada", CNPJ: cnpj, Endereco: end})); !errors.As(err, &erroDados) {
+			t.Errorf("%s: erro = %v, want ErroDadosFilial", nome, err)
+		}
+	}
+	// Complemento é opcional.
+	semComp := enderecoFilialTeste()
+	semComp.Complemento = ""
+	if _, err := CriarFilial(db, a.ID, DadosFilial{Nome: "Sem Complemento", Endereco: semComp}); err != nil {
+		t.Errorf("sem complemento: %v", err)
+	}
+	if _, err := AtualizarFilial(db, a.ID, f.ID, AtualizacaoCompletaFilial(DadosFilial{Nome: "Só Nome Editada", CNPJ: cnpj,
+		InscricaoEstadual: strings.Repeat("1", 21)})); !errors.As(err, &erroDados) {
+		t.Errorf("IE > 20: erro = %v, want ErroDadosFilial", err)
+	}
+	semAlteracao(t)
+
+	// CNPJ válido de OUTRA raiz (outra empresa) -> 400, nada gravado.
+	cnpjOutraRaiz := cnpjDeTeste("112223330001")
+	if _, err := AtualizarFilial(db, a.ID, f.ID, AtualizacaoFilial{CNPJ: &cnpjOutraRaiz}); !errors.As(err, &erroDados) ||
+		!strings.Contains(erroDados.Mensagem, "8 primeiros dígitos") {
+		t.Errorf("CNPJ de outra raiz (editar): erro = %v, want ErroDadosFilial sobre a raiz", err)
+	}
+	if _, err := CriarFilial(db, a.ID, DadosFilial{Nome: "Outra Raiz", CNPJ: cnpjOutraRaiz}); !errors.As(err, &erroDados) {
+		t.Errorf("CNPJ de outra raiz (criar): erro = %v, want ErroDadosFilial", err)
+	}
+
+	// CEP com letras/lixo -> 400 (nunca descarta caracteres em silêncio);
+	// caracteres de controle em nome/IE/endereço -> 400.
+	for nome, mut := range map[string]func(*DadosFilial){
+		"CEP com letras":     func(d *DadosFilial) { d.Endereco.CEP = "50780-00a" },
+		"CEP com lixo":       func(d *DadosFilial) { d.Endereco.CEP = "CEP 50780000" },
+		"CEP com 9 dígitos":  func(d *DadosFilial) { d.Endereco.CEP = "507800001" },
+		"nome com quebra":    func(d *DadosFilial) { d.Nome = "Só Nome\nEditada" },
+		"IE com tab":         func(d *DadosFilial) { d.InscricaoEstadual = "123\t456" },
+		"logradouro com \\r": func(d *DadosFilial) { d.Endereco.Logradouro = "Av.\rRecife" },
+		"cidade com \\x07":   func(d *DadosFilial) { d.Endereco.Cidade = "Rec\x07ife" },
+	} {
+		d := DadosFilial{Nome: "Só Nome Editada", CNPJ: cnpj, Endereco: enderecoFilialTeste()}
+		mut(&d)
+		if _, err := AtualizarFilial(db, a.ID, f.ID, AtualizacaoCompletaFilial(d)); !errors.As(err, &erroDados) {
+			t.Errorf("%s: erro = %v, want ErroDadosFilial", nome, err)
+		}
+	}
+	if cep, err := normalizarCEP(" 50780000 "); err != nil || cep != "50780000" {
+		t.Errorf("normalizarCEP sem hífen = %q, %v", cep, err)
+	}
+	semAlteracao(t)
+
+	// PUT parcial: campo ausente mantém; "" limpa.
+	ie := "123456"
+	if p, err := AtualizarFilial(db, a.ID, f.ID, AtualizacaoFilial{InscricaoEstadual: &ie}); err != nil ||
+		p.InscricaoEstadual == nil || *p.InscricaoEstadual != ie || p.CNPJ == nil || *p.CNPJ != cnpj ||
+		p.Endereco == nil || p.Endereco.Cidade != "Recife" || p.Nome != "Só Nome Editada" {
+		t.Errorf("parcial só IE: %+v err=%v (CNPJ/endereço/nome deveriam ficar)", p, err)
+	}
+	vazio := "Natal"
+	if p, err := AtualizarFilial(db, a.ID, f.ID, AtualizacaoFilial{Endereco: &EnderecoFilialParcial{Cidade: &vazio}}); err != nil ||
+		p.Endereco == nil || p.Endereco.Cidade != "Natal" || p.Endereco.Logradouro != "Av. Recife" {
+		t.Errorf("parcial só cidade: %+v err=%v", p.Endereco, err)
+	}
+	limpa := ""
+	if p, err := AtualizarFilial(db, a.ID, f.ID, AtualizacaoFilial{InscricaoEstadual: &limpa}); err != nil ||
+		p.InscricaoEstadual != nil || p.CNPJ == nil {
+		t.Errorf("IE \"\" deveria limpar só a IE: %+v err=%v", p, err)
+	}
+	// Limpar só um campo obrigatório do endereço -> endereço incompleto.
+	if _, err := AtualizarFilial(db, a.ID, f.ID, AtualizacaoFilial{Endereco: &EnderecoFilialParcial{Bairro: &limpa}}); !errors.As(err, &erroDados) {
+		t.Errorf("limpar só o bairro: erro = %v, want endereço incompleto", err)
+	}
+	cidadeRecife := "Recife"
+	if _, err := AtualizarFilial(db, a.ID, f.ID, AtualizacaoFilial{Endereco: &EnderecoFilialParcial{Cidade: &cidadeRecife}}); err != nil {
+		t.Fatalf("restaurar cidade: %v", err)
+	}
+	semAlteracao(t)
+
+	// Editar Filial de outra Empresa / inexistente / malformada -> não encontrada.
+	for _, id := range []string{f.ID, "00000000-0000-4000-8000-000000000000", "nao-e-uuid"} {
+		if _, err := AtualizarFilial(db, b.ID, id, AtualizacaoCompletaFilial(DadosFilial{Nome: "Invasora"})); !errors.Is(err, ErrFilialNaoEncontrada) {
+			t.Errorf("AtualizarFilial(outra Empresa, %s): erro = %v, want ErrFilialNaoEncontrada", id, err)
+		}
+	}
+	semAlteracao(t)
 }

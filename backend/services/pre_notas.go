@@ -30,8 +30,8 @@ import (
 //
 // O que é congelado (Spec Change Log de spec-20-5, decisão do usuário): SÓ
 // preço e unidade, gravados em `pedido_itens` na aprovação em lote. Código do
-// produto, nomes das Filiais, nome do Estoque de destino, razão social/CNPJ
-// e nome do Aprovador vêm do cadastro atual no momento do download (mesmo
+// produto, nomes e dados fiscais (CNPJ/IE/endereço) das Filiais, nome do
+// Estoque de destino, razão social/CNPJ e nome do Aprovador vêm do cadastro atual no momento do download (mesmo
 // critério do recibo de Pedido) — renomear algum deles muda o próximo
 // download. O nome do Estoque de origem é o snapshot `pedido_itens.estoque_nome`. A renderização em
 // si é determinística: mesma entrada -> mesmos bytes.
@@ -80,6 +80,22 @@ type PreNotaItem struct {
 	FilialDestino       string // só Transferência; "" nos demais
 	EstoqueOrigem       string // `pedido_itens.estoque_nome` (snapshot do envio)
 	EstoqueDestino      string // só Transferência: `estoques.nome` atual do destino; "" nos demais
+	// Dados fiscais da Filial de cada lado (spec-filial-dados-fiscais), do
+	// cadastro ATUAL — zero value quando ausentes. Destino só em Transferência.
+	FiscalOrigem  DadosFiscaisFilialPreNota
+	FiscalDestino DadosFiscaisFilialPreNota
+	// Ids dos Estoques (agrupamento por rota): `pedido_itens.estoque_id` e,
+	// só em Transferência, `estoque_destino_id`. "" quando ausentes — o
+	// agrupamento cai no nome impresso.
+	EstoqueOrigemID  string
+	EstoqueDestinoID string
+}
+
+// DadosFiscaisFilialPreNota são CNPJ, Inscrição Estadual e endereço de uma
+// Filial como lidos de `filiais` ("" no que for NULL). CNPJ/CEP só dígitos.
+type DadosFiscaisFilialPreNota struct {
+	CNPJ, InscricaoEstadual                                  string
+	Logradouro, Numero, Complemento, Bairro, Cidade, CEP, UF string
 }
 
 // PreNotaConteudo é o conteúdo já resolvido do documento — struct de dados
@@ -162,19 +178,27 @@ func MontarPreNotaConteudo(db *sql.DB, empresaID, preNotaID string) (PreNotaCont
 	// Itens: só `quantidade_aprovada > 0`. Quantidade e preço lidos como
 	// inteiros exatos (milésimos/centavos) — as escalas das colunas
 	// (NUMERIC(10,3)/NUMERIC(12,2)) garantem que a multiplicação é exata.
-	// Filial origem/destino via `estoques.filial_id`. Ordem total e estável
-	// para a renderização ser determinística.
+	// Filial origem/destino: a gravada na aprovação (`pi.filial_*_id`,
+	// spec-filial-dados-fiscais) — sobrevive à exclusão do Estoque —, com
+	// fallback para `estoques.filial_id` em Pré-Notas anteriores (NULL). Os
+	// dados da Filial (nome, CNPJ, IE, endereço) são SEMPRE os do cadastro
+	// atual. Nome do Estoque destino: o atual; se o Estoque foi excluído, o
+	// gravado na aprovação. Ordem total e estável para a renderização ser
+	// determinística.
 	const selectItens = `
 		SELECT p.tipo, pr.codigo, pi.produto_nome, (pi.quantidade_aprovada * 1000)::bigint,
 		       pi.unidade_medida::text, (pi.preco_unitario * 100)::bigint, fo.nome, fd.nome,
-		       pi.estoque_nome, ed.nome
+		       pi.estoque_nome, COALESCE(ed.nome, pi.estoque_destino_nome),
+		       pi.estoque_id::text, pi.estoque_destino_id::text,
+		       fo.cnpj, fo.inscricao_estadual, fo.logradouro, fo.numero, fo.complemento, fo.bairro, fo.cidade, fo.cep, fo.uf,
+		       fd.cnpj, fd.inscricao_estadual, fd.logradouro, fd.numero, fd.complemento, fd.bairro, fd.cidade, fd.cep, fd.uf
 		FROM pedido_itens pi
 		JOIN pedidos p ON p.id = pi.pedido_id AND p.empresa_id = pi.empresa_id
 		LEFT JOIN produtos pr ON pr.id = pi.produto_id AND pr.empresa_id = pi.empresa_id
 		LEFT JOIN estoques eo ON eo.id = pi.estoque_id AND eo.empresa_id = pi.empresa_id
-		LEFT JOIN filiais fo ON fo.id = eo.filial_id AND fo.empresa_id = pi.empresa_id
+		LEFT JOIN filiais fo ON fo.id = COALESCE(pi.filial_origem_id, eo.filial_id) AND fo.empresa_id = pi.empresa_id
 		LEFT JOIN estoques ed ON ed.id = pi.estoque_destino_id AND ed.empresa_id = pi.empresa_id
-		LEFT JOIN filiais fd ON fd.id = ed.filial_id AND fd.empresa_id = pi.empresa_id
+		LEFT JOIN filiais fd ON fd.id = COALESCE(pi.filial_destino_id, ed.filial_id) AND fd.empresa_id = pi.empresa_id
 		WHERE p.pre_nota_id = $1 AND pi.empresa_id = $2 AND pi.quantidade_aprovada > 0
 		ORDER BY pi.produto_nome, p.id, pi.produto_id, pi.estoque_id`
 	itensRows, err := tx.Query(selectItens, preNotaID, empresaID)
@@ -186,11 +210,20 @@ func MontarPreNotaConteudo(db *sql.DB, empresaID, preNotaID string) (PreNotaCont
 	for itensRows.Next() {
 		var it PreNotaItem
 		var codigo, unidade, filialOrigem, filialDestino, estoqueOrigem, estoqueDestino sql.NullString
+		var estoqueOrigemID, estoqueDestinoID sql.NullString
 		var preco sql.NullInt64
-		if err := itensRows.Scan(
+		var fiscalO, fiscalD [9]sql.NullString
+		dest := []any{
 			&it.Tipo, &codigo, &it.Descricao, &it.QuantidadeMilesimos, &unidade, &preco, &filialOrigem, &filialDestino,
-			&estoqueOrigem, &estoqueDestino,
-		); err != nil {
+			&estoqueOrigem, &estoqueDestino, &estoqueOrigemID, &estoqueDestinoID,
+		}
+		for i := range fiscalO {
+			dest = append(dest, &fiscalO[i])
+		}
+		for i := range fiscalD {
+			dest = append(dest, &fiscalD[i])
+		}
+		if err := itensRows.Scan(dest...); err != nil {
 			return PreNotaConteudo{}, fmt.Errorf("falha ao ler item da pré-nota: %w", err)
 		}
 		if codigo.Valid {
@@ -210,7 +243,11 @@ func MontarPreNotaConteudo(db *sql.DB, empresaID, preNotaID string) (PreNotaCont
 		if estoqueOrigem.Valid {
 			it.EstoqueOrigem = estoqueOrigem.String
 		}
+		it.FiscalOrigem = dadosFiscaisPreNota(fiscalO)
+		it.EstoqueOrigemID = estoqueOrigemID.String
 		if it.Tipo == "transferencia" {
+			it.EstoqueDestinoID = estoqueDestinoID.String
+			it.FiscalDestino = dadosFiscaisPreNota(fiscalD)
 			if filialDestino.Valid {
 				it.FilialDestino = filialDestino.String
 			}
@@ -224,6 +261,16 @@ func MontarPreNotaConteudo(db *sql.DB, empresaID, preNotaID string) (PreNotaCont
 		return PreNotaConteudo{}, fmt.Errorf("falha ao iterar itens da pré-nota: %w", err)
 	}
 	return c, nil
+}
+
+// dadosFiscaisPreNota converte as 9 colunas fiscais de `filiais` (ordem do
+// SELECT: cnpj, ie, logradouro, numero, complemento, bairro, cidade, cep, uf).
+func dadosFiscaisPreNota(c [9]sql.NullString) DadosFiscaisFilialPreNota {
+	v := func(i int) string { return strings.TrimSpace(c[i].String) }
+	return DadosFiscaisFilialPreNota{
+		CNPJ: v(0), InscricaoEstadual: v(1), Logradouro: v(2), Numero: v(3), Complemento: v(4),
+		Bairro: v(5), Cidade: v(6), CEP: v(7), UF: v(8),
+	}
 }
 
 // --- Formatação (funções puras) -------------------------------------------
@@ -343,13 +390,71 @@ const (
 )
 
 // partePreNota é um lado da rota (Remetente ou Destinatário), já formatado
-// ("—" no que faltar). Empresa e CNPJ são os da própria Empresa — a Pré-Nota
-// é sempre interna.
+// ("—" no que faltar). Empresa é a razão social da própria Empresa (a
+// Pré-Nota é sempre interna); CNPJ, IE e endereço são os da FILIAL daquele
+// lado (spec-filial-dados-fiscais) — ausentes viram "—", nunca o CNPJ da
+// Empresa (não pode parecer o CNPJ do estabelecimento). Endereco tem até 2
+// linhas: logradouro/número/complemento e bairro/cidade/UF/CEP.
 type partePreNota struct {
-	Empresa string
-	CNPJ    string
-	Filial  string
-	Estoque string
+	Empresa  string
+	CNPJ     string
+	IE       string
+	Endereco []string
+	Filial   string
+	Estoque  string
+}
+
+// formatarCEPPreNota aplica 00000-000 a um CEP de 8 dígitos.
+func formatarCEPPreNota(cep string) string {
+	if len(cep) != 8 {
+		return cep
+	}
+	return cep[:5] + "-" + cep[5:]
+}
+
+// juntarPreNota junta as partes não vazias com `sep`.
+func juntarPreNota(sep string, partes ...string) string {
+	var ok []string
+	for _, p := range partes {
+		if strings.TrimSpace(p) != "" {
+			ok = append(ok, p)
+		}
+	}
+	return strings.Join(ok, sep)
+}
+
+// enderecoPreNota formata o endereço da Filial em até 2 linhas; sem endereço
+// -> ["—"].
+func enderecoPreNota(f DadosFiscaisFilialPreNota) []string {
+	linha1 := juntarPreNota(" - ", juntarPreNota(", ", f.Logradouro, f.Numero), f.Complemento)
+	cidadeUF := juntarPreNota("/", f.Cidade, f.UF)
+	cep := ""
+	if f.CEP != "" {
+		cep = "CEP " + formatarCEPPreNota(f.CEP)
+	}
+	linha2 := juntarPreNota(" - ", f.Bairro, cidadeUF, cep)
+	linhas := make([]string, 0, 2)
+	for _, l := range []string{linha1, linha2} {
+		if l != "" {
+			linhas = append(linhas, l)
+		}
+	}
+	if len(linhas) == 0 {
+		return []string{textoAusentePreNota}
+	}
+	return linhas
+}
+
+// parteDaFilialPreNota monta um lado da rota com os dados da Filial.
+func parteDaFilialPreNota(empresa, filial, estoque string, f DadosFiscaisFilialPreNota) partePreNota {
+	return partePreNota{
+		Empresa:  empresa,
+		CNPJ:     textoOuAusentePreNota(formatarCNPJPreNota(f.CNPJ)),
+		IE:       textoOuAusentePreNota(f.InscricaoEstadual),
+		Endereco: enderecoPreNota(f),
+		Filial:   textoOuAusentePreNota(filial),
+		Estoque:  textoOuAusentePreNota(estoque),
+	}
 }
 
 // produtoPreNota é uma linha da tabela DADOS DOS PRODUTOS, já formatada.
@@ -363,8 +468,9 @@ type produtoPreNota struct {
 }
 
 // rotaPreNota agrupa os itens de um mesmo par Estoque origem -> Estoque
-// destino (Baixa: mesmo Estoque origem). Destinatario nil = sem
-// destinatário; o quadro mostra SemDestinatario no lugar.
+// destino (Baixa: mesmo Estoque origem), pelos IDS dos Estoques.
+// Destinatario nil = sem destinatário; o quadro mostra SemDestinatario no
+// lugar. Subtotal leva avisoTotalSemValor quando há item sem preço na rota.
 type rotaPreNota struct {
 	Natureza        string
 	Remetente       partePreNota
@@ -386,6 +492,81 @@ type layoutPreNota struct {
 	ValorTotal   string // com avisoTotalSemValor quando há item sem preço
 	Aprovador    string
 	Solicitantes string
+	// Canhoto de recebimento (spec-filial-dados-fiscais): quadro RECEBIMENTO
+	// com campos em branco, sempre o último do documento.
+	Recebimento []campoDesenhado
+}
+
+// campoDesenhado é um campo de um quadro do PDF: Quadro = título da seção
+// ("REMETENTE (ORIGEM)", "RECEBIMENTO"...), Rotulo = o rótulo pequeno no
+// canto ("CNPJ", "" quando o quadro é só um texto), Linhas = o valor (antes
+// da quebra pela largura; nil = campo em branco). RenderizarPreNotaPDF
+// desenha EXATAMENTE o que quadrosDaRotaPreNota/camposRecebimentoPreNota
+// devolvem — é o que os testes conferem sem ler bytes de PDF.
+type campoDesenhado struct {
+	Quadro string
+	Rotulo string
+	Linhas []string
+}
+
+const (
+	quadroRemetentePreNota    = "REMETENTE (ORIGEM)"
+	quadroDestinatarioPreNota = "DESTINATÁRIO (DESTINO)"
+	quadroRecebimentoPreNota  = "RECEBIMENTO"
+	// declaracaoRecebimentoPreNota abre o canhoto.
+	declaracaoRecebimentoPreNota = "Recebi o material relacionado nesta Pré-Nota."
+)
+
+// rotulosPartePreNota: ordem dos campos de um quadro Remetente/Destinatário
+// (o renderizador posiciona por índice: Razão social; CNPJ | IE; Endereço;
+// Filial | Estoque).
+var rotulosPartePreNota = []string{"RAZÃO SOCIAL", "CNPJ", "INSCRIÇÃO ESTADUAL", "ENDEREÇO", "FILIAL", "ESTOQUE"}
+
+// camposPartePreNota devolve os 6 campos de um lado da rota, na ordem de
+// rotulosPartePreNota.
+func camposPartePreNota(quadro string, p partePreNota) []campoDesenhado {
+	valores := [][]string{{p.Empresa}, {p.CNPJ}, {p.IE}, p.Endereco, {p.Filial}, {p.Estoque}}
+	campos := make([]campoDesenhado, len(rotulosPartePreNota))
+	for i, r := range rotulosPartePreNota {
+		campos[i] = campoDesenhado{Quadro: quadro, Rotulo: r, Linhas: valores[i]}
+	}
+	return campos
+}
+
+// quadrosDaRotaPreNota devolve os campos dos dois quadros da rota: [0] =
+// Remetente (6 campos), [1] = Destinatário (6 campos) ou, sem destinatário,
+// um único campo sem rótulo com SemDestinatario.
+func quadrosDaRotaPreNota(r rotaPreNota) [2][]campoDesenhado {
+	var q [2][]campoDesenhado
+	q[0] = camposPartePreNota(quadroRemetentePreNota, r.Remetente)
+	if r.Destinatario != nil {
+		q[1] = camposPartePreNota(quadroDestinatarioPreNota, *r.Destinatario)
+	} else {
+		q[1] = []campoDesenhado{{Quadro: quadroDestinatarioPreNota, Linhas: []string{r.SemDestinatario}}}
+	}
+	return q
+}
+
+// tituloContinuacaoPreNota é o título da tabela quando ela continua na
+// página seguinte: lembra a rota com Estoque e Filial de cada lado.
+func tituloContinuacaoPreNota(r rotaPreNota) string {
+	lado := func(p partePreNota) string { return p.Estoque + " (" + p.Filial + ")" }
+	t := "DADOS DOS PRODUTOS (continuação: " + lado(r.Remetente)
+	if r.Destinatario != nil {
+		return t + " para " + lado(*r.Destinatario) + ")"
+	}
+	return t + ", " + strings.ToLower(r.Natureza) + ")"
+}
+
+// camposRecebimentoPreNota: o canhoto — declaração + Data, Nome legível e
+// Assinatura em branco.
+func camposRecebimentoPreNota() []campoDesenhado {
+	return []campoDesenhado{
+		{Quadro: quadroRecebimentoPreNota, Linhas: []string{declaracaoRecebimentoPreNota}},
+		{Quadro: quadroRecebimentoPreNota, Rotulo: "DATA"},
+		{Quadro: quadroRecebimentoPreNota, Rotulo: "NOME LEGÍVEL"},
+		{Quadro: quadroRecebimentoPreNota, Rotulo: "ASSINATURA"},
+	}
 }
 
 // formatarDocnumPreNota: docnum com 6 dígitos e ponto de milhar ("Nº 000.001").
@@ -410,36 +591,45 @@ func layoutDaPreNota(c PreNotaConteudo) layoutPreNota {
 		Emissao:      "Emissão: " + formatarDataPreNota(c.CriadoEm),
 		Aprovador:    textoOuAusentePreNota(c.Aprovador),
 		Solicitantes: solicitantes,
+		Recebimento:  camposRecebimentoPreNota(),
 	}
 
 	// Agrupamento por rota na ordem da 1ª aparição — a ordem dos itens já é
 	// total e estável (ORDER BY de MontarPreNotaConteudo), então o documento
-	// também é. A chave usa os nomes impressos (Filial + Estoque de cada
-	// lado): duas rotas indistinguíveis no papel viram um bloco só.
+	// também é. A chave usa os IDS dos Estoques de cada lado (dois Estoques
+	// homônimos em Filiais diferentes nunca se fundem); sem id (conteúdo
+	// montado à mão), cai no nome impresso. A Filial entra na chave também:
+	// mesmo Estoque com Filial diferente gravada na aprovação é outro bloco.
+	chaveEstoque := func(id, nome string) string {
+		if id != "" {
+			return "id:" + id
+		}
+		return "nome:" + nome
+	}
 	type chaveRota struct{ tipo, filialO, estoqueO, filialD, estoqueD string }
 	indice := make(map[chaveRota]int)
 	subtotais := make([]*big.Int, 0)
+	semValorNaRota := make([]bool, 0)
 	total := new(big.Int)
 	algumSemValor := false
 	for _, it := range c.Itens {
 		transf := it.Tipo == "transferencia"
-		k := chaveRota{tipo: it.Tipo, filialO: it.FilialOrigem, estoqueO: it.EstoqueOrigem}
+		k := chaveRota{tipo: it.Tipo, filialO: it.FilialOrigem, estoqueO: chaveEstoque(it.EstoqueOrigemID, it.EstoqueOrigem)}
 		if transf {
-			k.filialD, k.estoqueD = it.FilialDestino, it.EstoqueDestino
+			k.filialD, k.estoqueD = it.FilialDestino, chaveEstoque(it.EstoqueDestinoID, it.EstoqueDestino)
 		}
 		i, ok := indice[k]
 		if !ok {
 			r := rotaPreNota{
-				Natureza: rotuloTipoPreNota(it.Tipo),
-				Remetente: partePreNota{Empresa: empresa, CNPJ: cnpj,
-					Filial: textoOuAusentePreNota(it.FilialOrigem), Estoque: textoOuAusentePreNota(it.EstoqueOrigem)},
+				Natureza:        rotuloTipoPreNota(it.Tipo),
+				Remetente:       parteDaFilialPreNota(empresa, it.FilialOrigem, it.EstoqueOrigem, it.FiscalOrigem),
 				SemDestinatario: textoAusentePreNota,
 			}
 			switch it.Tipo {
 			case "transferencia":
 				r.Natureza = naturezaTransferenciaPreNota
-				r.Destinatario = &partePreNota{Empresa: empresa, CNPJ: cnpj,
-					Filial: textoOuAusentePreNota(it.FilialDestino), Estoque: textoOuAusentePreNota(it.EstoqueDestino)}
+				d := parteDaFilialPreNota(empresa, it.FilialDestino, it.EstoqueDestino, it.FiscalDestino)
+				r.Destinatario = &d
 				r.SemDestinatario = ""
 			case "baixa":
 				r.Natureza = naturezaBaixaPreNota
@@ -449,6 +639,7 @@ func layoutDaPreNota(c PreNotaConteudo) layoutPreNota {
 			indice[k] = i
 			l.Rotas = append(l.Rotas, r)
 			subtotais = append(subtotais, new(big.Int))
+			semValorNaRota = append(semValorNaRota, false)
 		}
 
 		valorLinha := textoAusentePreNota
@@ -459,6 +650,7 @@ func layoutDaPreNota(c PreNotaConteudo) layoutPreNota {
 			valorLinha = formatarCentavosPreNota(v)
 		} else {
 			algumSemValor = true
+			semValorNaRota[i] = true
 		}
 		unidade := textoAusentePreNota
 		if it.UnidadeMedida != nil {
@@ -475,6 +667,9 @@ func layoutDaPreNota(c PreNotaConteudo) layoutPreNota {
 	}
 	for i := range l.Rotas {
 		l.Rotas[i].Subtotal = formatarCentavosPreNota(subtotais[i])
+		if semValorNaRota[i] {
+			l.Rotas[i].Subtotal += avisoTotalSemValor
+		}
 	}
 	if len(l.Rotas) > 0 {
 		l.ValorTotal = formatarCentavosPreNota(total)
@@ -756,65 +951,101 @@ func RenderizarPreNotaPDF(conteudo PreNotaConteudo) ([]byte, error) {
 
 	// 2. Uma seção por rota.
 	wParte := (W - espacoEntreQuadrosPT) / 2
-	larguraCNPJ := 100.0
-	for ri, rota := range doc.Rotas {
-		// Medidas dos quadros Remetente/Destinatário: 3 faixas (Empresa;
-		// CNPJ | Filial; Estoque), cada uma com a altura do lado mais alto.
-		partes := []*partePreNota{&rota.Remetente, rota.Destinatario}
-		hFaixa := [3]float64{}
-		type faixas struct{ empresa, cnpj, filial, estoque []string }
-		medidas := make([]faixas, 2)
-		for i, p := range partes {
-			if p == nil {
-				continue
-			}
-			m := faixas{
-				empresa: linhasCampo(p.Empresa, wParte, false),
-				cnpj:    linhasCampo(p.CNPJ, larguraCNPJ, false),
-				filial:  linhasCampo(p.Filial, wParte-larguraCNPJ, false),
-				estoque: linhasCampo(p.Estoque, wParte, true),
-			}
-			medidas[i] = m
-			hFaixa[0] = max(hFaixa[0], alturaCampo(len(m.empresa)))
-			hFaixa[1] = max(hFaixa[1], alturaCampo(len(m.cnpj)), alturaCampo(len(m.filial)))
-			hFaixa[2] = max(hFaixa[2], alturaCampo(len(m.estoque)))
+	larguraCNPJ := 110.0
+	larguraFilial := wParte / 2
+	hSub := 15.0
+	// posicaoCampoParte: onde cada campo de rotulosPartePreNota vai no
+	// quadro — faixa (0..3) e coluna (0 = linha inteira/esquerda, 1 =
+	// direita). Razão social; CNPJ | IE; Endereço; Filial | Estoque.
+	type posicaoCampo struct{ faixa, col int }
+	posicaoCampoParte := []posicaoCampo{{0, 0}, {1, 0}, {1, 1}, {2, 0}, {3, 0}, {3, 1}}
+	// larguraCampoParte devolve x relativo e largura do campo na faixa.
+	larguraCampoParte := func(pos posicaoCampo, faixaDividida bool) (float64, float64) {
+		divisao := 0.0
+		switch pos.faixa {
+		case 1:
+			divisao = larguraCNPJ
+		case 3:
+			divisao = larguraFilial
 		}
-		hPartes := hFaixa[0] + hFaixa[1] + hFaixa[2]
-		linhasSemDest := quebrar(rota.SemDestinatario, wParte-4*paddingQuadroPT, true, tamanhoValorPreNotaPT)
+		if !faixaDividida || divisao == 0 {
+			return 0, wParte
+		}
+		if pos.col == 0 {
+			return 0, divisao
+		}
+		return divisao, wParte - divisao
+	}
+	for ri, rota := range doc.Rotas {
+		// Medidas dos quadros Remetente/Destinatário a partir dos campos de
+		// quadrosDaRotaPreNota (o que é desenhado é exatamente isso): cada
+		// faixa com a altura do lado mais alto — os dois quadros alinhados.
+		quadros := quadrosDaRotaPreNota(rota)
+		hFaixa := [4]float64{}
+		linhasQuadros := [2][][]string{}
+		for qi, campos := range quadros {
+			if len(campos) != len(rotulosPartePreNota) {
+				continue // quadro "sem destinatário": texto único
+			}
+			linhasQuadros[qi] = make([][]string, len(campos))
+			for ci, c := range campos {
+				pos := posicaoCampoParte[ci]
+				_, w := larguraCampoParte(pos, true)
+				var linhas []string
+				for _, l := range c.Linhas {
+					linhas = append(linhas, linhasCampo(l, w, c.Rotulo == "ESTOQUE")...)
+				}
+				linhasQuadros[qi][ci] = linhas
+				hFaixa[pos.faixa] = max(hFaixa[pos.faixa], alturaCampo(len(linhas)))
+			}
+		}
+		hPartes := hFaixa[0] + hFaixa[1] + hFaixa[2] + hFaixa[3]
 		hNatureza := alturaCampo(1)
 		_, hPrimeiro := alturasLinhaProduto(rota.Produtos[0])
+		if len(rota.Produtos) == 1 {
+			hPrimeiro += hSub // o subtotal nunca fica sozinho na página seguinte
+		}
 
-		// Remetente/Destinatário nunca ficam longe do início da tabela.
+		// Remetente/Destinatário + natureza + cabeçalho da tabela + 1º item
+		// formam um bloco só: se não couber, vai inteiro para a próxima
+		// página (nunca sobra um cabeçalho de tabela vazio para trás).
 		if ri > 0 {
 			y += espacoEntreRotasPT
 		}
 		garantir(alturaTituloSecaoPT + hPartes + espacoEntreQuadrosPT + hNatureza + espacoEntreQuadrosPT +
 			alturaTituloSecaoPT + alturaCabecalhoTabelaPT + hPrimeiro)
 
-		titulos := []string{"REMETENTE (ORIGEM)", "DESTINATÁRIO (DESTINO)"}
-		for i, p := range partes {
-			px := x + float64(i)*(wParte+espacoEntreQuadrosPT)
-			tituloSecao(px, y, wParte, titulos[i])
+		for qi, campos := range quadros {
+			px := x + float64(qi)*(wParte+espacoEntreQuadrosPT)
+			tituloSecao(px, y, wParte, campos[0].Quadro)
 			by := y + alturaTituloSecaoPT
 			quadro(px, by, wParte, hPartes)
-			if p == nil {
+			if linhasQuadros[qi] == nil {
+				// Sem destinatário (Baixa): texto único, centralizado.
+				var texto []string
+				for _, l := range campos[0].Linhas {
+					texto = append(texto, quebrar(l, wParte-4*paddingQuadroPT, true, tamanhoValorPreNotaPT)...)
+				}
 				fonte(true, tamanhoValorPreNotaPT)
-				ly := by + (hPartes-float64(len(linhasSemDest))*entrelinhaPreNotaPT)/2
-				for _, l := range linhasSemDest {
+				ly := by + (hPartes-float64(len(texto))*entrelinhaPreNotaPT)/2
+				for _, l := range texto {
 					escrever(px+2*paddingQuadroPT, ly, wParte-4*paddingQuadroPT, entrelinhaPreNotaPT, l, gopdf.Center|gopdf.Middle)
 					ly += entrelinhaPreNotaPT
 				}
 				continue
 			}
-			m := medidas[i]
+			yFaixa := [4]float64{by, by + hFaixa[0], by + hFaixa[0] + hFaixa[1], by + hFaixa[0] + hFaixa[1] + hFaixa[2]}
 			traco(0.6, 0)
-			pdf.Line(px, by+hFaixa[0], px+wParte, by+hFaixa[0])
-			pdf.Line(px, by+hFaixa[0]+hFaixa[1], px+wParte, by+hFaixa[0]+hFaixa[1])
-			pdf.Line(px+larguraCNPJ, by+hFaixa[0], px+larguraCNPJ, by+hFaixa[0]+hFaixa[1])
-			desenharCampo(px, by, wParte, "EMPRESA", m.empresa, false)
-			desenharCampo(px, by+hFaixa[0], larguraCNPJ, "CNPJ", m.cnpj, false)
-			desenharCampo(px+larguraCNPJ, by+hFaixa[0], wParte-larguraCNPJ, "FILIAL", m.filial, false)
-			desenharCampo(px, by+hFaixa[0]+hFaixa[1], wParte, "ESTOQUE", m.estoque, true)
+			for f := 1; f < 4; f++ {
+				pdf.Line(px, yFaixa[f], px+wParte, yFaixa[f])
+			}
+			pdf.Line(px+larguraCNPJ, yFaixa[1], px+larguraCNPJ, yFaixa[2])
+			pdf.Line(px+larguraFilial, yFaixa[3], px+larguraFilial, by+hPartes)
+			for ci, c := range campos {
+				pos := posicaoCampoParte[ci]
+				dx, w := larguraCampoParte(pos, true)
+				desenharCampo(px+dx, yFaixa[pos.faixa], w, c.Rotulo, linhasQuadros[qi][ci], c.Rotulo == "ESTOQUE")
+			}
 		}
 		y += alturaTituloSecaoPT + hPartes + espacoEntreQuadrosPT
 
@@ -823,16 +1054,16 @@ func RenderizarPreNotaPDF(conteudo PreNotaConteudo) ([]byte, error) {
 		y += hNatureza + espacoEntreQuadrosPT
 
 		// Na página seguinte o título da tabela lembra de qual rota ela é.
-		continuacao := "DADOS DOS PRODUTOS (continuação: " + rota.Remetente.Estoque
-		if rota.Destinatario != nil {
-			continuacao += " para " + rota.Destinatario.Estoque + ")"
-		} else {
-			continuacao += ", " + strings.ToLower(rota.Natureza) + ")"
-		}
+		continuacao := tituloContinuacaoPreNota(rota)
 		abrirSegmento("DADOS DOS PRODUTOS")
-		for _, p := range rota.Produtos {
+		for pi, p := range rota.Produtos {
 			celulas, h := alturasLinhaProduto(p)
-			if y+h > limiteYPreNotaPT {
+			// O ÚLTIMO item reserva também o subtotal: os dois vão juntos.
+			reserva := h
+			if pi == len(rota.Produtos)-1 {
+				reserva += hSub
+			}
+			if y+reserva > limiteYPreNotaPT && pi > 0 {
 				fecharSegmento()
 				novaPagina()
 				abrirSegmento(continuacao)
@@ -851,22 +1082,23 @@ func RenderizarPreNotaPDF(conteudo PreNotaConteudo) ([]byte, error) {
 			traco(0.3, 150)
 			pdf.Line(x, y, x+W, y)
 		}
-		// Subtotal da rota, colado no fim da tabela.
-		hSub := 15.0
-		if y+hSub > limiteYPreNotaPT {
-			fecharSegmento()
-			novaPagina()
-			abrirSegmento(continuacao)
-		}
+		// Subtotal da rota, colado no fim da tabela (espaço já reservado
+		// junto do último item). Com item sem preço, o aviso vai no rótulo.
 		fecharSegmento()
 		wTotal := colunasProdutosPreNota[len(colunasProdutosPreNota)-1].Largura
+		rotuloSub := "SUBTOTAL DA ROTA"
+		valorSub := rota.Subtotal
+		if strings.HasSuffix(valorSub, avisoTotalSemValor) {
+			valorSub = strings.TrimSuffix(valorSub, avisoTotalSemValor)
+			rotuloSub += avisoTotalSemValor
+		}
 		quadro(x, y, W, hSub)
 		traco(0.6, 0)
 		pdf.Line(x+W-wTotal, y, x+W-wTotal, y+hSub)
 		fonte(true, 7)
-		escrever(x, y, W-wTotal-paddingQuadroPT, hSub, "SUBTOTAL DA ROTA", gopdf.Right|gopdf.Middle)
+		escrever(x, y, W-wTotal-paddingQuadroPT, hSub, rotuloSub, gopdf.Right|gopdf.Middle)
 		fonte(true, tamanhoItemPreNotaPT)
-		escrever(x+W-wTotal+paddingQuadroPT, y, wTotal-2*paddingQuadroPT, hSub, rota.Subtotal, gopdf.Right|gopdf.Middle)
+		escrever(x+W-wTotal+paddingQuadroPT, y, wTotal-2*paddingQuadroPT, hSub, valorSub, gopdf.Right|gopdf.Middle)
 		y += hSub
 	}
 
@@ -885,20 +1117,59 @@ func RenderizarPreNotaPDF(conteudo PreNotaConteudo) ([]byte, error) {
 		y += h + espacoEntreRotasPT
 	}
 
-	// 4. DADOS ADICIONAIS: Aprovador e Solicitante(s).
+	// 4. DADOS ADICIONAIS (Aprovador e Solicitante(s)) + 5. RECEBIMENTO
+	// (canhoto). Os dois formam um bloco só: o canhoto nunca abre uma página
+	// sozinho — se não couber, os dois vão juntos para a próxima.
 	{
 		wAprov := 180.0
 		linhasAprov := linhasCampo(doc.Aprovador, wAprov, false)
 		linhasSolic := linhasCampo(doc.Solicitantes, W-wAprov, false)
-		h := alturaCampo(max(len(linhasAprov), len(linhasSolic)))
-		garantir(alturaTituloSecaoPT + h)
+		hDados := alturaCampo(max(len(linhasAprov), len(linhasSolic)))
+
+		// Canhoto: [0] = declaração (linha inteira); [1..3] = Data | Nome
+		// legível | Assinatura, em branco com altura para escrever à mão.
+		canhoto := doc.Recebimento
+		hDeclaracao := 16.0
+		hAssinar := 34.0
+		hCanhoto := 0.0
+		if len(canhoto) > 0 {
+			hCanhoto = espacoEntreRotasPT + alturaTituloSecaoPT + hDeclaracao + hAssinar
+		}
+		garantir(alturaTituloSecaoPT + hDados + hCanhoto)
+
 		tituloSecao(x, y, W, "DADOS ADICIONAIS")
 		y += alturaTituloSecaoPT
-		quadro(x, y, W, h)
+		quadro(x, y, W, hDados)
 		traco(0.6, 0)
-		pdf.Line(x+wAprov, y, x+wAprov, y+h)
+		pdf.Line(x+wAprov, y, x+wAprov, y+hDados)
 		desenharCampo(x, y, wAprov, "APROVADOR", linhasAprov, false)
 		desenharCampo(x+wAprov, y, W-wAprov, "SOLICITANTE(S)", linhasSolic, false)
+		y += hDados
+
+		if len(canhoto) > 0 {
+			y += espacoEntreRotasPT
+			tituloSecao(x, y, W, canhoto[0].Quadro)
+			y += alturaTituloSecaoPT
+			quadro(x, y, W, hDeclaracao+hAssinar)
+			fonte(false, tamanhoValorPreNotaPT)
+			for _, l := range canhoto[0].Linhas {
+				escrever(x+paddingQuadroPT, y, W-2*paddingQuadroPT, hDeclaracao, l, gopdf.Left|gopdf.Middle)
+			}
+			yc := y + hDeclaracao
+			traco(0.6, 0)
+			pdf.Line(x, yc, x+W, yc)
+			larguras := []float64{110, 190, W - 110 - 190}
+			cx := x
+			for i, c := range canhoto[1:] {
+				if i > 0 {
+					traco(0.6, 0)
+					pdf.Line(cx, yc, cx, yc+hAssinar)
+				}
+				desenharCampo(cx, yc, larguras[i], c.Rotulo, c.Linhas, false)
+				cx += larguras[i]
+			}
+			y = yc + hAssinar
+		}
 	}
 
 	if erro != nil {

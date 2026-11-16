@@ -888,8 +888,8 @@ describe('LogAcessoPage — Log de Acesso (Story 1.12)', () => {
 });
 
 describe('FiliaisPage — Filiais (Story 12.1)', () => {
-  it('adm vê a seção "Filiais" e carrega GET /api/filiais', async () => {
-    authState.papel = 'adm';
+  it.each(['gestor', 'adm'])('%s vê a seção "Filiais" e carrega GET /api/filiais', async (papel) => {
+    authState.papel = papel;
     const fetchMock = stubFetch((url) => {
       if (url === '/api/promocoes/minha') return jsonOk({ solicitacao: null });
       if (url === '/api/promocoes') return jsonOk({ solicitacoes: [] });
@@ -909,7 +909,7 @@ describe('FiliaisPage — Filiais (Story 12.1)', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/filiais', expect.anything());
   });
 
-  it.each(['usuario', 'almoxarife', 'gestor'])(
+  it.each(['usuario', 'almoxarife'])(
     'papel %s NÃO vê a seção "Filiais" e nunca chama GET /api/filiais',
     async (papel) => {
       authState.papel = papel;

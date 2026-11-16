@@ -87,9 +87,12 @@ describe('nav-items: grupos e papéis', () => {
     expect(ids).toEqual(['catalogo', 'pedidos', 'estoque', 'qualidade']);
   });
 
-  it('gestor vê só Usuários, Convites e Promoções em Administração; sem Cadastros; e Aprovação em lote em Pedidos', () => {
+  it('gestor vê só Usuários, Convites e Promoções em Administração; só Filiais em Cadastros; e Aprovação em lote em Pedidos', () => {
     const grupos = gruposVisiveis(navGrupos, 'gestor');
-    expect(grupos.map((g) => g.id)).toEqual(['catalogo', 'pedidos', 'estoque', 'qualidade', 'administracao']);
+    expect(grupos.map((g) => g.id)).toEqual(['catalogo', 'pedidos', 'estoque', 'qualidade', 'cadastros', 'administracao']);
+    const grupo = (id: string) => grupos.find((g) => g.id === id);
+    // spec-filial-dados-fiscais: o cadastro de Filiais passou de adm para gestor.
+    expect(grupo('cadastros')?.itens.map((i) => i.id)).toEqual(['filiais']);
     const pedidos = grupos.find((g) => g.id === 'pedidos');
     expect(pedidos?.itens.map((i) => i.id)).toEqual([
       'meus-pedidos',
@@ -98,7 +101,7 @@ describe('nav-items: grupos e papéis', () => {
       'fila-aprovacao',
       'aprovacao-lote',
     ]);
-    expect(grupos[4].itens.map((i) => i.id)).toEqual(['usuarios', 'convites', 'promocoes']);
+    expect(grupo('administracao')?.itens.map((i) => i.id)).toEqual(['usuarios', 'convites', 'promocoes']);
   });
 
   it('almoxarife não vê Aprovação em lote (papelMinimo: gestor)', () => {

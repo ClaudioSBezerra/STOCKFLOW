@@ -390,7 +390,7 @@ describe('LocaisEstoqueSection', () => {
     render(<LocaisEstoqueSection />);
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Nenhuma filial cadastrada. Peça a um administrador para cadastrar uma filial antes de criar estoques.',
+      'Nenhuma filial cadastrada. Peça a um gestor ou administrador para cadastrar uma filial antes de criar estoques.',
     );
     await user.type(screen.getByLabelText('Nome do estoque'), 'Depósito');
     expect(screen.getByRole('button', { name: 'Adicionar estoque' })).toBeDisabled();

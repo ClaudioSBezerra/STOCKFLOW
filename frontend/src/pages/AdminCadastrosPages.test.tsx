@@ -37,7 +37,7 @@ vi.mock('@/lib/auth', async (importOriginal) => ({
 const paginas: Array<{ tela: string; Page: ComponentType; minimo: string; url: string }> = [
   { tela: 'Categorias', Page: CategoriasPage, minimo: 'adm', url: '/api/categorias' },
   { tela: 'Templates de nome', Page: TemplatesPage, minimo: 'adm', url: '/api/nomenclatura-templates' },
-  { tela: 'Filiais', Page: FiliaisPage, minimo: 'adm', url: '/api/filiais' },
+  { tela: 'Filiais', Page: FiliaisPage, minimo: 'gestor', url: '/api/filiais' },
   { tela: 'Centros de custo', Page: CentrosCustoPage, minimo: 'adm', url: '/api/centros-custo' },
   { tela: 'Usuários', Page: UsuariosPage, minimo: 'gestor', url: '/api/usuarios' },
   { tela: 'Convites', Page: ConvitesPage, minimo: 'gestor', url: '/api/convites' },

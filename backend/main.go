@@ -537,12 +537,16 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 		middleware.RequireRole(services.PapelAlmoxarife)(
 			handlers.ExcluirEstoqueHandler(db))))
 
-	// Filiais — Story 12.1 (FR-51, AD-27). Escrita só `adm`+ (403 abaixo,
-	// decidido por RequireRole); a listagem leva só RequireAuth (o almoxarife
-	// precisa listar para escolher a Filial do Estoque).
+	// Filiais — Story 12.1 (FR-51, AD-27) + spec-filial-dados-fiscais.
+	// Escrita (criar e editar, com CNPJ/IE/endereço) só `gestor`+ (403 abaixo,
+	// decidido por RequireRole; era `adm`+); a listagem leva só RequireAuth
+	// (o almoxarife precisa listar para escolher a Filial do Estoque).
 	registrar("POST /e/{slug}/api/filiais", middleware.RequireAuth(db, jwtSecret)(
-		middleware.RequireRole(services.PapelAdm)(
+		middleware.RequireRole(services.PapelGestor)(
 			handlers.CriarFilialHandler(db))))
+	registrar("PUT /e/{slug}/api/filiais/{id}", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelGestor)(
+			handlers.AtualizarFilialHandler(db))))
 	registrar("GET /e/{slug}/api/filiais", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarFiliaisHandler(db)))
 

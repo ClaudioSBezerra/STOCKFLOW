@@ -1716,10 +1716,21 @@ func decidirUmPedidoDoLoteTx(tx *sql.Tx, empresaID, decisorID string, ctx *pedid
 		// nunca impedir a gravação da quantidade ("—" no documento). O
 		// UPDATE equivalente de DecidirPedido (retirada) continua intocado
 		// (Never, spec-20-5).
+		//
+		// Filiais de origem/destino e nome do Estoque destino
+		// (spec-filial-dados-fiscais, revisão): gravados no MESMO UPDATE,
+		// lidos de `estoques` da MESMA Empresa — só ids/nome; os dados
+		// fiscais da Filial seguem vindo do cadastro atual no PDF. Baixa
+		// (sem `estoque_destino_id`) fica com destino NULL.
 		const updateItem = `
 			UPDATE pedido_itens SET quantidade_aprovada = $1,
 			  (preco_unitario, unidade_medida) = (
-			    SELECT pr.preco_unitario, pr.unidade_medida FROM produtos pr WHERE pr.id = $3 AND pr.empresa_id = $5)
+			    SELECT pr.preco_unitario, pr.unidade_medida FROM produtos pr WHERE pr.id = $3 AND pr.empresa_id = $5),
+			  filial_origem_id = (
+			    SELECT eo.filial_id FROM estoques eo WHERE eo.id = $4 AND eo.empresa_id = $5),
+			  (filial_destino_id, estoque_destino_nome) = (
+			    SELECT ed.filial_id, ed.nome FROM estoques ed
+			    WHERE ed.id = pedido_itens.estoque_destino_id AND ed.empresa_id = $5)
 			WHERE pedido_id = $2 AND produto_id = $3 AND estoque_id = $4 AND empresa_id = $5`
 
 		totalmenteAprovado := true

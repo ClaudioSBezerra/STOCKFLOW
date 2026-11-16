@@ -69,7 +69,7 @@ const MENSAGEM_ERRO_CARREGAR =
   'Não foi possível carregar a lista de estoques. Recarregue a página.';
 const MENSAGEM_ERRO_CARREGAR_FILIAIS = 'Não foi possível carregar as filiais. Recarregue a página.';
 const MENSAGEM_SEM_FILIAIS =
-  'Nenhuma filial cadastrada. Peça a um administrador para cadastrar uma filial antes de criar estoques.';
+  'Nenhuma filial cadastrada. Peça a um gestor ou administrador para cadastrar uma filial antes de criar estoques.';
 const MENSAGEM_ERRO_CADASTRO =
   'Não foi possível cadastrar o estoque agora. Tente novamente em instantes.';
 const MENSAGEM_ERRO_DUPLICADO = 'Já existe um estoque com esse nome.';

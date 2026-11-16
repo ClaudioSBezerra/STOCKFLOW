@@ -3,12 +3,13 @@ import { rankPapel } from '@/components/shell/nav-items';
 import { FiliaisSection } from '@/components/filiais/FiliaisSection';
 
 /**
- * Página "Filiais" (Story 17.2). Gate `adm`+ espelhado de `nav-items.ts`;
+ * Página "Filiais" (Story 17.2). Gate `gestor`+ espelhado de `nav-items.ts`
+ * (spec-filial-dados-fiscais; era `adm`+);
  * sem o papel, mostra a recusa e não monta a seção (nenhum fetch).
  */
 export function FiliaisPage() {
   const { usuario } = useAuth();
-  const permitido = rankPapel(usuario?.papel ?? '') >= rankPapel('adm');
+  const permitido = rankPapel(usuario?.papel ?? '') >= rankPapel('gestor');
 
   return (
     <div className="flex flex-col gap-6 p-6">

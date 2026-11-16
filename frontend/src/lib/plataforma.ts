@@ -288,11 +288,6 @@ export function normalizarSlug(texto: string): string {
     .replace(/-+$/, '');
 }
 
-/** "12345678000195" -> "12.345.678/0001-95"; outro formato volta como veio. */
-export function formatarCNPJ(cnpj: string): string {
-  const d = cnpj.replace(/\D/g, '');
-  if (d.length !== 14) {
-    return cnpj;
-  }
-  return `${d.slice(0, 2)}.${d.slice(2, 5)}.${d.slice(5, 8)}/${d.slice(8, 12)}-${d.slice(12)}`;
-}
+// Formatador de CNPJ compartilhado com a tela de Filiais (lib/formatacao);
+// reexportado aqui para os chamadores existentes da área do Dono.
+export { formatarCNPJ } from '@/lib/formatacao';

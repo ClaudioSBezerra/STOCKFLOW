@@ -116,7 +116,7 @@ export const navGrupos: NavGrupo[] = [
     itens: [
       { id: 'categorias', label: 'Categorias', to: '/cadastros/categorias', papelMinimo: 'adm' },
       { id: 'templates', label: 'Templates de nome', to: '/cadastros/templates', papelMinimo: 'adm' },
-      { id: 'filiais', label: 'Filiais', to: '/cadastros/filiais', papelMinimo: 'adm' },
+      { id: 'filiais', label: 'Filiais', to: '/cadastros/filiais', papelMinimo: 'gestor' },
       { id: 'centros-custo', label: 'Centros de custo', to: '/cadastros/centros-custo', papelMinimo: 'adm' },
     ],
   },

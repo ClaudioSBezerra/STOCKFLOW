@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"database/sql"
 	"errors"
+	"fmt"
 	"math/big"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -545,16 +548,29 @@ func conteudoMistoTeste() PreNotaConteudo {
 		Itens: []PreNotaItem{
 			{Tipo: "transferencia", ProdutoCodigo: "000123", Descricao: "Cimento CP-II 50kg", QuantidadeMilesimos: 6000,
 				UnidadeMedida: ptrStr("un"), PrecoCentavos: ptrI64(123450), FilialOrigem: "Recife", FilialDestino: "Natal",
-				EstoqueOrigem: "Almoxarifado Central", EstoqueDestino: "Depósito Natal"},
+				EstoqueOrigem: "Almoxarifado Central", EstoqueDestino: "Depósito Natal", FiscalOrigem: fiscalRecifeTeste()},
 			{Tipo: "baixa", ProdutoCodigo: "000456", Descricao: "Areia média", QuantidadeMilesimos: 2500,
-				UnidadeMedida: ptrStr("m3"), PrecoCentavos: ptrI64(1001), FilialOrigem: "Recife", EstoqueOrigem: "Almoxarifado Central"},
+				UnidadeMedida: ptrStr("m3"), PrecoCentavos: ptrI64(1001), FilialOrigem: "Recife", EstoqueOrigem: "Almoxarifado Central",
+				FiscalOrigem: fiscalRecifeTeste()},
 		},
+	}
+}
+
+// fiscalRecifeTeste: Filial com CNPJ, IE e endereço completos.
+func fiscalRecifeTeste() DadosFiscaisFilialPreNota {
+	return DadosFiscaisFilialPreNota{
+		CNPJ: "38149716000390", InscricaoEstadual: "0123456-78",
+		Logradouro: "Av. Recife", Numero: "1000", Complemento: "Galpão 3",
+		Bairro: "Areias", Cidade: "Recife", CEP: "50780000", UF: "PE",
 	}
 }
 
 func TestLayoutPreNota_Mista(t *testing.T) {
 	empresa := "Ferreira Costa & Cia LTDA"
 	cnpj := "12.345.678/0001-99"
+	recife := partePreNota{Empresa: empresa, CNPJ: "38.149.716/0003-90", IE: "0123456-78",
+		Endereco: []string{"Av. Recife, 1000 - Galpão 3", "Areias - Recife/PE - CEP 50780-000"},
+		Filial:   "Recife", Estoque: "Almoxarifado Central"}
 	want := layoutPreNota{
 		Empresa: empresa,
 		CNPJ:    cnpj,
@@ -562,9 +578,11 @@ func TestLayoutPreNota_Mista(t *testing.T) {
 		Emissao: "Emissão: 13/11/2026 15:04",
 		Rotas: []rotaPreNota{
 			{
-				Natureza:     "Transferência",
-				Remetente:    partePreNota{Empresa: empresa, CNPJ: cnpj, Filial: "Recife", Estoque: "Almoxarifado Central"},
-				Destinatario: &partePreNota{Empresa: empresa, CNPJ: cnpj, Filial: "Natal", Estoque: "Depósito Natal"},
+				Natureza:  "Transferência",
+				Remetente: recife,
+				// Natal sem dados fiscais: "—", nunca o CNPJ da Empresa.
+				Destinatario: &partePreNota{Empresa: empresa, CNPJ: "—", IE: "—", Endereco: []string{"—"},
+					Filial: "Natal", Estoque: "Depósito Natal"},
 				Produtos: []produtoPreNota{
 					{Codigo: "000123", Descricao: "Cimento CP-II 50kg", Unidade: "un", Quantidade: "6", ValorUnitario: "R$ 1.234,50", ValorTotal: "R$ 7.407,00"},
 				},
@@ -572,7 +590,7 @@ func TestLayoutPreNota_Mista(t *testing.T) {
 			},
 			{
 				Natureza:        "Baixa de estoque",
-				Remetente:       partePreNota{Empresa: empresa, CNPJ: cnpj, Filial: "Recife", Estoque: "Almoxarifado Central"},
+				Remetente:       recife,
 				SemDestinatario: "BAIXA DE ESTOQUE — consumo, sem destinatário",
 				Produtos: []produtoPreNota{
 					// 2,5 × 10,01 = 25,025 -> 25,03 (meio para cima, em inteiros)
@@ -584,6 +602,7 @@ func TestLayoutPreNota_Mista(t *testing.T) {
 		ValorTotal:   "R$ 7.432,03",
 		Aprovador:    "Gestor Ávila",
 		Solicitantes: "Ana, Bruno",
+		Recebimento:  camposRecebimentoPreNota(),
 	}
 	if got := layoutDaPreNota(conteudoMistoTeste()); !reflect.DeepEqual(got, want) {
 		t.Errorf("layout =\n%+v\nwant\n%+v", got, want)
@@ -633,7 +652,8 @@ func TestLayoutPreNota_MesmaFilialEstoquesDiferentes(t *testing.T) {
 	if r.Remetente.Filial != "FBTECHIA - Treinamento" || r.Destinatario.Filial != "FBTECHIA - Treinamento" {
 		t.Errorf("Filiais = %q / %q", r.Remetente.Filial, r.Destinatario.Filial)
 	}
-	if r.Remetente.CNPJ != "38.149.716/0001-28" || r.Remetente.Empresa != "Fortes Bezerra Tecnologia e Consultoria Ltda" {
+	// Filial sem dados fiscais: CNPJ "—" (nunca o CNPJ da Empresa).
+	if r.Remetente.CNPJ != "—" || r.Remetente.Empresa != "Fortes Bezerra Tecnologia e Consultoria Ltda" {
 		t.Errorf("Remetente = %+v", r.Remetente)
 	}
 	var totais []string
@@ -711,7 +731,7 @@ func TestLayoutPreNota_TotaisComItemSemPreco(t *testing.T) {
 	if len(l.Rotas) != 1 || !reflect.DeepEqual(l.Rotas[0].Produtos, want) {
 		t.Fatalf("Rotas = %+v, want 1 rota com %+v", l.Rotas, want)
 	}
-	if l.Rotas[0].Subtotal != "R$ 30,00" || l.ValorTotal != "R$ 30,00 (há itens sem valor cadastrado)" {
+	if l.Rotas[0].Subtotal != "R$ 30,00 (há itens sem valor cadastrado)" || l.ValorTotal != "R$ 30,00 (há itens sem valor cadastrado)" {
 		t.Errorf("Subtotal/Total = %q/%q", l.Rotas[0].Subtotal, l.ValorTotal)
 	}
 	// Estoque/Filial ausentes viram "—".
@@ -729,6 +749,7 @@ func TestLayoutPreNota_SemItensEDadosAusentes(t *testing.T) {
 		Emissao:      "Emissão: 02/01/2026 00:00",
 		Aprovador:    "—",
 		Solicitantes: "—",
+		Recebimento:  camposRecebimentoPreNota(),
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("layout = %+v, want %+v", got, want)
@@ -821,5 +842,471 @@ func TestFormatacoesPreNota(t *testing.T) {
 		if got := valorLinhaCentavosPreNota(c.milesimos, c.centavos).String(); got != c.want {
 			t.Errorf("valorLinha(%d, %d) = %s, want %s", c.milesimos, c.centavos, got, c.want)
 		}
+	}
+}
+
+// --- Dados fiscais da Filial nos quadros — spec-filial-dados-fiscais --------
+
+// conteudoFiliaisFiscaisTeste: Transferência entre duas Filiais; `preenchida`
+// decide se as Filiais têm CNPJ/IE/endereço.
+func conteudoFiliaisFiscaisTeste(preenchida bool) PreNotaConteudo {
+	c := conteudoMesmaFilialTeste()
+	for i := range c.Itens {
+		c.Itens[i].FilialOrigem = "FBTECHIA - Recife"
+		c.Itens[i].FilialDestino = "FBTECHIA - Natal"
+		if preenchida {
+			c.Itens[i].FiscalOrigem = fiscalRecifeTeste()
+			c.Itens[i].FiscalDestino = DadosFiscaisFilialPreNota{
+				CNPJ: "38149716000209", InscricaoEstadual: "ISENTO",
+				Logradouro: "Rua Doutor Barata", Numero: "45", Bairro: "Ribeira",
+				Cidade: "Natal", CEP: "59012300", UF: "RN",
+			}
+		}
+	}
+	c.Itens = append(c.Itens, PreNotaItem{Tipo: "baixa", ProdutoCodigo: "000104", Descricao: "Prego 17x21",
+		QuantidadeMilesimos: 2000, UnidadeMedida: ptrStr("kg"), PrecoCentavos: ptrI64(1590),
+		FilialOrigem: "FBTECHIA - Recife", EstoqueOrigem: "Almoxarifado Central", FiscalOrigem: c.Itens[0].FiscalOrigem})
+	return c
+}
+
+func TestLayoutPreNota_FilialPreenchida(t *testing.T) {
+	l := layoutDaPreNota(conteudoFiliaisFiscaisTeste(true))
+	if len(l.Rotas) != 2 || l.Rotas[0].Destinatario == nil {
+		t.Fatalf("Rotas = %+v, want transferência + baixa", l.Rotas)
+	}
+	rem, dest := l.Rotas[0].Remetente, *l.Rotas[0].Destinatario
+	wantRem := partePreNota{Empresa: "Fortes Bezerra Tecnologia e Consultoria Ltda", CNPJ: "38.149.716/0003-90",
+		IE: "0123456-78", Endereco: []string{"Av. Recife, 1000 - Galpão 3", "Areias - Recife/PE - CEP 50780-000"},
+		Filial: "FBTECHIA - Recife", Estoque: "Almoxarifado Central"}
+	wantDest := partePreNota{Empresa: "Fortes Bezerra Tecnologia e Consultoria Ltda", CNPJ: "38.149.716/0002-09",
+		IE: "ISENTO", Endereco: []string{"Rua Doutor Barata, 45", "Ribeira - Natal/RN - CEP 59012-300"},
+		Filial: "FBTECHIA - Natal", Estoque: "Canteiro de Obras"}
+	if !reflect.DeepEqual(rem, wantRem) {
+		t.Errorf("Remetente = %+v\nwant %+v", rem, wantRem)
+	}
+	if !reflect.DeepEqual(dest, wantDest) {
+		t.Errorf("Destinatario = %+v\nwant %+v", dest, wantDest)
+	}
+	// Baixa continua sem destinatário, com o Remetente preenchido.
+	if b := l.Rotas[1]; b.Destinatario != nil || b.SemDestinatario != textoSemDestinatarioPreNota || !reflect.DeepEqual(b.Remetente, wantRem) {
+		t.Errorf("Baixa = %+v", b)
+	}
+	if _, err := RenderizarPreNotaPDF(conteudoFiliaisFiscaisTeste(true)); err != nil {
+		t.Errorf("RenderizarPreNotaPDF: %v", err)
+	}
+}
+
+func TestLayoutPreNota_FilialVazia(t *testing.T) {
+	l := layoutDaPreNota(conteudoFiliaisFiscaisTeste(false))
+	if len(l.Rotas) != 2 || l.Rotas[0].Destinatario == nil {
+		t.Fatalf("Rotas = %+v, want transferência + baixa", l.Rotas)
+	}
+	for _, p := range []partePreNota{l.Rotas[0].Remetente, *l.Rotas[0].Destinatario, l.Rotas[1].Remetente} {
+		if p.CNPJ != "—" || p.IE != "—" || !reflect.DeepEqual(p.Endereco, []string{"—"}) {
+			t.Errorf("parte = %+v, want CNPJ/IE/Endereço \"—\"", p)
+		}
+		if p.CNPJ == l.CNPJ {
+			t.Errorf("parte usa o CNPJ da Empresa: %+v", p)
+		}
+	}
+	if _, err := RenderizarPreNotaPDF(conteudoFiliaisFiscaisTeste(false)); err != nil {
+		t.Errorf("RenderizarPreNotaPDF: %v", err)
+	}
+}
+
+func TestEnderecoPreNota(t *testing.T) {
+	casos := []struct {
+		f    DadosFiscaisFilialPreNota
+		want []string
+	}{
+		{DadosFiscaisFilialPreNota{}, []string{"—"}},
+		{DadosFiscaisFilialPreNota{CNPJ: "38149716000390"}, []string{"—"}},
+		{fiscalRecifeTeste(), []string{"Av. Recife, 1000 - Galpão 3", "Areias - Recife/PE - CEP 50780-000"}},
+	}
+	for _, c := range casos {
+		if got := enderecoPreNota(c.f); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("enderecoPreNota(%+v) = %q, want %q", c.f, got, c.want)
+		}
+	}
+}
+
+// cnpjFilialDaEmpresaTeste: CNPJ válido com a raiz da Empresa da suíte e o
+// estabelecimento `filial4` ("0101"...).
+func cnpjFilialDaEmpresaTeste(t *testing.T, db *sql.DB, filial4 string) string {
+	t.Helper()
+	var cnpj string
+	if err := db.QueryRow(`SELECT cnpj FROM empresas WHERE id = $1`, empresaTeste).Scan(&cnpj); err != nil {
+		t.Fatalf("ler CNPJ da empresa: %v", err)
+	}
+	return cnpjDeTeste(strings.TrimSpace(cnpj)[:8] + filial4)
+}
+
+// limparFiscalFilialTeste zera os dados fiscais da Filial agora e no fim do
+// teste (as Filiais da suíte não são truncadas entre testes).
+func limparFiscalFilialTeste(t *testing.T, db *sql.DB, filialID string) {
+	t.Helper()
+	limpar := func() {
+		_, _ = db.Exec(`UPDATE filiais SET cnpj = NULL, inscricao_estadual = NULL, logradouro = NULL, numero = NULL,
+			complemento = NULL, bairro = NULL, cidade = NULL, cep = NULL, uf = NULL WHERE id = $1`, filialID)
+	}
+	limpar()
+	t.Cleanup(limpar)
+}
+
+// TestMontarPreNotaConteudo_DadosFiscaisDaFilial: dados fiscais vêm do
+// cadastro ATUAL da Filial de cada lado. Origem e destino recebem dados
+// DIFERENTES via AtualizarFilial (Filiais já existentes, editadas depois da
+// aprovação) e cada item traz os do seu lado; a Baixa não tem destino.
+func TestMontarPreNotaConteudo_DadosFiscaisDaFilial(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	c := semearPreNotaMista(t, db, "PreNota Fiscal")
+
+	origemID := filialTeste(t, db, empresaTeste)
+	destinoID := filialNomeadaTeste(t, db, "Filial Destino PreNota")
+	limparFiscalFilialTeste(t, db, origemID)
+	limparFiscalFilialTeste(t, db, destinoID)
+
+	conteudo, err := MontarPreNotaConteudo(db, empresaTeste, c.preNotaID)
+	if err != nil {
+		t.Fatalf("MontarPreNotaConteudo: %v", err)
+	}
+	for _, it := range conteudo.Itens {
+		if it.FiscalOrigem != (DadosFiscaisFilialPreNota{}) || it.FiscalDestino != (DadosFiscaisFilialPreNota{}) {
+			t.Errorf("antes da edição: item %q com dados fiscais %+v / %+v", it.Descricao, it.FiscalOrigem, it.FiscalDestino)
+		}
+	}
+
+	cnpjOrigem := cnpjFilialDaEmpresaTeste(t, db, "0101")
+	cnpjDestino := cnpjFilialDaEmpresaTeste(t, db, "0102")
+	var nomeOrigem string
+	if err := db.QueryRow(`SELECT nome FROM filiais WHERE id = $1`, origemID).Scan(&nomeOrigem); err != nil {
+		t.Fatalf("ler filial de origem: %v", err)
+	}
+	if _, err := AtualizarFilial(db, empresaTeste, origemID, AtualizacaoCompletaFilial(DadosFilial{
+		Nome: nomeOrigem, CNPJ: cnpjOrigem, InscricaoEstadual: "111111",
+		Endereco: EnderecoEmpresa{Logradouro: "Rua da Origem", Numero: "1", Bairro: "Centro",
+			Cidade: "Recife", CEP: "50000-000", UF: "pe"},
+	})); err != nil {
+		t.Fatalf("AtualizarFilial origem: %v", err)
+	}
+	if _, err := AtualizarFilial(db, empresaTeste, destinoID, AtualizacaoCompletaFilial(DadosFilial{
+		Nome: "Filial Destino PreNota", CNPJ: cnpjDestino, InscricaoEstadual: "ISENTO",
+		Endereco: EnderecoEmpresa{Logradouro: "Av. do Destino", Numero: "2", Complemento: "Galpão 9", Bairro: "Ribeira",
+			Cidade: "Natal", CEP: "59012300", UF: "RN"},
+	})); err != nil {
+		t.Fatalf("AtualizarFilial destino: %v", err)
+	}
+
+	wantOrigem := DadosFiscaisFilialPreNota{CNPJ: cnpjOrigem, InscricaoEstadual: "111111", Logradouro: "Rua da Origem",
+		Numero: "1", Bairro: "Centro", Cidade: "Recife", CEP: "50000000", UF: "PE"}
+	wantDestino := DadosFiscaisFilialPreNota{CNPJ: cnpjDestino, InscricaoEstadual: "ISENTO", Logradouro: "Av. do Destino",
+		Numero: "2", Complemento: "Galpão 9", Bairro: "Ribeira", Cidade: "Natal", CEP: "59012300", UF: "RN"}
+
+	conteudo, err = MontarPreNotaConteudo(db, empresaTeste, c.preNotaID)
+	if err != nil {
+		t.Fatalf("MontarPreNotaConteudo: %v", err)
+	}
+	transf, baixas := 0, 0
+	for _, it := range conteudo.Itens {
+		if it.FiscalOrigem != wantOrigem {
+			t.Errorf("%s %q: FiscalOrigem = %+v, want %+v", it.Tipo, it.Descricao, it.FiscalOrigem, wantOrigem)
+		}
+		switch it.Tipo {
+		case "transferencia":
+			transf++
+			if it.FiscalDestino != wantDestino {
+				t.Errorf("transferência: FiscalDestino = %+v, want %+v", it.FiscalDestino, wantDestino)
+			}
+		case "baixa":
+			baixas++
+			if it.FiscalDestino != (DadosFiscaisFilialPreNota{}) {
+				t.Errorf("baixa: FiscalDestino = %+v, want vazio", it.FiscalDestino)
+			}
+		}
+	}
+	if transf != 1 || baixas != 2 {
+		t.Fatalf("itens = %d transferências / %d baixas, want 1/2", transf, baixas)
+	}
+
+	// No layout, cada quadro carrega o seu lado.
+	l := layoutDaPreNota(conteudo)
+	for _, r := range l.Rotas {
+		if r.Remetente.CNPJ != formatarCNPJPreNota(cnpjOrigem) || r.Remetente.IE != "111111" {
+			t.Errorf("%s: Remetente = %+v", r.Natureza, r.Remetente)
+		}
+		if r.Natureza == naturezaTransferenciaPreNota {
+			if d := r.Destinatario; d == nil || d.CNPJ != formatarCNPJPreNota(cnpjDestino) || d.IE != "ISENTO" ||
+				!reflect.DeepEqual(d.Endereco, []string{"Av. do Destino, 2 - Galpão 9", "Ribeira - Natal/RN - CEP 59012-300"}) {
+				t.Errorf("Destinatario = %+v", d)
+			}
+		}
+	}
+}
+
+// TestDecidirLotePedidos_GravaFiliaisEEstoqueDestino: a aprovação grava os
+// ids das Filiais e o nome do Estoque destino; excluído o Estoque de origem
+// (e o de destino), a Pré-Nota continua trazendo Filial/CNPJ/endereço dos
+// dois lados e o nome do Estoque destino.
+func TestDecidirLotePedidos_GravaFiliaisEEstoqueDestino(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	c := semearPreNotaMista(t, db, "PreNota Excluido")
+
+	origemID := filialTeste(t, db, empresaTeste)
+	destinoID := filialNomeadaTeste(t, db, "Filial Destino PreNota")
+	limparFiscalFilialTeste(t, db, origemID)
+	limparFiscalFilialTeste(t, db, destinoID)
+
+	var filialO, filialD, estoqueDestNome sql.NullString
+	var estoqueOrigemID, estoqueDestinoID string
+	if err := db.QueryRow(`SELECT filial_origem_id::text, filial_destino_id::text, estoque_destino_nome, estoque_id::text, estoque_destino_id::text
+		FROM pedido_itens WHERE pedido_id = $1 AND produto_id = $2`, c.pedidoTransfID, c.produtoTransfID).
+		Scan(&filialO, &filialD, &estoqueDestNome, &estoqueOrigemID, &estoqueDestinoID); err != nil {
+		t.Fatalf("ler pedido_item: %v", err)
+	}
+	if filialO.String != origemID || filialD.String != destinoID || estoqueDestNome.String != "PreNota Excluido Destino" {
+		t.Errorf("gravado na aprovação = %v / %v / %v, want %s / %s / PreNota Excluido Destino", filialO, filialD, estoqueDestNome, origemID, destinoID)
+	}
+	var baixaDestinos int
+	if err := db.QueryRow(`SELECT count(*) FROM pedido_itens WHERE produto_id = $1 AND filial_origem_id IS NOT NULL
+		AND filial_destino_id IS NULL AND estoque_destino_nome IS NULL`, c.produtoBaixaID).Scan(&baixaDestinos); err != nil || baixaDestinos != 2 {
+		t.Errorf("baixas com origem gravada e destino NULL = %d (err=%v), want 2", baixaDestinos, err)
+	}
+
+	var nomeOrigem string
+	if err := db.QueryRow(`SELECT nome FROM filiais WHERE id = $1`, origemID).Scan(&nomeOrigem); err != nil {
+		t.Fatalf("ler filial de origem: %v", err)
+	}
+	cnpjOrigem := cnpjFilialDaEmpresaTeste(t, db, "0201")
+	if _, err := AtualizarFilial(db, empresaTeste, origemID, AtualizacaoCompletaFilial(DadosFilial{
+		Nome: nomeOrigem, CNPJ: cnpjOrigem,
+		Endereco: EnderecoEmpresa{Logradouro: "Rua da Origem", Numero: "1", Bairro: "Centro", Cidade: "Recife", CEP: "50000000", UF: "PE"},
+	})); err != nil {
+		t.Fatalf("AtualizarFilial origem: %v", err)
+	}
+
+	// Exclui os dois Estoques da Transferência (simulação direta: o resíduo
+	// físico/histórico é apagado antes, como se o Estoque tivesse sido
+	// esvaziado e excluído). `pedido_itens` não tem FK para `estoques`.
+	for _, id := range []string{estoqueOrigemID, estoqueDestinoID} {
+		for _, q := range []string{
+			`DELETE FROM movimentacoes WHERE estoque_origem_id = $1 OR estoque_destino_id = $1`,
+			`DELETE FROM lotes WHERE estoque_id = $1`,
+			`DELETE FROM produto_estoque WHERE estoque_id = $1`,
+			`DELETE FROM estoques WHERE id = $1`,
+		} {
+			if _, err := db.Exec(q, id); err != nil {
+				t.Fatalf("excluir estoque %s (%s): %v", id, q, err)
+			}
+		}
+	}
+
+	conteudo, err := MontarPreNotaConteudo(db, empresaTeste, c.preNotaID)
+	if err != nil {
+		t.Fatalf("MontarPreNotaConteudo: %v", err)
+	}
+	var transf *PreNotaItem
+	for i := range conteudo.Itens {
+		if conteudo.Itens[i].Tipo == "transferencia" {
+			transf = &conteudo.Itens[i]
+		}
+	}
+	if transf == nil {
+		t.Fatalf("sem transferência: %+v", conteudo.Itens)
+	}
+	if transf.FilialOrigem != nomeOrigem || transf.FiscalOrigem.CNPJ != cnpjOrigem || transf.FiscalOrigem.Cidade != "Recife" {
+		t.Errorf("origem após excluir o Estoque: Filial %q, fiscal %+v", transf.FilialOrigem, transf.FiscalOrigem)
+	}
+	if transf.FilialDestino != "Filial Destino PreNota" || transf.EstoqueDestino != "PreNota Excluido Destino" {
+		t.Errorf("destino após excluir o Estoque: Filial %q, Estoque %q", transf.FilialDestino, transf.EstoqueDestino)
+	}
+	if transf.EstoqueOrigem != "PreNota Excluido Transf" {
+		t.Errorf("EstoqueOrigem = %q (snapshot do envio)", transf.EstoqueOrigem)
+	}
+}
+
+// TestRenderizarPreNotaPDF_AmostrasFiliais: as duas linhas de PDF da I/O
+// Matrix renderizam; com PRE_NOTA_AMOSTRAS=<dir> grava os PDFs para conferência
+// visual.
+func TestRenderizarPreNotaPDF_AmostrasFiliais(t *testing.T) {
+	dir := os.Getenv("PRE_NOTA_AMOSTRAS")
+	if dir == "" {
+		dir = t.TempDir()
+	}
+	// Várias páginas: rotas com muitos itens, uma rota sem preço, quebra de
+	// rota no meio da tabela, subtotal e canhoto no fim.
+	varias := conteudoFiliaisFiscaisTeste(true)
+	for i := 0; i < 34; i++ {
+		it := varias.Itens[i%3]
+		it.Descricao = fmt.Sprintf("%s — lote %02d", it.Descricao, i+1)
+		varias.Itens = append(varias.Itens, it)
+	}
+	for i := 0; i < 26; i++ {
+		varias.Itens = append(varias.Itens, PreNotaItem{Tipo: "baixa", ProdutoCodigo: fmt.Sprintf("0009%02d", i),
+			Descricao: fmt.Sprintf("Material de consumo sem preço cadastrado %02d", i+1), QuantidadeMilesimos: 1000,
+			FilialOrigem: "FBTECHIA - Natal", EstoqueOrigem: "Canteiro de Obras", EstoqueOrigemID: "canteiro",
+			FiscalOrigem: varias.Itens[0].FiscalDestino})
+	}
+	conteudos := map[string]PreNotaConteudo{
+		"pre-nota-filial-preenchida.pdf": conteudoFiliaisFiscaisTeste(true),
+		"pre-nota-filial-vazia.pdf":      conteudoFiliaisFiscaisTeste(false),
+		"pre-nota-varias-paginas.pdf":    varias,
+	}
+	for nome, conteudo := range conteudos {
+		pdf, err := RenderizarPreNotaPDF(conteudo)
+		if err != nil {
+			t.Fatalf("amostra %s: %v", nome, err)
+		}
+		if !bytes.HasPrefix(pdf, []byte("%PDF-")) {
+			t.Fatalf("amostra %s: não é PDF", nome)
+		}
+		if err := os.WriteFile(filepath.Join(dir, nome), pdf, 0o644); err != nil {
+			t.Fatalf("gravar amostra %s: %v", nome, err)
+		}
+	}
+}
+
+// --- Revisão (spec-filial-dados-fiscais): quadros desenhados, rotas por id,
+// subtotal com aviso, canhoto -------------------------------------------------
+
+// campoPorRotulo devolve as linhas do campo `rotulo` em `campos`.
+func campoPorRotulo(t *testing.T, campos []campoDesenhado, rotulo string) []string {
+	t.Helper()
+	for _, c := range campos {
+		if c.Rotulo == rotulo {
+			return c.Linhas
+		}
+	}
+	t.Fatalf("campo %q ausente em %+v", rotulo, campos)
+	return nil
+}
+
+// TestQuadrosDaRotaPreNota_CadaLadoNoSeuQuadro: Transferência + Baixa com
+// Filiais preenchidas — cada campo desenhado (CNPJ, IE, ENDEREÇO, FILIAL,
+// ESTOQUE) carrega o valor do lado certo; a Baixa desenha o quadro "sem
+// destinatário"; o título de continuação traz a rota; o canhoto aparece.
+func TestQuadrosDaRotaPreNota_CadaLadoNoSeuQuadro(t *testing.T) {
+	l := layoutDaPreNota(conteudoFiliaisFiscaisTeste(true))
+	if len(l.Rotas) != 2 {
+		t.Fatalf("Rotas = %d, want 2", len(l.Rotas))
+	}
+	transf := quadrosDaRotaPreNota(l.Rotas[0])
+	esperado := []struct {
+		quadro []campoDesenhado
+		titulo string
+		want   map[string][]string
+	}{
+		{transf[0], quadroRemetentePreNota, map[string][]string{
+			"RAZÃO SOCIAL":       {"Fortes Bezerra Tecnologia e Consultoria Ltda"},
+			"CNPJ":               {"38.149.716/0003-90"},
+			"INSCRIÇÃO ESTADUAL": {"0123456-78"},
+			"ENDEREÇO":           {"Av. Recife, 1000 - Galpão 3", "Areias - Recife/PE - CEP 50780-000"},
+			"FILIAL":             {"FBTECHIA - Recife"},
+			"ESTOQUE":            {"Almoxarifado Central"},
+		}},
+		{transf[1], quadroDestinatarioPreNota, map[string][]string{
+			"RAZÃO SOCIAL":       {"Fortes Bezerra Tecnologia e Consultoria Ltda"},
+			"CNPJ":               {"38.149.716/0002-09"},
+			"INSCRIÇÃO ESTADUAL": {"ISENTO"},
+			"ENDEREÇO":           {"Rua Doutor Barata, 45", "Ribeira - Natal/RN - CEP 59012-300"},
+			"FILIAL":             {"FBTECHIA - Natal"},
+			"ESTOQUE":            {"Canteiro de Obras"},
+		}},
+	}
+	for _, e := range esperado {
+		if len(e.quadro) != len(rotulosPartePreNota) {
+			t.Fatalf("%s: %d campos, want %d", e.titulo, len(e.quadro), len(rotulosPartePreNota))
+		}
+		for i, c := range e.quadro {
+			if c.Quadro != e.titulo || c.Rotulo != rotulosPartePreNota[i] {
+				t.Errorf("%s campo %d = %q/%q", e.titulo, i, c.Quadro, c.Rotulo)
+			}
+		}
+		for rotulo, want := range e.want {
+			if got := campoPorRotulo(t, e.quadro, rotulo); !reflect.DeepEqual(got, want) {
+				t.Errorf("%s / %s = %q, want %q", e.titulo, rotulo, got, want)
+			}
+		}
+	}
+
+	baixa := quadrosDaRotaPreNota(l.Rotas[1])
+	if got := campoPorRotulo(t, baixa[0], "CNPJ"); !reflect.DeepEqual(got, []string{"38.149.716/0003-90"}) {
+		t.Errorf("Baixa / Remetente CNPJ = %q", got)
+	}
+	if len(baixa[1]) != 1 || baixa[1][0].Quadro != quadroDestinatarioPreNota || baixa[1][0].Rotulo != "" ||
+		!reflect.DeepEqual(baixa[1][0].Linhas, []string{textoSemDestinatarioPreNota}) {
+		t.Errorf("Baixa / Destinatário = %+v, want só o quadro sem destinatário", baixa[1])
+	}
+
+	if got, want := tituloContinuacaoPreNota(l.Rotas[0]),
+		"DADOS DOS PRODUTOS (continuação: Almoxarifado Central (FBTECHIA - Recife) para Canteiro de Obras (FBTECHIA - Natal))"; got != want {
+		t.Errorf("continuação transferência = %q, want %q", got, want)
+	}
+	if got, want := tituloContinuacaoPreNota(l.Rotas[1]),
+		"DADOS DOS PRODUTOS (continuação: Almoxarifado Central (FBTECHIA - Recife), baixa de estoque)"; got != want {
+		t.Errorf("continuação baixa = %q, want %q", got, want)
+	}
+
+	var rotulosCanhoto []string
+	for _, c := range l.Recebimento {
+		if c.Quadro != quadroRecebimentoPreNota {
+			t.Errorf("canhoto fora do quadro RECEBIMENTO: %+v", c)
+		}
+		if c.Rotulo != "" && len(c.Linhas) != 0 {
+			t.Errorf("campo %q do canhoto deveria vir em branco: %q", c.Rotulo, c.Linhas)
+		}
+		rotulosCanhoto = append(rotulosCanhoto, c.Rotulo)
+	}
+	if !reflect.DeepEqual(rotulosCanhoto, []string{"", "DATA", "NOME LEGÍVEL", "ASSINATURA"}) {
+		t.Errorf("canhoto = %q", rotulosCanhoto)
+	}
+}
+
+// TestLayoutPreNota_RotasPorIdDoEstoque: dois Estoques homônimos (ids
+// diferentes) viram dois blocos; o mesmo id com o mesmo nome, um só.
+func TestLayoutPreNota_RotasPorIdDoEstoque(t *testing.T) {
+	item := func(desc, origemID, destinoID string) PreNotaItem {
+		return PreNotaItem{Tipo: "transferencia", Descricao: desc, QuantidadeMilesimos: 1000, PrecoCentavos: ptrI64(100),
+			FilialOrigem: "Recife", FilialDestino: "Recife", EstoqueOrigem: "Central", EstoqueDestino: "Canteiro",
+			EstoqueOrigemID: origemID, EstoqueDestinoID: destinoID}
+	}
+	l := layoutDaPreNota(PreNotaConteudo{Itens: []PreNotaItem{
+		item("A", "o1", "d1"), item("B", "o2", "d1"), item("C", "o1", "d1"), item("D", "o1", "d2"),
+	}})
+	var blocos []string
+	for _, r := range l.Rotas {
+		var ds []string
+		for _, p := range r.Produtos {
+			ds = append(ds, p.Descricao)
+		}
+		blocos = append(blocos, strings.Join(ds, ""))
+	}
+	if !reflect.DeepEqual(blocos, []string{"AC", "B", "D"}) {
+		t.Errorf("blocos = %q, want [AC B D]", blocos)
+	}
+}
+
+// TestLayoutPreNota_SubtotalComItemSemPreco: rota com item sem preço leva o
+// aviso no subtotal; rota toda sem preço nunca aparece como "R$ 0,00" puro.
+func TestLayoutPreNota_SubtotalComItemSemPreco(t *testing.T) {
+	l := layoutDaPreNota(PreNotaConteudo{Itens: []PreNotaItem{
+		{Tipo: "baixa", Descricao: "Sem preço", QuantidadeMilesimos: 1000, EstoqueOrigem: "A", EstoqueOrigemID: "a"},
+		{Tipo: "baixa", Descricao: "Com preço", QuantidadeMilesimos: 1000, PrecoCentavos: ptrI64(500), EstoqueOrigem: "B", EstoqueOrigemID: "b"},
+		{Tipo: "baixa", Descricao: "Misto sem", QuantidadeMilesimos: 1000, EstoqueOrigem: "C", EstoqueOrigemID: "c"},
+		{Tipo: "baixa", Descricao: "Misto com", QuantidadeMilesimos: 2000, PrecoCentavos: ptrI64(500), EstoqueOrigem: "C", EstoqueOrigemID: "c"},
+	}})
+	var subtotais []string
+	for _, r := range l.Rotas {
+		subtotais = append(subtotais, r.Subtotal)
+	}
+	want := []string{"R$ 0,00 (há itens sem valor cadastrado)", "R$ 5,00", "R$ 10,00 (há itens sem valor cadastrado)"}
+	if !reflect.DeepEqual(subtotais, want) {
+		t.Errorf("subtotais = %q, want %q", subtotais, want)
+	}
+	if _, err := RenderizarPreNotaPDF(PreNotaConteudo{Itens: []PreNotaItem{
+		{Tipo: "baixa", Descricao: "Sem preço", QuantidadeMilesimos: 1000, EstoqueOrigem: "A", EstoqueOrigemID: "a"},
+	}}); err != nil {
+		t.Errorf("RenderizarPreNotaPDF: %v", err)
 	}
 }

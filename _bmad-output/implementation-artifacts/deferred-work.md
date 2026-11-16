@@ -897,3 +897,23 @@ status: open
 - source_spec: `spec-20-5-documento-impresso-da-pre-nota.md`
   summary: Não existe uma tela pra listar/rebaixar Pré-Notas; depois de sair da tela de Aprovação em lote, só dá pra baixar abrindo um Pedido vinculado.
   evidence: Achado pela revisão (blind-hunter). Explicitamente fora de escopo desta story (Never da spec); candidata a uma story futura.
+
+- source_spec: `spec-filial-dados-fiscais.md`
+  summary: Aceitar CNPJ alfanumérico (formato da Receita em vigor desde 07/2026) em Empresa, Filial, PDF e telas — hoje tudo exige 14 dígitos numéricos.
+  evidence: Achado pela revisão (blind-hunter + edge-case-hunter). Usuário decidiu (2026-11-16) fazer como story separada logo em seguida.
+
+- source_spec: `spec-filial-dados-fiscais.md`
+  summary: Edição de Filial não tem controle de concorrência (dois Gestores editando ao mesmo tempo: o último sobrescreve o outro) nem trilha de auditoria de quem mudou CNPJ/endereço.
+  evidence: Achado pela revisão (blind-hunter + edge-case-hunter). Cadastro pouco editado na prática; auditoria de cadastros é uma lacuna geral do projeto.
+
+- source_spec: `spec-filial-dados-fiscais.md`
+  summary: As regras de formato da Filial (CNPJ, CEP, UF, endereço completo) só existem no Go — nenhum CHECK no banco.
+  evidence: Achado pela revisão (blind-hunter). Mesmo padrão do cadastro de Empresa, que também valida só no Go.
+
+- source_spec: `spec-filial-dados-fiscais.md`
+  summary: Campos CNPJ e CEP da tela de Filiais não têm máscara nem validação no navegador; o erro só aparece quando o servidor responde.
+  evidence: Achado pela revisão (blind-hunter). Polimento de UX; a validação real é a do servidor.
+
+- source_spec: `spec-filial-dados-fiscais.md`
+  summary: `GET /api/filiais` devolve CNPJ, IE e endereço completo a qualquer conta autenticada (inclusive `usuario`); só o nome é necessário pra escolher a Filial de um Estoque.
+  evidence: Achado pela revisão (blind-hunter). São dados cadastrais da própria Empresa do usuário (já visíveis no PDF), mas dá pra enxugar a listagem ou limitar os campos fiscais a `gestor`+.

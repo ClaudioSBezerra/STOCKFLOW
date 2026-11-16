@@ -1117,6 +1117,75 @@ func TestNewMux_EstoquesRotaCarregaRequireRole(t *testing.T) {
 
 }
 
+// TestNewMux_FiliaisEscritaCarregaRequireRoleGestor prova, despachando pela
+// mesma instância de newMux usada por main() (spec-filial-dados-fiscais), que
+// POST /api/filiais e PUT /api/filiais/{id} estão atrás de
+// RequireRole(gestor): `gestor` cria (201) e edita (200); `almoxarife` recebe
+// 403 nos dois sem gravar nada.
+func TestNewMux_FiliaisEscritaCarregaRequireRoleGestor(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate usuarios: %v", err)
+	}
+	limpar := func() {
+		_, _ = db.Exec(`DELETE FROM filiais WHERE nome LIKE 'MuxFilial %'`)
+	}
+	limpar()
+	t.Cleanup(limpar)
+
+	mux := newMux(db, services.CarregarEmailConfig(), []byte("segredo-de-teste-nao-usar-em-producao"), iam.Config{}, t.TempDir())
+	const senha = "senha-123456"
+	segredos := map[string]string{}
+	seedContaMux(t, db, "filial-mux-gestor@empresa.com", "gestor", senha, segredos)
+	seedContaMux(t, db, "filial-mux-almox@empresa.com", "almoxarife", senha, segredos)
+
+	despachar := func(metodo, caminho, token, corpo string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(metodo, caminho, strings.NewReader(corpo))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	tokenGestor := tokenDeMux(t, mux, "filial-mux-gestor@empresa.com", senha, segredos)
+	w := despachar(http.MethodPost, prefixoEmpresaTeste+"/api/filiais", tokenGestor, `{"nome":"MuxFilial Gestor"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("gestor POST: status = %d, want 201 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Filial struct {
+			ID string `json:"id"`
+		} `json:"filial"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || resp.Filial.ID == "" {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	id := resp.Filial.ID
+	w = despachar(http.MethodPut, prefixoEmpresaTeste+"/api/filiais/"+id, tokenGestor,
+		`{"nome":"MuxFilial Gestor","inscricaoEstadual":"123"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("gestor PUT: status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+
+	tokenAlmox := tokenDeMux(t, mux, "filial-mux-almox@empresa.com", senha, segredos)
+	if w := despachar(http.MethodPost, prefixoEmpresaTeste+"/api/filiais", tokenAlmox, `{"nome":"MuxFilial Almox"}`); w.Code != http.StatusForbidden {
+		t.Errorf("almoxarife POST: status = %d, want 403 (body=%s)", w.Code, w.Body.String())
+	}
+	if w := despachar(http.MethodPut, prefixoEmpresaTeste+"/api/filiais/"+id, tokenAlmox, `{"nome":"MuxFilial Almox"}`); w.Code != http.StatusForbidden {
+		t.Errorf("almoxarife PUT: status = %d, want 403 (body=%s)", w.Code, w.Body.String())
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM filiais WHERE nome = 'MuxFilial Almox'`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("almoxarife gravou Filial: n=%d err=%v", n, err)
+	}
+	var nome, ie string
+	if err := db.QueryRow(`SELECT nome, inscricao_estadual FROM filiais WHERE id = $1`, id).Scan(&nome, &ie); err != nil ||
+		nome != "MuxFilial Gestor" || ie != "123" {
+		t.Errorf("Filial do gestor = %q/%q (err=%v)", nome, ie, err)
+	}
+}
+
 // TestNewMux_CategoriasEscritaCarregaRequireRoleAdm prova, despachando pela
 // mesma instância de newMux usada por main() (Story 10.5), que POST/PUT/DELETE
 // de /api/categorias estão atrás de RequireRole(adm): tokens `usuario`,
@@ -3527,8 +3596,8 @@ func TestNewMux_LancarSaldoCarregaRequireRoleAlmoxarife(t *testing.T) {
 
 // TestNewMux_FiliaisRotaCarregaRequireRole (Story 12.1, spec-12-1) prova, pela
 // composição REAL de newMux, que POST /api/filiais está atrás de
-// RequireRole(adm): tokens `usuario`, `almoxarife` e `gestor` -> 403 FORBIDDEN
-// (nada gravado); `adm` -> 201. GET /api/filiais leva só RequireAuth: um
+// RequireRole(gestor) (spec-filial-dados-fiscais; era adm): tokens `usuario`
+// e `almoxarife` -> 403 FORBIDDEN (nada gravado); `gestor` e `adm` -> 201. GET /api/filiais leva só RequireAuth: um
 // token `usuario` -> 200.
 func TestNewMux_FiliaisRotaCarregaRequireRole(t *testing.T) {
 	db := testDB(t)
@@ -3565,7 +3634,7 @@ func TestNewMux_FiliaisRotaCarregaRequireRole(t *testing.T) {
 		seedContaMux(t, db, "filial-mux-"+p+"@empresa.com", p, senha, segredos)
 	}
 
-	for _, p := range []string{"usuario", "almoxarife", "gestor"} {
+	for _, p := range []string{"usuario", "almoxarife"} {
 		t.Run("POST: papel "+p+" -> 403 FORBIDDEN", func(t *testing.T) {
 			token := tokenDeMux(t, mux, "filial-mux-"+p+"@empresa.com", senha, segredos)
 			w := despachar(http.MethodPost, prefixoEmpresaTeste+"/api/filiais", token, `{"nome":"`+nomeFilial+` `+p+`"}`)
@@ -3578,6 +3647,14 @@ func TestNewMux_FiliaisRotaCarregaRequireRole(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("POST: papel gestor -> 201", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "filial-mux-gestor@empresa.com", senha, segredos)
+		w := despachar(http.MethodPost, prefixoEmpresaTeste+"/api/filiais", token, `{"nome":"`+nomeFilial+` gestor"}`)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want 201 (body=%s)", w.Code, w.Body.String())
+		}
+	})
 
 	t.Run("POST: papel adm -> 201", func(t *testing.T) {
 		token := tokenDeMux(t, mux, "filial-mux-adm@empresa.com", senha, segredos)
