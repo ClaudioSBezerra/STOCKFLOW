@@ -21,7 +21,9 @@ func TestNormalizarCNPJ_RemoveMascara(t *testing.T) {
 		"11.222.333/0001-81":   "11222333000181",
 		"11222333000181":       "11222333000181",
 		" 11 222 333/0001 81 ": "11222333000181",
-		"abc":                  "",
+		"abc":                  "ABC",
+		"12.abc.345/01de-35":   "12ABC34501DE35",
+		"12.ABC.345/01D@-35":   "12ABC34501D@35", // não limpa em silêncio: ValidarCNPJ recusa
 	}
 	for entrada, want := range casos {
 		if got := NormalizarCNPJ(entrada); got != want {
@@ -63,6 +65,107 @@ func TestValidarCNPJ(t *testing.T) {
 				t.Fatalf("ValidarCNPJ(%q) erro inesperado: %v", c.cnpj, err)
 			}
 		})
+	}
+}
+
+// TestValidarCNPJ_Alfanumerico cobre o CNPJ alfanumérico (Receita, 07/2026):
+// valor de cada caractere = ASCII - 48. O vetor 12.ABC.345/01DE-35 foi
+// calculado à mão/independente pela regra publicada (DV 3 e 5).
+func TestValidarCNPJ_Alfanumerico(t *testing.T) {
+	if got := cnpjDeTeste("12ABC34501DE"); got != "12ABC34501DE35" {
+		t.Fatalf("cnpjDeTeste = %q, want 12ABC34501DE35", got)
+	}
+	casos := []struct {
+		nome, cnpj, msg string
+		ok              bool
+	}{
+		{"alfanumérico válido", "12.ABC.345/01DE-35", "", true},
+		{"minúsculas", "12.abc.345/01de-35", "", true},
+		{"outro vetor válido", "12ABC34601DE80", "", true},
+		{"DV errado", "12ABC34501DE36", "dígito verificador não confere", false},
+		{"letra no DV", "12ABC34501DE3A", "últimos caracteres", false},
+		{"caractere inválido", "12.ABC.345/01D@-35", "só letras A-Z e números", false},
+		{"13 caracteres", "12ABC34501DE3", "14 caracteres", false},
+		{"15 caracteres", "12ABC34501DE355", "14 caracteres", false},
+		{"numérico antigo", "38.149.716/0001-28", "", true},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			err := ValidarCNPJ(c.cnpj)
+			if c.ok {
+				if err != nil {
+					t.Fatalf("erro inesperado: %v", err)
+				}
+				return
+			}
+			var valErr *ErroEmpresaValidacao
+			if !errors.As(err, &valErr) || !strings.Contains(valErr.Mensagem, c.msg) {
+				t.Fatalf("erro = %v, want mensagem com %q", err, c.msg)
+			}
+		})
+	}
+}
+
+// Vetores calculados FORA do código (Python: valor = ASCII-48, pesos 2..9 da
+// direita para a esquerda, módulo 11).
+func TestValidarCNPJ_VetoresIndependentes(t *testing.T) {
+	for nome, cnpj := range map[string]string{
+		"1º DV = 0": "0OW8XZDR000105", "1º DV = 9": "D6V1OR0S000197",
+		"2º DV = 0": "P2UFPQBN000150", "2º DV = 9": "YDHLWGNL000139",
+	} {
+		if err := ValidarCNPJ(cnpj); err != nil {
+			t.Errorf("%s: ValidarCNPJ(%q) = %v", nome, cnpj, err)
+		}
+		if got := digitoVerificadorCNPJ(cnpj[:12]); got != int(cnpj[12]-'0') {
+			t.Errorf("%s: DV1 = %d, want %c", nome, got, cnpj[12])
+		}
+		if got := digitoVerificadorCNPJ(cnpj[:13]); got != int(cnpj[13]-'0') {
+			t.Errorf("%s: DV2 = %d, want %c", nome, got, cnpj[13])
+		}
+	}
+	if digitoVerificadorCNPJ("12ABC34501DE") != 3 || digitoVerificadorCNPJ("12ABC34501DE3") != 5 {
+		t.Errorf("12ABC34501DE: DVs != 3,5")
+	}
+	// Numérico antigo (38.149.716/0001-28).
+	if digitoVerificadorCNPJ("381497160001") != 2 || digitoVerificadorCNPJ("3814971600012") != 8 {
+		t.Errorf("38149716000128: DVs != 2,8")
+	}
+}
+
+func TestValidarCNPJ_EntradasRuins(t *testing.T) {
+	casos := []struct{ nome, cnpj, msg string }{
+		{"cedilha", "12ABC34501DÇ35", "só letras A-Z e números"},
+		{"cedilha minúscula", "12abc34501dç35", "só letras A-Z e números"},
+		{"dígitos de largura total", "１２ABC34501DE35", "só letras A-Z e números"},
+		{"dígito de largura total no DV", "12ABC34501DE3５", "devem ser numéricos"},
+		{"14 alfanuméricos iguais", "AAAAAAAAAAAAAA", "CNPJ inválido"},
+		{"14 dígitos iguais", "00000000000000", "CNPJ inválido"},
+		{"vazio", "", "14 caracteres"},
+		{"só espaços", "   ", "14 caracteres"},
+		{"tab no meio vira máscara e sobra 13", "12ABC345\t01DE3", "14 caracteres"},
+		{"nbsp no meio vira máscara e sobra 13", "12ABC345\u00a001DE3", "14 caracteres"},
+		{"minúscula no DV é letra", "12ABC34501DE3a", "devem ser numéricos"},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			err := ValidarCNPJ(c.cnpj)
+			var valErr *ErroEmpresaValidacao
+			if !errors.As(err, &valErr) || !strings.Contains(valErr.Mensagem, c.msg) {
+				t.Fatalf("ValidarCNPJ(%q) = %v, want mensagem com %q", c.cnpj, err, c.msg)
+			}
+		})
+	}
+	// tab/nbsp como separadores válidos: 14 caracteres + espaços em branco.
+	if err := ValidarCNPJ("12ABC345\t01DE35\u00a0"); err != nil {
+		t.Errorf("espaços em branco ao redor deveriam ser ignorados: %v", err)
+	}
+}
+
+func TestSoDigitos(t *testing.T) {
+	for in, want := range map[string]string{"50780-000": "50780000", "ab123": "123", "": ""} {
+		if got := soDigitos(in); got != want {
+			t.Errorf("soDigitos(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

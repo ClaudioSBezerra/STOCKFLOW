@@ -97,6 +97,23 @@ async function preencherFormulario(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe('EmpresasPage (Story 9.2)', () => {
+  it('CNPJ digitado em minúsculas aparece e é enviado em maiúsculas (alfanumérico)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('Acme Obras');
+
+    await preencherFormulario(user);
+    await user.clear(screen.getByLabelText('CNPJ'));
+    await user.click(screen.getByLabelText('CNPJ'));
+    await user.paste('12.abc.345/01de-35');
+    expect(screen.getByLabelText('CNPJ')).toHaveValue('12.ABC.345/01DE-35');
+    await user.click(screen.getByRole('button', { name: 'Criar empresa' }));
+
+    await waitFor(() => expect(chamadas('POST', '/api/plataforma/empresas')).toHaveLength(1));
+    const [, init] = chamadas('POST', '/api/plataforma/empresas')[0];
+    expect(JSON.parse(init.body as string).cnpj).toBe('12.ABC.345/01DE-35');
+  });
+
   beforeEach(() => {
     navigateMock.mockClear();
     toastSuccess.mockClear();

@@ -25,6 +25,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/lib/pq"
@@ -118,11 +119,29 @@ type DadosEmpresa struct {
 	TrialTerminaEm *time.Time
 }
 
-// NormalizarCNPJ remove tudo que não é dígito ("12.345.678/0001-95" ->
-// "12345678000195"). Não valida — isso é de ValidarCNPJ.
+// NormalizarCNPJ tira a máscara (". / -" e brancos) e põe as letras em
+// MAIÚSCULAS ("12.abc.345/01de-35" -> "12ABC34501DE35"). Qualquer outro
+// caractere é MANTIDO (nunca descartado em silêncio) para que ValidarCNPJ o
+// recuse. Aceita o CNPJ numérico e o alfanumérico (Receita, desde 07/2026).
 func NormalizarCNPJ(cnpj string) string {
 	var b strings.Builder
 	for _, r := range cnpj {
+		switch {
+		case r == '.' || r == '/' || r == '-' || unicode.IsSpace(r):
+			continue
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r - 'a' + 'A')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// soDigitos mantém só os dígitos 0-9 (CEP).
+func soDigitos(s string) string {
+	var b strings.Builder
+	for _, r := range s {
 		if r >= '0' && r <= '9' {
 			b.WriteRune(r)
 		}
@@ -130,19 +149,21 @@ func NormalizarCNPJ(cnpj string) string {
 	return b.String()
 }
 
-// pesosCNPJ são os pesos dos dois dígitos verificadores do CNPJ: o primeiro
-// usa os 12 últimos pesos (5..2, 9..2) sobre os 12 primeiros dígitos; o
-// segundo usa os 13 (6..2, 9..2) sobre os 13 primeiros.
+// pesosCNPJ são os pesos 2..9 (da direita para a esquerda, em ciclo) dos dois
+// dígitos verificadores, na ordem da esquerda para a direita. O 1º DV usa os 12
+// últimos pesos (5..2, 9..2) sobre os 12 primeiros caracteres; o 2º usa os 13
+// (6..2, 9..2) sobre os 13 primeiros.
 var pesosCNPJ = []int{6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2}
 
 // digitoVerificadorCNPJ calcula um dígito verificador do CNPJ sobre `base`
-// (12 ou 13 dígitos): resto da soma ponderada por 11; resto < 2 -> 0, senão
-// 11 - resto.
+// (12 ou 13 caracteres [0-9A-Z]). Cada caractere vale seu código ASCII - 48
+// (regra da Receita para o CNPJ alfanumérico; para dígitos, o próprio dígito).
+// Resto da soma ponderada por 11: resto < 2 -> 0, senão 11 - resto.
 func digitoVerificadorCNPJ(base string) int {
 	pesos := pesosCNPJ[len(pesosCNPJ)-len(base):]
 	soma := 0
 	for i, r := range base {
-		soma += int(r-'0') * pesos[i]
+		soma += int(r-'0') * pesos[i] // '0'-'9' = 0-9, 'A' = 17 ... 'Z' = 42
 	}
 	resto := soma % 11
 	if resto < 2 {
@@ -151,14 +172,25 @@ func digitoVerificadorCNPJ(base string) int {
 	return 11 - resto
 }
 
-// ValidarCNPJ normaliza `cnpj` (NormalizarCNPJ) e exige 14 dígitos, não
-// todos iguais ("00000000000000" passa no cálculo mas não é um CNPJ real), com
-// os dois dígitos verificadores corretos. Qualquer falha ->
+// ValidarCNPJ normaliza `cnpj` (NormalizarCNPJ) e exige 14 caracteres: os 12
+// primeiros [0-9A-Z], os 2 últimos (dígitos verificadores) numéricos, não
+// todos iguais, com os dois dígitos verificadores corretos. Qualquer falha ->
 // *ErroEmpresaValidacao.
 func ValidarCNPJ(cnpj string) error {
 	d := NormalizarCNPJ(cnpj)
-	if len(d) != 14 {
-		return &ErroEmpresaValidacao{Mensagem: "CNPJ deve ter 14 dígitos"}
+	if utf8.RuneCountInString(d) != 14 {
+		return &ErroEmpresaValidacao{Mensagem: "CNPJ deve ter 14 caracteres"}
+	}
+	r := []rune(d)
+	for _, c := range r[:12] {
+		if (c < '0' || c > '9') && (c < 'A' || c > 'Z') {
+			return &ErroEmpresaValidacao{Mensagem: "CNPJ inválido: use só letras A-Z e números"}
+		}
+	}
+	for _, c := range r[12:] {
+		if c < '0' || c > '9' {
+			return &ErroEmpresaValidacao{Mensagem: "CNPJ inválido: os 2 últimos caracteres (dígitos verificadores) devem ser numéricos"}
+		}
 	}
 	if strings.Count(d, d[:1]) == 14 {
 		return &ErroEmpresaValidacao{Mensagem: "CNPJ inválido"}
@@ -319,7 +351,7 @@ func validarDadosEmpresa(d DadosEmpresa) (dadosEmpresaValidados, error) {
 		}
 		v.complemento = sql.NullString{String: comp, Valid: true}
 	}
-	v.cep = NormalizarCNPJ(d.Endereco.CEP) // mesma extração de dígitos
+	v.cep = soDigitos(d.Endereco.CEP)
 	if len(v.cep) != 8 {
 		return v, &ErroEmpresaValidacao{Mensagem: "CEP deve ter 8 dígitos"}
 	}

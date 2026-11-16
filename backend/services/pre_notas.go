@@ -104,7 +104,7 @@ type PreNotaConteudo struct {
 	PreNotaID          string
 	Docnum             int
 	EmpresaRazaoSocial string
-	EmpresaCNPJ        string // 14 dígitos, sem máscara (formatado no texto)
+	EmpresaCNPJ        string // 14 caracteres [0-9A-Z], maiúsculos, sem máscara (formatado no texto)
 	CriadoEm           time.Time
 	Aprovador          string
 	Solicitantes       []string // distintos, ordenados, só de Pedidos com item listado
@@ -276,7 +276,7 @@ func dadosFiscaisPreNota(c [9]sql.NullString) DadosFiscaisFilialPreNota {
 // --- Formatação (funções puras) -------------------------------------------
 
 // formatarCNPJPreNota aplica a máscara 00.000.000/0000-00 a um CNPJ de 14
-// dígitos; qualquer outro formato é devolvido como veio.
+// caracteres (numérico ou alfanumérico); qualquer outro formato é devolvido como veio.
 func formatarCNPJPreNota(cnpj string) string {
 	if len(cnpj) != 14 {
 		return cnpj

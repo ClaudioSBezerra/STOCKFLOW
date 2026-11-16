@@ -20,8 +20,8 @@ import (
 // roteamento, RequireRole — spec-filial-dados-fiscais; era `adm`+).
 
 // Filial é a projeção devolvida por POST/PUT/GET /api/filiais. Dados fiscais
-// (spec-filial-dados-fiscais) são todos opcionais: `cnpj` (14 dígitos, sem
-// máscara) e `inscricaoEstadual` são null quando ausentes; `endereco` é null
+// (spec-filial-dados-fiscais) são todos opcionais: `cnpj` (14 caracteres [0-9A-Z],
+// maiúsculos, sem máscara) e `inscricaoEstadual` são null quando ausentes; `endereco` é null
 // quando a Filial não tem endereço (o endereço é um bloco — tudo ou nada).
 type Filial struct {
 	ID                string           `json:"id"`
@@ -185,7 +185,7 @@ func temCaractereDeControle(s string) bool {
 	return strings.IndexFunc(s, unicode.IsControl) >= 0
 }
 
-// raizCNPJ: os 8 primeiros dígitos (identificam a empresa; os 4 seguintes, o
+// raizCNPJ: os 8 primeiros caracteres alfanuméricos (identificam a empresa; os 4 seguintes, o
 // estabelecimento).
 func raizCNPJ(cnpj string) string {
 	d := NormalizarCNPJ(cnpj)
@@ -197,7 +197,7 @@ func raizCNPJ(cnpj string) string {
 
 // validarDadosFilial normaliza e valida `d` ANTES de qualquer escrita. Nome:
 // mesma regra de sempre (ErrFilialValidacao). CNPJ: ValidarCNPJ quando
-// informado, gravado só com dígitos, e com a MESMA raiz (8 primeiros dígitos)
+// informado, gravado normalizado (maiúsculo, sem máscara), e com a MESMA raiz (8 primeiros caracteres)
 // do CNPJ da Empresa `cnpjEmpresa`. IE: texto livre até 20 caracteres.
 // Endereço: bloco — se qualquer campo vier preenchido, logradouro, número,
 // bairro, cidade, CEP (8 dígitos) e UF (uma das 27) passam a ser obrigatórios;
@@ -231,7 +231,7 @@ func validarDadosFilial(d DadosFilial, cnpjEmpresa string) (dadosFilialValidados
 		n := NormalizarCNPJ(cnpj)
 		if raiz := raizCNPJ(cnpjEmpresa); n[:8] != raiz {
 			return v, &ErroDadosFilial{Mensagem: fmt.Sprintf(
-				"o CNPJ da filial deve ser da mesma empresa: os 8 primeiros dígitos (%s) têm que ser iguais aos do CNPJ da empresa (%s)",
+				"o CNPJ da filial deve ser da mesma empresa: os 8 primeiros caracteres (%s) têm que ser iguais aos do CNPJ da empresa (%s)",
 				n[:2]+"."+n[2:5]+"."+n[5:8], formatarRaizCNPJ(raiz))}
 		}
 		v.cnpj = textoNulo(n)

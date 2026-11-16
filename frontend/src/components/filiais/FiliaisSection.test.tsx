@@ -185,6 +185,30 @@ describe('FiliaisSection', () => {
     expect(screen.getAllByRole('cell', { name: '—' })).toHaveLength(2); // Matriz sem CNPJ e sem cidade
   });
 
+  it('CNPJ alfanumérico digitado em minúsculas aparece e é enviado em maiúsculas', async () => {
+    const fetchMock = stubFetch((url, init) => {
+      if (url === '/api/filiais' && metodo(init) === 'GET') return jsonOk({ filiais: [] });
+      if (url === '/api/filiais' && init?.method === 'POST') {
+        return Promise.resolve({ ok: true, status: 201, json: async () => ({ filial: RECIFE_FISCAL }) });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    const user = userEvent.setup();
+    render(<FiliaisSection />);
+    await screen.findByText('Nenhuma filial cadastrada ainda.');
+
+    await user.type(screen.getByLabelText('Nome da filial'), 'Recife');
+    const campoCnpj = screen.getByLabelText('CNPJ (opcional)');
+    await user.type(campoCnpj, '12.abc.345/01de-35');
+    expect(campoCnpj).toHaveValue('12.ABC.345/01DE-35');
+    expect(campoCnpj).toHaveAccessibleDescription(/alfanumérico/);
+    await user.click(screen.getByRole('button', { name: 'Adicionar filial' }));
+
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Filial criada.'));
+    const post = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST');
+    expect(JSON.parse(String(post?.[1]?.body))).toMatchObject({ cnpj: '12.ABC.345/01DE-35' });
+  });
+
   it('cadastro com dados fiscais envia CNPJ, IE e endereço no POST', async () => {
     const fetchMock = stubFetch((url, init) => {
       if (url === '/api/filiais' && metodo(init) === 'GET') return jsonOk({ filiais: [] });

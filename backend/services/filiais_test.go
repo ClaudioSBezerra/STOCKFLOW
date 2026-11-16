@@ -488,7 +488,7 @@ func TestFilialDadosFiscais_CriarEditarEValidar(t *testing.T) {
 	// CNPJ válido de OUTRA raiz (outra empresa) -> 400, nada gravado.
 	cnpjOutraRaiz := cnpjDeTeste("112223330001")
 	if _, err := AtualizarFilial(db, a.ID, f.ID, AtualizacaoFilial{CNPJ: &cnpjOutraRaiz}); !errors.As(err, &erroDados) ||
-		!strings.Contains(erroDados.Mensagem, "8 primeiros dígitos") {
+		!strings.Contains(erroDados.Mensagem, "8 primeiros caracteres") {
 		t.Errorf("CNPJ de outra raiz (editar): erro = %v, want ErroDadosFilial sobre a raiz", err)
 	}
 	if _, err := CriarFilial(db, a.ID, DadosFilial{Nome: "Outra Raiz", CNPJ: cnpjOutraRaiz}); !errors.As(err, &erroDados) {
@@ -551,4 +551,35 @@ func TestFilialDadosFiscais_CriarEditarEValidar(t *testing.T) {
 		}
 	}
 	semAlteracao(t)
+}
+
+// TestFilialCNPJAlfanumerico: Empresa e Filial com CNPJ alfanumérico — raiz
+// alfanumérica, gravação em maiúsculas e unicidade insensível a caixa.
+func TestFilialCNPJAlfanumerico(t *testing.T) {
+	db := testDB(t)
+	removerEmpresaDeTeste(t, db, "filial-alfa")
+	t.Cleanup(func() { removerEmpresaDeTeste(t, db, "filial-alfa") })
+	emp := criarEmpresaDeTeste(t, db, "filial-alfa", "7A8B9C0D0001", "Filial Alfa")
+	if emp.CNPJ != cnpjDeTeste("7A8B9C0D0001") {
+		t.Fatalf("empresa.CNPJ = %q", emp.CNPJ)
+	}
+	est := cnpjDeTeste("7A8B9C0D00XY") // mesma raiz 7A8B9C0D
+	minusc := strings.ToLower(est)
+
+	f, err := CriarFilial(db, emp.ID, DadosFilial{Nome: "Alfa 1", CNPJ: minusc})
+	if err != nil {
+		t.Fatalf("CriarFilial alfanumérica: %v", err)
+	}
+	if f.CNPJ == nil || *f.CNPJ != est {
+		t.Errorf("CNPJ gravado = %v, want %q (maiúsculo)", f.CNPJ, est)
+	}
+	// Mesmo CNPJ em outra caixa -> duplicado.
+	if _, err := CriarFilial(db, emp.ID, DadosFilial{Nome: "Alfa 2", CNPJ: est}); !errors.Is(err, ErrCNPJFilialDuplicado) {
+		t.Errorf("duplicado em caixa diferente: erro = %v", err)
+	}
+	// Raiz diferente -> ErroDadosFilial.
+	var erroDados *ErroDadosFilial
+	if _, err := CriarFilial(db, emp.ID, DadosFilial{Nome: "Alfa 3", CNPJ: cnpjDeTeste("7A8B9C0E00XY")}); !errors.As(err, &erroDados) {
+		t.Errorf("raiz diferente: erro = %v, want ErroDadosFilial", err)
+	}
 }

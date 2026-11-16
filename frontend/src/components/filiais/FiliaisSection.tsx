@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { apiUrl, authHeaders } from '@/lib/api';
-import { formatarCEP, formatarCNPJ } from '@/lib/formatacao';
+import { formatarCEP, formatarCNPJ, maiusculasAscii } from '@/lib/formatacao';
 
 /**
  * Seção "Filiais" de `/cadastros/filiais` (Story 12.1, FR-51 +
@@ -276,10 +276,17 @@ export function FiliaisSection() {
                 id="filial-cnpj"
                 value={form.cnpj}
                 maxLength={18}
-                inputMode="numeric"
+                inputMode="text"
+                autoCapitalize="characters"
+                autoCorrect="off"
+                spellCheck={false}
                 placeholder="00.000.000/0000-00"
-                onChange={(event) => campo('cnpj', event.target.value)}
+                aria-describedby="filial-cnpj-dica"
+                onChange={(event) => campo('cnpj', maiusculasAscii(event.target.value))}
               />
+              <p id="filial-cnpj-dica" className="text-label text-muted-foreground">
+                Aceita CNPJ numérico ou alfanumérico (letras A-Z).
+              </p>
             </div>
             <div className="flex flex-col gap-2">
               <Label htmlFor="filial-ie">Inscrição Estadual (opcional)</Label>

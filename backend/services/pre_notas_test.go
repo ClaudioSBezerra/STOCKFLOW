@@ -814,6 +814,9 @@ func TestFormatacoesPreNota(t *testing.T) {
 	if got := formatarCNPJPreNota("12345678000199"); got != "12.345.678/0001-99" {
 		t.Errorf("CNPJ = %q", got)
 	}
+	if got := formatarCNPJPreNota("12ABC34501DE35"); got != "12.ABC.345/01DE-35" {
+		t.Errorf("CNPJ alfanumérico = %q", got)
+	}
 	valores := map[int64]string{0: "R$ 0,00", 5: "R$ 0,05", 1250: "R$ 12,50", 123450: "R$ 1.234,50", 123456789: "R$ 1.234.567,89"}
 	for v, want := range valores {
 		if got := formatarCentavosPreNota(big.NewInt(v)); got != want {

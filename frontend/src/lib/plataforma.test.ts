@@ -1,3 +1,4 @@
+import { limparCNPJ, maiusculasAscii } from '@/lib/formatacao';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ErroPlataforma,
@@ -219,5 +220,22 @@ describe('normalizarSlug / formatarCNPJ', () => {
   it('formata o CNPJ com máscara', () => {
     expect(formatarCNPJ('12345678000195')).toBe('12.345.678/0001-95');
     expect(formatarCNPJ('123')).toBe('123');
+    expect(formatarCNPJ('12ABC34501DE35')).toBe('12.ABC.345/01DE-35');
+    expect(formatarCNPJ('12.abc.345/01de-35')).toBe('12.ABC.345/01DE-35');
+  });
+
+  it('formatarCNPJ devolve como veio quando há símbolo inválido', () => {
+    expect(formatarCNPJ('12@ABC34501DE35')).toBe('12@ABC34501DE35');
+    expect(formatarCNPJ('12ABC34501DÇ35')).toBe('12ABC34501DÇ35');
+  });
+
+  it('limparCNPJ tira máscara e espaços e põe a-z em maiúsculas', () => {
+    expect(limparCNPJ(' 12.abc.345/01de-35 ')).toBe('12ABC34501DE35');
+    expect(limparCNPJ('')).toBe('');
+  });
+
+  it('maiusculasAscii só converte a-z (ß não vira SS)', () => {
+    expect(maiusculasAscii('ab12ß')).toBe('AB12ß');
+    expect(maiusculasAscii('ç')).toBe('ç');
   });
 });

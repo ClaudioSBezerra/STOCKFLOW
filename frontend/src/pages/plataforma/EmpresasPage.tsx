@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { maiusculasAscii } from '@/lib/formatacao';
 import { cn } from '@/lib/utils';
 import {
   ErroPlataforma,
@@ -471,8 +472,13 @@ export function EmpresasPage() {
                 id="cnpj"
                 label="CNPJ"
                 value={form.cnpj}
-                onChange={(v) => atualizar('cnpj', v)}
-                inputMode="numeric"
+                onChange={(v) => atualizar('cnpj', maiusculasAscii(v))}
+                inputMode="text"
+                autoCapitalize="characters"
+                autoCorrect="off"
+                spellCheck={false}
+                placeholder="00.000.000/0000-00"
+                dica="Aceita CNPJ numérico ou alfanumérico (letras A-Z)."
                 maxLength={18}
                 required
               />
