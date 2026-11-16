@@ -8,6 +8,8 @@ import { baixarPreNotaPDF, MENSAGEM_ERRO_PRE_NOTA } from '@/lib/pedidos';
 interface BaixarPreNotaButtonProps {
   preNotaId: string;
   docnum?: number | null;
+  /** Versão curta para a linha de uma lista: "Pré-Nota nº N", tamanho `sm`. */
+  compacto?: boolean;
 }
 
 /**
@@ -19,7 +21,7 @@ interface BaixarPreNotaButtonProps {
  * download>` criado, clicado e removido -> `URL.revokeObjectURL`, sem sair
  * da página. Falha -> `toast.error` com a mensagem do servidor.
  */
-export function BaixarPreNotaButton({ preNotaId, docnum }: BaixarPreNotaButtonProps) {
+export function BaixarPreNotaButton({ preNotaId, docnum, compacto = false }: BaixarPreNotaButtonProps) {
   const { usuario } = useAuth();
   const [baixando, setBaixando] = useState(false);
 
@@ -48,15 +50,19 @@ export function BaixarPreNotaButton({ preNotaId, docnum }: BaixarPreNotaButtonPr
     }
   }
 
+  const rotuloCompacto = docnum != null ? `Pré-Nota nº ${docnum}` : 'Pré-Nota';
+
   return (
     <Button
       type="button"
       variant="outline"
+      size={compacto ? 'sm' : undefined}
       onClick={() => void aoBaixar()}
       disabled={baixando}
       aria-busy={baixando}
+      aria-label={compacto ? `Baixar ${rotuloCompacto}` : undefined}
     >
-      {baixando ? 'Baixando Pré-Nota...' : 'Baixar Pré-Nota'}
+      {baixando ? 'Baixando Pré-Nota...' : compacto ? rotuloCompacto : 'Baixar Pré-Nota'}
     </Button>
   );
 }

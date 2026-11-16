@@ -362,6 +362,9 @@ export function FilaPedidosSection() {
               <span className="flex shrink-0 items-center gap-3">
                 <TipoPedidoBadge tipo={pedido.tipo} />
                 <StatusPedidoBadge status={pedido.status} />
+                {pedido.preNotaId && (
+                  <BaixarPreNotaButton preNotaId={pedido.preNotaId} docnum={pedido.docnum} compacto />
+                )}
                 <Button
                   type="button"
                   variant="outline"

@@ -1090,4 +1090,39 @@ describe('FilaPedidosSection — Pré-Nota (Story 20.5)', () => {
     await abrirDetalheComPreNota([PEDIDOS[1]]);
     expect(screen.queryByRole('button', { name: 'Baixar Pré-Nota' })).not.toBeInTheDocument();
   });
+
+  // --- botão direto na LINHA da lista (pedido do usuário, 2026-11-16) ------
+  async function renderizarLista(pedidos: unknown[]) {
+    listarFilaPedidosMock.mockResolvedValue(pedidos);
+    render(<FilaPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText(/Obra Sul/);
+    return userEvent.setup();
+  }
+
+  it('gestor baixa a Pré-Nota direto da linha da lista, sem abrir o detalhe', async () => {
+    const blob = new Blob(['%PDF-fake'], { type: 'application/pdf' });
+    baixarPreNotaPDFMock.mockResolvedValue(blob);
+
+    const user = await renderizarLista([COM_PRE_NOTA]);
+    await user.click(screen.getByRole('button', { name: 'Baixar Pré-Nota nº 7' }));
+
+    await waitFor(() => expect(baixarPreNotaPDFMock).toHaveBeenCalledWith('pn-1'));
+    await waitFor(() => expect(cliqueSpy).toHaveBeenCalled());
+    expect((cliqueSpy.mock.contexts[0] as HTMLAnchorElement).download).toBe('pre-nota-7.pdf');
+    expect(screen.queryByRole('button', { name: 'Baixar recibo' })).not.toBeInTheDocument();
+  });
+
+  it('a linha de um Pedido sem Pré-Nota não tem o botão de Pré-Nota', async () => {
+    await renderizarLista([PEDIDOS[1]]);
+    expect(screen.queryByRole('button', { name: /^Baixar Pré-Nota/ })).not.toBeInTheDocument();
+  });
+
+  it('papel abaixo de gestor não vê o botão de Pré-Nota na linha', async () => {
+    authState.papel = 'almoxarife';
+    await renderizarLista([COM_PRE_NOTA]);
+    expect(screen.queryByRole('button', { name: /^Baixar Pré-Nota/ })).not.toBeInTheDocument();
+  });
 });
