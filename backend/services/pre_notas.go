@@ -1,10 +1,15 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"log/slog"
 	"math/big"
 	"strconv"
 	"strings"
@@ -109,6 +114,10 @@ type PreNotaConteudo struct {
 	Aprovador          string
 	Solicitantes       []string // distintos, ordenados, só de Pedidos com item listado
 	Itens              []PreNotaItem
+	// LogoEmpresa são os bytes (PNG ou JPEG) da logo cadastrada da Empresa
+	// (`empresa_logos`, spec-logo-da-empresa), lida do cadastro ATUAL no
+	// momento da montagem; nil/vazio = sem logo (cabeçalho como sempre foi).
+	LogoEmpresa []byte
 }
 
 // MontarPreNotaConteudo busca e monta o conteúdo da Pré-Nota `preNotaID` da
@@ -144,6 +153,11 @@ func MontarPreNotaConteudo(db *sql.DB, empresaID, preNotaID string) (PreNotaCont
 	c.EmpresaCNPJ = strings.TrimSpace(c.EmpresaCNPJ)
 	if aprovador.Valid {
 		c.Aprovador = aprovador.String
+	}
+
+	// Logo da Empresa (opcional): sem linha = sem logo.
+	if err := tx.QueryRow(`SELECT conteudo FROM empresa_logos WHERE empresa_id = $1`, empresaID).Scan(&c.LogoEmpresa); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return PreNotaConteudo{}, fmt.Errorf("falha ao buscar logo da empresa: %w", err)
 	}
 
 	// Solicitantes: só dos Pedidos com ao menos 1 item listado no documento
@@ -495,6 +509,159 @@ type layoutPreNota struct {
 	// Canhoto de recebimento (spec-filial-dados-fiscais): quadro RECEBIMENTO
 	// com campos em branco, sempre o último do documento.
 	Recebimento []campoDesenhado
+	// Logo desenhada no canto superior esquerdo da caixa da Empresa; nil =
+	// sem logo (ausente, corrompida ou que o gopdf não consegue desenhar).
+	Logo *logoPreNota
+}
+
+// Limites (em pontos) da logo no cabeçalho — caixa esquerda — e espaço entre
+// ela e o texto da Empresa.
+const (
+	logoMaxAlturaPreNotaPT  = 40.0
+	logoMaxLarguraPreNotaPT = 110.0
+	logoEspacoPreNotaPT     = 4.0
+)
+
+// logoPreNota é a logo já medida: Largura x Altura em pontos, proporção
+// original mantida, dentro de logoMax*PreNotaPT.
+type logoPreNota struct {
+	Dados []byte
+	// Imagem, quando não nil, é o que vai ao gopdf no lugar de Dados: PNG
+	// indexado (paleta) com transparência PARCIAL — o gopdf só entende o
+	// índice totalmente transparente (/Mask) e pintaria opacos os pixels
+	// semitransparentes (bordas suavizadas). Convertida para NRGBA só para
+	// desenhar; os bytes guardados no banco seguem intactos.
+	Imagem  image.Image
+	Largura float64
+	Altura  float64
+}
+
+// Recusas de prepararLogoPreNota (o envio da logo as traduz em mensagens).
+var (
+	errLogoIlegivelPreNota       = errors.New("logo ilegível")
+	errLogoNaoDesenhavelPreNota  = errors.New("logo que o gopdf não consegue desenhar")
+	errLogoProporcaoPreNota      = errors.New("logo com proporção extrema")
+	logoMinLadoImpressoPreNotaPT = 6.0
+)
+
+// prepararLogoPreNota decodifica o cabeçalho da imagem, calcula o tamanho
+// final e confere se o gopdf consegue desenhá-la (numa página descartável).
+// É a MESMA lógica no envio da logo (recusa na hora) e na geração do PDF
+// (cai para "sem logo"). Qualquer pânico do decoder/gopdf vira erro.
+func prepararLogoPreNota(dados []byte) (l *logoPreNota, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			l, err = nil, fmt.Errorf("%w: pânico: %v", errLogoNaoDesenhavelPreNota, r)
+		}
+	}()
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(dados))
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		return nil, fmt.Errorf("%w: %v", errLogoIlegivelPreNota, err)
+	}
+	escala := min(logoMaxLarguraPreNotaPT/float64(cfg.Width), logoMaxAlturaPreNotaPT/float64(cfg.Height))
+	l = &logoPreNota{Dados: dados, Largura: float64(cfg.Width) * escala, Altura: float64(cfg.Height) * escala}
+	if l.Largura < logoMinLadoImpressoPreNotaPT || l.Altura < logoMinLadoImpressoPreNotaPT {
+		return nil, fmt.Errorf("%w: %.1fx%.1f pt", errLogoProporcaoPreNota, l.Largura, l.Altura)
+	}
+	if precisaConverterLogoPreNota(cfg.ColorModel) {
+		img, _, err := image.Decode(bytes.NewReader(dados))
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", errLogoIlegivelPreNota, err)
+		}
+		nrgba := image.NewNRGBA(img.Bounds())
+		draw.Draw(nrgba, nrgba.Bounds(), img, img.Bounds().Min, draw.Src)
+		l.Imagem = nrgba
+	}
+	teste := &gopdf.GoPdf{}
+	teste.Start(gopdf.Config{PageSize: *gopdf.PageSizeA4})
+	teste.AddPage()
+	if err := desenharLogoPreNota(teste, l, 0, 0); err != nil {
+		return nil, fmt.Errorf("%w: %v", errLogoNaoDesenhavelPreNota, err)
+	}
+	return l, nil
+}
+
+// logoDoCabecalhoPreNota é prepararLogoPreNota para a geração do PDF: qualquer
+// falha -> slog.Warn e nil — logo ruim NUNCA derruba o PDF.
+func logoDoCabecalhoPreNota(dados []byte) *logoPreNota {
+	if len(dados) == 0 {
+		return nil
+	}
+	l, err := prepararLogoPreNota(dados)
+	if err != nil {
+		slog.Warn("logo da empresa não pôde ser usada; Pré-Nota gerada sem a logo", "error", err)
+		return nil
+	}
+	return l
+}
+
+// posicoesEmpresaPreNota são os deslocamentos verticais (a partir do topo da
+// caixa esquerda do cabeçalho) de cada elemento: a logo, o rótulo EMPRESA e o
+// texto (razão social + CNPJ). Função pura — com logo, rótulo e texto ficam
+// ABAIXO do fundo da logo (LogoFundo).
+type posicoesEmpresaPreNota struct {
+	LogoTopo, LogoFundo float64 // LogoFundo = LogoTopo quando não há logo
+	Rotulo, Texto       float64
+}
+
+func (l layoutPreNota) posicoesEmpresa() posicoesEmpresaPreNota {
+	p := posicoesEmpresaPreNota{LogoTopo: paddingQuadroPT, LogoFundo: paddingQuadroPT}
+	desl := 0.0
+	if l.Logo != nil {
+		p.LogoFundo = p.LogoTopo + l.Logo.Altura
+		desl = l.Logo.Altura + logoEspacoPreNotaPT
+	}
+	p.Rotulo = paddingQuadroPT + desl
+	p.Texto = paddingQuadroPT + tamanhoRotuloPreNotaPT + 2 + desl
+	return p
+}
+
+// precisaConverterLogoPreNota: o gopdf só entende, nos bytes originais, o
+// índice totalmente transparente de PNG indexado (/Mask) e PNG RGBA/NRGBA/
+// gray+alpha de 8 bits; paleta com alpha PARCIAL e demais modelos com alpha
+// vão como NRGBA (/SMask), senão as bordas sairiam opacas.
+func precisaConverterLogoPreNota(m color.Model) bool {
+	if p, ok := m.(color.Palette); ok {
+		return paletaTemAlphaParcial(p)
+	}
+	return false
+}
+
+// paletaTemAlphaParcial: a paleta tem entrada nem opaca nem totalmente
+// transparente (bordas suavizadas de logo indexada).
+func paletaTemAlphaParcial(p color.Palette) bool {
+	for _, c := range p {
+		if _, _, _, a := c.RGBA(); a != 0 && a != 0xffff {
+			return true
+		}
+	}
+	return false
+}
+
+// semPanicoPreNota roda f convertendo pânico em erro. ATENÇÃO: só cobre
+// pânico na MESMA goroutine; o gopdf.ImageFrom codifica a imagem numa goroutine
+// própria, por isso só recebe o NRGBA que nós mesmos montamos (nunca dado
+// do cliente); bytes do cliente vão por ImageHolderByBytes (mesma goroutine).
+func semPanicoPreNota(f func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("pânico do gopdf ao desenhar a logo: %v", r)
+		}
+	}()
+	return f()
+}
+
+func desenharLogoPreNota(pdf *gopdf.GoPdf, l *logoPreNota, x, y float64) error {
+	return semPanicoPreNota(func() error {
+		if l.Imagem != nil {
+			return pdf.ImageFrom(l.Imagem, x, y, &gopdf.Rect{W: l.Largura, H: l.Altura})
+		}
+		holder, err := gopdf.ImageHolderByBytes(l.Dados)
+		if err != nil {
+			return err
+		}
+		return pdf.ImageByHolder(holder, x, y, &gopdf.Rect{W: l.Largura, H: l.Altura})
+	})
 }
 
 // campoDesenhado é um campo de um quadro do PDF: Quadro = título da seção
@@ -592,6 +759,7 @@ func layoutDaPreNota(c PreNotaConteudo) layoutPreNota {
 		Aprovador:    textoOuAusentePreNota(c.Aprovador),
 		Solicitantes: solicitantes,
 		Recebimento:  camposRecebimentoPreNota(),
+		Logo:         logoDoCabecalhoPreNota(c.LogoEmpresa),
 	}
 
 	// Agrupamento por rota na ordem da 1ª aparição — a ordem dos itens já é
@@ -852,7 +1020,9 @@ func RenderizarPreNotaPDF(conteudo PreNotaConteudo) ([]byte, error) {
 		linhasEmpresa := linhasCampo(doc.Empresa, wE, true)
 		linhasEmpresa = append(linhasEmpresa, linhasCampo("CNPJ: "+doc.CNPJ, wE, false)...)
 		linhasAviso := quebrar(RodapePreNota, wC-2*paddingQuadroPT, false, 7)
-		h := alturaCampo(len(linhasEmpresa))
+		// Com logo, o texto da Empresa desce abaixo dela.
+		posEmpresa := doc.posicoesEmpresa()
+		h := alturaCampo(len(linhasEmpresa)) + (posEmpresa.Rotulo - paddingQuadroPT)
 		if hC := 6 + 18 + 4 + float64(len(linhasAviso))*9 + 6; hC > h {
 			h = hC
 		}
@@ -867,9 +1037,14 @@ func RenderizarPreNotaPDF(conteudo PreNotaConteudo) ([]byte, error) {
 		// Empresa: razão social em negrito, CNPJ embaixo.
 		fonte(false, tamanhoRotuloPreNotaPT)
 		pdf.SetTextColor(70, 70, 70)
-		escrever(x+paddingQuadroPT, y+paddingQuadroPT, wE, tamanhoRotuloPreNotaPT, "EMPRESA", gopdf.Left|gopdf.Top)
+		if doc.Logo != nil && erro == nil {
+			if err := desenharLogoPreNota(pdf, doc.Logo, x+paddingQuadroPT, y+posEmpresa.LogoTopo); err != nil {
+				slog.Warn("falha ao desenhar a logo da empresa na Pré-Nota", "error", err)
+			}
+		}
+		escrever(x+paddingQuadroPT, y+posEmpresa.Rotulo, wE, tamanhoRotuloPreNotaPT, "EMPRESA", gopdf.Left|gopdf.Top)
 		pdf.SetTextColor(0, 0, 0)
-		ly := y + paddingQuadroPT + tamanhoRotuloPreNotaPT + 2
+		ly := y + posEmpresa.Texto
 		for i, l := range linhasEmpresa {
 			fonte(i < len(linhasEmpresa)-1, tamanhoValorPreNotaPT)
 			escrever(x+paddingQuadroPT, ly, wE-2*paddingQuadroPT, entrelinhaPreNotaPT, l, gopdf.Left|gopdf.Middle)

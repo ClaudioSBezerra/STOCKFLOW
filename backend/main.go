@@ -550,6 +550,18 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	registrar("GET /e/{slug}/api/filiais", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarFiliaisHandler(db)))
 
+	// Logo da Empresa (spec-logo-da-empresa): impressa na Pré-Nota. Leitura,
+	// envio e remoção só `gestor`+.
+	registrar("GET /e/{slug}/api/empresa/logo", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelGestor)(
+			handlers.BuscarLogoEmpresaHandler(db))))
+	registrar("PUT /e/{slug}/api/empresa/logo", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelGestor)(
+			handlers.EnviarLogoEmpresaHandler(db))))
+	registrar("DELETE /e/{slug}/api/empresa/logo", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelGestor)(
+			handlers.RemoverLogoEmpresaHandler(db))))
+
 	// Centros de Custo — Story 12.3 (FR-51, AD-28). Mesmo desenho de Filiais:
 	// escrita só `adm`+ (403 abaixo); a listagem leva só RequireAuth (quem
 	// envia Pedido precisa listar para escolher o Centro de Custo).

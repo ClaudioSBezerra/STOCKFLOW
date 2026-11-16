@@ -933,3 +933,19 @@ status: open
 - source_spec: `correcao-lentidao-telas-realtime` (sem spec; correção avulsa, 2026-11-16)
   summary: Reforço opcional de infraestrutura, não aplicado: no `nginx_proxy` compartilhado da AWS (10 sistemas) ligar `http2 on;` no bloco de suprimentos e `proxy_buffering off` na rota `^/e/[^/]+/api/realtime/` — evita o atraso de 15 s do `open` do SSE na origem e o limite de 6 conexões do HTTP/1.1.
   evidence: Medido: com a correção no código as telas já abrem em ~0,2 s, então o ajuste no nginx compartilhado deixou de ser necessário; fica como defesa extra para quando a infra puder ser alterada com segurança (arquivo /apps/infra-server-fercos-sap/nginx/config/nginx.conf, bind mount).
+
+- source_spec: `spec-logo-da-empresa.md`
+  summary: Não há trilha de auditoria de quem enviou, trocou ou removeu a logo da Empresa nem de quando (só `atualizado_em`), e dois gestores trocando ao mesmo tempo se sobrescrevem sem aviso (sem `If-Match`/versão).
+  evidence: Achado pela revisão (blind-hunter). Mesma lacuna geral dos demais cadastros do projeto (Filiais, Centros de custo): nenhum tem auditoria de alteração.
+
+- source_spec: `spec-logo-da-empresa.md`
+  summary: Um JPEG de celular com marcador de orientação EXIF pode aparecer girado no PDF e certo na pré-visualização do navegador (o Go e o gopdf ignoram o EXIF, o navegador aplica).
+  evidence: Achado pela revisão (blind-hunter). Logo normalmente vem de arquivo de design, não de foto de celular; tratar só se alguém reclamar.
+
+- source_spec: `spec-logo-da-empresa.md`
+  summary: Sem aviso de baixa resolução (logo de 32 px fica borrada impressa) e sem quota/limite de trocas por Empresa (cada envio regrava uma linha BYTEA de até 512 KB).
+  evidence: Achado pela revisão (blind-hunter). Impacto baixo: 1 linha por Empresa, troca rara, só gestor+.
+
+- source_spec: `spec-logo-da-empresa.md`
+  summary: O desenho da logo é refeito a cada geração de Pré-Nota (decodifica e testa numa página do gopdf); poderia ser pré-calculado no envio e guardado.
+  evidence: Achado pela revisão (blind-hunter + edge-case-hunter). Custo de milissegundos para uma logo de poucos KB; só importaria com muitas gerações por segundo.

@@ -4,6 +4,7 @@ import type { ComponentType } from 'react';
 import { CategoriasPage } from './cadastros/CategoriasPage';
 import { TemplatesPage } from './cadastros/TemplatesPage';
 import { FiliaisPage } from './cadastros/FiliaisPage';
+import { EmpresaPage } from './cadastros/EmpresaPage';
 import { CentrosCustoPage } from './cadastros/CentrosCustoPage';
 import { UsuariosPage } from './admin/UsuariosPage';
 import { ConvitesPage } from './admin/ConvitesPage';
@@ -38,6 +39,7 @@ const paginas: Array<{ tela: string; Page: ComponentType; minimo: string; url: s
   { tela: 'Categorias', Page: CategoriasPage, minimo: 'adm', url: '/api/categorias' },
   { tela: 'Templates de nome', Page: TemplatesPage, minimo: 'adm', url: '/api/nomenclatura-templates' },
   { tela: 'Filiais', Page: FiliaisPage, minimo: 'gestor', url: '/api/filiais' },
+  { tela: 'Empresa', Page: EmpresaPage, minimo: 'gestor', url: '/api/empresa/logo' },
   { tela: 'Centros de custo', Page: CentrosCustoPage, minimo: 'adm', url: '/api/centros-custo' },
   { tela: 'Usuários', Page: UsuariosPage, minimo: 'gestor', url: '/api/usuarios' },
   { tela: 'Convites', Page: ConvitesPage, minimo: 'gestor', url: '/api/convites' },

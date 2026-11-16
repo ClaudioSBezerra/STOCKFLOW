@@ -58,6 +58,7 @@ describe('nav-items: grupos e papéis', () => {
       '/cadastros/categorias',
       '/cadastros/templates',
       '/cadastros/filiais',
+      '/cadastros/empresa',
       '/cadastros/centros-custo',
       '/admin/usuarios',
       '/admin/convites',
@@ -87,12 +88,12 @@ describe('nav-items: grupos e papéis', () => {
     expect(ids).toEqual(['catalogo', 'pedidos', 'estoque', 'qualidade']);
   });
 
-  it('gestor vê só Usuários, Convites e Promoções em Administração; só Filiais em Cadastros; e Aprovação em lote em Pedidos', () => {
+  it('gestor vê só Usuários, Convites e Promoções em Administração; só Filiais e Empresa em Cadastros; e Aprovação em lote em Pedidos', () => {
     const grupos = gruposVisiveis(navGrupos, 'gestor');
     expect(grupos.map((g) => g.id)).toEqual(['catalogo', 'pedidos', 'estoque', 'qualidade', 'cadastros', 'administracao']);
     const grupo = (id: string) => grupos.find((g) => g.id === id);
     // spec-filial-dados-fiscais: o cadastro de Filiais passou de adm para gestor.
-    expect(grupo('cadastros')?.itens.map((i) => i.id)).toEqual(['filiais']);
+    expect(grupo('cadastros')?.itens.map((i) => i.id)).toEqual(['filiais', 'empresa']);
     const pedidos = grupos.find((g) => g.id === 'pedidos');
     expect(pedidos?.itens.map((i) => i.id)).toEqual([
       'meus-pedidos',

@@ -12,6 +12,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/jpeg"
+	"image/png"
 	"io/fs"
 	"mime/multipart"
 	"net/http"
@@ -19,6 +22,7 @@ import (
 	"os"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1183,6 +1187,170 @@ func TestNewMux_FiliaisEscritaCarregaRequireRoleGestor(t *testing.T) {
 	if err := db.QueryRow(`SELECT nome, inscricao_estadual FROM filiais WHERE id = $1`, id).Scan(&nome, &ie); err != nil ||
 		nome != "MuxFilial Gestor" || ie != "123" {
 		t.Errorf("Filial do gestor = %q/%q (err=%v)", nome, ie, err)
+	}
+}
+
+// TestNewMux_LogoDaEmpresaCarregaRequireRoleGestor (spec-logo-da-empresa)
+// despacha pela MESMA instância de newMux de main(): GET/PUT/DELETE de
+// /api/empresa/logo exigem `gestor`+ (almoxarife -> 403, sem token -> 401) e
+// cobre 200/204/400/404, o ETag e o isolamento por Empresa.
+func TestNewMux_LogoDaEmpresaCarregaRequireRoleGestor(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate usuarios: %v", err)
+	}
+	limpar := func() { _, _ = db.Exec(`DELETE FROM empresa_logos`) }
+	limpar()
+	t.Cleanup(limpar)
+
+	mux := newMux(db, services.CarregarEmailConfig(), []byte("segredo-de-teste-nao-usar-em-producao"), iam.Config{}, t.TempDir())
+	const senha = "senha-123456"
+	segredos := map[string]string{}
+	seedContaMux(t, db, "logo-mux-gestor@empresa.com", "gestor", senha, segredos)
+	seedContaMux(t, db, "logo-mux-almox@empresa.com", "almoxarife", senha, segredos)
+	tokenGestor := tokenDeMux(t, mux, "logo-mux-gestor@empresa.com", senha, segredos)
+	tokenAlmox := tokenDeMux(t, mux, "logo-mux-almox@empresa.com", senha, segredos)
+
+	imagem := func(codec string, w, h int) []byte {
+		img := image.NewRGBA(image.Rect(0, 0, w, h))
+		for i := range img.Pix {
+			img.Pix[i] = 0xc0
+		}
+		var buf bytes.Buffer
+		if codec == "png" {
+			_ = png.Encode(&buf, img)
+		} else {
+			_ = jpeg.Encode(&buf, img, nil)
+		}
+		return buf.Bytes()
+	}
+	const url = prefixoEmpresaTeste + "/api/empresa/logo"
+	despachar := func(metodo, token string, conteudo []byte, extra ...string) *httptest.ResponseRecorder {
+		var corpo bytes.Buffer
+		req := httptest.NewRequest(metodo, url, nil)
+		if conteudo != nil {
+			mw := multipart.NewWriter(&corpo)
+			fw, _ := mw.CreateFormFile("logo", "logo.png") // extensão e Content-Type do cliente não valem
+			_, _ = fw.Write(conteudo)
+			_ = mw.Close()
+			req = httptest.NewRequest(metodo, url, &corpo)
+			req.Header.Set("Content-Type", mw.FormDataContentType())
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		if len(extra) == 2 {
+			req.Header.Set(extra[0], extra[1])
+		}
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	// Sem token e papel insuficiente: nada feito.
+	if w := despachar(http.MethodGet, "", nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("GET sem token: %d, want 401", w.Code)
+	}
+	for _, m := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
+		if w := despachar(m, tokenAlmox, imagem("png", 100, 50)); w.Code != http.StatusForbidden {
+			t.Errorf("almoxarife %s: %d, want 403", m, w.Code)
+		}
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM empresa_logos`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("almoxarife gravou logo: n=%d err=%v", n, err)
+	}
+
+	// Sem logo: 404; DELETE idempotente: 204.
+	if w := despachar(http.MethodGet, tokenGestor, nil); w.Code != http.StatusNotFound {
+		t.Errorf("GET sem logo: %d, want 404", w.Code)
+	}
+	if w := despachar(http.MethodDelete, tokenGestor, nil); w.Code != http.StatusNoContent {
+		t.Errorf("DELETE sem logo: %d, want 204", w.Code)
+	}
+
+	// Recusas: 400, nada gravado.
+	pngBom := imagem("png", 300, 100)
+	recusas := map[string]struct {
+		dados []byte
+		msg   string
+	}{
+		"svg":         {[]byte(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"/>`), "use PNG ou JPEG"},
+		"texto":       {[]byte("texto renomeado para .png"), "use PNG ou JPEG"},
+		"minuscula":   {imagem("png", 10, 10), "Dimensões inválidas"},
+		"larga":       {imagem("png", 4001, 40), "Dimensões inválidas"},
+		"pixels":      {imagem("png", 2001, 2000), "pixels demais"},
+		"truncada":    {pngBom[:len(pngBom)/2], "corrompida ou incompleta"},
+		"achatada":    {imagem("png", 4000, 32), "proporção"},
+		"acima512KB":  {bytes.Repeat([]byte{0x42}, 700*1024), "grande demais"},
+		"jpeg grande": {append(imagem("jpeg", 100, 100), bytes.Repeat([]byte{0}, 520*1024)...), "grande demais"},
+	}
+	for nome, c := range recusas {
+		w := despachar(http.MethodPut, tokenGestor, c.dados)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), c.msg) {
+			t.Errorf("%s: PUT = %d, want 400 com %q (body=%s)", nome, w.Code, c.msg, w.Body.String())
+		}
+	}
+	// Corpo que não é multipart: mensagem própria.
+	{
+		req := httptest.NewRequest(http.MethodPut, url, strings.NewReader(`{"logo":"x"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+tokenGestor)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "multipart/form-data") {
+			t.Errorf("PUT JSON: %d %s, want 400 multipart/form-data", w.Code, w.Body.String())
+		}
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM empresa_logos`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("recusas gravaram logo: n=%d err=%v", n, err)
+	}
+	if w := despachar(http.MethodPut, tokenGestor, imagem("png", 100, 50)); w.Code != http.StatusOK {
+		t.Fatalf("PUT png: %d (body=%s)", w.Code, w.Body.String())
+	}
+	if w := despachar(http.MethodPut, tokenGestor, imagem("png", 5000, 5000)); w.Code != http.StatusBadRequest {
+		t.Errorf("dimensão enorme com logo existente: %d, want 400", w.Code)
+	}
+
+	// GET devolve os bytes, o tipo, ETag e Cache-Control; If-None-Match -> 304.
+	w := despachar(http.MethodGet, tokenGestor, nil)
+	if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "image/png" ||
+		w.Header().Get("Cache-Control") != "private, no-cache" || w.Header().Get("ETag") == "" {
+		t.Fatalf("GET: %d %v", w.Code, w.Header())
+	}
+	if _, err := png.Decode(bytes.NewReader(w.Body.Bytes())); err != nil {
+		t.Errorf("GET não devolveu um PNG válido: %v", err)
+	}
+	if w.Header().Get("X-Content-Type-Options") != "nosniff" || w.Header().Get("Content-Length") != strconv.Itoa(w.Body.Len()) {
+		t.Errorf("GET: nosniff/Content-Length ausentes: %v", w.Header())
+	}
+	etag := w.Header().Get("ETag")
+	for _, h := range []string{etag, "W/" + etag, `"outro", ` + etag, "*"} {
+		if w2 := despachar(http.MethodGet, tokenGestor, nil, "If-None-Match", h); w2.Code != http.StatusNotModified {
+			t.Errorf("GET com If-None-Match %q: %d, want 304", h, w2.Code)
+		}
+	}
+	if w2 := despachar(http.MethodGet, tokenGestor, nil, "If-None-Match", `"outro"`); w2.Code != http.StatusOK {
+		t.Errorf("GET com If-None-Match diferente: %d, want 200", w2.Code)
+	}
+
+	// Substituir por JPEG; a troca muda o ETag.
+	if w2 := despachar(http.MethodPut, tokenGestor, imagem("jpeg", 200, 80)); w2.Code != http.StatusOK {
+		t.Fatalf("PUT jpeg: %d", w2.Code)
+	}
+	w3 := despachar(http.MethodGet, tokenGestor, nil)
+	if w3.Header().Get("Content-Type") != "image/jpeg" || w3.Header().Get("ETag") == w.Header().Get("ETag") {
+		t.Errorf("troca não refletida: %v", w3.Header())
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM empresa_logos`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("deveria haver 1 logo por Empresa, n=%d err=%v", n, err)
+	}
+
+	if w := despachar(http.MethodDelete, tokenGestor, nil); w.Code != http.StatusNoContent {
+		t.Errorf("DELETE: %d, want 204", w.Code)
+	}
+	if w := despachar(http.MethodGet, tokenGestor, nil); w.Code != http.StatusNotFound {
+		t.Errorf("GET após remover: %d, want 404", w.Code)
 	}
 }
 

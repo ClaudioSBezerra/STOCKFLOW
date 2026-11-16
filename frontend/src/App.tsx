@@ -28,6 +28,7 @@ import { NormalizacaoPage } from '@/pages/NormalizacaoPage';
 import { CategoriasPage } from '@/pages/cadastros/CategoriasPage';
 import { TemplatesPage } from '@/pages/cadastros/TemplatesPage';
 import { FiliaisPage } from '@/pages/cadastros/FiliaisPage';
+import { EmpresaPage } from '@/pages/cadastros/EmpresaPage';
 import { CentrosCustoPage } from '@/pages/cadastros/CentrosCustoPage';
 import { UsuariosPage } from '@/pages/admin/UsuariosPage';
 import { ConvitesPage } from '@/pages/admin/ConvitesPage';
@@ -162,6 +163,7 @@ export const router = createBrowserRouter(
         { path: 'cadastros/categorias', element: <CategoriasPage /> },
         { path: 'cadastros/templates', element: <TemplatesPage /> },
         { path: 'cadastros/filiais', element: <FiliaisPage /> },
+        { path: 'cadastros/empresa', element: <EmpresaPage /> },
         { path: 'cadastros/centros-custo', element: <CentrosCustoPage /> },
         { path: 'admin/usuarios', element: <UsuariosPage /> },
         { path: 'admin/convites', element: <ConvitesPage /> },
