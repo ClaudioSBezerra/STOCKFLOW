@@ -116,6 +116,25 @@ var secoesManual = []SecaoManual{
 		},
 	},
 	{
+		ID:          "pedido-outras-saidas",
+		Titulo:      "Pedidos — Pedido de Outras Saídas",
+		PapelMinimo: PapelUsuario,
+		Paragrafos: []string{
+			"Solicita a saída de saldo de um Estoque por perda ou roubo, produto vencido ou avariado, ou utilização na obra da Empresa. É o mesmo pedido do botão \"Registrar Baixa\" do Detalhe do Produto — a baixa direta não existe mais.",
+			"O motivo e a justificativa são obrigatórios (a obra / centro de custo é opcional). Nada é debitado ao enviar: o saldo fica reservado até um Gestor aprovar.",
+			"Quando o Gestor aprova, é gerado um Termo de Baixa em PDF por motivo, com numeração própria, o motivo em destaque e campos para assinatura de quem solicitou e de quem aprovou.",
+		},
+	},
+	{
+		ID:          "aprovacao-lote",
+		Titulo:      "Pedidos — Aprovação em lote",
+		PapelMinimo: PapelGestor,
+		Paragrafos: []string{
+			"Duas abas: Transferências e Outras saídas, cada uma com sua contagem, seleção e botões Aprovar/Rejeitar. Um lote nunca mistura os dois tipos.",
+			"Aprovar um lote de Transferências gera uma Pré-Nota; aprovar um lote de Outras saídas gera um Termo de Baixa por motivo. Ambos têm PDF para baixar.",
+		},
+	},
+	{
 		ID:          "locais",
 		Titulo:      "Estoque — Locais",
 		PapelMinimo: PapelAlmoxarife,

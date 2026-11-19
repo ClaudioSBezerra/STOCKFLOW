@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
 import { ProdutoDetalhePage } from './ProdutoDetalhePage';
@@ -10,7 +10,7 @@ vi.mock('@/lib/session', () => ({
 }));
 
 // useAuth() fornece o papel — configurável por teste (Story 5.1: gate do
-// botão "Registrar Baixa"). Default `almoxarife`, mesmo molde de
+// botão "Solicitar baixa"). Default `almoxarife`, mesmo molde de
 // EstoquesPage.test.tsx.
 const authState = vi.hoisted(() => ({ papel: 'almoxarife' as string }));
 vi.mock('@/lib/auth', () => ({
@@ -658,9 +658,18 @@ describe('ProdutoDetalhePage', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 
-  describe('Registrar Baixa (Story 5.1)', () => {
+  async function preencherMotivoEJustificativa(
+    user: ReturnType<typeof userEvent.setup>,
+    dialogo: HTMLElement,
+  ) {
+    await user.click(within(dialogo).getByRole('combobox', { name: 'Motivo da saída' }));
+    await user.click(await screen.findByRole('option', { name: 'Baixa de Estoque por Perda ou Roubo' }));
+    await user.type(within(dialogo).getByLabelText('Justificativa'), 'Furto no galpão 3, BO 123');
+  }
+
+  describe('Solicitar baixa (Pedido de Outras Saídas)', () => {
     it.each(['almoxarife', 'gestor', 'adm'])(
-      'papel %s vê o botão "Registrar Baixa" em cada linha de Estoque',
+      'papel %s vê o botão "Solicitar baixa" em cada linha de Estoque',
       async (papel) => {
         authState.papel = papel;
         stubPadrao();
@@ -671,11 +680,11 @@ describe('ProdutoDetalhePage', () => {
         });
 
         await screen.findByText('Cabo Flexível 4mm');
-        expect(screen.getAllByRole('button', { name: /Registrar Baixa/ })).toHaveLength(2);
+        expect(screen.getAllByRole('button', { name: /Solicitar baixa/ })).toHaveLength(2);
       },
     );
 
-    it('papel usuario NÃO vê o botão "Registrar Baixa"', async () => {
+    it('papel usuario NÃO vê o botão "Solicitar baixa"', async () => {
       authState.papel = 'usuario';
       stubPadrao();
       renderPagina();
@@ -685,22 +694,58 @@ describe('ProdutoDetalhePage', () => {
       });
 
       await screen.findByText('Cabo Flexível 4mm');
-      expect(screen.queryByRole('button', { name: /Registrar Baixa/ })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Solicitar baixa/ })).not.toBeInTheDocument();
     });
 
-    it('submissão bem-sucedida: fecha o diálogo, mostra toast.success e refaz o refetch', async () => {
-      let baixaChamada = false;
+    it('motivo e justificativa são obrigatórios: o botão só habilita com os dois (e a quantidade)', async () => {
+      stubPadrao();
+      const user = userEvent.setup();
+      renderPagina();
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+      await screen.findByText('Cabo Flexível 4mm');
+      await user.click(screen.getAllByRole('button', { name: /Solicitar baixa/ })[0]);
+
+      const dialogo = await screen.findByRole('dialog');
+      const enviar = within(dialogo).getByRole('button', { name: 'Solicitar baixa' });
+      await user.type(within(dialogo).getByLabelText('Quantidade'), '2');
+      expect(enviar).toBeDisabled();
+
+      await user.click(within(dialogo).getByRole('combobox', { name: 'Motivo da saída' }));
+      for (const rotulo of [
+        'Baixa de Estoque por Perda ou Roubo',
+        'Produto Vencido ou Avariado',
+        'Por Utilização na Obra da Empresa',
+      ]) {
+        expect(await screen.findByRole('option', { name: rotulo })).toBeInTheDocument();
+      }
+      await user.click(screen.getByRole('option', { name: 'Por Utilização na Obra da Empresa' }));
+      expect(enviar).toBeDisabled();
+
+      await user.type(within(dialogo).getByLabelText('Justificativa'), '   ');
+      expect(enviar).toBeDisabled();
+      await user.type(within(dialogo).getByLabelText('Justificativa'), 'Aplicado na laje');
+      expect(enviar).toBeEnabled();
+    });
+
+    it('submissão bem-sucedida: envia Pedido de Outras Saídas (sem debitar), fecha o diálogo, mostra toast.success e refaz o refetch', async () => {
+      let corpoEnviado: Record<string, unknown> | null = null;
+      let baixaDiretaChamada = false;
       const fetchMock = stubFetch((url, init) => {
         if (url === '/api/produtos/p1' && (!init?.method || init.method === 'GET')) {
           return jsonOk({ produto: PRODUTO_DETALHE });
         }
         if (url === '/api/produtos/p1/fotos') return jsonOk({ fotos: [] });
-        if (url === '/api/produtos/p1/estoques/e1/baixa' && init?.method === 'POST') {
-          baixaChamada = true;
+        if (url === '/api/produtos/p1/estoques/e1/baixa') {
+          baixaDiretaChamada = true;
+        }
+        if (url === '/api/pedidos/baixa' && init?.method === 'POST') {
+          corpoEnviado = JSON.parse(String(init.body)) as Record<string, unknown>;
           return Promise.resolve({
             ok: true,
             status: 201,
-            json: async () => ({ movimentacao: { id: 'mov1', tipo: 'baixa', quantidade: 2 } }),
+            json: async () => ({ pedido: { id: 'ped1', tipo: 'baixa', status: 'pendente' } }),
           });
         }
         throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
@@ -714,20 +759,97 @@ describe('ProdutoDetalhePage', () => {
       });
       await screen.findByText('Cabo Flexível 4mm');
 
-      const botoes = screen.getAllByRole('button', { name: /Registrar Baixa/ });
+      const botoes = screen.getAllByRole('button', { name: /Solicitar baixa/ });
       await user.click(botoes[0]);
 
       const dialogo = await screen.findByRole('dialog');
       const input = within(dialogo).getByLabelText('Quantidade');
       await user.type(input, '2');
-      await user.click(within(dialogo).getByRole('button', { name: 'Confirmar' }));
+      await preencherMotivoEJustificativa(user, dialogo);
+      await user.type(within(dialogo).getByLabelText('Obra / centro de custo (opcional)'), 'Obra Norte');
+      await user.click(within(dialogo).getByRole('button', { name: 'Solicitar baixa' }));
 
-      await waitFor(() => expect(baixaChamada).toBe(true));
+      await waitFor(() => expect(corpoEnviado).not.toBeNull());
+      expect(corpoEnviado).toEqual({
+        produtoId: 'p1',
+        estoqueId: 'e1',
+        quantidade: 2,
+        motivo: 'perda_roubo',
+        observacao: 'Furto no galpão 3, BO 123',
+        obraCentroCusto: 'Obra Norte',
+      });
+      expect(baixaDiretaChamada).toBe(false);
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-      expect(toastSuccess).toHaveBeenCalledWith('Baixa registrada.');
+      expect(toastSuccess).toHaveBeenCalledWith(
+        'Pedido de baixa enviado para aprovação do Gestor. O saldo ficou reservado.',
+      );
       // refetch: mais de uma chamada a GET /api/produtos/p1 (mount + pós-baixa).
       const chamadasDetalhe = fetchMock.mock.calls.filter(([u]) => u === '/api/produtos/p1');
       expect(chamadasDetalhe.length).toBeGreaterThan(1);
+    });
+
+    it('refresh do detalhe falhando DEPOIS do envio não vira erro de envio nem reenvia o pedido', async () => {
+      let posts = 0;
+      let detalhes = 0;
+      stubFetch((url, init) => {
+        if (url === '/api/produtos/p1' && (!init?.method || init.method === 'GET')) {
+          detalhes += 1;
+          return detalhes === 1
+            ? jsonOk({ produto: PRODUTO_DETALHE })
+            : Promise.reject(new TypeError('Failed to fetch'));
+        }
+        if (url === '/api/produtos/p1/fotos') return jsonOk({ fotos: [] });
+        if (url === '/api/pedidos/baixa' && init?.method === 'POST') {
+          posts += 1;
+          return Promise.resolve({ ok: true, status: 201, json: async () => ({ pedido: { id: 'ped1' } }) });
+        }
+        throw new Error(`URL inesperada: ${url} (${init?.method ?? 'GET'})`);
+      });
+      const user = userEvent.setup();
+      renderPagina();
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+      await screen.findByText('Cabo Flexível 4mm');
+      await user.click(screen.getAllByRole('button', { name: /Solicitar baixa/ })[0]);
+      const dialogo = await screen.findByRole('dialog');
+      await user.type(within(dialogo).getByLabelText('Quantidade'), '2');
+      await preencherMotivoEJustificativa(user, dialogo);
+      await user.click(within(dialogo).getByRole('button', { name: 'Solicitar baixa' }));
+
+      await waitFor(() =>
+        expect(toastSuccess).toHaveBeenCalledWith(
+          'Pedido de baixa enviado para aprovação do Gestor. O saldo ficou reservado.',
+        ),
+      );
+      await waitFor(() => expect(detalhes).toBeGreaterThan(1));
+      expect(posts).toBe(1);
+      expect(screen.queryByText(/Não foi possível solicitar a baixa agora/)).not.toBeInTheDocument();
+    });
+
+    it('justificativa: contador N/1000, maxLength e botão bloqueado acima do limite', async () => {
+      stubPadrao();
+      const user = userEvent.setup();
+      renderPagina();
+      act(() => {
+        aoMudarStatus('conectado');
+      });
+      await screen.findByText('Cabo Flexível 4mm');
+      await user.click(screen.getAllByRole('button', { name: /Solicitar baixa/ })[0]);
+      const dialogo = await screen.findByRole('dialog');
+      await user.type(within(dialogo).getByLabelText('Quantidade'), '2');
+      await preencherMotivoEJustificativa(user, dialogo);
+
+      const campo = within(dialogo).getByLabelText('Justificativa') as HTMLTextAreaElement;
+      expect(campo.maxLength).toBe(1000);
+      expect(within(dialogo).getByTestId('baixa-justificativa-contador')).toHaveTextContent('25/1000');
+      const enviar = within(dialogo).getByRole('button', { name: 'Solicitar baixa' });
+      expect(enviar).toBeEnabled();
+      fireEvent.change(campo, { target: { value: 'x'.repeat(1001) } });
+      expect(within(dialogo).getByRole('alert')).toHaveTextContent(
+        'A justificativa deve ter no máximo 1000 caracteres.',
+      );
+      expect(enviar).toBeDisabled();
     });
 
     it('mostra o saldo disponível da linha e o aviso de reserva (Story 11.4)', async () => {
@@ -753,7 +875,7 @@ describe('ProdutoDetalhePage', () => {
       });
       await screen.findByText('Cabo Flexível 4mm');
 
-      await user.click(screen.getByRole('button', { name: /Registrar Baixa/ }));
+      await user.click(screen.getByRole('button', { name: /Solicitar baixa/ }));
       const dialogo = await screen.findByRole('dialog');
       expect(within(dialogo).getByText('Disponível para baixa: 2')).toBeInTheDocument();
       expect(
@@ -768,7 +890,7 @@ describe('ProdutoDetalhePage', () => {
           return jsonOk({ produto: PRODUTO_DETALHE });
         }
         if (url === '/api/produtos/p1/fotos') return jsonOk({ fotos: [] });
-        if (url === '/api/produtos/p1/estoques/e1/baixa' && init?.method === 'POST') {
+        if (url === '/api/pedidos/baixa' && init?.method === 'POST') {
           return Promise.resolve({
             ok: false,
             status: 409,
@@ -792,13 +914,14 @@ describe('ProdutoDetalhePage', () => {
       });
       await screen.findByText('Cabo Flexível 4mm');
 
-      const botoes = screen.getAllByRole('button', { name: /Registrar Baixa/ });
+      const botoes = screen.getAllByRole('button', { name: /Solicitar baixa/ });
       await user.click(botoes[0]);
 
       const dialogo = await screen.findByRole('dialog');
       const input = within(dialogo).getByLabelText('Quantidade');
       await user.type(input, '999');
-      await user.click(within(dialogo).getByRole('button', { name: 'Confirmar' }));
+      await preencherMotivoEJustificativa(user, dialogo);
+      await user.click(within(dialogo).getByRole('button', { name: 'Solicitar baixa' }));
 
       expect(
         await within(dialogo).findByText('quantidade indisponível: apenas 5 unidade(s) disponível(is)'),
@@ -1637,7 +1760,7 @@ describe('ProdutoDetalhePage — Inativar/Reativar (Story 16.1)', () => {
     await screen.findByRole('heading', { name: 'Cabo Flexível 4mm' });
     expect(screen.getByText('Almoxarifado Central')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Adicionar ao Carrinho/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Registrar Baixa/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Solicitar baixa/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Transferir/ })).not.toBeInTheDocument();
   });
 
@@ -1650,7 +1773,7 @@ describe('ProdutoDetalhePage — Inativar/Reativar (Story 16.1)', () => {
     });
     await screen.findByRole('heading', { name: 'Cabo Flexível 4mm' });
     expect(screen.getAllByRole('button', { name: /Adicionar ao Carrinho/ })).toHaveLength(2);
-    expect(screen.getAllByRole('button', { name: /Registrar Baixa/ })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: /Solicitar baixa/ })).toHaveLength(2);
     expect(screen.getAllByRole('button', { name: /Transferir/ })).toHaveLength(2);
   });
 

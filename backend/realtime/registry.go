@@ -45,7 +45,9 @@ type Evento struct {
 // canal na URL, AD-3) — cada assinante recebe os eventos de QUALQUER canal
 // da sua Empresa e filtra client-side por `resource`.
 type Registry struct {
-	mu sync.Mutex
+	// buffer: capacidade do canal de cada assinante.
+	buffer int
+	mu     sync.Mutex
 	// subs é indexado por `empresaID` — a partição de fan-out. Uma partição
 	// vazia é removida do mapa quando seu último assinante cancela, para que
 	// o mapa não cresça indefinidamente com Empresas sem conexão aberta.
@@ -56,7 +58,18 @@ type Registry struct {
 // uma única instância por processo e a compartilha entre os handlers que
 // publicam (produtos.go) e o que assina (realtime.go, StreamRealtimeHandler).
 func NewRegistry() *Registry {
-	return &Registry{subs: make(map[string]map[chan Evento]struct{})}
+	return NewRegistryWithBuffer(eventoBufferSize)
+}
+
+// NewRegistryWithBuffer é NewRegistry com a capacidade do canal de cada
+// assinante escolhida (mínimo 1). Existe para testes que contam muitos
+// eventos de uma vez sem depender do ritmo do consumidor; produção usa
+// NewRegistry.
+func NewRegistryWithBuffer(n int) *Registry {
+	if n < 1 {
+		n = 1
+	}
+	return &Registry{subs: make(map[string]map[chan Evento]struct{}), buffer: n}
 }
 
 // eventoBufferSize é a capacidade do canal de cada assinante: uma folga
@@ -99,7 +112,7 @@ func (r *Registry) Publish(empresaID string, canal string, evento Evento) {
 // quando o cliente desconecta (r.Context().Done()), sempre via `defer`.
 // Chamar o cancelamento mais de uma vez é seguro (idempotente).
 func (r *Registry) Subscribe(empresaID string) (<-chan Evento, func()) {
-	ch := make(chan Evento, eventoBufferSize)
+	ch := make(chan Evento, r.buffer)
 
 	r.mu.Lock()
 	if r.subs[empresaID] == nil {

@@ -20,8 +20,6 @@ import (
 
 	"github.com/lib/pq"
 	"github.com/signintech/gopdf"
-	"golang.org/x/image/font/gofont/gobold"
-	"golang.org/x/image/font/gofont/goregular"
 )
 
 // --- Documento impresso da Pré-Nota — Story 20.5 (Epic 20), spec-20-5 -------
@@ -189,17 +187,24 @@ func MontarPreNotaConteudo(db *sql.DB, empresaID, preNotaID string) (PreNotaCont
 	}
 	rows.Close()
 
-	// Itens: só `quantidade_aprovada > 0`. Quantidade e preço lidos como
-	// inteiros exatos (milésimos/centavos) — as escalas das colunas
-	// (NUMERIC(10,3)/NUMERIC(12,2)) garantem que a multiplicação é exata.
-	// Filial origem/destino: a gravada na aprovação (`pi.filial_*_id`,
-	// spec-filial-dados-fiscais) — sobrevive à exclusão do Estoque —, com
-	// fallback para `estoques.filial_id` em Pré-Notas anteriores (NULL). Os
-	// dados da Filial (nome, CNPJ, IE, endereço) são SEMPRE os do cadastro
-	// atual. Nome do Estoque destino: o atual; se o Estoque foi excluído, o
-	// gravado na aprovação. Ordem total e estável para a renderização ser
-	// determinística.
-	const selectItens = `
+	itens, err := lerItensDocumentoTx(tx, vinculoPreNota, preNotaID, empresaID)
+	if err != nil {
+		return PreNotaConteudo{}, err
+	}
+	c.Itens = itens
+	return c, nil
+}
+
+// sqlItensDocumento é a parte comum da leitura dos itens (quantidade_aprovada >
+// 0) dos Pedidos de um documento. Quantidade e preço lidos como inteiros
+// exatos (milésimos/centavos) — as escalas das colunas (NUMERIC(10,3)/
+// NUMERIC(12,2)) garantem que a multiplicação é exata. Filial origem/destino: a
+// gravada na aprovação (`pi.filial_*_id`, spec-filial-dados-fiscais) —
+// sobrevive à exclusão do Estoque —, com fallback para `estoques.filial_id` em
+// Pré-Notas anteriores (NULL). Os dados da Filial (nome, CNPJ, IE, endereço)
+// são SEMPRE os do cadastro atual. Nome do Estoque destino: o atual; se o
+// Estoque foi excluído, o gravado na aprovação.
+const sqlItensDocumento = `
 		SELECT p.tipo, pr.codigo, pi.produto_nome, (pi.quantidade_aprovada * 1000)::bigint,
 		       pi.unidade_medida::text, (pi.preco_unitario * 100)::bigint, fo.nome, fd.nome,
 		       pi.estoque_nome, COALESCE(ed.nome, pi.estoque_destino_nome),
@@ -213,14 +218,36 @@ func MontarPreNotaConteudo(db *sql.DB, empresaID, preNotaID string) (PreNotaCont
 		LEFT JOIN filiais fo ON fo.id = COALESCE(pi.filial_origem_id, eo.filial_id) AND fo.empresa_id = pi.empresa_id
 		LEFT JOIN estoques ed ON ed.id = pi.estoque_destino_id AND ed.empresa_id = pi.empresa_id
 		LEFT JOIN filiais fd ON fd.id = COALESCE(pi.filial_destino_id, ed.filial_id) AND fd.empresa_id = pi.empresa_id
-		WHERE p.pre_nota_id = $1 AND pi.empresa_id = $2 AND pi.quantidade_aprovada > 0
+		`
+
+// Consultas FECHADAS (constantes) por tipo de documento — nenhuma concatenação
+// em tempo de execução. Ordem total e estável para a renderização ser
+// determinística.
+const (
+	sqlItensPreNota = sqlItensDocumento + `WHERE p.pre_nota_id = $1 AND pi.empresa_id = $2 AND pi.quantidade_aprovada > 0
 		ORDER BY pi.produto_nome, p.id, pi.produto_id, pi.estoque_id`
-	itensRows, err := tx.Query(selectItens, preNotaID, empresaID)
+	sqlItensTermoBaixa = sqlItensDocumento + `WHERE p.termo_baixa_id = $1 AND pi.empresa_id = $2 AND pi.quantidade_aprovada > 0
+		ORDER BY pi.produto_nome, p.id, pi.produto_id, pi.estoque_id`
+)
+
+// vinculoDocumento identifica de qual documento se leem os itens: a consulta
+// (uma das constantes acima) e o rótulo usado nas mensagens de erro.
+type vinculoDocumento struct{ sql, rotulo string }
+
+var (
+	vinculoPreNota    = vinculoDocumento{sqlItensPreNota, "da Pré-Nota"}
+	vinculoTermoBaixa = vinculoDocumento{sqlItensTermoBaixa, "do Termo de Baixa"}
+)
+
+// lerItensDocumentoTx lê os itens dos Pedidos vinculados ao documento
+// `documentoID`. Compartilhado por Pré-Nota e Termo de Baixa.
+func lerItensDocumentoTx(tx *sql.Tx, v vinculoDocumento, documentoID, empresaID string) ([]PreNotaItem, error) {
+	itensRows, err := tx.Query(v.sql, documentoID, empresaID)
 	if err != nil {
-		return PreNotaConteudo{}, fmt.Errorf("falha ao listar itens da pré-nota: %w", err)
+		return nil, fmt.Errorf("falha ao listar itens %s: %w", v.rotulo, err)
 	}
 	defer itensRows.Close()
-	c.Itens = make([]PreNotaItem, 0)
+	itens := make([]PreNotaItem, 0)
 	for itensRows.Next() {
 		var it PreNotaItem
 		var codigo, unidade, filialOrigem, filialDestino, estoqueOrigem, estoqueDestino sql.NullString
@@ -238,7 +265,7 @@ func MontarPreNotaConteudo(db *sql.DB, empresaID, preNotaID string) (PreNotaCont
 			dest = append(dest, &fiscalD[i])
 		}
 		if err := itensRows.Scan(dest...); err != nil {
-			return PreNotaConteudo{}, fmt.Errorf("falha ao ler item da pré-nota: %w", err)
+			return nil, fmt.Errorf("falha ao ler item %s: %w", v.rotulo, err)
 		}
 		if codigo.Valid {
 			it.ProdutoCodigo = codigo.String
@@ -269,12 +296,12 @@ func MontarPreNotaConteudo(db *sql.DB, empresaID, preNotaID string) (PreNotaCont
 				it.EstoqueDestino = estoqueDestino.String
 			}
 		}
-		c.Itens = append(c.Itens, it)
+		itens = append(itens, it)
 	}
 	if err := itensRows.Err(); err != nil {
-		return PreNotaConteudo{}, fmt.Errorf("falha ao iterar itens da pré-nota: %w", err)
+		return nil, fmt.Errorf("falha ao iterar itens %s: %w", v.rotulo, err)
 	}
-	return c, nil
+	return itens, nil
 }
 
 // dadosFiscaisPreNota converte as 9 colunas fiscais de `filiais` (ordem do
@@ -605,11 +632,16 @@ type posicoesEmpresaPreNota struct {
 }
 
 func (l layoutPreNota) posicoesEmpresa() posicoesEmpresaPreNota {
+	return posicoesEmpresaDaLogo(l.Logo)
+}
+
+// posicoesEmpresaDaLogo: ver posicoesEmpresaPreNota (logo nil = sem logo).
+func posicoesEmpresaDaLogo(logo *logoPreNota) posicoesEmpresaPreNota {
 	p := posicoesEmpresaPreNota{LogoTopo: paddingQuadroPT, LogoFundo: paddingQuadroPT}
 	desl := 0.0
-	if l.Logo != nil {
-		p.LogoFundo = p.LogoTopo + l.Logo.Altura
-		desl = l.Logo.Altura + logoEspacoPreNotaPT
+	if logo != nil {
+		p.LogoFundo = p.LogoTopo + logo.Altura
+		desl = logo.Altura + logoEspacoPreNotaPT
 	}
 	p.Rotulo = paddingQuadroPT + desl
 	p.Texto = paddingQuadroPT + tamanhoRotuloPreNotaPT + 2 + desl
@@ -889,7 +921,9 @@ var colunasProdutosPreNota = []struct {
 // MONTADO, no estilo DANFE (A4 retrato): quadros com borda fina e rótulo
 // pequeno em maiúsculas, tabela de produtos com cabeçalho em caixa e uma
 // linha entre cada item. Função pura e determinística (mesma regra de
-// RenderizarReciboPedidoPDF: sem `time.Now()`, sem `pdf.SetInfo`).
+// RenderizarReciboPedidoPDF: sem `time.Now()`, sem `pdf.SetInfo`). As peças
+// de desenho são do pintorPDF (documento_pdf.go), compartilhado com o Termo
+// de Baixa.
 //
 // Quebra de página: os quadros Remetente/Destinatário de uma rota só são
 // desenhados se couberem junto do cabeçalho da tabela e do 1º item; um item
@@ -898,259 +932,26 @@ var colunasProdutosPreNota = []struct {
 func RenderizarPreNotaPDF(conteudo PreNotaConteudo) ([]byte, error) {
 	doc := layoutDaPreNota(conteudo)
 
-	pdf := &gopdf.GoPdf{}
-	pdf.Start(gopdf.Config{PageSize: *gopdf.PageSizeA4})
-	pdf.SetMargins(margemPreNotaPT, margemPreNotaPT, margemPreNotaPT, margemPreNotaPT)
-	if err := pdf.AddTTFFontData("gofont", goregular.TTF); err != nil {
-		return nil, fmt.Errorf("falha ao carregar fonte da pré-nota: %w", err)
+	p, err := novoPintorPDF(RodapePreNota, "da Pré-Nota")
+	if err != nil {
+		return nil, err
 	}
-	if err := pdf.AddTTFFontData("gofont-negrito", gobold.TTF); err != nil {
-		return nil, fmt.Errorf("falha ao carregar fonte negrito da pré-nota: %w", err)
-	}
-
-	// Primeiro erro de desenho; as funções abaixo viram no-op depois dele.
-	var erro error
-	fonte := func(negrito bool, tamanho float64) {
-		if erro != nil {
-			return
-		}
-		familia := "gofont"
-		if negrito {
-			familia = "gofont-negrito"
-		}
-		if err := pdf.SetFont(familia, "", tamanho); err != nil {
-			erro = fmt.Errorf("falha ao selecionar fonte da pré-nota: %w", err)
-		}
-	}
-	// escrever põe `texto` na caixa (x, y, w, h), alinhado por `align`.
-	escrever := func(x, y, w, h float64, texto string, align int) {
-		if erro != nil || texto == "" {
-			return
-		}
-		pdf.SetXY(x, y)
-		if err := pdf.CellWithOption(&gopdf.Rect{W: w, H: h}, texto, gopdf.CellOption{Align: align}); err != nil {
-			erro = fmt.Errorf("falha ao escrever texto da pré-nota: %w", err)
-		}
-	}
-	// quebrar divide `texto` em linhas que cabem em `largura` com a fonte
-	// indicada — texto longo quebra, nunca é cortado.
-	quebrar := func(texto string, largura float64, negrito bool, tamanho float64) []string {
-		fonte(negrito, tamanho)
-		if erro != nil || texto == "" {
-			return []string{""}
-		}
-		partes, err := pdf.SplitTextWithWordWrap(texto, largura)
-		if err != nil {
-			erro = fmt.Errorf("falha ao quebrar texto da pré-nota: %w", err)
-			return []string{""}
-		}
-		if len(partes) == 0 {
-			return []string{""}
-		}
-		return partes
-	}
-	traco := func(largura float64, cinza uint8) {
-		pdf.SetLineWidth(largura)
-		pdf.SetStrokeColor(cinza, cinza, cinza)
-	}
-	quadro := func(x, y, w, h float64) {
-		traco(0.6, 0)
-		pdf.RectFromUpperLeftWithStyle(x, y, w, h, "D")
-	}
-
-	// Campo = rótulo pequeno no canto superior esquerdo + valor (quebrado na
-	// largura do campo). Altura medida antes de desenhar.
-	alturaCampo := func(linhas int) float64 {
-		return paddingQuadroPT + tamanhoRotuloPreNotaPT + 2 + float64(linhas)*entrelinhaPreNotaPT + paddingQuadroPT
-	}
-	linhasCampo := func(valor string, w float64, negrito bool) []string {
-		return quebrar(valor, w-2*paddingQuadroPT, negrito, tamanhoValorPreNotaPT)
-	}
-	desenharCampo := func(x, y, w float64, rotulo string, linhas []string, negrito bool) {
-		fonte(false, tamanhoRotuloPreNotaPT)
-		pdf.SetTextColor(70, 70, 70)
-		escrever(x+paddingQuadroPT, y+paddingQuadroPT, w-2*paddingQuadroPT, tamanhoRotuloPreNotaPT, rotulo, gopdf.Left|gopdf.Top)
-		pdf.SetTextColor(0, 0, 0)
-		fonte(negrito, tamanhoValorPreNotaPT)
-		ly := y + paddingQuadroPT + tamanhoRotuloPreNotaPT + 2
-		for _, l := range linhas {
-			escrever(x+paddingQuadroPT, ly, w-2*paddingQuadroPT, entrelinhaPreNotaPT, l, gopdf.Left|gopdf.Middle)
-			ly += entrelinhaPreNotaPT
-		}
-	}
-	tituloSecao := func(x, y, w float64, titulo string) {
-		fonte(true, 7)
-		escrever(x, y, w, alturaTituloSecaoPT, titulo, gopdf.Left|gopdf.Middle)
-	}
-
-	pdf.AddFooter(func() {
-		yLinha := alturaPaginaPreNotaPT - margemPreNotaPT - 14
-		traco(0.4, 120)
-		pdf.Line(margemPreNotaPT, yLinha, margemPreNotaPT+larguraUtilPreNotaPT, yLinha)
-		pdf.SetTextColor(70, 70, 70)
-		fonte(false, 7)
-		escrever(margemPreNotaPT, yLinha+3, larguraUtilPreNotaPT-60, 10, RodapePreNota, gopdf.Left|gopdf.Middle)
-		escrever(margemPreNotaPT+larguraUtilPreNotaPT-60, yLinha+3, 60, 10,
-			fmt.Sprintf("Página %d", pdf.GetNumberOfPages()), gopdf.Right|gopdf.Middle)
-		pdf.SetTextColor(0, 0, 0)
-	})
-
-	x := margemPreNotaPT
-	W := larguraUtilPreNotaPT
-	topoY := margemPreNotaPT
-	y := topoY
-	novaPagina := func() {
-		pdf.AddPage()
-		pdf.SetTextColor(0, 0, 0)
-		y = topoY
-	}
-	// cabe: há espaço para `h` pontos a partir de y? No topo da página
-	// sempre "cabe" (um bloco maior que a página é desenhado assim mesmo).
-	garantir := func(h float64) {
-		if y+h > limiteYPreNotaPT && y > topoY {
-			novaPagina()
-		}
-	}
-	novaPagina()
+	x, W := p.x, p.W
 
 	// 1. Cabeçalho: Empresa | PRÉ-NOTA | Nº + Emissão.
-	{
-		wE, wC := 230.0, 170.0
-		wN := W - wE - wC
-		linhasEmpresa := linhasCampo(doc.Empresa, wE, true)
-		linhasEmpresa = append(linhasEmpresa, linhasCampo("CNPJ: "+doc.CNPJ, wE, false)...)
-		linhasAviso := quebrar(RodapePreNota, wC-2*paddingQuadroPT, false, 7)
-		// Com logo, o texto da Empresa desce abaixo dela.
-		posEmpresa := doc.posicoesEmpresa()
-		h := alturaCampo(len(linhasEmpresa)) + (posEmpresa.Rotulo - paddingQuadroPT)
-		if hC := 6 + 18 + 4 + float64(len(linhasAviso))*9 + 6; hC > h {
-			h = hC
-		}
-		if h < 56 {
-			h = 56
-		}
-		quadro(x, y, W, h)
-		traco(0.6, 0)
-		pdf.Line(x+wE, y, x+wE, y+h)
-		pdf.Line(x+wE+wC, y, x+wE+wC, y+h)
-
-		// Empresa: razão social em negrito, CNPJ embaixo.
-		fonte(false, tamanhoRotuloPreNotaPT)
-		pdf.SetTextColor(70, 70, 70)
-		if doc.Logo != nil && erro == nil {
-			if err := desenharLogoPreNota(pdf, doc.Logo, x+paddingQuadroPT, y+posEmpresa.LogoTopo); err != nil {
-				slog.Warn("falha ao desenhar a logo da empresa na Pré-Nota", "error", err)
-			}
-		}
-		escrever(x+paddingQuadroPT, y+posEmpresa.Rotulo, wE, tamanhoRotuloPreNotaPT, "EMPRESA", gopdf.Left|gopdf.Top)
-		pdf.SetTextColor(0, 0, 0)
-		ly := y + posEmpresa.Texto
-		for i, l := range linhasEmpresa {
-			fonte(i < len(linhasEmpresa)-1, tamanhoValorPreNotaPT)
-			escrever(x+paddingQuadroPT, ly, wE-2*paddingQuadroPT, entrelinhaPreNotaPT, l, gopdf.Left|gopdf.Middle)
-			ly += entrelinhaPreNotaPT
-		}
-
-		// Centro: título em destaque + aviso.
-		fonte(true, 16)
-		escrever(x+wE, y+6, wC, 18, "PRÉ-NOTA", gopdf.Center|gopdf.Middle)
-		fonte(false, 7)
-		ly = y + 6 + 18 + 4
-		for _, l := range linhasAviso {
-			escrever(x+wE+paddingQuadroPT, ly, wC-2*paddingQuadroPT, 9, l, gopdf.Center|gopdf.Middle)
-			ly += 9
-		}
-
-		// Direita: número e emissão.
-		xN := x + wE + wC
-		fonte(false, tamanhoRotuloPreNotaPT)
-		pdf.SetTextColor(70, 70, 70)
-		escrever(xN+paddingQuadroPT, y+paddingQuadroPT, wN, tamanhoRotuloPreNotaPT, "NÚMERO", gopdf.Left|gopdf.Top)
-		pdf.SetTextColor(0, 0, 0)
-		fonte(true, 13)
-		escrever(xN, y+12, wN, 18, doc.Numero, gopdf.Center|gopdf.Middle)
-		fonte(false, tamanhoValorPreNotaPT)
-		escrever(xN, y+34, wN, 12, doc.Emissao, gopdf.Center|gopdf.Middle)
-
-		y += h + espacoEntreRotasPT
-	}
-
-	// Tabela de produtos.
-	alturasLinhaProduto := func(p produtoPreNota) ([][]string, float64) {
-		valores := []string{p.Codigo, p.Descricao, p.Unidade, p.Quantidade, p.ValorUnitario, p.ValorTotal}
-		celulas := make([][]string, len(valores))
-		maior := 1
-		for i, v := range valores {
-			celulas[i] = quebrar(v, colunasProdutosPreNota[i].Largura-2*paddingQuadroPT, false, tamanhoItemPreNotaPT)
-			if len(celulas[i]) > maior {
-				maior = len(celulas[i])
-			}
-		}
-		return celulas, float64(maior)*entrelinhaItemPreNotaPT + 5
-	}
-	// Segmento = parte da tabela numa página: cabeçalho em caixa + itens.
-	// A borda externa e as divisões de coluna são desenhadas ao fechar.
-	var inicioSegmento float64
-	abrirSegmento := func(titulo string) {
-		tituloSecao(x, y, W, titulo)
-		y += alturaTituloSecaoPT
-		inicioSegmento = y
-		pdf.SetFillColor(232, 232, 232)
-		traco(0.6, 0)
-		pdf.RectFromUpperLeftWithStyle(x, y, W, alturaCabecalhoTabelaPT, "FD")
-		fonte(true, 6.5)
-		cx := x
-		for _, col := range colunasProdutosPreNota {
-			escrever(cx+paddingQuadroPT, y, col.Largura-2*paddingQuadroPT, alturaCabecalhoTabelaPT, col.Titulo, col.Align|gopdf.Middle)
-			cx += col.Largura
-		}
-		y += alturaCabecalhoTabelaPT
-	}
-	fecharSegmento := func() {
-		quadro(x, inicioSegmento, W, y-inicioSegmento)
-		traco(0.6, 0)
-		cx := x
-		for _, col := range colunasProdutosPreNota[:len(colunasProdutosPreNota)-1] {
-			cx += col.Largura
-			pdf.Line(cx, inicioSegmento, cx, y)
-		}
-	}
+	p.cabecalho("PRÉ-NOTA", doc.Empresa, doc.CNPJ, doc.Numero, doc.Emissao, doc.Logo)
 
 	if len(doc.Rotas) == 0 {
 		h := 26.0
-		quadro(x, y, W, h)
-		fonte(false, 9)
-		escrever(x, y, W, h, textoSemItensPreNota, gopdf.Center|gopdf.Middle)
-		y += h + espacoEntreRotasPT
+		p.quadro(x, p.y, W, h)
+		p.fonte(false, 9)
+		p.escrever(x, p.y, W, h, textoSemItensPreNota, gopdf.Center|gopdf.Middle)
+		p.y += h + espacoEntreRotasPT
 	}
 
 	// 2. Uma seção por rota.
 	wParte := (W - espacoEntreQuadrosPT) / 2
-	larguraCNPJ := 110.0
-	larguraFilial := wParte / 2
-	hSub := 15.0
-	// posicaoCampoParte: onde cada campo de rotulosPartePreNota vai no
-	// quadro — faixa (0..3) e coluna (0 = linha inteira/esquerda, 1 =
-	// direita). Razão social; CNPJ | IE; Endereço; Filial | Estoque.
-	type posicaoCampo struct{ faixa, col int }
-	posicaoCampoParte := []posicaoCampo{{0, 0}, {1, 0}, {1, 1}, {2, 0}, {3, 0}, {3, 1}}
-	// larguraCampoParte devolve x relativo e largura do campo na faixa.
-	larguraCampoParte := func(pos posicaoCampo, faixaDividida bool) (float64, float64) {
-		divisao := 0.0
-		switch pos.faixa {
-		case 1:
-			divisao = larguraCNPJ
-		case 3:
-			divisao = larguraFilial
-		}
-		if !faixaDividida || divisao == 0 {
-			return 0, wParte
-		}
-		if pos.col == 0 {
-			return 0, divisao
-		}
-		return divisao, wParte - divisao
-	}
+	hSub := alturaSubtotalPT
 	for ri, rota := range doc.Rotas {
 		// Medidas dos quadros Remetente/Destinatário a partir dos campos de
 		// quadrosDaRotaPreNota (o que é desenhado é exatamente isso): cada
@@ -1162,21 +963,11 @@ func RenderizarPreNotaPDF(conteudo PreNotaConteudo) ([]byte, error) {
 			if len(campos) != len(rotulosPartePreNota) {
 				continue // quadro "sem destinatário": texto único
 			}
-			linhasQuadros[qi] = make([][]string, len(campos))
-			for ci, c := range campos {
-				pos := posicaoCampoParte[ci]
-				_, w := larguraCampoParte(pos, true)
-				var linhas []string
-				for _, l := range c.Linhas {
-					linhas = append(linhas, linhasCampo(l, w, c.Rotulo == "ESTOQUE")...)
-				}
-				linhasQuadros[qi][ci] = linhas
-				hFaixa[pos.faixa] = max(hFaixa[pos.faixa], alturaCampo(len(linhas)))
-			}
+			linhasQuadros[qi] = p.medirParte(campos, wParte, &hFaixa)
 		}
 		hPartes := hFaixa[0] + hFaixa[1] + hFaixa[2] + hFaixa[3]
-		hNatureza := alturaCampo(1)
-		_, hPrimeiro := alturasLinhaProduto(rota.Produtos[0])
+		hNatureza := p.alturaCampo(1)
+		_, hPrimeiro := p.alturasLinhaProduto(rota.Produtos[0])
 		if len(rota.Produtos) == 1 {
 			hPrimeiro += hSub // o subtotal nunca fica sozinho na página seguinte
 		}
@@ -1185,176 +976,64 @@ func RenderizarPreNotaPDF(conteudo PreNotaConteudo) ([]byte, error) {
 		// formam um bloco só: se não couber, vai inteiro para a próxima
 		// página (nunca sobra um cabeçalho de tabela vazio para trás).
 		if ri > 0 {
-			y += espacoEntreRotasPT
+			p.y += espacoEntreRotasPT
 		}
-		garantir(alturaTituloSecaoPT + hPartes + espacoEntreQuadrosPT + hNatureza + espacoEntreQuadrosPT +
+		p.garantir(alturaTituloSecaoPT + hPartes + espacoEntreQuadrosPT + hNatureza + espacoEntreQuadrosPT +
 			alturaTituloSecaoPT + alturaCabecalhoTabelaPT + hPrimeiro)
 
 		for qi, campos := range quadros {
 			px := x + float64(qi)*(wParte+espacoEntreQuadrosPT)
-			tituloSecao(px, y, wParte, campos[0].Quadro)
-			by := y + alturaTituloSecaoPT
-			quadro(px, by, wParte, hPartes)
+			p.tituloSecao(px, p.y, wParte, campos[0].Quadro)
+			by := p.y + alturaTituloSecaoPT
 			if linhasQuadros[qi] == nil {
 				// Sem destinatário (Baixa): texto único, centralizado.
+				p.quadro(px, by, wParte, hPartes)
 				var texto []string
 				for _, l := range campos[0].Linhas {
-					texto = append(texto, quebrar(l, wParte-4*paddingQuadroPT, true, tamanhoValorPreNotaPT)...)
+					texto = append(texto, p.quebrar(l, wParte-4*paddingQuadroPT, true, tamanhoValorPreNotaPT)...)
 				}
-				fonte(true, tamanhoValorPreNotaPT)
+				p.fonte(true, tamanhoValorPreNotaPT)
 				ly := by + (hPartes-float64(len(texto))*entrelinhaPreNotaPT)/2
 				for _, l := range texto {
-					escrever(px+2*paddingQuadroPT, ly, wParte-4*paddingQuadroPT, entrelinhaPreNotaPT, l, gopdf.Center|gopdf.Middle)
+					p.escrever(px+2*paddingQuadroPT, ly, wParte-4*paddingQuadroPT, entrelinhaPreNotaPT, l, gopdf.Center|gopdf.Middle)
 					ly += entrelinhaPreNotaPT
 				}
 				continue
 			}
-			yFaixa := [4]float64{by, by + hFaixa[0], by + hFaixa[0] + hFaixa[1], by + hFaixa[0] + hFaixa[1] + hFaixa[2]}
-			traco(0.6, 0)
-			for f := 1; f < 4; f++ {
-				pdf.Line(px, yFaixa[f], px+wParte, yFaixa[f])
-			}
-			pdf.Line(px+larguraCNPJ, yFaixa[1], px+larguraCNPJ, yFaixa[2])
-			pdf.Line(px+larguraFilial, yFaixa[3], px+larguraFilial, by+hPartes)
-			for ci, c := range campos {
-				pos := posicaoCampoParte[ci]
-				dx, w := larguraCampoParte(pos, true)
-				desenharCampo(px+dx, yFaixa[pos.faixa], w, c.Rotulo, linhasQuadros[qi][ci], c.Rotulo == "ESTOQUE")
-			}
+			p.desenharParte(px, by, wParte, campos, linhasQuadros[qi], hFaixa)
 		}
-		y += alturaTituloSecaoPT + hPartes + espacoEntreQuadrosPT
+		p.y += alturaTituloSecaoPT + hPartes + espacoEntreQuadrosPT
 
-		quadro(x, y, W, hNatureza)
-		desenharCampo(x, y, W, "NATUREZA DA OPERAÇÃO", []string{rota.Natureza}, false)
-		y += hNatureza + espacoEntreQuadrosPT
+		p.quadro(x, p.y, W, hNatureza)
+		p.desenharCampo(x, p.y, W, "NATUREZA DA OPERAÇÃO", []string{rota.Natureza}, false)
+		p.y += hNatureza + espacoEntreQuadrosPT
 
 		// Na página seguinte o título da tabela lembra de qual rota ela é.
-		continuacao := tituloContinuacaoPreNota(rota)
-		abrirSegmento("DADOS DOS PRODUTOS")
-		for pi, p := range rota.Produtos {
-			celulas, h := alturasLinhaProduto(p)
-			// O ÚLTIMO item reserva também o subtotal: os dois vão juntos.
-			reserva := h
-			if pi == len(rota.Produtos)-1 {
-				reserva += hSub
-			}
-			if y+reserva > limiteYPreNotaPT && pi > 0 {
-				fecharSegmento()
-				novaPagina()
-				abrirSegmento(continuacao)
-			}
-			fonte(false, tamanhoItemPreNotaPT)
-			cx := x
-			for i, col := range colunasProdutosPreNota {
-				ly := y + 2.5
-				for _, l := range celulas[i] {
-					escrever(cx+paddingQuadroPT, ly, col.Largura-2*paddingQuadroPT, entrelinhaItemPreNotaPT, l, col.Align|gopdf.Middle)
-					ly += entrelinhaItemPreNotaPT
-				}
-				cx += col.Largura
-			}
-			y += h
-			traco(0.3, 150)
-			pdf.Line(x, y, x+W, y)
-		}
-		// Subtotal da rota, colado no fim da tabela (espaço já reservado
-		// junto do último item). Com item sem preço, o aviso vai no rótulo.
-		fecharSegmento()
-		wTotal := colunasProdutosPreNota[len(colunasProdutosPreNota)-1].Largura
-		rotuloSub := "SUBTOTAL DA ROTA"
-		valorSub := rota.Subtotal
-		if strings.HasSuffix(valorSub, avisoTotalSemValor) {
-			valorSub = strings.TrimSuffix(valorSub, avisoTotalSemValor)
-			rotuloSub += avisoTotalSemValor
-		}
-		quadro(x, y, W, hSub)
-		traco(0.6, 0)
-		pdf.Line(x+W-wTotal, y, x+W-wTotal, y+hSub)
-		fonte(true, 7)
-		escrever(x, y, W-wTotal-paddingQuadroPT, hSub, rotuloSub, gopdf.Right|gopdf.Middle)
-		fonte(true, tamanhoItemPreNotaPT)
-		escrever(x+W-wTotal+paddingQuadroPT, y, wTotal-2*paddingQuadroPT, hSub, valorSub, gopdf.Right|gopdf.Middle)
-		y += hSub
+		p.tabelaProdutos(rota.Produtos, tituloContinuacaoPreNota(rota), "SUBTOTAL DA ROTA", rota.Subtotal)
 	}
 
 	// 3. CÁLCULO DO TOTAL.
 	if len(doc.Rotas) > 0 {
-		y += espacoEntreRotasPT
-		h := alturaCampo(1)
-		garantir(alturaTituloSecaoPT + h)
-		tituloSecao(x, y, W, "CÁLCULO DO TOTAL")
-		y += alturaTituloSecaoPT
-		quadro(x, y, W, h)
-		desenharCampo(x, y, W, "VALOR TOTAL DOS PRODUTOS", nil, false)
-		fonte(true, 10)
-		escrever(x+paddingQuadroPT, y+paddingQuadroPT+tamanhoRotuloPreNotaPT+2, W-2*paddingQuadroPT, entrelinhaPreNotaPT,
-			doc.ValorTotal, gopdf.Right|gopdf.Middle)
-		y += h + espacoEntreRotasPT
+		p.calculoTotal(doc.ValorTotal)
 	}
 
 	// 4. DADOS ADICIONAIS (Aprovador e Solicitante(s)) + 5. RECEBIMENTO
 	// (canhoto). Os dois formam um bloco só: o canhoto nunca abre uma página
 	// sozinho — se não couber, os dois vão juntos para a próxima.
-	{
-		wAprov := 180.0
-		linhasAprov := linhasCampo(doc.Aprovador, wAprov, false)
-		linhasSolic := linhasCampo(doc.Solicitantes, W-wAprov, false)
-		hDados := alturaCampo(max(len(linhasAprov), len(linhasSolic)))
-
-		// Canhoto: [0] = declaração (linha inteira); [1..3] = Data | Nome
-		// legível | Assinatura, em branco com altura para escrever à mão.
-		canhoto := doc.Recebimento
-		hDeclaracao := 16.0
-		hAssinar := 34.0
-		hCanhoto := 0.0
-		if len(canhoto) > 0 {
-			hCanhoto = espacoEntreRotasPT + alturaTituloSecaoPT + hDeclaracao + hAssinar
-		}
-		garantir(alturaTituloSecaoPT + hDados + hCanhoto)
-
-		tituloSecao(x, y, W, "DADOS ADICIONAIS")
-		y += alturaTituloSecaoPT
-		quadro(x, y, W, hDados)
-		traco(0.6, 0)
-		pdf.Line(x+wAprov, y, x+wAprov, y+hDados)
-		desenharCampo(x, y, wAprov, "APROVADOR", linhasAprov, false)
-		desenharCampo(x+wAprov, y, W-wAprov, "SOLICITANTE(S)", linhasSolic, false)
-		y += hDados
-
-		if len(canhoto) > 0 {
-			y += espacoEntreRotasPT
-			tituloSecao(x, y, W, canhoto[0].Quadro)
-			y += alturaTituloSecaoPT
-			quadro(x, y, W, hDeclaracao+hAssinar)
-			fonte(false, tamanhoValorPreNotaPT)
-			for _, l := range canhoto[0].Linhas {
-				escrever(x+paddingQuadroPT, y, W-2*paddingQuadroPT, hDeclaracao, l, gopdf.Left|gopdf.Middle)
-			}
-			yc := y + hDeclaracao
-			traco(0.6, 0)
-			pdf.Line(x, yc, x+W, yc)
-			larguras := []float64{110, 190, W - 110 - 190}
-			cx := x
-			for i, c := range canhoto[1:] {
-				if i > 0 {
-					traco(0.6, 0)
-					pdf.Line(cx, yc, cx, yc+hAssinar)
-				}
-				desenharCampo(cx, yc, larguras[i], c.Rotulo, c.Linhas, false)
-				cx += larguras[i]
-			}
-			y = yc + hAssinar
-		}
+	linhasAprov, linhasSolic, hDados := p.medirDadosAdicionais(doc.Aprovador, doc.Solicitantes)
+	// Canhoto: [0] = declaração (linha inteira); [1..3] = Data | Nome
+	// legível | Assinatura, em branco com altura para escrever à mão.
+	var canhoto []blocoAssinatura
+	if len(doc.Recebimento) > 0 {
+		canhoto = []blocoAssinatura{{Texto: strings.Join(doc.Recebimento[0].Linhas, " "), Campos: doc.Recebimento[1:]}}
+	}
+	p.garantir(alturaTituloSecaoPT + hDados + alturaAssinaturas(len(canhoto)))
+	p.desenharDadosAdicionais(linhasAprov, linhasSolic, hDados)
+	if len(canhoto) > 0 {
+		p.desenharAssinaturas(doc.Recebimento[0].Quadro, canhoto)
 	}
 
-	if erro != nil {
-		return nil, erro
-	}
-	bytes, err := pdf.GetBytesPdfReturnErr()
-	if err != nil {
-		return nil, fmt.Errorf("falha ao gerar bytes do PDF da pré-nota: %w", err)
-	}
-	return bytes, nil
+	return p.bytes(p.rotulo)
 }
 
 // GerarPreNotaPDF compõe MontarPreNotaConteudo + RenderizarPreNotaPDF — é o

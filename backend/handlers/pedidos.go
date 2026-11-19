@@ -206,6 +206,7 @@ type submeterPedidoBaixaRequest struct {
 	ProdutoID       string  `json:"produtoId"`
 	EstoqueID       string  `json:"estoqueId"`
 	Quantidade      float64 `json:"quantidade"`
+	Motivo          string  `json:"motivo"`
 }
 
 // SubmeterPedidoBaixaHandler expõe POST /api/pedidos/baixa (Story 20.2, Epic
@@ -247,7 +248,7 @@ func SubmeterPedidoBaixaHandler(db *sql.DB, registro *realtime.Registry) http.Ha
 
 		pedido, err := services.SubmeterPedidoBaixa(
 			db, empresa.ID, usuario.ID, usuario.Nome, req.ObraCentroCusto, req.Observacao,
-			req.ProdutoID, req.EstoqueID, req.Quantidade,
+			req.ProdutoID, req.EstoqueID, req.Quantidade, req.Motivo,
 		)
 		var erroValidacao *services.ErroPedidoValidacao
 		var erroIndisponivel *services.ErroPedidoIndisponivel
@@ -485,6 +486,18 @@ func DecidirLotePedidosHandler(db *sql.DB, registro *realtime.Registry) http.Han
 		var erroValidacao *services.ErroPedidoValidacao
 		switch {
 		case err == nil:
+			// Aprovar debita saldo e grava Movimentações (baixa/transferência):
+			// a tela de Movimentações precisa refazer a leitura. UM evento por
+			// chamada (idempotente — o canal só pede um refetch), só quando ao
+			// menos um Pedido da resposta saiu aprovado/parcialmente aprovado.
+			if *req.Aprovar {
+				for _, pedido := range pedidos {
+					if pedido.Status == "aprovado" || pedido.Status == "parcialmente_aprovado" {
+						registro.Publish(empresa.ID, "movimentacoes", realtime.Evento{Change: "created"})
+						break
+					}
+				}
+			}
 			produtoIDs := make([]string, 0)
 			for _, pedido := range pedidos {
 				// Pedido pulado (já decidido antes desta chamada): o único
@@ -624,6 +637,35 @@ func BaixarPreNotaPDFHandler(db *sql.DB) http.HandlerFunc {
 		default:
 			slog.Error("falha ao gerar PDF da pré-nota", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao gerar PDF da pré-nota")
+		}
+	}
+}
+
+// BaixarTermoBaixaPDFHandler expõe GET /api/termos-baixa/{id}/pdf
+// (spec-pedido-outras-saidas), atrás de RequireAuth + RequireRole(PapelGestor).
+// Molde de BaixarPreNotaPDFHandler: Termo de outra Empresa, inexistente ou
+// malformado -> 404; sucesso -> PDF `termo-baixa-{numero}.pdf`.
+func BaixarTermoBaixaPDFHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+
+		pdf, numero, err := services.GerarTermoBaixaPDF(db, empresa.ID, r.PathValue("id"))
+		switch {
+		case err == nil:
+			w.Header().Set("Content-Type", "application/pdf")
+			w.Header().Set("Content-Disposition", `attachment; filename="termo-baixa-`+strconv.Itoa(numero)+`.pdf"`)
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(pdf)
+		case errors.Is(err, services.ErrTermoBaixaNaoEncontrado):
+			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "termo de baixa não encontrado")
+		default:
+			slog.Error("falha ao gerar PDF do termo de baixa", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao gerar PDF do termo de baixa")
 		}
 	}
 }

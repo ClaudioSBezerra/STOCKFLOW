@@ -662,6 +662,8 @@ func removerEmpresaPlataformaMux(t *testing.T, db *sql.DB, slug string) {
 		// Story 20.4 (spec-20-4): `contadores_pre_nota` nasce junto com TODA
 		// Empresa, mesmo molde/razão de `contadores_produto` acima.
 		`DELETE FROM contadores_pre_nota WHERE empresa_id = $1`,
+		`DELETE FROM termos_baixa WHERE empresa_id = $1`,
+		`DELETE FROM contadores_termo_baixa WHERE empresa_id = $1`,
 		`DELETE FROM empresas WHERE id = $1`,
 	} {
 		if _, err := db.Exec(stmt, id); err != nil {
@@ -1879,17 +1881,12 @@ func TestNewMux_ProdutosInativacaoRotaCarregaRequireRole(t *testing.T) {
 	}
 }
 
-// TestNewMux_ProdutosBaixaRotaCarregaRequireRole prova, despachando pela
-// mesma instância de newMux usada por main() (Story 5.1), que
-// POST /api/produtos/{id}/estoques/{estoqueId}/baixa está atrás de
-// RequireRole(almoxarife): token `usuario` -> 403 FORBIDDEN; token
-// `almoxarife` passa do gate (201 de verdade, nunca 403).
-//
-// Sem este caso, remover `middleware.RequireRole(services.PapelAlmoxarife)`
-// de POST /api/produtos/{id}/estoques/{estoqueId}/baixa deixaria a suíte
-// verde (o único caso pré-existente em main_test.go, sem token -> 401, é
-// produzido só por RequireAuth).
-func TestNewMux_ProdutosBaixaRotaCarregaRequireRole(t *testing.T) {
+// TestNewMux_ProdutosBaixaDiretaDescontinuada prova, pela mesma instância de
+// newMux usada por main(), que POST /api/produtos/{id}/estoques/{estoqueId}/baixa
+// (baixa direta, Story 5.1) responde 410 Gone a QUALQUER papel autenticado e
+// nunca debita saldo nem grava Movimentação (spec-pedido-outras-saidas): o
+// consumo agora é o Pedido de Outras Saídas. Sem token -> 401.
+func TestNewMux_ProdutosBaixaDiretaDescontinuada(t *testing.T) {
 	db := testDB(t)
 	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
 		t.Fatalf("truncate usuarios: %v", err)
@@ -1900,21 +1897,17 @@ func TestNewMux_ProdutosBaixaRotaCarregaRequireRole(t *testing.T) {
 
 	emailCfg := services.CarregarEmailConfig()
 	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
-	fotosDir := t.TempDir()
-	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, fotosDir)
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, t.TempDir())
 
 	const senha = "senha-123456"
 	segredos := map[string]string{}
 
-	despachar := func(metodo, caminho, token, corpo string) *httptest.ResponseRecorder {
-		var req *http.Request
-		if corpo != "" {
-			req = httptest.NewRequest(metodo, caminho, strings.NewReader(corpo))
-			req.Header.Set("Content-Type", "application/json")
-		} else {
-			req = httptest.NewRequest(metodo, caminho, nil)
+	despachar := func(caminho, token, corpo string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, caminho, strings.NewReader(corpo))
+		req.Header.Set("Content-Type", "application/json")
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
 		}
-		req.Header.Set("Authorization", "Bearer "+token)
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, req)
 		return w
@@ -1922,6 +1915,7 @@ func TestNewMux_ProdutosBaixaRotaCarregaRequireRole(t *testing.T) {
 
 	seedContaMux(t, db, "prod-baixa-usuario@empresa.com", "usuario", senha, segredos)
 	seedContaMux(t, db, "prod-baixa-almox@empresa.com", "almoxarife", senha, segredos)
+	seedContaMux(t, db, "prod-baixa-gestor@empresa.com", "gestor", senha, segredos)
 
 	var categoriaID string
 	if err := db.QueryRow(`SELECT id FROM categorias WHERE codigo = '04.001' AND empresa_id = $1`, empresaTeste).Scan(&categoriaID); err != nil {
@@ -1942,33 +1936,183 @@ func TestNewMux_ProdutosBaixaRotaCarregaRequireRole(t *testing.T) {
 	}
 	caminho := prefixoEmpresaTeste + "/api/produtos/" + produto.ID + "/estoques/" + estoque.ID + "/baixa"
 
-	t.Run("papel usuario -> 403 FORBIDDEN", func(t *testing.T) {
-		token := tokenDeMux(t, mux, "prod-baixa-usuario@empresa.com", senha, segredos)
-		w := despachar(http.MethodPost, caminho, token, `{"quantidade":1}`)
-		if w.Code != http.StatusForbidden {
-			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusForbidden, w.Body.String())
+	t.Run("sem token -> 401", func(t *testing.T) {
+		if w := despachar(caminho, "", `{"quantidade":1}`); w.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401", w.Code)
 		}
-		var env struct {
-			Error struct {
-				Code string `json:"code"`
-			} `json:"error"`
-		}
-		if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
-			t.Fatalf("decode envelope: %v", err)
-		}
-		if env.Error.Code != "FORBIDDEN" {
-			t.Errorf("code = %q, want FORBIDDEN", env.Error.Code)
+	})
+	for _, email := range []string{"prod-baixa-usuario@empresa.com", "prod-baixa-almox@empresa.com", "prod-baixa-gestor@empresa.com"} {
+		t.Run(email+" -> 410 Gone", func(t *testing.T) {
+			token := tokenDeMux(t, mux, email, senha, segredos)
+			w := despachar(caminho, token, `{"quantidade":1}`)
+			if w.Code != http.StatusGone {
+				t.Fatalf("status = %d, want 410 (body=%s)", w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), "A baixa direta foi substituída pelo Pedido de Outras Saídas, que precisa da aprovação do Gestor.") {
+				t.Errorf("mensagem = %s", w.Body.String())
+			}
+		})
+	}
+
+	var saldo float64
+	var movs int
+	if err := db.QueryRow(`SELECT quantidade FROM produto_estoque WHERE produto_id = $1 AND estoque_id = $2`, produto.ID, estoque.ID).Scan(&saldo); err != nil {
+		t.Fatalf("ler saldo: %v", err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM movimentacoes WHERE produto_id = $1 AND tipo = 'baixa'`, produto.ID).Scan(&movs); err != nil {
+		t.Fatalf("contar movimentações: %v", err)
+	}
+	if saldo != 10 || movs != 0 {
+		t.Errorf("saldo = %v, baixas = %d, want 10 e 0 (nada debitado)", saldo, movs)
+	}
+}
+
+// TestNewMux_OutrasSaidasPapeis prova, pelo newMux REAL, as permissões do
+// Pedido de Outras Saídas (spec-pedido-outras-saidas): usuário e almoxarife
+// solicitam (POST /api/pedidos/baixa -> 201), mas NÃO decidem
+// (decisao-lote -> 403) nem baixam o Termo de Baixa (PDF -> 403); o gestor
+// decide e baixa o PDF (200, cabeçalhos de download); Termo de outra Empresa
+// ou inexistente -> 404.
+func TestNewMux_OutrasSaidasPapeis(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
+		t.Fatalf("truncate usuarios: %v", err)
+	}
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, produto_historico, mesclagens_duplicatas, carrinho_itens, pedido_itens, reservas_pedido_item, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
+		t.Fatalf("truncate produtos: %v", err)
+	}
+
+	emailCfg := services.CarregarEmailConfig()
+	jwtSecret := []byte("segredo-de-teste-nao-usar-em-producao")
+	mux := newMux(db, emailCfg, jwtSecret, iam.Config{}, t.TempDir())
+
+	const senha = "senha-123456"
+	segredos := map[string]string{}
+	emails := map[string]string{"usuario": "saidas-usuario@empresa.com", "almoxarife": "saidas-almox@empresa.com", "gestor": "saidas-gestor@empresa.com"}
+	for papel, email := range emails {
+		seedContaMux(t, db, email, papel, senha, segredos)
+	}
+
+	despachar := func(metodo, caminho, token, corpo string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(metodo, caminho, strings.NewReader(corpo))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	var categoriaID string
+	if err := db.QueryRow(`SELECT id FROM categorias WHERE codigo = '04.001' AND empresa_id = $1`, empresaTeste).Scan(&categoriaID); err != nil {
+		t.Fatalf("buscar categoria de seed: %v", err)
+	}
+	estoque, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Mux Saidas")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque: %v", err)
+	}
+	produto, err := criarProdutoComSaldo(db, empresaTeste, services.CriarProdutoInput{
+		UnidadeMedida: "un", TemplateID: templateGenericoIDMux(t, db), Nome: "Produto Mux Saidas", CategoriaID: categoriaID,
+	}, estoque.ID, 100)
+	if err != nil {
+		t.Fatalf("seed CriarProduto: %v", err)
+	}
+	corpoPedido := func(extra string) string {
+		return `{"produtoId":"` + produto.ID + `","estoqueId":"` + estoque.ID + `","quantidade":1` + extra + `}`
+	}
+	valido := corpoPedido(`,"motivo":"utilizacao_obra","observacao":"Aplicado na laje do bloco B"`)
+
+	tokens := map[string]string{}
+	for papel, email := range emails {
+		tokens[papel] = tokenDeMux(t, mux, email, senha, segredos)
+	}
+
+	var pedidoIDs []string
+	for _, papel := range []string{"usuario", "almoxarife"} {
+		t.Run(papel+" solicita (201) e não decide (403)", func(t *testing.T) {
+			w := despachar(http.MethodPost, prefixoEmpresaTeste+"/api/pedidos/baixa", tokens[papel], valido)
+			if w.Code != http.StatusCreated {
+				t.Fatalf("POST baixa: status = %d, want 201 (body=%s)", w.Code, w.Body.String())
+			}
+			var resp struct {
+				Pedido struct {
+					ID          string  `json:"id"`
+					MotivoSaida *string `json:"motivoSaida"`
+				} `json:"pedido"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || resp.Pedido.MotivoSaida == nil || *resp.Pedido.MotivoSaida != "utilizacao_obra" {
+				t.Fatalf("resposta = %s (err=%v)", w.Body.String(), err)
+			}
+			pedidoIDs = append(pedidoIDs, resp.Pedido.ID)
+			w = despachar(http.MethodPost, prefixoEmpresaTeste+"/api/pedidos/decisao-lote", tokens[papel], `{"pedidoIds":["`+resp.Pedido.ID+`"],"aprovar":true}`)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("decisao-lote: status = %d, want 403", w.Code)
+			}
+			w = despachar(http.MethodGet, prefixoEmpresaTeste+"/api/termos-baixa/00000000-0000-0000-0000-000000000000/pdf", tokens[papel], "")
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("PDF do termo: status = %d, want 403", w.Code)
+			}
+		})
+	}
+
+	t.Run("sem motivo ou sem justificativa -> 400", func(t *testing.T) {
+		for _, corpo := range []string{
+			corpoPedido(`,"observacao":"x"`),
+			corpoPedido(`,"motivo":"outro","observacao":"x"`),
+			corpoPedido(`,"motivo":"perda_roubo","observacao":"   "`),
+			corpoPedido(`,"motivo":"perda_roubo"`),
+		} {
+			if w := despachar(http.MethodPost, prefixoEmpresaTeste+"/api/pedidos/baixa", tokens["usuario"], corpo); w.Code != http.StatusBadRequest {
+				t.Errorf("corpo %s: status = %d, want 400", corpo, w.Code)
+			}
 		}
 	})
 
-	t.Run("almoxarife passa do gate (nunca 403)", func(t *testing.T) {
-		token := tokenDeMux(t, mux, "prod-baixa-almox@empresa.com", senha, segredos)
-		w := despachar(http.MethodPost, caminho, token, `{"quantidade":1}`)
-		if w.Code == http.StatusForbidden {
-			t.Fatalf("status = %d, want != 403 (body=%s)", w.Code, w.Body.String())
+	t.Run("gestor aprova e baixa o Termo; outra Empresa/inexistente -> 404", func(t *testing.T) {
+		if len(pedidoIDs) != 2 {
+			t.Fatalf("pré-condição: %d pedidos criados, want 2", len(pedidoIDs))
 		}
-		if w.Code != http.StatusCreated {
-			t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
+		w := despachar(http.MethodPost, prefixoEmpresaTeste+"/api/pedidos/decisao-lote", tokens["gestor"],
+			`{"pedidoIds":["`+pedidoIDs[0]+`","`+pedidoIDs[1]+`"],"aprovar":true}`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("decisao-lote: status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+		}
+		var resp struct {
+			Pedidos []struct {
+				PreNotaID    *string `json:"preNotaId"`
+				TermoBaixaID *string `json:"termoBaixaId"`
+				NumeroTermo  *int    `json:"numeroTermo"`
+			} `json:"pedidos"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || len(resp.Pedidos) != 2 {
+			t.Fatalf("resposta = %s (err=%v)", w.Body.String(), err)
+		}
+		for _, p := range resp.Pedidos {
+			if p.PreNotaID != nil || p.TermoBaixaID == nil || p.NumeroTermo == nil {
+				t.Fatalf("pedido sem Termo (ou com Pré-Nota): %+v", p)
+			}
+		}
+		if *resp.Pedidos[0].TermoBaixaID != *resp.Pedidos[1].TermoBaixaID {
+			t.Error("mesmo motivo deveria gerar UM só Termo")
+		}
+
+		w = despachar(http.MethodGet, prefixoEmpresaTeste+"/api/termos-baixa/"+*resp.Pedidos[0].TermoBaixaID+"/pdf", tokens["gestor"], "")
+		if w.Code != http.StatusOK {
+			t.Fatalf("PDF: status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+		}
+		if got := w.Header().Get("Content-Disposition"); got != `attachment; filename="termo-baixa-`+strconv.Itoa(*resp.Pedidos[0].NumeroTermo)+`.pdf"` {
+			t.Errorf("Content-Disposition = %q", got)
+		}
+		if w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("X-Content-Type-Options") != "nosniff" || w.Header().Get("Content-Type") != "application/pdf" {
+			t.Errorf("cabeçalhos = %v", w.Header())
+		}
+		if !strings.HasPrefix(w.Body.String(), "%PDF-") {
+			t.Error("corpo não é PDF")
+		}
+
+		for _, id := range []string{"00000000-0000-0000-0000-000000000000", "malformado"} {
+			if w := despachar(http.MethodGet, prefixoEmpresaTeste+"/api/termos-baixa/"+id+"/pdf", tokens["gestor"], ""); w.Code != http.StatusNotFound {
+				t.Errorf("id %q: status = %d, want 404", id, w.Code)
+			}
 		}
 	})
 }
@@ -2078,7 +2222,7 @@ func TestNewMux_ProdutosTransferenciaRotaCarregaRequireRole(t *testing.T) {
 // POST /api/pedidos/decisao-lote está atrás de RequireRole(PapelGestor) — um
 // nível MAIOR que o `almoxarife` de POST /api/pedidos/{id}/decisao: token
 // `almoxarife` -> 403 FORBIDDEN; token `gestor` passa do gate (200 de
-// verdade, nunca 403). Molde de TestNewMux_ProdutosBaixaRotaCarregaRequireRole/
+// verdade, nunca 403). Molde de TestNewMux_ProdutosTransferenciaRotaCarregaRequireRole/
 // TestNewMux_ProdutosTransferenciaRotaCarregaRequireRole.
 //
 // Sem este caso, remover ou trocar `middleware.RequireRole(services.PapelGestor)`
@@ -2139,7 +2283,7 @@ func TestNewMux_PedidosDecisaoLoteRotaCarregaRequireRole(t *testing.T) {
 	}
 
 	t.Run("papel almoxarife -> 403 FORBIDDEN (gate exige gestor+)", func(t *testing.T) {
-		pedido, err := services.SubmeterPedidoBaixa(db, empresaTeste, usuarioAlmoxID, "Fulano", "Obra X", "", produto.ID, estoque.ID, 1)
+		pedido, err := services.SubmeterPedidoBaixa(db, empresaTeste, usuarioAlmoxID, "Fulano", "Obra X", "justificativa de teste", produto.ID, estoque.ID, 1, "perda_roubo")
 		if err != nil {
 			t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
 		}
@@ -2169,7 +2313,7 @@ func TestNewMux_PedidosDecisaoLoteRotaCarregaRequireRole(t *testing.T) {
 	})
 
 	t.Run("gestor passa do gate (nunca 403)", func(t *testing.T) {
-		pedido, err := services.SubmeterPedidoBaixa(db, empresaTeste, usuarioAlmoxID, "Fulano", "Obra Y", "", produto.ID, estoque.ID, 1)
+		pedido, err := services.SubmeterPedidoBaixa(db, empresaTeste, usuarioAlmoxID, "Fulano", "Obra Y", "justificativa de teste", produto.ID, estoque.ID, 1, "perda_roubo")
 		if err != nil {
 			t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
 		}

@@ -707,14 +707,14 @@ func TestListarPedidosFila_Vazia(t *testing.T) {
 // TestListarPedidosFila_PedidoDeBaixaSemObraCentroCusto prova a linha
 // achada pela revisão da Story 20.2 (verification-gap): um Pedido de Baixa
 // SEM Obra/Centro de Custo (coluna NULL desde a migration 000057) não
-// quebra `ListarPedidosFila` — o `COALESCE(p.obra_centro_custo, '')` já
+// quebra `ListarPedidosFila` — o `COALESCE(p.obra_centro_custo, ”)` já
 // aplicado na query devolve `ObraCentroCusto = ""`, nunca um erro de Scan.
 func TestListarPedidosFila_PedidoDeBaixaSemObraCentroCusto(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
 	produtoID, estoqueID, usuarioID := seedProdutoComSaldo(t, db, "Fila Baixa Sem Obra", 10)
-	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "", "", produtoID, estoqueID, 5)
+	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "", "justificativa de teste", produtoID, estoqueID, 5, "perda_roubo")
 	if err != nil {
 		t.Fatalf("SubmeterPedidoBaixa erro inesperado: %v", err)
 	}
@@ -2374,6 +2374,18 @@ func contarReservas(t *testing.T, db *sql.DB, pedidoID string) int {
 	return n
 }
 
+// submeterTransfParaLoteTeste submete uma Transferência (origem -> um Estoque
+// novo da mesma Empresa) — os testes de Pré-Nota/docnum precisam de Pedidos
+// que ainda gerem Pré-Nota; Outras Saídas (baixa) agora geram Termo de Baixa.
+func submeterTransfParaLoteTeste(t *testing.T, db *sql.DB, empresaID, usuarioID, solicitante, obra, produtoID, estoqueOrigemID string, quantidade float64) (Pedido, error) {
+	t.Helper()
+	destino, err := CriarEstoque(db, empresaID, filialTeste(t, db, empresaID), "Dest "+produtoID[:8]+"-"+estoqueOrigemID[:8])
+	if err != nil {
+		t.Fatalf("seed CriarEstoque (destino): %v", err)
+	}
+	return SubmeterPedidoTransferencia(db, empresaID, usuarioID, solicitante, obra, "", produtoID, estoqueOrigemID, destino.ID, quantidade)
+}
+
 // criarEstoqueDestinoTeste cria um segundo Estoque (mesma Filial de
 // empresaTeste) para servir de destino de uma Transferência — nunca recebe
 // saldo (a Transferência de verdade, Story 20.3, nunca é chamada aqui).
@@ -2870,7 +2882,7 @@ func TestSubmeterPedidoBaixa_Sucesso(t *testing.T) {
 
 	pedido, err := SubmeterPedidoBaixa(
 		db, empresaTeste, usuarioID, "  Fulano de Tal  ", "  Obra Norte  ", "  urgente  ",
-		produtoID, estoqueID, 5,
+		produtoID, estoqueID, 5, "vencido_avariado",
 	)
 	if err != nil {
 		t.Fatalf("SubmeterPedidoBaixa erro inesperado: %v", err)
@@ -2928,7 +2940,7 @@ func TestSubmeterPedidoBaixa_ObraCentroCustoOpcional(t *testing.T) {
 	usuarioID := semearConta(t, db, "Usuario Baixa SemObra", "baixa-semobra@empresa.com", PapelUsuario, 0)
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Baixa SemObra", 10)
 
-	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "   ", "", produtoID, estoqueID, 5)
+	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "   ", "justificativa de teste", produtoID, estoqueID, 5, "perda_roubo")
 	if err != nil {
 		t.Fatalf("SubmeterPedidoBaixa erro inesperado: %v", err)
 	}
@@ -3005,7 +3017,7 @@ func TestSubmeterPedidoBaixa_DisponibilidadeInsuficiente(t *testing.T) {
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Baixa Insuf", 10)
 
 	antes := contarPedidos(t, db)
-	_, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 11)
+	_, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "justificativa de teste", produtoID, estoqueID, 11, "perda_roubo")
 	var erroIndisponivel *ErroPedidoIndisponivel
 	if !errors.As(err, &erroIndisponivel) {
 		t.Fatalf("erro = %v, want *ErroPedidoIndisponivel", err)
@@ -3032,7 +3044,7 @@ func TestSubmeterPedidoBaixa_ProdutoInativoRecusado(t *testing.T) {
 	}
 
 	antes := contarPedidos(t, db)
-	_, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 1)
+	_, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "justificativa de teste", produtoID, estoqueID, 1, "perda_roubo")
 	var erroInativo *ErroPedidoProdutoInativo
 	if !errors.As(err, &erroInativo) {
 		t.Fatalf("erro = %v, want *ErroPedidoProdutoInativo", err)
@@ -3064,7 +3076,7 @@ func TestSubmeterPedidoBaixa_CamposVaziosSaoValidacao(t *testing.T) {
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
-			_, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", c.produto, c.estoque, 1)
+			_, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "justificativa de teste", c.produto, c.estoque, 1, "perda_roubo")
 			var erroValidacao *ErroPedidoValidacao
 			if !errors.As(err, &erroValidacao) {
 				t.Fatalf("erro = %v, want *ErroPedidoValidacao", err)
@@ -3127,7 +3139,7 @@ func TestSubmeterPedidoBaixa_ProdutoOuEstoqueDeOutraEmpresa(t *testing.T) {
 
 	t.Run("produto de outra empresa", func(t *testing.T) {
 		antes := contarPedidos(t, db)
-		_, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoAlheio.ID, estoqueID, 1)
+		_, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "justificativa de teste", produtoAlheio.ID, estoqueID, 1, "perda_roubo")
 		var erroValidacao *ErroPedidoValidacao
 		if !errors.As(err, &erroValidacao) {
 			t.Fatalf("erro = %v, want *ErroPedidoValidacao", err)
@@ -3139,7 +3151,7 @@ func TestSubmeterPedidoBaixa_ProdutoOuEstoqueDeOutraEmpresa(t *testing.T) {
 
 	t.Run("estoque de outra empresa", func(t *testing.T) {
 		antes := contarPedidos(t, db)
-		_, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueAlheio.ID, 1)
+		_, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "justificativa de teste", produtoID, estoqueAlheio.ID, 1, "perda_roubo")
 		var erroValidacao *ErroPedidoValidacao
 		if !errors.As(err, &erroValidacao) {
 			t.Fatalf("erro = %v, want *ErroPedidoValidacao", err)
@@ -3160,7 +3172,7 @@ func TestSubmeterPedidoBaixa_QuantidadeInvalida(t *testing.T) {
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Baixa QtdRuim", 10)
 
 	for _, q := range []float64{0, -5, math.NaN()} {
-		_, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, q)
+		_, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "justificativa de teste", produtoID, estoqueID, q, "perda_roubo")
 		var erroValidacao *ErroPedidoValidacao
 		if !errors.As(err, &erroValidacao) {
 			t.Errorf("quantidade=%v: erro = %v, want *ErroPedidoValidacao", q, err)
@@ -3188,12 +3200,12 @@ func TestSubmeterPedidoBaixa_ConcorrenciaMesmoPar(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		<-start
-		_, err1 = SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 6)
+		_, err1 = SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "justificativa de teste", produtoID, estoqueID, 6, "perda_roubo")
 	}()
 	go func() {
 		defer wg.Done()
 		<-start
-		_, err2 = SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 6)
+		_, err2 = SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "justificativa de teste", produtoID, estoqueID, 6, "perda_roubo")
 	}()
 	close(start)
 	wg.Wait()
@@ -3239,7 +3251,7 @@ func TestDecidirPedido_RecusaPedidoDeBaixa(t *testing.T) {
 	// nome do Estoque) — reaproveitada aqui como decisor.
 	produtoID, estoqueID, almoxID := seedProdutoComSaldo(t, db, "Baixa Decisao", 10)
 
-	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 6)
+	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "justificativa de teste", produtoID, estoqueID, 6, "perda_roubo")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
 	}
@@ -3293,7 +3305,7 @@ func TestDecidirLotePedidos_IdInexistenteOuDeOutraEmpresa(t *testing.T) {
 	usuarioID := semearConta(t, db, "Lote IdRuim Usuario", "lote-idruim-usuario@empresa.com", PapelUsuario, 1)
 
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Lote IdRuim Baixa", 10)
-	pedidoValido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 3)
+	pedidoValido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "justificativa de teste", produtoID, estoqueID, 3, "perda_roubo")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
 	}
@@ -3323,8 +3335,8 @@ func TestDecidirLotePedidos_IdInexistenteOuDeOutraEmpresa(t *testing.T) {
 
 	casos := map[string][]string{
 		"id inexistente (UUID válido, nenhum Pedido)": {pedidoValido.ID, "00000000-0000-0000-0000-000000000000"},
-		"id malformado (não-UUID)":                     {pedidoValido.ID, "nao-e-um-uuid"},
-		"id de outra Empresa":                          {pedidoValido.ID, pedidoAlheio},
+		"id malformado (não-UUID)":                    {pedidoValido.ID, "nao-e-um-uuid"},
+		"id de outra Empresa":                         {pedidoValido.ID, pedidoAlheio},
 	}
 	for nome, ids := range casos {
 		t.Run(nome, func(t *testing.T) {
@@ -3376,7 +3388,7 @@ func TestDecidirLotePedidos_RetiradaMisturada_RejeitaListaInteira(t *testing.T) 
 
 	// Pedido de Baixa pendente, que seria válido sozinho.
 	produtoBaixaID, estoqueBaixaID, _ := seedProdutoComSaldo(t, db, "Lote Misto Baixa", 10)
-	pedidoBaixa, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioRetirada, "Fulano", "Obra X", "", produtoBaixaID, estoqueBaixaID, 3)
+	pedidoBaixa, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioRetirada, "Fulano", "Obra X", "justificativa de teste", produtoBaixaID, estoqueBaixaID, 3, "perda_roubo")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
 	}
@@ -3437,7 +3449,7 @@ func TestDecidirLotePedidos_MistoTransferenciaEBaixa_Aprovado(t *testing.T) {
 	}
 
 	produtoBaixaID, estoqueBaixaID, _ := seedProdutoComSaldo(t, db, "Lote Misto OK Baixa", 10)
-	pedidoBaixa, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra Y", "", produtoBaixaID, estoqueBaixaID, 4)
+	pedidoBaixa, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra Y", "justificativa de teste", produtoBaixaID, estoqueBaixaID, 4, "perda_roubo")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
 	}
@@ -3508,12 +3520,12 @@ func TestDecidirLotePedidos_ItemParcial_RestoDoLoteSeguiNormal(t *testing.T) {
 	usuarioID := semearConta(t, db, "Lote Parcial Usuario", "lote-parcial-usuario@empresa.com", PapelUsuario, 1)
 
 	produtoA, estoqueA, _ := seedProdutoComSaldo(t, db, "Lote Parcial A", 10)
-	pedidoA, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoA, estoqueA, 8)
+	pedidoA, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "justificativa de teste", produtoA, estoqueA, 8, "perda_roubo")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa A: %v", err)
 	}
 	produtoB, estoqueB, _ := seedProdutoComSaldo(t, db, "Lote Parcial B", 10)
-	pedidoB, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra Y", "", produtoB, estoqueB, 5)
+	pedidoB, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra Y", "justificativa de teste", produtoB, estoqueB, 5, "perda_roubo")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa B: %v", err)
 	}
@@ -3562,7 +3574,7 @@ func TestDecidirLotePedidos_PedidoJaDecidido_PuladoSemAbortarLote(t *testing.T) 
 	// abaixo aprova TOTALMENTE, com um `quantidadeAprovada` previsível para
 	// comparar byte a byte com o que o lote de gestor2 relê depois.
 	produtoJaDecidido, estoqueJaDecidido, _ := seedProdutoComSaldo(t, db, "Lote Pulado JaDecidido", 4)
-	pedidoJaDecidido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "obs-ja-decidido", produtoJaDecidido, estoqueJaDecidido, 4)
+	pedidoJaDecidido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "obs-ja-decidido", produtoJaDecidido, estoqueJaDecidido, 4, "perda_roubo")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa (já decidido): %v", err)
 	}
@@ -3581,7 +3593,7 @@ func TestDecidirLotePedidos_PedidoJaDecidido_PuladoSemAbortarLote(t *testing.T) 
 	ground := decididoAntes[0]
 
 	produtoNormal, estoqueNormal, _ := seedProdutoComSaldo(t, db, "Lote Pulado Normal", 10)
-	pedidoNormal, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra Y", "", produtoNormal, estoqueNormal, 3)
+	pedidoNormal, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra Y", "justificativa de teste", produtoNormal, estoqueNormal, 3, "perda_roubo")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa (normal): %v", err)
 	}
@@ -3665,7 +3677,7 @@ func TestDecidirLotePedidos_DecisoesConcorrentesSoAPrimeiraDebita(t *testing.T) 
 	usuarioID := semearConta(t, db, "Lote Corrida Usuario", "lote-corrida-usuario@empresa.com", PapelUsuario, 1)
 
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "Lote Corrida", 10)
-	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 4)
+	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "justificativa de teste", produtoID, estoqueID, 4, "perda_roubo")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
 	}
@@ -3771,7 +3783,7 @@ func TestDecidirLotePedidos_GeraPreNota_TodosDecididosAgora(t *testing.T) {
 	var pedidoIDs []string
 	for _, nome := range []string{"PreNota Todos A", "PreNota Todos B", "PreNota Todos C"} {
 		produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, nome, 10)
-		pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 2)
+		pedido, err := submeterTransfParaLoteTeste(t, db, empresaTeste, usuarioID, "Fulano", "Obra X", produtoID, estoqueID, 2)
 		if err != nil {
 			t.Fatalf("seed SubmeterPedidoBaixa (%s): %v", nome, err)
 		}
@@ -3822,7 +3834,7 @@ func TestDecidirLotePedidos_PreNotaSoComDecididosNestaChamada(t *testing.T) {
 	usuarioID := semearConta(t, db, "PreNota Misto Usuario", "prenota-misto-usuario@empresa.com", PapelUsuario, 2)
 
 	produtoA, estoqueA, _ := seedProdutoComSaldo(t, db, "PreNota Misto A", 10)
-	pedidoA, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoA, estoqueA, 3)
+	pedidoA, err := submeterTransfParaLoteTeste(t, db, empresaTeste, usuarioID, "Fulano", "Obra X", produtoA, estoqueA, 3)
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa A: %v", err)
 	}
@@ -3838,7 +3850,7 @@ func TestDecidirLotePedidos_PreNotaSoComDecididosNestaChamada(t *testing.T) {
 	}
 
 	produtoB, estoqueB, _ := seedProdutoComSaldo(t, db, "PreNota Misto B", 10)
-	pedidoB, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra Y", "", produtoB, estoqueB, 4)
+	pedidoB, err := submeterTransfParaLoteTeste(t, db, empresaTeste, usuarioID, "Fulano", "Obra Y", produtoB, estoqueB, 4)
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa B: %v", err)
 	}
@@ -3884,7 +3896,7 @@ func TestDecidirLotePedidos_LoteTotalmentePulado_NenhumaPreNotaNova(t *testing.T
 	usuarioID := semearConta(t, db, "PreNota Pulado Usuario", "prenota-pulado-usuario@empresa.com", PapelUsuario, 2)
 
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "PreNota Pulado", 10)
-	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 3)
+	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "justificativa de teste", produtoID, estoqueID, 3, "perda_roubo")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
 	}
@@ -3924,7 +3936,7 @@ func TestDecidirLotePedidos_Rejeitado_NenhumaPreNotaGerada(t *testing.T) {
 	var pedidoIDs []string
 	for _, nome := range []string{"PreNota Rejeitado A", "PreNota Rejeitado B"} {
 		produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, nome, 10)
-		pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 2)
+		pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "justificativa de teste", produtoID, estoqueID, 2, "perda_roubo")
 		if err != nil {
 			t.Fatalf("seed SubmeterPedidoBaixa (%s): %v", nome, err)
 		}
@@ -3967,12 +3979,12 @@ func TestDecidirLotePedidos_DoisLotesSequenciais_DocnumCrescente(t *testing.T) {
 	usuarioID := semearConta(t, db, "PreNota Sequencial Usuario", "prenota-sequencial-usuario@empresa.com", PapelUsuario, 1)
 
 	produtoA, estoqueA, _ := seedProdutoComSaldo(t, db, "PreNota Sequencial A", 10)
-	pedidoA, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoA, estoqueA, 2)
+	pedidoA, err := submeterTransfParaLoteTeste(t, db, empresaTeste, usuarioID, "Fulano", "Obra X", produtoA, estoqueA, 2)
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa A: %v", err)
 	}
 	produtoB, estoqueB, _ := seedProdutoComSaldo(t, db, "PreNota Sequencial B", 10)
-	pedidoB, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra Y", "", produtoB, estoqueB, 2)
+	pedidoB, err := submeterTransfParaLoteTeste(t, db, empresaTeste, usuarioID, "Fulano", "Obra Y", produtoB, estoqueB, 2)
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa B: %v", err)
 	}
@@ -4007,12 +4019,12 @@ func TestDecidirLotePedidos_PreNotaConcorrenciaMesmaEmpresa_DocnumSemColisao(t *
 	usuarioID := semearConta(t, db, "PreNota Corrida Usuario", "prenota-corrida-usuario@empresa.com", PapelUsuario, 1)
 
 	produtoA, estoqueA, _ := seedProdutoComSaldo(t, db, "PreNota Corrida A", 10)
-	pedidoA, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoA, estoqueA, 2)
+	pedidoA, err := submeterTransfParaLoteTeste(t, db, empresaTeste, usuarioID, "Fulano", "Obra X", produtoA, estoqueA, 2)
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa A: %v", err)
 	}
 	produtoB, estoqueB, _ := seedProdutoComSaldo(t, db, "PreNota Corrida B", 10)
-	pedidoB, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra Y", "", produtoB, estoqueB, 2)
+	pedidoB, err := submeterTransfParaLoteTeste(t, db, empresaTeste, usuarioID, "Fulano", "Obra Y", produtoB, estoqueB, 2)
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa B: %v", err)
 	}
@@ -4067,7 +4079,7 @@ func TestDecidirLotePedidos_DuasEmpresasConcorrentes_DocnumIndependente(t *testi
 	gestorID := semearConta(t, db, "PreNota DuasEmpresas Gestor", "prenota-duasempresas-gestor@empresa.com", PapelGestor, 0)
 	usuarioID := semearConta(t, db, "PreNota DuasEmpresas Usuario", "prenota-duasempresas-usuario@empresa.com", PapelUsuario, 1)
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "PreNota DuasEmpresas", 10)
-	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 2)
+	pedido, err := submeterTransfParaLoteTeste(t, db, empresaTeste, usuarioID, "Fulano", "Obra X", produtoID, estoqueID, 2)
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa (empresa 1): %v", err)
 	}
@@ -4083,10 +4095,13 @@ func TestDecidirLotePedidos_DuasEmpresasConcorrentes_DocnumIndependente(t *testi
 		for _, stmt := range []string{
 			`UPDATE pedidos SET pre_nota_id = NULL WHERE empresa_id = $1`,
 			`DELETE FROM pre_notas WHERE empresa_id = $1`,
+			`UPDATE pedidos SET termo_baixa_id = NULL WHERE empresa_id = $1`,
+			`DELETE FROM termos_baixa WHERE empresa_id = $1`,
 			`DELETE FROM pedido_itens WHERE empresa_id = $1`,
 			`DELETE FROM movimentacoes WHERE empresa_id = $1`,
 			`DELETE FROM pedidos WHERE empresa_id = $1`,
 			`DELETE FROM produto_estoque WHERE produto_id IN (SELECT id FROM produtos WHERE empresa_id = $1)`,
+			`DELETE FROM lotes WHERE produto_id IN (SELECT id FROM produtos WHERE empresa_id = $1)`,
 			`DELETE FROM produtos WHERE empresa_id = $1`,
 			`DELETE FROM estoques WHERE empresa_id = $1`,
 			`DELETE FROM usuarios WHERE empresa_id = $1`,
@@ -4113,7 +4128,7 @@ func TestDecidirLotePedidos_DuasEmpresasConcorrentes_DocnumIndependente(t *testi
 	if err != nil {
 		t.Fatalf("seed criarProdutoComSaldo (outra empresa): %v", err)
 	}
-	pedidoOutra, err := SubmeterPedidoBaixa(db, outraEmpresa.ID, usuarioOutraID, "Fulano", "Obra X", "", produtoOutra.ID, estoqueOutra.ID, 2)
+	pedidoOutra, err := submeterTransfParaLoteTeste(t, db, outraEmpresa.ID, usuarioOutraID, "Fulano", "Obra X", produtoOutra.ID, estoqueOutra.ID, 2)
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa (outra empresa): %v", err)
 	}
@@ -4170,7 +4185,7 @@ func TestDecidirLotePedidos_ExpoePreNotaIdEDocnumNasLeituras(t *testing.T) {
 	usuarioID := semearConta(t, db, "PreNota Exposicao Usuario", "prenota-exposicao-usuario@empresa.com", PapelUsuario, 1)
 
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "PreNota Exposicao", 10)
-	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 2)
+	pedido, err := submeterTransfParaLoteTeste(t, db, empresaTeste, usuarioID, "Fulano", "Obra X", produtoID, estoqueID, 2)
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
 	}
@@ -4255,7 +4270,7 @@ func TestDecidirLotePedidos_RespostaJaTrazPreNotaIdEDocnum(t *testing.T) {
 	usuarioID := semearConta(t, db, "PreNota Resposta Usuario", "prenota-resposta-usuario@empresa.com", PapelUsuario, 1)
 
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "PreNota Resposta", 10)
-	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 2)
+	pedido, err := submeterTransfParaLoteTeste(t, db, empresaTeste, usuarioID, "Fulano", "Obra X", produtoID, estoqueID, 2)
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
 	}
@@ -4299,13 +4314,13 @@ func TestDecidirLotePedidos_MistoAprovadoEParcial_MesmaPreNotaNova(t *testing.T)
 	usuarioID := semearConta(t, db, "PreNota MistoStatus Usuario", "prenota-mistostatus-usuario@empresa.com", PapelUsuario, 1)
 
 	produtoTotal, estoqueTotal, _ := seedProdutoComSaldo(t, db, "PreNota MistoStatus Total", 10)
-	pedidoTotal, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoTotal, estoqueTotal, 4)
+	pedidoTotal, err := submeterTransfParaLoteTeste(t, db, empresaTeste, usuarioID, "Fulano", "Obra X", produtoTotal, estoqueTotal, 4)
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa (total): %v", err)
 	}
 
 	produtoParcial, estoqueParcial, _ := seedProdutoComSaldo(t, db, "PreNota MistoStatus Parcial", 10)
-	pedidoParcial, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra Y", "", produtoParcial, estoqueParcial, 8)
+	pedidoParcial, err := submeterTransfParaLoteTeste(t, db, empresaTeste, usuarioID, "Fulano", "Obra Y", produtoParcial, estoqueParcial, 8)
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa (parcial): %v", err)
 	}

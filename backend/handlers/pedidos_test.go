@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1695,7 +1696,7 @@ func TestSubmeterPedidoBaixaHandler_201(t *testing.T) {
 	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, "Canteiro Baixa H 201", 10)
 
 	corpo := `{"obraCentroCusto":"Obra Norte","produtoId":"` + produtoID +
-		`","estoqueId":"` + estoqueID + `","quantidade":5}`
+		`","estoqueId":"` + estoqueID + `","quantidade":5,"motivo":"perda_roubo","observacao":"justificativa de teste"}`
 	w := postPedidoBaixa(db, "Bearer "+token, corpo)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
@@ -1737,7 +1738,7 @@ func TestSubmeterPedidoBaixaHandler_IgnoraSolicitanteDoCorpo(t *testing.T) {
 	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, "Canteiro Baixa H IgnoraSolic", 10)
 
 	corpo := `{"solicitante":"Nome Forjado","obraCentroCusto":"Obra X","produtoId":"` + produtoID +
-		`","estoqueId":"` + estoqueID + `","quantidade":1}`
+		`","estoqueId":"` + estoqueID + `","quantidade":1,"motivo":"perda_roubo","observacao":"justificativa de teste"}`
 	w := postPedidoBaixa(db, "Bearer "+token, corpo)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
@@ -1762,7 +1763,7 @@ func TestSubmeterPedidoBaixaHandler_201_ObraCentroCustoAusente(t *testing.T) {
 	_, token := seedContaComumECarrinho(t, db, "Usuario Baixa H SemObra", "baixa-h-semobra@empresa.com")
 	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, "Canteiro Baixa H SemObra", 10)
 
-	corpo := `{"produtoId":"` + produtoID + `","estoqueId":"` + estoqueID + `","quantidade":1}`
+	corpo := `{"produtoId":"` + produtoID + `","estoqueId":"` + estoqueID + `","quantidade":1,"motivo":"perda_roubo","observacao":"justificativa de teste"}`
 	w := postPedidoBaixa(db, "Bearer "+token, corpo)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
@@ -1805,7 +1806,7 @@ func TestSubmeterPedidoBaixaHandler_PublicaEventoNoSucesso(t *testing.T) {
 			middleware.RequireAuth(db, testJWTSecret)(SubmeterPedidoBaixaHandler(db, registro))))
 
 	corpo := `{"obraCentroCusto":"Obra X","produtoId":"` + produtoID +
-		`","estoqueId":"` + estoqueID + `","quantidade":1}`
+		`","estoqueId":"` + estoqueID + `","quantidade":1,"motivo":"perda_roubo","observacao":"justificativa de teste"}`
 	r := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/pedidos/baixa", strings.NewReader(corpo))
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+token)
@@ -1885,7 +1886,7 @@ func TestSubmeterPedidoBaixaHandler_409DisponibilidadeInsuficiente(t *testing.T)
 	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, "Canteiro Baixa H 409", 3)
 
 	corpo := `{"obraCentroCusto":"Obra X","produtoId":"` + produtoID +
-		`","estoqueId":"` + estoqueID + `","quantidade":4}`
+		`","estoqueId":"` + estoqueID + `","quantidade":4,"motivo":"perda_roubo","observacao":"justificativa de teste"}`
 	w := postPedidoBaixa(db, "Bearer "+token, corpo)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusConflict, w.Body.String())
@@ -1909,7 +1910,7 @@ func TestSubmeterPedidoBaixaHandler_409ProdutoInativo(t *testing.T) {
 	}
 
 	corpo := `{"obraCentroCusto":"Obra X","produtoId":"` + produtoID +
-		`","estoqueId":"` + estoqueID + `","quantidade":1}`
+		`","estoqueId":"` + estoqueID + `","quantidade":1,"motivo":"perda_roubo","observacao":"justificativa de teste"}`
 	w := postPedidoBaixa(db, "Bearer "+token, corpo)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusConflict, w.Body.String())
@@ -1948,7 +1949,7 @@ func TestDecidirPedidoHandler_409PedidoDeBaixaTipoNaoSuportado(t *testing.T) {
 	tokenAlmox := tokenDeLogin(t, db, "h-baixa-tiponaosup-almox@empresa.com", "senha-123456")
 
 	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, "Canteiro Baixa TipoNaoSup", 10)
-	pedido, err := services.SubmeterPedidoBaixa(db, empresaTeste, dono, "Fulano", "Obra X", "", produtoID, estoqueID, 5)
+	pedido, err := services.SubmeterPedidoBaixa(db, empresaTeste, dono, "Fulano", "Obra X", "justificativa de teste", produtoID, estoqueID, 5, "perda_roubo")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
 	}
@@ -1982,7 +1983,7 @@ func TestPedidosHandlers_CampoTipoNoJSON_Baixa(t *testing.T) {
 	usuarioID, token := seedContaComumECarrinho(t, db, "H Tipo JSON Baixa", "h-pedidos-tipo-json-baixa@empresa.com")
 
 	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, "H Tipo JSON Baixa", 10)
-	pedidoBaixa, err := services.SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 1)
+	pedidoBaixa, err := services.SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "justificativa de teste", produtoID, estoqueID, 1, "perda_roubo")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
 	}
@@ -2070,7 +2071,7 @@ func TestDecidirLotePedidosHandler_200LoteMisto(t *testing.T) {
 		t.Fatalf("seed SubmeterPedidoTransferencia: %v", err)
 	}
 	produtoBaixaID, estoqueBaixaID := seedProdutoComSaldoHandler(t, db, "H203 Lote Baixa", 10)
-	pedidoBaixa, err := services.SubmeterPedidoBaixa(db, empresaTeste, dono, "Fulano", "Obra Y", "", produtoBaixaID, estoqueBaixaID, 3)
+	pedidoBaixa, err := services.SubmeterPedidoBaixa(db, empresaTeste, dono, "Fulano", "Obra Y", "justificativa de teste", produtoBaixaID, estoqueBaixaID, 3, "perda_roubo")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
 	}
@@ -2109,10 +2110,7 @@ func TestDecidirLotePedidosHandler_200RespostaTrazPreNotaIdEDocnumCamelCase(t *t
 	dono, _ := seedContaComumECarrinho(t, db, "H204 PreNota Dono", "h-prenota-dono@empresa.com")
 
 	produtoBaixaID, estoqueBaixaID := seedProdutoComSaldoHandler(t, db, "H204 PreNota Baixa", 10)
-	pedidoBaixa, err := services.SubmeterPedidoBaixa(db, empresaTeste, dono, "Fulano", "Obra Y", "", produtoBaixaID, estoqueBaixaID, 3)
-	if err != nil {
-		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
-	}
+	pedidoBaixa := submeterTransfHandlerTeste(t, db, dono, produtoBaixaID, estoqueBaixaID, 3)
 
 	body := `{"pedidoIds":["` + pedidoBaixa.ID + `"],"aprovar":true}`
 	w := postDecisaoLotePedidos(db, "Bearer "+tokenGestor, body)
@@ -2173,7 +2171,7 @@ func TestDecidirLotePedidosHandler_400RetiradaMisturada(t *testing.T) {
 
 	pedidoRetirada := seedPedidoViaServico(t, db, dono, "H203 Misto Retirada", 1)
 	produtoBaixaID, estoqueBaixaID := seedProdutoComSaldoHandler(t, db, "H203 Misto Baixa", 10)
-	pedidoBaixa, err := services.SubmeterPedidoBaixa(db, empresaTeste, dono, "Fulano", "Obra Y", "", produtoBaixaID, estoqueBaixaID, 3)
+	pedidoBaixa, err := services.SubmeterPedidoBaixa(db, empresaTeste, dono, "Fulano", "Obra Y", "justificativa de teste", produtoBaixaID, estoqueBaixaID, 3, "perda_roubo")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
 	}
@@ -2208,7 +2206,7 @@ func TestDecidirLotePedidosHandler_403PapelAlmoxarife(t *testing.T) {
 	tokenAlmox := tokenDeLogin(t, db, "h-lote-papel-almox@empresa.com", "senha-123456")
 
 	produtoBaixaID, estoqueBaixaID := seedProdutoComSaldoHandler(t, db, "H203 Papel Almox Baixa", 10)
-	pedidoBaixa, err := services.SubmeterPedidoBaixa(db, empresaTeste, dono, "Fulano", "Obra Y", "", produtoBaixaID, estoqueBaixaID, 3)
+	pedidoBaixa, err := services.SubmeterPedidoBaixa(db, empresaTeste, dono, "Fulano", "Obra Y", "justificativa de teste", produtoBaixaID, estoqueBaixaID, 3, "perda_roubo")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
 	}
@@ -2255,7 +2253,7 @@ func TestDecidirLotePedidosHandler_PublicaEventoNoSucesso(t *testing.T) {
 	// cima — prova que o dedup de eventos `produtos` não colapsa produtos
 	// distintos).
 	produtoBaixaID, estoqueBaixaID := seedProdutoComSaldoHandler(t, db, "H203 Evento Baixa", 10)
-	pedidoBaixa, err := services.SubmeterPedidoBaixa(db, empresaTeste, dono, "Fulano", "Obra Y", "", produtoBaixaID, estoqueBaixaID, 3)
+	pedidoBaixa, err := services.SubmeterPedidoBaixa(db, empresaTeste, dono, "Fulano", "Obra Y", "justificativa de teste", produtoBaixaID, estoqueBaixaID, 3, "perda_roubo")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
 	}
@@ -2265,7 +2263,7 @@ func TestDecidirLotePedidosHandler_PublicaEventoNoSucesso(t *testing.T) {
 	// TestDecidirLotePedidos_PedidoJaDecidido_PuladoSemAbortarLote),
 	// reaproveitando o MESMO Produto/Estoque da Transferência acima (origem)
 	// para testar o dedup de eventos `produtos`.
-	pedidoPulado, err := services.SubmeterPedidoBaixa(db, empresaTeste, dono, "Fulano", "Obra Z", "", produtoTransfID, estoqueOrigemID, 2)
+	pedidoPulado, err := services.SubmeterPedidoBaixa(db, empresaTeste, dono, "Fulano", "Obra Z", "justificativa de teste", produtoTransfID, estoqueOrigemID, 2, "perda_roubo")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa (pulado): %v", err)
 	}
@@ -2273,7 +2271,9 @@ func TestDecidirLotePedidosHandler_PublicaEventoNoSucesso(t *testing.T) {
 		t.Fatalf("seed: marcar pedidoPulado como já decidido: %v", err)
 	}
 
-	registro := realtime.NewRegistry()
+	// Buffer folgado: o teste conta 6 eventos publicados de uma vez e não deve
+	// depender do ritmo do consumidor (o buffer real é de 4).
+	registro := realtime.NewRegistryWithBuffer(16)
 	eventos, cancelar := registro.Subscribe(empresaTeste)
 	defer cancelar()
 
@@ -2301,40 +2301,61 @@ func TestDecidirLotePedidosHandler_PublicaEventoNoSucesso(t *testing.T) {
 	// um bug do handler). Por isso o `ServeHTTP` roda numa goroutine própria
 	// e o dreno do canal começa EM PARALELO — o mesmo padrão que o
 	// consumidor real (StreamRealtimeHandler) segue.
-	const totalEsperado = 5
+	const totalEsperado = 6 // 3 pedidos + 2 produtos + 1 movimentacoes
 	recebidos := make([]struct {
 		Resource string
 		ID       string
 		Change   string
 	}, 0, totalEsperado)
 
-	servidoCh := make(chan struct{})
+	// Dreno dedicado e sem timers (um laço fechado sobre o canal): o Registry
+	// descarta eventos quando o buffer de 4 enche, então o consumidor precisa
+	// acompanhar o ritmo do handler.
+	var mu sync.Mutex
+	drenoFim := make(chan struct{})
 	go func() {
-		defer close(servidoCh)
-		mux.ServeHTTP(w, r)
-	}()
-
-	for len(recebidos) < totalEsperado {
-		select {
-		case ev := <-eventos:
+		defer close(drenoFim)
+		for ev := range eventos {
+			mu.Lock()
 			recebidos = append(recebidos, struct {
 				Resource string
 				ID       string
 				Change   string
 			}{ev.Resource, ev.ID, ev.Change})
-		case <-time.After(time.Second):
-			t.Fatalf("recebeu só %d de %d eventos esperados em 1s: %+v", len(recebidos), totalEsperado, recebidos)
+			mu.Unlock()
 		}
+	}()
+
+	mux.ServeHTTP(w, r)
+	prazo := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(recebidos)
+		mu.Unlock()
+		if n >= totalEsperado || time.Now().After(prazo) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	<-servidoCh
+	cancelar() // fecha o canal: encerra o dreno
+	<-drenoFim
+	if len(recebidos) < totalEsperado {
+		t.Fatalf("recebeu só %d de %d eventos esperados: %+v", len(recebidos), totalEsperado, recebidos)
+	}
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
 	}
 
 	eventosPedidos := map[string]string{}
 	eventosProdutos := map[string]bool{}
+	eventosMovimentacoes := 0
 	for _, ev := range recebidos {
 		switch ev.Resource {
+		case "movimentacoes":
+			eventosMovimentacoes++
+			if ev.Change != "created" {
+				t.Errorf("evento movimentacoes = %+v, want change created", ev)
+			}
 		case "pedidos":
 			eventosPedidos[ev.ID] = ev.Change
 		case "produtos":
@@ -2365,6 +2386,53 @@ func TestDecidirLotePedidosHandler_PublicaEventoNoSucesso(t *testing.T) {
 	}
 	if len(eventosProdutos) != 2 {
 		t.Errorf("eventos produtos = %+v, want 2 entradas (dedup de produtoTransfID repetido)", eventosProdutos)
+	}
+	if eventosMovimentacoes != 1 {
+		t.Errorf("eventos movimentacoes = %d, want exatamente 1 por chamada", eventosMovimentacoes)
+	}
+}
+
+// TestDecidirLotePedidosHandler_RejeicaoNaoPublicaMovimentacoes: rejeitar não
+// grava Movimentação, então a tela de Movimentações não é notificada.
+func TestDecidirLotePedidosHandler_RejeicaoNaoPublicaMovimentacoes(t *testing.T) {
+	db := testDB(t)
+	limparProdutosHandler(t, db)
+	criarContaComPapel(t, db, "H203 Rej Gestor", "h-lote-rej-gestor@empresa.com", "senha-123456", "gestor")
+	tokenGestor := tokenDeLogin(t, db, "h-lote-rej-gestor@empresa.com", "senha-123456")
+	dono, _ := seedContaComumECarrinho(t, db, "H203 Rej Dono", "h-lote-rej-dono@empresa.com")
+	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, "H203 Rej Baixa", 10)
+	pedido, err := services.SubmeterPedidoBaixa(db, empresaTeste, dono, "Fulano", "", "justificativa de teste", produtoID, estoqueID, 2, "perda_roubo")
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	registro := realtime.NewRegistry()
+	eventos, cancelar := registro.Subscribe(empresaTeste)
+	defer cancelar()
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /e/{slug}/api/pedidos/decisao-lote",
+		comEmpresa(db,
+			middleware.RequireAuth(db, testJWTSecret)(
+				middleware.RequireRole(services.PapelGestor)(
+					DecidirLotePedidosHandler(db, registro)))))
+	r := httptest.NewRequest(http.MethodPost, prefixoEmpresaTeste+"/api/pedidos/decisao-lote",
+		strings.NewReader(`{"pedidoIds":["`+pedido.ID+`"],"aprovar":false}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer "+tokenGestor)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r) // 2 eventos (pedidos + produtos) cabem no buffer
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	for {
+		select {
+		case ev := <-eventos:
+			if ev.Resource == "movimentacoes" {
+				t.Fatalf("rejeição publicou %+v", ev)
+			}
+		default:
+			return
+		}
 	}
 }
 
@@ -2434,15 +2502,25 @@ func getPreNotaPDF(db *sql.DB, authHeader, id string) *httptest.ResponseRecorder
 	return w
 }
 
-// seedPreNotaViaServico aprova em lote 1 Pedido de Baixa e devolve
+// seedPreNotaViaServico aprova em lote 1 Pedido de Transferência e devolve
 // (preNotaID, docnum).
+func submeterTransfHandlerTeste(t *testing.T, db *sql.DB, donoID, produtoID, estoqueID string, qtd float64) services.Pedido {
+	t.Helper()
+	destino, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Dest "+produtoID[:8])
+	if err != nil {
+		t.Fatalf("seed CriarEstoque (destino): %v", err)
+	}
+	p, err := services.SubmeterPedidoTransferencia(db, empresaTeste, donoID, "Fulano", "Obra Y", "", produtoID, estoqueID, destino.ID, qtd)
+	if err != nil {
+		t.Fatalf("seed SubmeterPedidoTransferencia: %v", err)
+	}
+	return p
+}
+
 func seedPreNotaViaServico(t *testing.T, db *sql.DB, gestorID, donoID, nome string) (string, int) {
 	t.Helper()
 	produtoID, estoqueID := seedProdutoComSaldoHandler(t, db, nome, 10)
-	pedido, err := services.SubmeterPedidoBaixa(db, empresaTeste, donoID, "Fulano", "Obra Y", "", produtoID, estoqueID, 3)
-	if err != nil {
-		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
-	}
+	pedido := submeterTransfHandlerTeste(t, db, donoID, produtoID, estoqueID, 3)
 	res, err := services.DecidirLotePedidos(db, empresaTeste, gestorID, []string{pedido.ID}, true)
 	if err != nil {
 		t.Fatalf("seed DecidirLotePedidos: %v", err)

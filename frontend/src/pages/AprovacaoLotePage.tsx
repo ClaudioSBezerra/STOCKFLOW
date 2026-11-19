@@ -6,6 +6,9 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { TipoPedidoBadge } from '@/components/pedidos/TipoPedidoBadge';
 import { BaixarPreNotaButton } from '@/components/pedidos/BaixarPreNotaButton';
+import { BaixarTermoBaixaButton } from '@/components/pedidos/BaixarTermoBaixaButton';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { rotuloCurtoMotivo } from '@/lib/motivosSaida';
 import { formatarQuantidade } from '@/components/catalogo/formatacao';
 import { conectarRealtime, type StatusRealtime } from '@/lib/realtime/client';
 import { deveRecarregarNaConexao } from '@/lib/realtime/recarregarNaConexao';
@@ -22,8 +25,11 @@ import {
 /**
  * Página "Aprovação em lote" (`/pedidos/aprovacao-lote`, Story 20.3, Epic
  * 20, spec-20-3) — tela dedicada onde um Gestor (`gestor`/`adm`) seleciona
- * vários Pedidos pendentes de Transferência e/ou Baixa e aprova/rejeita o
- * lote inteiro numa chamada só (`decidirLotePedidos`, POST
+ * vários Pedidos pendentes e aprova/rejeita o lote inteiro numa chamada só
+ * (spec-pedido-outras-saidas: DUAS ABAS — Transferências e Outras saídas —,
+ * cada uma com sua contagem, seleção e botões; trocar de aba limpa a seleção
+ * e um lote nunca mistura tipos; Transferências geram a Pré-Nota, Outras
+ * saídas geram um Termo de Baixa por motivo) (`decidirLotePedidos`, POST
  * /api/pedidos/decisao-lote). Molde de `FilaPedidosSection` (SSE via
  * `conectarRealtime`, `ConfirmDialog` próprio por ação) + o padrão de
  * seleção em lote de `InconsistenciasSection` (checkbox por linha +
@@ -51,7 +57,11 @@ const MENSAGEM_ERRO_CARREGAR =
   'Não foi possível carregar os pendentes agora. Tente novamente em instantes.';
 const MENSAGEM_ERRO_DECISAO =
   'Não foi possível registrar a decisão do lote agora. Tente novamente em instantes.';
-const MENSAGEM_VAZIO = 'Nenhum Pedido de Transferência ou de Baixa pendente.';
+type AbaLote = 'transferencia' | 'baixa';
+const MENSAGEM_VAZIO: Record<AbaLote, string> = {
+  transferencia: 'Nenhum Pedido de Transferência pendente.',
+  baixa: 'Nenhum Pedido de Outras Saídas pendente.',
+};
 const MENSAGEM_ERRO_DETALHE_LINHA =
   'Não foi possível carregar os detalhes deste pedido agora.';
 
@@ -83,7 +93,26 @@ function preNotaDoResultado(
   return { id: comPreNota.preNotaId, docnum: comPreNota.docnum ?? null };
 }
 
+/**
+ * Termos de Baixa gerados pelo lote (spec-pedido-outras-saidas): um por motivo
+ * — os Pedidos decididos agora apontam para o Termo do seu motivo; devolve um
+ * item por termo distinto, na ordem da resposta.
+ */
+function termosDoResultado(pedidos: PedidoDetalhe[]): { id: string; numero: number | null }[] {
+  const vistos = new Map<string, number | null>();
+  for (const p of pedidos) {
+    if (p.termoBaixaId && !vistos.has(p.termoBaixaId)) {
+      vistos.set(p.termoBaixaId, p.numeroTermo ?? null);
+    }
+  }
+  // Ordem crescente do número (sem número, ao fim) — nunca a da resposta.
+  return Array.from(vistos, ([id, numero]) => ({ id, numero })).sort(
+    (a, b) => (a.numero ?? Infinity) - (b.numero ?? Infinity),
+  );
+}
+
 function AprovacaoLoteConteudo() {
+  const [aba, setAba] = useState<AbaLote>('transferencia');
   const [pendentes, setPendentes] = useState<PedidoResumo[]>([]);
   const [erroCarregar, setErroCarregar] = useState<string | null>(null);
   const [carregou, setCarregou] = useState(false);
@@ -225,12 +254,30 @@ function AprovacaoLoteConteudo() {
     [errosDetalhe],
   );
 
+  const pendentesTransferencia = useMemo(
+    () => pendentes.filter((p) => p.tipo === 'transferencia'),
+    [pendentes],
+  );
+  const pendentesOutrasSaidas = useMemo(
+    () => pendentes.filter((p) => p.tipo === 'baixa'),
+    [pendentes],
+  );
+  // Só os pendentes da ABA ativa entram na tela, na seleção e na decisão.
+  const pendentesAba = aba === 'transferencia' ? pendentesTransferencia : pendentesOutrasSaidas;
+
+  function trocarAba(nova: AbaLote) {
+    if (nova === aba) return;
+    setAba(nova);
+    setSelecionados(new Set());
+    setErroDecisao(null);
+  }
+
   // selecionaveis: pendentes SEM erro de carga — "Selecionar todos" nunca
   // marca uma linha com erro (Checkbox dela fica desabilitado de qualquer
   // forma, mas a contagem/"todasSelecionadas" não deve considerá-la).
   const selecionaveis = useMemo(
-    () => pendentes.filter((p) => !errosDetalhe.has(p.id)),
-    [pendentes, errosDetalhe],
+    () => pendentesAba.filter((p) => !errosDetalhe.has(p.id)),
+    [pendentesAba, errosDetalhe],
   );
 
   const todasSelecionadas = useMemo(
@@ -270,6 +317,9 @@ function AprovacaoLoteConteudo() {
   const [preNotaGerada, setPreNotaGerada] = useState<{ id: string; docnum: number | null } | null>(
     null,
   );
+  // termosGerados: Termos de Baixa do ÚLTIMO lote de Outras saídas decidido
+  // (um botão por documento), mesma regra de preNotaGerada.
+  const [termosGerados, setTermosGerados] = useState<{ id: string; numero: number | null }[]>([]);
 
   async function decidirSelecionados(aprovar: boolean) {
     if (decidindo || selecionados.size === 0) {
@@ -280,7 +330,11 @@ function AprovacaoLoteConteudo() {
     try {
       const resultado = await decidirLotePedidos(Array.from(selecionados), aprovar);
       setSelecionados(new Set());
-      setPreNotaGerada(preNotaDoResultado(resultado));
+      if (aba === 'transferencia') {
+        setPreNotaGerada(preNotaDoResultado(resultado));
+      } else {
+        setTermosGerados(termosDoResultado(resultado));
+      }
       toast.success(mensagemResultadoLote(resultado));
       await carregar();
     } catch (err) {
@@ -290,20 +344,29 @@ function AprovacaoLoteConteudo() {
     }
   }
 
-  const vazio = carregou && !erroCarregar && pendentes.length === 0;
+  const vazio = carregou && !erroCarregar && pendentesAba.length === 0;
 
   return (
     <Card>
       <CardHeader>
         <h1 className="text-heading-lg">Aprovação em lote</h1>
         <CardDescription>
-          Selecione vários Pedidos de Transferência e/ou Baixa pendentes e aprove ou rejeite o lote
-          inteiro numa chamada só. O estoque disponível é revalidado item a item no momento da
-          aprovação — um item sem saldo suficiente fica parcialmente aprovado, sem travar o resto do
-          lote.
+          Selecione vários Pedidos pendentes da aba e aprove ou rejeite o lote inteiro numa chamada
+          só. Transferências geram a Pré-Nota; Outras saídas geram um Termo de Baixa por motivo. O
+          estoque disponível é revalidado item a item no momento da aprovação — um item sem saldo
+          suficiente fica parcialmente aprovado, sem travar o resto do lote.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
+        <Tabs value={aba} onValueChange={(v) => trocarAba(v as AbaLote)}>
+          <TabsList>
+            <TabsTrigger value="transferencia">
+              Transferências ({pendentesTransferencia.length})
+            </TabsTrigger>
+            <TabsTrigger value="baixa">Outras saídas ({pendentesOutrasSaidas.length})</TabsTrigger>
+          </TabsList>
+        </Tabs>
+
         {statusConexao === 'reconectando' && (
           <output aria-live="polite" className="text-label text-muted-foreground">
             Reconectando...
@@ -320,7 +383,7 @@ function AprovacaoLoteConteudo() {
           <output className="text-body text-muted-foreground">Carregando pendentes...</output>
         )}
 
-        {preNotaGerada && (
+        {aba === 'transferencia' && preNotaGerada && (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border p-3">
             <output aria-live="polite" className="text-body">
               {preNotaGerada.docnum !== null
@@ -331,7 +394,22 @@ function AprovacaoLoteConteudo() {
           </div>
         )}
 
-        {vazio && <p className="text-body text-muted-foreground">{MENSAGEM_VAZIO}</p>}
+        {aba === 'baixa' && termosGerados.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border p-3">
+            <output aria-live="polite" className="text-body">
+              {termosGerados.length === 1
+                ? 'Termo de Baixa gerado.'
+                : `${termosGerados.length} Termos de Baixa gerados (um por motivo).`}
+            </output>
+            <div className="flex flex-wrap gap-2">
+              {termosGerados.map((t) => (
+                <BaixarTermoBaixaButton key={t.id} termoBaixaId={t.id} numero={t.numero} compacto />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {vazio && <p className="text-body text-muted-foreground">{MENSAGEM_VAZIO[aba]}</p>}
 
         {erroDecisao && (
           <p role="alert" className="text-body text-destructive">
@@ -339,7 +417,7 @@ function AprovacaoLoteConteudo() {
           </p>
         )}
 
-        {pendentes.length > 0 && (
+        {pendentesAba.length > 0 && (
           <>
             <div className="flex gap-2">
               <Button
@@ -373,6 +451,12 @@ function AprovacaoLoteConteudo() {
                     </th>
                     <th className="py-2 pr-4 text-left font-medium">Solicitante</th>
                     <th className="py-2 pr-4 text-left font-medium">Tipo</th>
+                    {aba === 'baixa' && (
+                      <>
+                        <th className="py-2 pr-4 text-left font-medium">Motivo</th>
+                        <th className="py-2 pr-4 text-left font-medium">Justificativa</th>
+                      </>
+                    )}
                     <th className="py-2 pr-4 text-left font-medium">Produto</th>
                     <th className="py-2 pr-4 text-left font-medium">Quantidade</th>
                     <th className="py-2 pr-4 text-left font-medium">Estoque</th>
@@ -380,7 +464,7 @@ function AprovacaoLoteConteudo() {
                   </tr>
                 </thead>
                 <tbody>
-                  {pendentes.map((pedido) => {
+                  {pendentesAba.map((pedido) => {
                     const detalhe = detalhes.get(pedido.id);
                     const item = detalhe?.itens[0];
                     const erroLinha = errosDetalhe.has(pedido.id);
@@ -398,6 +482,14 @@ function AprovacaoLoteConteudo() {
                         <td className="py-2 pr-4">
                           <TipoPedidoBadge tipo={pedido.tipo} />
                         </td>
+                        {aba === 'baixa' && (
+                          <>
+                            <td className="py-2 pr-4">{rotuloCurtoMotivo(pedido.motivoSaida)}</td>
+                            <td className="py-2 pr-4 max-w-xs break-words">
+                              {pedido.observacao ?? '—'}
+                            </td>
+                          </>
+                        )}
                         {erroLinha ? (
                           <td className="py-2 pr-4" colSpan={3}>
                             <span role="alert" className="text-destructive">

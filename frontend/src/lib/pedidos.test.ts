@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
   baixarPreNotaPDF,
+  baixarTermoBaixaPDF,
   buscarPedido,
   buscarReciboPedidoBlob,
   decidirLotePedidos,
@@ -323,6 +324,37 @@ describe('buscarReciboPedidoBlob', () => {
 
 // Story 20.5 (spec-20-5): download do PDF da Pré-Nota — molde de
 // buscarReciboPedidoBlob.
+describe('baixarTermoBaixaPDF', () => {
+  const MENSAGEM = 'Não foi possível baixar o Termo de Baixa agora. Tente novamente em instantes.';
+
+  it('GET /api/termos-baixa/{id}/pdf com Authorization e devolve o Blob do corpo', async () => {
+    const blob = new Blob(['%PDF-fake'], { type: 'application/pdf' });
+    fetchMock.mockReturnValue(Promise.resolve({ ok: true, blob: async () => blob }));
+
+    const resultado = await baixarTermoBaixaPDF('tb-1');
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/termos-baixa/tb-1/pdf');
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer token-de-teste' });
+    expect(resultado).toBe(blob);
+  });
+
+  it('propaga a mensagem do servidor e cai no fallback amigável em falha de rede/sem mensagem', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 403,
+      json: async () => ({ error: { code: 'FORBIDDEN', message: 'permissão insuficiente' } }),
+    });
+    await expect(baixarTermoBaixaPDF('tb-1')).rejects.toThrow('permissão insuficiente');
+
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await expect(baixarTermoBaixaPDF('tb-1')).rejects.toThrow(MENSAGEM);
+
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) });
+    await expect(baixarTermoBaixaPDF('tb-1')).rejects.toThrow(MENSAGEM);
+  });
+});
+
 describe('baixarPreNotaPDF', () => {
   it('GET /api/pre-notas/{id}/pdf com Authorization e devolve o Blob do corpo', async () => {
     const blob = new Blob(['%PDF-fake'], { type: 'application/pdf' });
@@ -383,13 +415,14 @@ describe('baixarPreNotaPDF', () => {
 describe('submeterPedidoBaixa', () => {
   const INPUT = {
     obraCentroCusto: 'Obra Norte',
-    observacao: '',
+    observacao: 'Furto no galpão 3',
     produtoId: 'prod-1',
     estoqueId: 'est-1',
     quantidade: 5,
+    motivo: 'perda_roubo' as const,
   };
   const MENSAGEM_FALLBACK =
-    'Não foi possível enviar o pedido de baixa agora. Tente novamente em instantes.';
+    'Não foi possível enviar o pedido de outras saídas agora. Tente novamente em instantes.';
 
   it('POST /api/pedidos/baixa com Authorization e devolve o pedido no sucesso', async () => {
     const pedido = { id: 'ped-1', status: 'pendente', tipo: 'baixa' };

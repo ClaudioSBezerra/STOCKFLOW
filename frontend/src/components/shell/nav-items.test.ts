@@ -47,7 +47,7 @@ describe('nav-items: grupos e papéis', () => {
       '/carrinho',
       '/pedidos',
       '/pedidos/transferencia',
-      '/pedidos/baixa',
+      '/pedidos/outras-saidas',
       '/pedidos/fila',
       '/pedidos/aprovacao-lote',
       '/estoques',

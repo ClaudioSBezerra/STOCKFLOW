@@ -13,21 +13,27 @@ import {
 } from '@/components/ui/select';
 import { apiUrl, authHeaders } from '@/lib/api';
 import { submeterPedidoBaixa } from '@/lib/pedidos';
+import { type MotivoSaida } from '@/lib/motivosSaida';
+import { MotivoSaidaSelect } from '@/components/pedidos/MotivoSaidaSelect';
+import { JustificativaSaidaField, justificativaLonga } from '@/components/pedidos/JustificativaSaidaField';
 import { formatarQuantidade } from '@/components/catalogo/formatacao';
 
 /**
- * Página `/pedidos/baixa` — "Pedido de Baixa de Estoque" (Story 20.2, Epic
- * 20, spec-20-2): solicita a baixa de saldo num Estoque SEM mexer em saldo
- * físico — cria um Pedido `pendente` com a MESMA reserva dura do Pedido de
- * retirada/Transferência, aguardando um Gestor decidir (Story 20.3, fora de
- * escopo aqui). Tela própria, nunca passa pelo Carrinho — o envio é direto
+ * Página `/pedidos/outras-saidas` — "Pedido de Outras Saídas" (Story 20.2,
+ * Epic 20, spec-20-2; renomeada e com motivo + justificativa obrigatórios em
+ * spec-pedido-outras-saidas; `/pedidos/baixa` redireciona para cá): solicita a
+ * saída de saldo de um Estoque SEM mexer em saldo físico — cria um Pedido
+ * `pendente` com a MESMA reserva dura do Pedido de retirada/Transferência,
+ * aguardando um Gestor decidir na Aprovação em lote (Story 20.3), que gera o
+ * Termo de Baixa. Tela própria, nunca passa pelo Carrinho — o envio é direto
  * de 1 item (Produto + Estoque + quantidade), sem Estoque destino (molde de
  * PedidoTransferenciaPage.tsx, sem o segundo Select).
  *
  * Visível para `usuario`+ (mesmo mínimo de papel do Pedido de retirada/
  * Transferência — `nav-items.ts`). Molde de `LancamentoSaldoSection` (busca
- * de Produto por `GET /api/produtos/busca?q=`) + `CarrinhoPage` (campo
- * Observação do envio de Pedido).
+ * de Produto por `GET /api/produtos/busca?q=`). A Justificativa (campo
+ * `observacao` do Pedido) é obrigatória e limitada a 1000 caracteres, com
+ * contador.
  *
  * SEM campo "Solicitante" (requisito do usuário, pós-revisão: "Solicitante é
  * o usuário logado, não precisa pedir") — o servidor resolve o nome da
@@ -84,14 +90,14 @@ const MENSAGEM_ERRO_ESTOQUES =
 const MENSAGEM_ERRO_SALDO =
   'Não foi possível carregar o saldo disponível agora.';
 const MENSAGEM_ERRO_ENVIO =
-  'Não foi possível enviar o pedido de baixa agora. Tente novamente em instantes.';
+  'Não foi possível enviar o pedido de outras saídas agora. Tente novamente em instantes.';
 
 /** Rótulo "Estoque — Filial" (ou só o nome do Estoque, sem Filial cadastrada). */
 function rotuloEstoque(estoque: EstoqueOpcao): string {
   return estoque.filial_nome ? `${estoque.nome} — ${estoque.filial_nome}` : estoque.nome;
 }
 
-export function PedidoBaixaPage() {
+export function PedidoOutrasSaidasPage() {
   const [estoques, setEstoques] = useState<EstoqueOpcao[] | null>(null);
   const [erroEstoques, setErroEstoques] = useState<string | null>(null);
 
@@ -108,6 +114,7 @@ export function PedidoBaixaPage() {
   const [estoqueId, setEstoqueId] = useState('');
   const [quantidade, setQuantidade] = useState('');
 
+  const [motivo, setMotivo] = useState<MotivoSaida | ''>('');
   const [obraCentroCusto, setObraCentroCusto] = useState('');
   const [observacao, setObservacao] = useState('');
 
@@ -239,7 +246,13 @@ export function PedidoBaixaPage() {
   const quantidadeValida =
     quantidade.trim() !== '' && Number.isFinite(quantidadeNumero) && quantidadeNumero > 0;
   const podeEnviar =
-    !enviando && produto !== null && estoqueId !== '' && quantidadeValida;
+    !enviando &&
+    produto !== null &&
+    estoqueId !== '' &&
+    quantidadeValida &&
+    motivo !== '' &&
+    observacao.trim() !== '' &&
+    !justificativaLonga(observacao);
 
   const disponivelSelecionado =
     produto && estoqueId
@@ -260,17 +273,19 @@ export function PedidoBaixaPage() {
         produtoId: produto.id,
         estoqueId,
         quantidade: quantidadeNumero,
+        motivo,
       });
       // Revisão pós-Story 20.2: protege contra setState após desmontar
       // durante o await acima — mesmo padrão `montadoRef.current` já usado
       // nos efeitos de busca de Estoques/Produto neste mesmo arquivo.
       if (!montadoRef.current) return;
       toast.success(
-        'Pedido de Baixa enviado. O saldo ficou reservado até a decisão do gestor.',
+        'Pedido de Outras Saídas enviado. O saldo ficou reservado até a decisão do gestor.',
       );
       setProduto(null);
       setEstoqueId('');
       setQuantidade('');
+      setMotivo('');
       setObraCentroCusto('');
       setObservacao('');
     } catch (err) {
@@ -285,10 +300,10 @@ export function PedidoBaixaPage() {
     <div className="flex flex-col gap-4 p-6">
       <Card>
         <CardHeader>
-          <h1 className="text-heading-lg">Pedido de Baixa de Estoque</h1>
+          <h1 className="text-heading-lg">Pedido de Outras Saídas</h1>
           <CardDescription>
-            Solicita a baixa de saldo de um Estoque, sem mexer em saldo físico — o saldo fica
-            reservado até um Gestor aprovar.
+            Solicita a saída de saldo de um Estoque (perda, roubo, vencimento, avaria ou uso na
+            obra), sem mexer em saldo físico — o saldo fica reservado até um Gestor aprovar.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
@@ -397,6 +412,8 @@ export function PedidoBaixaPage() {
               />
             </div>
 
+            <MotivoSaidaSelect idBase="baixa" valor={motivo} onChange={setMotivo} />
+
             <div className="flex flex-col gap-2">
               <Label htmlFor="baixa-obra">Obra / centro de custo (opcional)</Label>
               <Input
@@ -406,15 +423,12 @@ export function PedidoBaixaPage() {
               />
             </div>
 
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="baixa-observacao">Observação (opcional)</Label>
-              <textarea
-                id="baixa-observacao"
-                className="min-h-16 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-2 text-base shadow-xs outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 md:text-sm dark:bg-input/30"
-                value={observacao}
-                onChange={(event) => setObservacao(event.target.value)}
-              />
-            </div>
+            <JustificativaSaidaField
+              id="baixa-observacao"
+              valor={observacao}
+              onChange={setObservacao}
+              placeholder="Explique o que aconteceu (ex.: Furto no galpão 3, BO 123)"
+            />
 
             {erroEnvio && (
               <p role="alert" className="text-body text-destructive">
@@ -424,7 +438,7 @@ export function PedidoBaixaPage() {
 
             <div>
               <Button type="submit" disabled={!podeEnviar}>
-                {enviando ? 'Enviando...' : 'Enviar pedido de baixa'}
+                {enviando ? 'Enviando...' : 'Enviar pedido de outras saídas'}
               </Button>
             </div>
           </form>
@@ -434,4 +448,4 @@ export function PedidoBaixaPage() {
   );
 }
 
-export default PedidoBaixaPage;
+export default PedidoOutrasSaidasPage;

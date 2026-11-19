@@ -135,6 +135,8 @@ func removerEmpresaDeTeste(t *testing.T, db *sql.DB, slug string) {
 		// então chame este helper precisa dela limpa aqui também.
 		`DELETE FROM pre_notas WHERE empresa_id = $1`,
 		`DELETE FROM contadores_pre_nota WHERE empresa_id = $1`,
+		`DELETE FROM termos_baixa WHERE empresa_id = $1`,
+		`DELETE FROM contadores_termo_baixa WHERE empresa_id = $1`,
 		`DELETE FROM empresas WHERE id = $1`,
 	} {
 		if _, err := db.Exec(stmt, id); err != nil {

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/lib/pq"
 	"github.com/signintech/gopdf"
@@ -68,6 +69,28 @@ type Pedido struct {
 	// impresso) ter o que referenciar; nenhum uso de UI ainda nesta story.
 	PreNotaID *string `json:"preNotaId"`
 	Docnum    *int    `json:"docnum"`
+	// MotivoSaida/TermoBaixaID/NumeroTermo (spec-pedido-outras-saidas):
+	// motivo do Pedido de Outras Saídas (`tipo='baixa'`; nil em baixas antigas
+	// e nos demais tipos) e vínculo ao Termo de Baixa gerado na aprovação em
+	// lote (LEFT JOIN ao vivo com `termos_baixa`, como PreNotaID/Docnum).
+	MotivoSaida  *string `json:"motivoSaida"`
+	TermoBaixaID *string `json:"termoBaixaId"`
+	NumeroTermo  *int    `json:"numeroTermo"`
+}
+
+// Motivos válidos de um Pedido de Outras Saídas (`pedidos.motivo_saida`).
+const (
+	MotivoSaidaPerdaRoubo      = "perda_roubo"
+	MotivoSaidaVencidoAvariado = "vencido_avariado"
+	MotivoSaidaUtilizacaoObra  = "utilizacao_obra"
+)
+
+// MaxJustificativaSaida é o limite (em caracteres, após trim) da justificativa
+// de um Pedido de Outras Saídas.
+const MaxJustificativaSaida = 1000
+
+func motivoSaidaValido(m string) bool {
+	return m == MotivoSaidaPerdaRoubo || m == MotivoSaidaVencidoAvariado || m == MotivoSaidaUtilizacaoObra
 }
 
 // PedidoItem é uma linha do SNAPSHOT imutável em `pedido_itens` (AD-17,
@@ -663,7 +686,19 @@ func SubmeterPedidoBaixa(
 	usuarioID, solicitante, obraCentroCusto, observacao string,
 	produtoID, estoqueID string,
 	quantidade float64,
+	motivo string,
 ) (Pedido, error) {
+	motivoTrim := strings.TrimSpace(motivo)
+	if !motivoSaidaValido(motivoTrim) {
+		return Pedido{}, &ErroPedidoValidacao{Mensagem: "motivo da saída é obrigatório (perda ou roubo; vencido ou avariado; utilização na obra)"}
+	}
+	justificativaTrim := strings.TrimSpace(observacao)
+	if justificativaTrim == "" {
+		return Pedido{}, &ErroPedidoValidacao{Mensagem: "justificativa é obrigatória"}
+	}
+	if utf8.RuneCountInString(justificativaTrim) > MaxJustificativaSaida {
+		return Pedido{}, &ErroPedidoValidacao{Mensagem: "A justificativa deve ter no máximo 1000 caracteres."}
+	}
 	solicitanteTrim := strings.TrimSpace(solicitante)
 	if solicitanteTrim == "" {
 		return Pedido{}, &ErroPedidoValidacao{Mensagem: "solicitante é obrigatório"}
@@ -750,10 +785,10 @@ func SubmeterPedidoBaixa(
 	// nunca gravam NULL) — um Pedido de Baixa sem Obra/Centro de Custo vira
 	// NULL na coluna (migrations/000057) mas "" aqui, nunca um erro de Scan.
 	const insertPedido = `
-		INSERT INTO pedidos (usuario_id, solicitante, obra_centro_custo, observacao, empresa_id, tipo)
-		VALUES ($1, $2, $3, $4, $5, 'baixa')
+		INSERT INTO pedidos (usuario_id, solicitante, obra_centro_custo, observacao, empresa_id, tipo, motivo_saida)
+		VALUES ($1, $2, $3, $4, $5, 'baixa', $6)
 		RETURNING id, usuario_id, solicitante, COALESCE(obra_centro_custo, ''), observacao, status, criado_em, tipo`
-	if err := tx.QueryRow(insertPedido, usuarioID, solicitanteTrim, obraCentroCustoNull, observacaoNull, empresaID).Scan(
+	if err := tx.QueryRow(insertPedido, usuarioID, solicitanteTrim, obraCentroCustoNull, observacaoNull, empresaID, motivoTrim).Scan(
 		&pedido.ID, &pedido.UsuarioID, &pedido.Solicitante, &pedido.ObraCentroCusto,
 		&observacaoGravada, &pedido.Status, &pedido.CriadoEm, &pedido.Tipo,
 	); err != nil {
@@ -762,6 +797,7 @@ func SubmeterPedidoBaixa(
 	if observacaoGravada.Valid {
 		pedido.Observacao = &observacaoGravada.String
 	}
+	pedido.MotivoSaida = &motivoTrim
 
 	const insertItem = `
 		INSERT INTO pedido_itens (pedido_id, produto_id, produto_nome, categoria_nome, estoque_id, estoque_nome, quantidade, empresa_id)
@@ -826,10 +862,11 @@ func ListarPedidosProprios(db *sql.DB, empresaID string, usuarioID, filtroStatus
 	// decidido fora de lote) — exposição mínima pra Story 20.5 referenciar.
 	q := `
 		SELECT p.id, p.usuario_id, p.solicitante, COALESCE(p.obra_centro_custo, ''), p.observacao, p.status, p.criado_em, p.tipo,
-		       (SELECT count(*) FROM pedido_itens pi WHERE pi.pedido_id = p.id), cc.nome, pn.id, pn.docnum
+		       (SELECT count(*) FROM pedido_itens pi WHERE pi.pedido_id = p.id), cc.nome, pn.id, pn.docnum, p.motivo_saida, tb.id, tb.numero
 		FROM pedidos p
 		LEFT JOIN centros_custo cc ON cc.id = p.centro_custo_id AND cc.empresa_id = p.empresa_id
 		LEFT JOIN pre_notas pn ON pn.id = p.pre_nota_id
+		LEFT JOIN termos_baixa tb ON tb.id = p.termo_baixa_id
 		WHERE p.usuario_id = $1 AND p.empresa_id = $2`
 	args := []any{usuarioID, empresaID}
 	if filtroStatus != "" {
@@ -851,9 +888,11 @@ func ListarPedidosProprios(db *sql.DB, empresaID string, usuarioID, filtroStatus
 		var centroCusto sql.NullString
 		var preNotaID sql.NullString
 		var docnum sql.NullInt64
+		var motivoSaida, termoBaixaID sql.NullString
+		var numeroTermo sql.NullInt64
 		if err := rows.Scan(
 			&r.ID, &r.UsuarioID, &r.Solicitante, &r.ObraCentroCusto,
-			&observacao, &r.Status, &r.CriadoEm, &r.Tipo, &r.QtdItens, &centroCusto, &preNotaID, &docnum,
+			&observacao, &r.Status, &r.CriadoEm, &r.Tipo, &r.QtdItens, &centroCusto, &preNotaID, &docnum, &motivoSaida, &termoBaixaID, &numeroTermo,
 		); err != nil {
 			return nil, fmt.Errorf("falha ao ler linha de pedido próprio: %w", err)
 		}
@@ -869,6 +908,16 @@ func ListarPedidosProprios(db *sql.DB, empresaID string, usuarioID, filtroStatus
 		if docnum.Valid {
 			d := int(docnum.Int64)
 			r.Docnum = &d
+		}
+		if motivoSaida.Valid {
+			r.MotivoSaida = &motivoSaida.String
+		}
+		if termoBaixaID.Valid {
+			r.TermoBaixaID = &termoBaixaID.String
+		}
+		if numeroTermo.Valid {
+			n := int(numeroTermo.Int64)
+			r.NumeroTermo = &n
 		}
 		resumos = append(resumos, r)
 	}
@@ -899,10 +948,11 @@ func ListarPedidosFila(db *sql.DB, empresaID string, filtroStatus string) ([]Ped
 	// em ListarPedidosProprios.
 	q := `
 		SELECT p.id, p.usuario_id, p.solicitante, COALESCE(p.obra_centro_custo, ''), p.observacao, p.status, p.criado_em, p.tipo,
-		       COALESCE(i.qtd, 0), cc.nome, pn.id, pn.docnum
+		       COALESCE(i.qtd, 0), cc.nome, pn.id, pn.docnum, p.motivo_saida, tb.id, tb.numero
 		FROM pedidos p
 		LEFT JOIN centros_custo cc ON cc.id = p.centro_custo_id AND cc.empresa_id = p.empresa_id
 		LEFT JOIN pre_notas pn ON pn.id = p.pre_nota_id
+		LEFT JOIN termos_baixa tb ON tb.id = p.termo_baixa_id
 		LEFT JOIN (
 			SELECT pedido_id, count(*) AS qtd FROM pedido_itens WHERE empresa_id = $1 GROUP BY pedido_id
 		) i ON i.pedido_id = p.id
@@ -927,9 +977,11 @@ func ListarPedidosFila(db *sql.DB, empresaID string, filtroStatus string) ([]Ped
 		var centroCusto sql.NullString
 		var preNotaID sql.NullString
 		var docnum sql.NullInt64
+		var motivoSaida, termoBaixaID sql.NullString
+		var numeroTermo sql.NullInt64
 		if err := rows.Scan(
 			&r.ID, &r.UsuarioID, &r.Solicitante, &r.ObraCentroCusto,
-			&observacao, &r.Status, &r.CriadoEm, &r.Tipo, &r.QtdItens, &centroCusto, &preNotaID, &docnum,
+			&observacao, &r.Status, &r.CriadoEm, &r.Tipo, &r.QtdItens, &centroCusto, &preNotaID, &docnum, &motivoSaida, &termoBaixaID, &numeroTermo,
 		); err != nil {
 			return nil, fmt.Errorf("falha ao ler linha da fila de pedidos: %w", err)
 		}
@@ -945,6 +997,16 @@ func ListarPedidosFila(db *sql.DB, empresaID string, filtroStatus string) ([]Ped
 		if docnum.Valid {
 			d := int(docnum.Int64)
 			r.Docnum = &d
+		}
+		if motivoSaida.Valid {
+			r.MotivoSaida = &motivoSaida.String
+		}
+		if termoBaixaID.Valid {
+			r.TermoBaixaID = &termoBaixaID.String
+		}
+		if numeroTermo.Valid {
+			n := int(numeroTermo.Int64)
+			r.NumeroTermo = &n
 		}
 		resumos = append(resumos, r)
 	}
@@ -993,19 +1055,22 @@ func BuscarPedidoProprio(db *sql.DB, empresaID string, pedidoID, usuarioID, pape
 	var centroCusto sql.NullString
 	var preNotaID sql.NullString
 	var docnum sql.NullInt64
+	var motivoSaida, termoBaixaID sql.NullString
+	var numeroTermo sql.NullInt64
 	// Mesmo COALESCE(obra_centro_custo, '') de ListarPedidosProprios/Fila
 	// (Story 20.2/20.1, migrations/000057/000058). LEFT JOIN pre_notas
 	// (Story 20.4, spec-20-4) — ver comentário equivalente em
 	// ListarPedidosProprios.
 	const selectPedido = `
-		SELECT p.id, p.usuario_id, p.solicitante, COALESCE(p.obra_centro_custo, ''), p.observacao, p.status, p.criado_em, p.tipo, cc.nome, pn.id, pn.docnum
+		SELECT p.id, p.usuario_id, p.solicitante, COALESCE(p.obra_centro_custo, ''), p.observacao, p.status, p.criado_em, p.tipo, cc.nome, pn.id, pn.docnum, p.motivo_saida, tb.id, tb.numero
 		FROM pedidos p
 		LEFT JOIN centros_custo cc ON cc.id = p.centro_custo_id AND cc.empresa_id = p.empresa_id
 		LEFT JOIN pre_notas pn ON pn.id = p.pre_nota_id
+		LEFT JOIN termos_baixa tb ON tb.id = p.termo_baixa_id
 		WHERE p.id = $1 AND p.empresa_id = $2`
 	if err := db.QueryRow(selectPedido, pedidoID, empresaID).Scan(
 		&det.ID, &det.UsuarioID, &det.Solicitante, &det.ObraCentroCusto,
-		&observacao, &det.Status, &det.CriadoEm, &det.Tipo, &centroCusto, &preNotaID, &docnum,
+		&observacao, &det.Status, &det.CriadoEm, &det.Tipo, &centroCusto, &preNotaID, &docnum, &motivoSaida, &termoBaixaID, &numeroTermo,
 	); err != nil {
 		var pqErr *pq.Error
 		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
@@ -1025,6 +1090,16 @@ func BuscarPedidoProprio(db *sql.DB, empresaID string, pedidoID, usuarioID, pape
 	if docnum.Valid {
 		d := int(docnum.Int64)
 		det.Docnum = &d
+	}
+	if motivoSaida.Valid {
+		det.MotivoSaida = &motivoSaida.String
+	}
+	if termoBaixaID.Valid {
+		det.TermoBaixaID = &termoBaixaID.String
+	}
+	if numeroTermo.Valid {
+		n := int(numeroTermo.Int64)
+		det.NumeroTermo = &n
 	}
 
 	if det.UsuarioID != usuarioID && RankPapel(papel) < RankPapel(PapelAlmoxarife) {
@@ -1392,9 +1467,31 @@ type itemLotePedido struct {
 // snapshot de itens lido dentro da transação — montado ANTES de travar
 // qualquer par (AD-10), consumido depois por decidirUmPedidoDoLoteTx.
 type pedidoLoteContexto struct {
-	ID    string
-	Tipo  string
-	Itens []itemLotePedido
+	ID   string
+	Tipo string
+	// Motivo: `pedidos.motivo_saida` (só Outras Saídas; "" = sem motivo).
+	Motivo string
+	Itens  []itemLotePedido
+}
+
+// proximoNumeroTermoBaixa gera o próximo número sequencial de Termo de Baixa
+// da Empresa (spec-pedido-outras-saidas) — mesmo molde de proximoDocnumPreNota,
+// com contador PRÓPRIO (`contadores_termo_baixa`), na transação do chamador.
+func proximoNumeroTermoBaixa(tx *sql.Tx, empresaID string) (int, error) {
+	var numero int
+	err := tx.QueryRow(
+		`UPDATE contadores_termo_baixa SET ultimo_numero = ultimo_numero + 1
+		  WHERE empresa_id = $1
+		RETURNING ultimo_numero`,
+		empresaID,
+	).Scan(&numero)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, fmt.Errorf("contador de termo de baixa ausente para a empresa %s", empresaID)
+		}
+		return 0, fmt.Errorf("falha ao gerar próximo número de termo de baixa: %w", err)
+	}
+	return numero, nil
 }
 
 // proximoDocnumPreNota gera o próximo `docnum` sequencial de Pré-Nota para
@@ -1503,10 +1600,11 @@ func DecidirLotePedidos(db *sql.DB, empresaID, decisorID string, pedidoIDs []str
 	// {transferencia, baixa} rejeita a lista inteira, nada gravado nem para
 	// os ids que seriam válidos.
 	tipos := make(map[string]string, len(idsUnicos))
-	const selectTipo = `SELECT tipo FROM pedidos WHERE id = $1 AND empresa_id = $2`
+	motivos := make(map[string]string, len(idsUnicos))
+	const selectTipo = `SELECT tipo, COALESCE(motivo_saida, '') FROM pedidos WHERE id = $1 AND empresa_id = $2`
 	for _, id := range idsUnicos {
-		var tipo string
-		if err := db.QueryRow(selectTipo, id, empresaID).Scan(&tipo); err != nil {
+		var tipo, motivo string
+		if err := db.QueryRow(selectTipo, id, empresaID).Scan(&tipo, &motivo); err != nil {
 			var pqErr *pq.Error
 			if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
 				return nil, ErrPedidoNaoEncontrado
@@ -1517,6 +1615,7 @@ func DecidirLotePedidos(db *sql.DB, empresaID, decisorID string, pedidoIDs []str
 			return nil, &ErroPedidoValidacao{Mensagem: "o lote só pode conter Pedidos de Transferência ou de Baixa"}
 		}
 		tipos[id] = tipo
+		motivos[id] = motivo
 	}
 
 	tx, err := db.Begin()
@@ -1546,7 +1645,7 @@ func DecidirLotePedidos(db *sql.DB, empresaID, decisorID string, pedidoIDs []str
 		if err != nil {
 			return nil, fmt.Errorf("falha ao listar itens do pedido %s no lote: %w", id, err)
 		}
-		ctx := &pedidoLoteContexto{ID: id, Tipo: tipos[id]}
+		ctx := &pedidoLoteContexto{ID: id, Tipo: tipos[id], Motivo: motivos[id]}
 		for rows.Next() {
 			var it itemLotePedido
 			if err := rows.Scan(
@@ -1628,7 +1727,19 @@ func DecidirLotePedidos(db *sql.DB, empresaID, decisorID string, pedidoIDs []str
 	// sempre vazio nesse caso). Gerado DENTRO da MESMA transação do lote,
 	// ANTES do Commit — um lote que falhar depois nunca deixa um `docnum`
 	// avançado sem Pedido nenhum vinculado.
-	if len(idsDecididosAgora) > 0 {
+	// Outras Saídas (spec-pedido-outras-saidas): Pedidos de baixa NÃO entram
+	// na Pré-Nota — geram um Termo de Baixa por motivo (abaixo).
+	var idsTransferencia []string
+	idsBaixaPorMotivo := map[string][]string{}
+	for _, id := range idsDecididosAgora {
+		if contextos[id].Tipo == "baixa" {
+			m := contextos[id].Motivo
+			idsBaixaPorMotivo[m] = append(idsBaixaPorMotivo[m], id)
+		} else {
+			idsTransferencia = append(idsTransferencia, id)
+		}
+	}
+	if len(idsTransferencia) > 0 {
 		docnum, err := proximoDocnumPreNota(tx, empresaID)
 		if err != nil {
 			return nil, err
@@ -1644,7 +1755,7 @@ func DecidirLotePedidos(db *sql.DB, empresaID, decisorID string, pedidoIDs []str
 		const vincularPedidos = `
 			UPDATE pedidos SET pre_nota_id = $1
 			WHERE empresa_id = $2 AND id = ANY($3)`
-		if _, err := tx.Exec(vincularPedidos, preNotaID, empresaID, pq.Array(idsDecididosAgora)); err != nil {
+		if _, err := tx.Exec(vincularPedidos, preNotaID, empresaID, pq.Array(idsTransferencia)); err != nil {
 			return nil, fmt.Errorf("falha ao vincular pedidos à pré-nota do lote: %w", err)
 		}
 		// Achado de revisão (3 revisores independentes, Story 20.4): sem
@@ -1653,10 +1764,49 @@ func DecidirLotePedidos(db *sql.DB, empresaID, decisorID string, pedidoIDs []str
 		// (ListarPedidosProprios/Fila, BuscarPedidoProprio) mostrava o
 		// vínculo. `porID` é atualizado aqui, ANTES de montar `resultado`
 		// abaixo, para que a resposta já reflita o vínculo recém-gravado.
-		for _, id := range idsDecididosAgora {
+		for _, id := range idsTransferencia {
 			det := porID[id]
 			det.PreNotaID = &preNotaID
 			det.Docnum = &docnum
+			porID[id] = det
+		}
+	}
+
+	// Termo de Baixa: um por motivo, em ordem fixa (perda_roubo,
+	// vencido_avariado, utilizacao_obra, sem motivo), cada um com seu número — mesma
+	// transação, contador próprio (independente da Pré-Nota).
+	for _, motivo := range []string{MotivoSaidaPerdaRoubo, MotivoSaidaVencidoAvariado, MotivoSaidaUtilizacaoObra, ""} {
+		ids := idsBaixaPorMotivo[motivo]
+		if len(ids) == 0 {
+			continue
+		}
+		numero, err := proximoNumeroTermoBaixa(tx, empresaID)
+		if err != nil {
+			return nil, err
+		}
+		var motivoNull sql.NullString
+		if motivo != "" {
+			motivoNull = sql.NullString{String: motivo, Valid: true}
+		}
+		var termoID string
+		const inserirTermo = `
+			INSERT INTO termos_baixa (empresa_id, numero, motivo_saida, decidido_por)
+			VALUES ($1, $2, $3, $4)
+			RETURNING id`
+		if err := tx.QueryRow(inserirTermo, empresaID, numero, motivoNull, decisorID).Scan(&termoID); err != nil {
+			return nil, fmt.Errorf("falha ao gravar termo de baixa do lote: %w", err)
+		}
+		const vincularTermo = `
+			UPDATE pedidos SET termo_baixa_id = $1
+			WHERE empresa_id = $2 AND id = ANY($3)`
+		if _, err := tx.Exec(vincularTermo, termoID, empresaID, pq.Array(ids)); err != nil {
+			return nil, fmt.Errorf("falha ao vincular pedidos ao termo de baixa do lote: %w", err)
+		}
+		for _, id := range ids {
+			det := porID[id]
+			tid, n := termoID, numero
+			det.TermoBaixaID = &tid
+			det.NumeroTermo = &n
 			porID[id] = det
 		}
 	}
@@ -1911,13 +2061,17 @@ func lerPedidoDetalheTx(tx *sql.Tx, empresaID, pedidoID string) (PedidoDetalhe, 
 	var decididoEm sql.NullTime
 	var centroCusto sql.NullString
 	const selectPedido = `
-		SELECT p.id, p.usuario_id, p.solicitante, COALESCE(p.obra_centro_custo, ''), p.observacao, p.status, p.criado_em, p.decidido_por, p.decidido_em, p.tipo, cc.nome
+		SELECT p.id, p.usuario_id, p.solicitante, COALESCE(p.obra_centro_custo, ''), p.observacao, p.status, p.criado_em, p.decidido_por, p.decidido_em, p.tipo, cc.nome, p.motivo_saida, tb.id, tb.numero
 		FROM pedidos p
 		LEFT JOIN centros_custo cc ON cc.id = p.centro_custo_id AND cc.empresa_id = p.empresa_id
+		LEFT JOIN termos_baixa tb ON tb.id = p.termo_baixa_id
 		WHERE p.id = $1 AND p.empresa_id = $2`
+	var motivoSaida, termoBaixaID sql.NullString
+	var numeroTermo sql.NullInt64
 	if err := tx.QueryRow(selectPedido, pedidoID, empresaID).Scan(
 		&det.ID, &det.UsuarioID, &det.Solicitante, &det.ObraCentroCusto,
 		&observacao, &det.Status, &det.CriadoEm, &decididoPor, &decididoEm, &det.Tipo, &centroCusto,
+		&motivoSaida, &termoBaixaID, &numeroTermo,
 	); err != nil {
 		return PedidoDetalhe{}, fmt.Errorf("falha ao reler pedido %s já decidido no lote: %w", pedidoID, err)
 	}
@@ -1932,6 +2086,17 @@ func lerPedidoDetalheTx(tx *sql.Tx, empresaID, pedidoID string) (PedidoDetalhe, 
 	}
 	if decididoEm.Valid {
 		det.DecididoEm = &decididoEm.Time
+	}
+
+	if motivoSaida.Valid {
+		det.MotivoSaida = &motivoSaida.String
+	}
+	if termoBaixaID.Valid {
+		det.TermoBaixaID = &termoBaixaID.String
+	}
+	if numeroTermo.Valid {
+		n := int(numeroTermo.Int64)
+		det.NumeroTermo = &n
 	}
 
 	const selectItens = `

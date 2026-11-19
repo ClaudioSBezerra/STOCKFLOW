@@ -30,11 +30,14 @@ const listarFilaPedidosMock = vi.hoisted(() => vi.fn());
 const buscarPedidoMock = vi.hoisted(() => vi.fn());
 const decidirLotePedidosMock = vi.hoisted(() => vi.fn());
 const baixarPreNotaPDFMock = vi.hoisted(() => vi.fn());
+const baixarTermoBaixaPDFMock = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/pedidos', () => ({
   listarFilaPedidos: listarFilaPedidosMock,
   buscarPedido: buscarPedidoMock,
   decidirLotePedidos: decidirLotePedidosMock,
   baixarPreNotaPDF: baixarPreNotaPDFMock,
+  baixarTermoBaixaPDF: baixarTermoBaixaPDFMock,
+  MENSAGEM_ERRO_TERMO_BAIXA: 'Não foi possível baixar o Termo de Baixa agora. Tente novamente em instantes.',
   MENSAGEM_ERRO_PRE_NOTA: 'Não foi possível baixar a Pré-Nota agora. Tente novamente em instantes.',
 }));
 
@@ -66,9 +69,22 @@ const PENDENTES = [
     usuarioId: 'u-2',
     solicitante: 'Bruno Costa',
     obraCentroCusto: 'Obra Sul',
-    observacao: null,
+    observacao: 'Furto no galpão 3, BO 123',
+    motivoSaida: 'perda_roubo',
     status: 'pendente',
     criadoEm: '2026-09-01T09:00:00Z',
+    tipo: 'baixa',
+    qtdItens: 1,
+  },
+  {
+    id: 'p-baixa2',
+    usuarioId: 'u-4',
+    solicitante: 'Dora Lima',
+    obraCentroCusto: '',
+    observacao: 'Aplicado na laje do bloco B',
+    motivoSaida: 'utilizacao_obra',
+    status: 'pendente',
+    criadoEm: '2026-09-01T10:00:00Z',
     tipo: 'baixa',
     qtdItens: 1,
   },
@@ -117,10 +133,7 @@ beforeEach(() => {
   );
   listarFilaPedidosMock.mockResolvedValue(PENDENTES);
   buscarPedidoMock.mockImplementation((id: string) => Promise.resolve(detalheDe(id)));
-  decidirLotePedidosMock.mockResolvedValue([
-    { ...detalheDe('p-transf'), status: 'aprovado' },
-    { ...detalheDe('p-baixa'), status: 'aprovado' },
-  ]);
+  decidirLotePedidosMock.mockResolvedValue([{ ...detalheDe('p-transf'), status: 'aprovado' }]);
 });
 
 afterEach(() => {
@@ -135,6 +148,11 @@ async function montarEConectar() {
   await screen.findByText('Ana Silva');
 }
 
+async function irParaOutrasSaidas(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('tab', { name: /Outras saídas/ }));
+  await screen.findByText('Bruno Costa');
+}
+
 describe('AprovacaoLotePage', () => {
   it('gate: papel abaixo de gestor não vê a tela', () => {
     authState.papel = 'almoxarife';
@@ -143,33 +161,73 @@ describe('AprovacaoLotePage', () => {
     expect(listarFilaPedidosMock).not.toHaveBeenCalled();
   });
 
-  it('gestor vê a lista de pendentes de Transferência e Baixa, SEM o de retirada', async () => {
+  it('duas abas com contagem própria; cada aba lista só o seu tipo, nunca retirada', async () => {
+    const user = userEvent.setup();
     await montarEConectar();
 
     expect(listarFilaPedidosMock).toHaveBeenCalledWith('pendente');
+    expect(screen.getByRole('tab', { name: 'Transferências (1)' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Outras saídas (2)' })).toBeInTheDocument();
+    // Aba Transferências (padrão): só a transferência.
     expect(screen.getByText('Ana Silva')).toBeInTheDocument();
-    expect(screen.getByText('Bruno Costa')).toBeInTheDocument();
+    expect(screen.queryByText('Bruno Costa')).not.toBeInTheDocument();
+    expect(screen.queryByText('Dora Lima')).not.toBeInTheDocument();
+    expect(screen.queryByText('Carla Souza')).not.toBeInTheDocument();
+
+    await irParaOutrasSaidas(user);
+    expect(screen.getByText('Dora Lima')).toBeInTheDocument();
+    expect(screen.queryByText('Ana Silva')).not.toBeInTheDocument();
     expect(screen.queryByText('Carla Souza')).not.toBeInTheDocument();
   });
 
+  it('Outras saídas mostram motivo e justificativa em cada linha', async () => {
+    const user = userEvent.setup();
+    await montarEConectar();
+    await irParaOutrasSaidas(user);
+
+    expect(screen.getByText('Perda ou roubo')).toBeInTheDocument();
+    expect(screen.getByText('Furto no galpão 3, BO 123')).toBeInTheDocument();
+    expect(screen.getByText('Utilização na obra')).toBeInTheDocument();
+    expect(screen.getByText('Aplicado na laje do bloco B')).toBeInTheDocument();
+  });
+
   it('mostra Produto/Quantidade/Estoque de cada pendente (buscados do detalhe)', async () => {
+    const user = userEvent.setup();
     await montarEConectar();
 
     await screen.findByText('Produto p-transf');
     expect(screen.getByText('Estoque p-transf')).toBeInTheDocument();
+    await irParaOutrasSaidas(user);
     expect(screen.getByText('Produto p-baixa')).toBeInTheDocument();
   });
 
-  it('"Selecionar todos" marca todas as linhas; os botões de ação mostram a contagem', async () => {
+  it('"Selecionar todos" marca só as linhas da aba; os botões de ação mostram a contagem', async () => {
     const user = userEvent.setup();
     await montarEConectar();
 
     expect(screen.getByRole('button', { name: /Aprovar selecionados \(0\)/ })).toBeDisabled();
-
     await user.click(screen.getByRole('checkbox', { name: 'Selecionar todos' }));
+    expect(screen.getByRole('button', { name: /Aprovar selecionados \(1\)/ })).toBeEnabled();
 
+    await irParaOutrasSaidas(user);
+    // Trocar de aba limpou a seleção.
+    expect(screen.getByRole('button', { name: /Aprovar selecionados \(0\)/ })).toBeDisabled();
+    await user.click(screen.getByRole('checkbox', { name: 'Selecionar todos' }));
     expect(screen.getByRole('button', { name: /Aprovar selecionados \(2\)/ })).toBeEnabled();
     expect(screen.getByRole('button', { name: /Rejeitar selecionados \(2\)/ })).toBeEnabled();
+  });
+
+  it('trocar de aba limpa a seleção: um lote nunca mistura tipos', async () => {
+    const user = userEvent.setup();
+    await montarEConectar();
+
+    await user.click(screen.getByRole('checkbox', { name: /Selecionar pedido de Ana Silva/ }));
+    await irParaOutrasSaidas(user);
+    await user.click(screen.getByRole('checkbox', { name: /Selecionar pedido de Bruno Costa/ }));
+    await user.click(screen.getByRole('button', { name: /Aprovar selecionados/ }));
+    await user.click(await screen.findByRole('button', { name: 'Aprovar' }));
+
+    await waitFor(() => expect(decidirLotePedidosMock).toHaveBeenCalledWith(['p-baixa'], true));
   });
 
   it('aprovar o lote selecionado chama decidirLotePedidos com os ids certos e aprovar=true', async () => {
@@ -180,13 +238,14 @@ describe('AprovacaoLotePage', () => {
     await user.click(screen.getByRole('button', { name: /Aprovar selecionados/ }));
     await user.click(await screen.findByRole('button', { name: 'Aprovar' }));
 
-    await waitFor(() => expect(decidirLotePedidosMock).toHaveBeenCalledWith(['p-transf', 'p-baixa'], true));
+    await waitFor(() => expect(decidirLotePedidosMock).toHaveBeenCalledWith(['p-transf'], true));
     expect(toastSuccess).toHaveBeenCalled();
   });
 
   it('rejeitar o lote selecionado chama decidirLotePedidos com aprovar=false', async () => {
     const user = userEvent.setup();
     await montarEConectar();
+    await irParaOutrasSaidas(user);
 
     await user.click(
       screen.getByRole('checkbox', { name: /Selecionar pedido de Bruno Costa/ }),
@@ -221,8 +280,10 @@ describe('AprovacaoLotePage', () => {
     });
 
     expect(
-      await screen.findByText('Nenhum Pedido de Transferência ou de Baixa pendente.'),
+      await screen.findByText('Nenhum Pedido de Transferência pendente.'),
     ).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole('tab', { name: /Outras saídas/ }));
+    expect(await screen.findByText('Nenhum Pedido de Outras Saídas pendente.')).toBeInTheDocument();
   });
 
   it('carrega a lista na montagem, sem esperar o SSE; 1ª conexão não duplica; reconexão recarrega', async () => {
@@ -305,6 +366,7 @@ describe('AprovacaoLotePage', () => {
     });
     const user = userEvent.setup();
     await montarEConectar();
+    await irParaOutrasSaidas(user);
 
     // Erro visível na linha de Bruno Costa (p-baixa), nunca "Carregando..."
     // infinito.
@@ -316,7 +378,7 @@ describe('AprovacaoLotePage', () => {
     expect(checkboxBruno).toBeDisabled();
     expect(checkboxBruno).not.toBeChecked();
 
-    // "Selecionar todos" marca só Ana (Bruno tem erro, fica de fora da
+    // "Selecionar todos" marca só Dora (Bruno tem erro, fica de fora da
     // contagem e nunca é marcado).
     await user.click(screen.getByRole('checkbox', { name: 'Selecionar todos' }));
     expect(screen.getByRole('button', { name: /Aprovar selecionados \(1\)/ })).toBeInTheDocument();
@@ -376,7 +438,6 @@ describe('AprovacaoLotePage — Pré-Nota (Story 20.5)', () => {
 
   const LOTE_COM_PRE_NOTA = () => [
     { ...detalheDe('p-transf'), status: 'aprovado', preNotaId: 'pn-7', docnum: 7 },
-    { ...detalheDe('p-baixa'), status: 'aprovado', preNotaId: 'pn-7', docnum: 7 },
   ];
 
   async function aprovarTodos(user: ReturnType<typeof userEvent.setup>) {
@@ -433,6 +494,7 @@ describe('AprovacaoLotePage — Pré-Nota (Story 20.5)', () => {
     ]);
     const user = userEvent.setup();
     await montarEConectar();
+    await irParaOutrasSaidas(user);
 
     await user.click(
       screen.getByRole('checkbox', { name: /Selecionar pedido de Bruno Costa/ }),
@@ -443,5 +505,90 @@ describe('AprovacaoLotePage — Pré-Nota (Story 20.5)', () => {
     await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
     expect(screen.queryByText(/Pré-Nota nº/)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Baixar Pré-Nota' })).not.toBeInTheDocument();
+  });
+});
+
+// --- spec-pedido-outras-saidas: Termo de Baixa no resultado do lote ----------
+describe('AprovacaoLotePage — Termo de Baixa', () => {
+  const createOriginal = URL.createObjectURL;
+  const revokeOriginal = URL.revokeObjectURL;
+  let cliqueSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    URL.createObjectURL = vi.fn(() => 'blob:termo-teste');
+    URL.revokeObjectURL = vi.fn();
+    cliqueSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    cliqueSpy.mockRestore();
+    URL.createObjectURL = createOriginal;
+    URL.revokeObjectURL = revokeOriginal;
+  });
+
+  const LOTE_COM_TERMOS = () => [
+    { ...detalheDe('p-baixa'), status: 'aprovado', termoBaixaId: 'tb-1', numeroTermo: 3, preNotaId: null },
+    { ...detalheDe('p-baixa2'), status: 'aprovado', termoBaixaId: 'tb-2', numeroTermo: 4, preNotaId: null },
+  ];
+
+  it('Outras saídas aprovadas mostram um botão "Termo de Baixa nº N" por documento e baixam o PDF', async () => {
+    decidirLotePedidosMock.mockResolvedValue(LOTE_COM_TERMOS());
+    const blob = new Blob(['%PDF-fake'], { type: 'application/pdf' });
+    baixarTermoBaixaPDFMock.mockResolvedValue(blob);
+    const user = userEvent.setup();
+    await montarEConectar();
+    await irParaOutrasSaidas(user);
+
+    await user.click(screen.getByRole('checkbox', { name: 'Selecionar todos' }));
+    await user.click(screen.getByRole('button', { name: /Aprovar selecionados/ }));
+    await user.click(await screen.findByRole('button', { name: 'Aprovar' }));
+
+    expect(await screen.findByText('2 Termos de Baixa gerados (um por motivo).')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Baixar Termo de Baixa nº 4' })).toBeInTheDocument();
+    expect(screen.queryByText(/Pré-Nota nº/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Baixar Termo de Baixa nº 3' }));
+    await waitFor(() => expect(baixarTermoBaixaPDFMock).toHaveBeenCalledWith('tb-1'));
+    await waitFor(() => expect(cliqueSpy).toHaveBeenCalled());
+    expect((cliqueSpy.mock.contexts[0] as HTMLAnchorElement).download).toBe('termo-baixa-3.pdf');
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it('os botões de Termo saem em ordem crescente de número, mesmo que a resposta venha fora de ordem', async () => {
+    decidirLotePedidosMock.mockResolvedValue([
+      { ...detalheDe('p-baixa'), status: 'aprovado', termoBaixaId: 'tb-2', numeroTermo: 2, preNotaId: null },
+      { ...detalheDe('p-baixa2'), status: 'aprovado', termoBaixaId: 'tb-1', numeroTermo: 1, preNotaId: null },
+      { ...detalheDe('p-baixa'), status: 'aprovado', termoBaixaId: 'tb-3', numeroTermo: 3, preNotaId: null },
+    ]);
+    const user = userEvent.setup();
+    await montarEConectar();
+    await irParaOutrasSaidas(user);
+    await user.click(screen.getByRole('checkbox', { name: 'Selecionar todos' }));
+    await user.click(screen.getByRole('button', { name: /Aprovar selecionados/ }));
+    await user.click(await screen.findByRole('button', { name: 'Aprovar' }));
+    await screen.findByText('3 Termos de Baixa gerados (um por motivo).');
+
+    const rotulos = screen
+      .getAllByRole('button', { name: /^Baixar Termo de Baixa nº/ })
+      .map((b) => b.getAttribute('aria-label'));
+    expect(rotulos).toEqual([
+      'Baixar Termo de Baixa nº 1',
+      'Baixar Termo de Baixa nº 2',
+      'Baixar Termo de Baixa nº 3',
+    ]);
+  });
+
+  it('o resultado de Outras saídas não aparece na aba Transferências', async () => {
+    decidirLotePedidosMock.mockResolvedValue(LOTE_COM_TERMOS());
+    const user = userEvent.setup();
+    await montarEConectar();
+    await irParaOutrasSaidas(user);
+    await user.click(screen.getByRole('checkbox', { name: 'Selecionar todos' }));
+    await user.click(screen.getByRole('button', { name: /Aprovar selecionados/ }));
+    await user.click(await screen.findByRole('button', { name: 'Aprovar' }));
+    await screen.findByText('2 Termos de Baixa gerados (um por motivo).');
+
+    await user.click(screen.getByRole('tab', { name: /Transferências/ }));
+    expect(screen.queryByText(/Termos? de Baixa gerados?/)).not.toBeInTheDocument();
   });
 });

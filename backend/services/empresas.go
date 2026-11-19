@@ -434,6 +434,13 @@ func InserirEmpresa(tx *sql.Tx, dados DadosEmpresa) (Empresa, error) {
 	); err != nil {
 		return Empresa{}, fmt.Errorf("falha ao criar contador de docnum de pré-nota para a empresa: %w", err)
 	}
+	// Contador do Termo de Baixa (spec-pedido-outras-saidas): mesmo molde, numeração
+	// independente da Pré-Nota.
+	if _, err := tx.Exec(
+		`INSERT INTO contadores_termo_baixa (empresa_id, ultimo_numero) VALUES ($1, 0) ON CONFLICT (empresa_id) DO NOTHING`, e.ID,
+	); err != nil {
+		return Empresa{}, fmt.Errorf("falha ao criar contador de termo de baixa para a empresa: %w", err)
+	}
 	return e, nil
 }
 

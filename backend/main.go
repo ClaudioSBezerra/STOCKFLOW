@@ -81,7 +81,9 @@
 // /api/produtos/catalogo aplicados à tabela agrupada COMPLETA, sem
 // `pagina`/`agrupar` — subtotal por grupo e total geral via fórmula
 // `SUBTOTAL`, nunca soma estática) e a abertura do domínio de Movimentação de
-// Estoque (Epic 5) com Registrar Baixa (consumo) — Story 5.1
+// Estoque (Epic 5) com Registrar Baixa (consumo) — Story 5.1 (DESCONTINUADA em
+// spec-pedido-outras-saidas: a rota responde 410; o consumo é o Pedido de
+// Outras Saídas aprovado por Gestor+)
 // (POST /api/produtos/{id}/estoques/{estoqueId}/baixa, mínimo `almoxarife`:
 // debita `produto_estoque.quantidade` e insere a Movimentação `tipo='baixa'`
 // correspondente numa única transação, com `SELECT ... FOR UPDATE` travando
@@ -759,18 +761,13 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	registrar("GET /e/{slug}/api/produtos/{id}/estoques/{estoqueId}/reservas", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarReservasSaldoHandler(db)))
 
-	// Registrar Baixa (consumo) — Story 5.1 (Epic 5, Movimentação de
-	// Estoque). POST /api/produtos/{id}/estoques/{estoqueId}/baixa fica
-	// atrás de RequireRole(almoxarife), mesmo mínimo de papel do
-	// cadastro/importação de Produto: registrar consumo é restrito a
-	// `almoxarife`+, decisão do middleware (403 para `usuario`, mesmo em
-	// chamada direta à API). Debita `produto_estoque.quantidade` e insere a
-	// Movimentação `tipo='baixa'` correspondente numa única transação
-	// (services.RegistrarBaixa), publicando no canal `movimentacoes` (AD-3
-	// do epic-5-context.md) a cada sucesso.
+	// Baixa direta (Story 5.1) DESCONTINUADA (spec-pedido-outras-saidas):
+	// POST /api/produtos/{id}/estoques/{estoqueId}/baixa responde 410 Gone a
+	// qualquer papel autenticado e NUNCA debita — o consumo agora é o Pedido
+	// de Outras Saídas (POST /api/pedidos/baixa), decidido por Gestor+.
+	// services.RegistrarBaixa fica no código, sem nenhuma rota HTTP.
 	registrar("POST /e/{slug}/api/produtos/{id}/estoques/{estoqueId}/baixa", middleware.RequireAuth(db, jwtSecret)(
-		middleware.RequireRole(services.PapelAlmoxarife)(
-			handlers.RegistrarBaixaHandler(db, registro))))
+		handlers.BaixaDiretaDescontinuadaHandler()))
 
 	// Lançamento de saldo com Lote e Data de Validade — Story 11.1 (Epic 11,
 	// AD-24, FR-47). POST /api/lotes atrás do MESMO gate de papel de
@@ -892,12 +889,14 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	registrar("POST /e/{slug}/api/pedidos/transferencia", middleware.RequireAuth(db, jwtSecret)(
 		handlers.SubmeterPedidoTransferenciaHandler(db, registro)))
 
-	// Pedido de Baixa de Estoque — Story 20.2 (Epic 20), spec-20-2. Atrás só
+	// Pedido de Outras Saídas (tipo `baixa`) — Story 20.2 (Epic 20), spec-20-2;
+	// renomeado e com `motivo` + justificativa obrigatórios em
+	// spec-pedido-outras-saidas. Atrás só
 	// de RequireAuth, SEM RequireRole: mesmo mínimo de papel do Pedido de
 	// retirada/Transferência acima — qualquer conta autenticada (`usuario`+)
 	// envia seu próprio Pedido. Reserva dura do par (Produto, Estoque), nunca
-	// debita saldo físico (RegistrarBaixa, movimentacoes.go, continua a ação
-	// direta sem aprovação). Publica no canal `pedidos` no sucesso, mesmo
+	// debita saldo físico (a baixa direta foi descontinuada: 410 em
+	// POST /produtos/{id}/estoques/{estoqueId}/baixa). Publica no canal `pedidos` no sucesso, mesmo
 	// padrão do POST acima.
 	registrar("POST /e/{slug}/api/pedidos/baixa", middleware.RequireAuth(db, jwtSecret)(
 		handlers.SubmeterPedidoBaixaHandler(db, registro)))
@@ -958,6 +957,13 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	registrar("GET /e/{slug}/api/pre-notas/{id}/pdf", middleware.RequireAuth(db, jwtSecret)(
 		middleware.RequireRole(services.PapelGestor)(
 			handlers.BaixarPreNotaPDFHandler(db))))
+
+	// Termo de Baixa em PDF (spec-pedido-outras-saidas): mesmo gate da
+	// Pré-Nota — RequireAuth + RequireRole(PapelGestor); outra Empresa/
+	// inexistente/malformado -> 404.
+	registrar("GET /e/{slug}/api/termos-baixa/{id}/pdf", middleware.RequireAuth(db, jwtSecret)(
+		middleware.RequireRole(services.PapelGestor)(
+			handlers.BaixarTermoBaixaPDFHandler(db))))
 
 	// Exportação dos próprios dados pessoais — Story 8.1 (Epic 8,
 	// Privacidade/LGPD), spec-8-1. Atrás SÓ de RequireAuth — SEM

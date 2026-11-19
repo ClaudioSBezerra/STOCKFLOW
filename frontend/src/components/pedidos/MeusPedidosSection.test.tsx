@@ -13,6 +13,7 @@ const buscarPedidoMock = vi.hoisted(() => vi.fn());
 const buscarReciboPedidoBlobMock = vi.hoisted(() => vi.fn());
 const buscarIndicadoresPedidosMock = vi.hoisted(() => vi.fn());
 const baixarPreNotaPDFMock = vi.hoisted(() => vi.fn());
+const baixarTermoBaixaPDFMock = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/pedidos', () => ({
   listarPedidos: listarPedidosMock,
   buscarPedido: buscarPedidoMock,
@@ -20,6 +21,8 @@ vi.mock('@/lib/pedidos', () => ({
   buscarIndicadoresPedidos: buscarIndicadoresPedidosMock,
   MENSAGEM_ERRO_RECIBO: 'Não foi possível baixar o recibo agora. Tente novamente em instantes.',
   baixarPreNotaPDF: baixarPreNotaPDFMock,
+  baixarTermoBaixaPDF: baixarTermoBaixaPDFMock,
+  MENSAGEM_ERRO_TERMO_BAIXA: 'Não foi possível baixar o Termo de Baixa agora. Tente novamente em instantes.',
   MENSAGEM_ERRO_PRE_NOTA: 'Não foi possível baixar a Pré-Nota agora. Tente novamente em instantes.',
 }));
 
@@ -833,5 +836,130 @@ describe('MeusPedidosSection — Pré-Nota (Story 20.5)', () => {
   it('Pedido sem Pré-Nota não mostra "Baixar Pré-Nota", nem para gestor', async () => {
     await abrirDetalheComPreNota([PEDIDOS[1]]);
     expect(screen.queryByRole('button', { name: 'Baixar Pré-Nota' })).not.toBeInTheDocument();
+  });
+});
+
+// --- spec-pedido-outras-saidas: badge, motivo e Termo de Baixa na linha -----
+describe('MeusPedidosSection — Outras saídas', () => {
+  const SAIDA = {
+    id: 'p-saida',
+    usuarioId: 'u-1',
+    solicitante: 'Bruno Costa',
+    obraCentroCusto: 'Obra Sul',
+    observacao: 'Furto no galpão 3',
+    status: 'aprovado',
+    criadoEm: '2026-09-01T09:00:00Z',
+    qtdItens: 1,
+    tipo: 'baixa',
+    motivoSaida: 'vencido_avariado',
+    termoBaixaId: 'tb-1',
+    numeroTermo: 5,
+  };
+  const createOriginal = URL.createObjectURL;
+  const revokeOriginal = URL.revokeObjectURL;
+  let cliqueSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    authState.papel = 'gestor';
+    URL.createObjectURL = vi.fn(() => 'blob:termo-teste');
+    URL.revokeObjectURL = vi.fn();
+    cliqueSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    cliqueSpy.mockRestore();
+    URL.createObjectURL = createOriginal;
+    URL.revokeObjectURL = revokeOriginal;
+  });
+
+  async function renderizar(pedidos: unknown[]) {
+    listarPedidosMock.mockResolvedValue(pedidos);
+    render(<MeusPedidosSection />);
+    act(() => {
+      aoMudarStatus('conectado');
+    });
+    await screen.findByText(/Obra Sul/);
+    return userEvent.setup();
+  }
+
+  it('a linha mostra o badge "Outras saídas" e o motivo em texto curto', async () => {
+    await renderizar([SAIDA]);
+    expect(screen.getByText('Outras saídas')).toBeInTheDocument();
+    expect(screen.getByText(/Vencido ou avariado/)).toBeInTheDocument();
+  });
+
+  it('baixa antiga sem motivo mostra "Motivo não informado"', async () => {
+    await renderizar([{ ...SAIDA, motivoSaida: null, termoBaixaId: null, numeroTermo: null }]);
+    expect(screen.getByText(/Motivo não informado/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Baixar Termo de Baixa/ })).not.toBeInTheDocument();
+  });
+
+  it('gestor baixa o Termo de Baixa direto da linha (termo-baixa-5.pdf)', async () => {
+    const blob = new Blob(['%PDF-fake'], { type: 'application/pdf' });
+    baixarTermoBaixaPDFMock.mockResolvedValue(blob);
+    const user = await renderizar([SAIDA]);
+
+    await user.click(screen.getByRole('button', { name: 'Baixar Termo de Baixa nº 5' }));
+
+    await waitFor(() => expect(baixarTermoBaixaPDFMock).toHaveBeenCalledWith('tb-1'));
+    await waitFor(() => expect(cliqueSpy).toHaveBeenCalled());
+    expect((cliqueSpy.mock.contexts[0] as HTMLAnchorElement).download).toBe('termo-baixa-5.pdf');
+  });
+
+  async function abrirDetalhe(pedidos: unknown[]) {
+    const user = await renderizar(pedidos);
+    await user.click(
+      screen.getByRole('button', { name: /^Ver itens do pedido de Bruno Costa — Obra Sul/ }),
+    );
+    await screen.findByRole('button', { name: 'Baixar recibo' });
+    return user;
+  }
+
+  it('o detalhe de Outras saídas mostra motivo (rótulo completo) e justificativa acima dos itens', async () => {
+    await abrirDetalhe([SAIDA]);
+    const dialogo = screen.getByRole('dialog');
+    expect(within(dialogo).getByText('Produto Vencido ou Avariado')).toBeInTheDocument();
+    expect(within(dialogo).getByText('Furto no galpão 3')).toBeInTheDocument();
+  });
+
+  it('o detalhe de baixa antiga sem motivo/justificativa mostra "Motivo não informado"', async () => {
+    await abrirDetalhe([{ ...SAIDA, motivoSaida: null, observacao: null, termoBaixaId: null, numeroTermo: null }]);
+    const dialogo = screen.getByRole('dialog');
+    expect(within(dialogo).getByText('Motivo não informado')).toBeInTheDocument();
+    expect(within(dialogo).getByText('Não informada')).toBeInTheDocument();
+  });
+
+  it('o detalhe de um pedido que não é de Outras saídas não mostra motivo nem justificativa', async () => {
+    await abrirDetalhe([{ ...SAIDA, tipo: 'retirada', termoBaixaId: null, numeroTermo: null }]);
+    expect(within(screen.getByRole('dialog')).queryByText(/Justificativa:/)).not.toBeInTheDocument();
+  });
+
+  it('gestor baixa o Termo de Baixa DENTRO do Dialog (termo-baixa-5.pdf)', async () => {
+    const blob = new Blob(['%PDF-fake'], { type: 'application/pdf' });
+    baixarTermoBaixaPDFMock.mockResolvedValue(blob);
+    const user = await abrirDetalhe([SAIDA]);
+
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Baixar Termo de Baixa' }));
+
+    await waitFor(() => expect(baixarTermoBaixaPDFMock).toHaveBeenCalledWith('tb-1'));
+    await waitFor(() => expect(cliqueSpy).toHaveBeenCalled());
+    expect((cliqueSpy.mock.contexts[0] as HTMLAnchorElement).download).toBe('termo-baixa-5.pdf');
+  });
+
+  it('o Dialog não mostra o botão do Termo abaixo de gestor, nem sem termo', async () => {
+    authState.papel = 'almoxarife';
+    await abrirDetalhe([SAIDA]);
+    expect(within(screen.getByRole('dialog')).queryByRole('button', { name: 'Baixar Termo de Baixa' })).not.toBeInTheDocument();
+  });
+
+  it('o Dialog de um pedido sem termo não mostra o botão do Termo, nem para gestor', async () => {
+    await abrirDetalhe([{ ...SAIDA, termoBaixaId: null, numeroTermo: null }]);
+    expect(within(screen.getByRole('dialog')).queryByRole('button', { name: 'Baixar Termo de Baixa' })).not.toBeInTheDocument();
+  });
+
+  it('papel abaixo de gestor não vê o botão do Termo de Baixa', async () => {
+    authState.papel = 'almoxarife';
+    await renderizar([SAIDA]);
+    expect(screen.queryByRole('button', { name: /^Baixar Termo de Baixa/ })).not.toBeInTheDocument();
   });
 });

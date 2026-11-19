@@ -35,6 +35,9 @@ export type StatusPedido = 'pendente' | 'aprovado' | 'parcialmente_aprovado' | '
  */
 export type TipoPedido = 'retirada' | 'transferencia' | 'baixa';
 
+import type { MotivoSaida } from '@/lib/motivosSaida';
+export type { MotivoSaida };
+
 interface PedidoCabecalho {
   id: string;
   usuarioId: string;
@@ -62,6 +65,13 @@ interface PedidoCabecalho {
   // (opcionais para tolerar fixtures anteriores à Story 20.4).
   preNotaId?: string | null;
   docnum?: number | null;
+  // motivoSaida/termoBaixaId/numeroTermo (spec-pedido-outras-saidas): só em
+  // Pedidos de Outras Saídas (`tipo: 'baixa'`). motivoSaida é null em baixas
+  // antigas (sem motivo); termoBaixaId/numeroTermo, só depois da aprovação em
+  // lote (opcionais para tolerar fixtures anteriores).
+  motivoSaida?: MotivoSaida | null;
+  termoBaixaId?: string | null;
+  numeroTermo?: number | null;
 }
 
 export interface PedidoResumo extends PedidoCabecalho {
@@ -179,7 +189,7 @@ export async function submeterPedidoTransferencia(
 }
 
 const MENSAGEM_ERRO_BAIXA =
-  'Não foi possível enviar o pedido de baixa agora. Tente novamente em instantes.';
+  'Não foi possível enviar o pedido de outras saídas agora. Tente novamente em instantes.';
 
 /**
  * Corpo de POST /api/pedidos/baixa (Story 20.2, Epic 20, spec-20-2). SEM
@@ -193,13 +203,15 @@ export interface SubmeterPedidoBaixaInput {
   produtoId: string;
   estoqueId: string;
   quantidade: number;
+  /** Obrigatório (spec-pedido-outras-saidas). */
+  motivo: MotivoSaida;
 }
 
 /**
- * Envia um Pedido de Baixa de Estoque (Story 20.2, Epic 20, spec-20-2) — 1
+ * Envia um Pedido de Outras Saídas (Story 20.2, Epic 20, spec-20-2) — 1
  * item só, enviado DIRETO (sem passar pelo Carrinho). Reserva dura do par
- * (Produto, Estoque); nunca debita saldo físico (RegistrarBaixa,
- * movimentacoes.go, continua a ação direta sem aprovação). `solicitante` é
+ * (Produto, Estoque); nunca debita saldo físico (a baixa direta foi
+ * descontinuada: spec-pedido-outras-saidas). `solicitante` é
  * sempre o usuário logado, resolvido pelo servidor — este módulo nunca o
  * envia. Resposta não-ok propaga `body.error?.message` do servidor (400
  * VALIDATION_ERROR para campos vazios, 409 CONFLICT para disponibilidade
@@ -348,6 +360,34 @@ export async function baixarPreNotaPDF(preNotaId: string): Promise<Blob> {
     return await res.blob();
   } catch {
     throw new Error(MENSAGEM_ERRO_PRE_NOTA);
+  }
+}
+
+export const MENSAGEM_ERRO_TERMO_BAIXA =
+  'Não foi possível baixar o Termo de Baixa agora. Tente novamente em instantes.';
+
+/**
+ * Baixa o PDF do Termo de Baixa `termoBaixaId` (spec-pedido-outras-saidas) —
+ * GET /api/termos-baixa/{id}/pdf, só `gestor`+ (o servidor revalida o papel).
+ * Molde de `baixarPreNotaPDF`: devolve o `Blob`, sem lógica de DOM.
+ */
+export async function baixarTermoBaixaPDF(termoBaixaId: string): Promise<Blob> {
+  let res: Response;
+  try {
+    res = await fetch(apiUrl(`/api/termos-baixa/${encodeURIComponent(termoBaixaId)}/pdf`), {
+      headers: authHeaders(),
+    });
+  } catch {
+    throw new Error(MENSAGEM_ERRO_TERMO_BAIXA);
+  }
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+    throw new Error(body.error?.message ?? MENSAGEM_ERRO_TERMO_BAIXA);
+  }
+  try {
+    return await res.blob();
+  } catch {
+    throw new Error(MENSAGEM_ERRO_TERMO_BAIXA);
   }
 }
 

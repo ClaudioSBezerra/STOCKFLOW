@@ -840,6 +840,8 @@ func TestMigrarProdutos_SeedAusente(t *testing.T) {
 		}
 		// Story 20.4 (spec-20-4): `contadores_pre_nota` nasce junto com TODA
 		// Empresa, mesmo molde/razão do contador de código acima.
+		_, _ = alvo.Exec(`DELETE FROM termos_baixa WHERE empresa_id IN (SELECT id FROM empresas WHERE slug = $1)`, slugPelada)
+		_, _ = alvo.Exec(`DELETE FROM contadores_termo_baixa WHERE empresa_id IN (SELECT id FROM empresas WHERE slug = $1)`, slugPelada)
 		if _, err := alvo.Exec(`DELETE FROM contadores_pre_nota WHERE empresa_id IN (SELECT id FROM empresas WHERE slug = $1)`, slugPelada); err != nil {
 			t.Errorf("falha ao remover o contador de pré-nota da Empresa pelada: %v", err)
 		}

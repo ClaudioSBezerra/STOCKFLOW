@@ -949,3 +949,19 @@ status: open
 - source_spec: `spec-logo-da-empresa.md`
   summary: O desenho da logo é refeito a cada geração de Pré-Nota (decodifica e testa numa página do gopdf); poderia ser pré-calculado no envio e guardado.
   evidence: Achado pela revisão (blind-hunter + edge-case-hunter). Custo de milissegundos para uma logo de poucos KB; só importaria com muitas gerações por segundo.
+
+- source_spec: `spec-pedido-outras-saidas.md`
+  summary: Dois testes de PDF só conferem validade, determinismo e nº de páginas, não o que é desenhado: a refatoração da Pré-Nota para `pintorPDF` ("sem mudar um byte") foi comprovada só por comparação manual de 6 PDFs antes/depois, e a faixa do motivo e as assinaturas do Termo de Baixa são testadas no layout puro, não na pintura.
+  evidence: Achado pela revisão (verification-gap + blind-hunter). Um teste dourado (hash/PDF de referência) travaria a Pré-Nota, mas quebraria a cada ajuste intencional de layout; alternativa: registrar os campos desenhados como foi feito no DANFE.
+
+- source_spec: `spec-pedido-outras-saidas.md`
+  summary: Sem `CHECK` no banco exigindo `motivo_saida` quando `tipo='baixa'` (só o serviço exige); a API de lote aceita misturar Transferência e Outras Saídas (a regra de não misturar é só da tela); o contador do Termo só nasce em `InserirEmpresa` e na migration.
+  evidence: Achados pela revisão (blind-hunter, edge-case-hunter). Um CHECK `NOT VALID` quebraria os helpers de teste que simulam baixa legada; lote misto na API é deliberado (spec); o contador segue a mesma premissa da Pré-Nota (toda Empresa nasce por `InserirEmpresa`).
+
+- source_spec: `spec-pedido-outras-saidas.md`
+  summary: Termo de Baixa não liga cada item à sua justificativa nem mostra a quantidade solicitada; solicitantes são deduplicados pelo nome (duas pessoas homônimas viram uma); o Gestor não tem listagem/busca de Termos para reimprimir; e o Solicitante, que assina o Termo, não consegue baixá-lo (PDF é gestor+).
+  evidence: Achados pela revisão (blind-hunter). Decisões de produto (o Termo segue o desenho aprovado e o mesmo acesso da Pré-Nota); valem uma conversa com a Karla.
+
+- source_spec: `spec-pedido-outras-saidas.md`
+  summary: Abas da Aprovação em lote sem `tabpanel`/`aria-controls`; os motivos de saída estão definidos em 4 lugares (Go, 2 CHECKs, `motivosSaida.ts`) sem teste de paridade; `RegistrarBaixa` ficou só no serviço (código sem rota); o 410 não aponta o endpoint novo; a página de Outras Saídas e o diálogo do Detalhe duplicam o formulário; quantidade acima do disponível só é recusada pelo servidor; banners de documento gerado persistem ao trocar de aba.
+  evidence: Achados pela revisão (blind-hunter, edge-case-hunter). Acabamento e dívida técnica de baixo risco.

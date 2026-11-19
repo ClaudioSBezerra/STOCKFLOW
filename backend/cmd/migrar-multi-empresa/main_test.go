@@ -125,6 +125,8 @@ func limparEmpresa(t *testing.T, db *sql.DB, slug string) {
 			// Story 20.4 (spec-20-4): `contadores_pre_nota` nasce junto com
 			// TODA Empresa, mesmo molde/razão de `contadores_produto` acima.
 			`DELETE FROM contadores_pre_nota WHERE empresa_id = $1`,
+			`DELETE FROM termos_baixa WHERE empresa_id = $1`,
+			`DELETE FROM contadores_termo_baixa WHERE empresa_id = $1`,
 		} {
 			if _, err := db.Exec(stmt, id); err != nil {
 				t.Fatalf("limparEmpresa(%s) [%s]: %v", slug, stmt, err)

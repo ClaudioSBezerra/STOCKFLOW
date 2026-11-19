@@ -69,6 +69,29 @@ func preNotaDoResultadoTeste(t *testing.T, resultado []PedidoDetalhe, pedidoID s
 	return ""
 }
 
+// legadoPreNotaDeBaixasTeste reproduz uma Pré-Nota EMITIDA ANTES do Termo de
+// Baixa (spec-pedido-outras-saidas): Pedidos de baixa vinculados a uma
+// Pré-Nota em vez de a um Termo. `preNotaID` vazio cria a Pré-Nota nova
+// (docnum do contador, como o fluxo antigo fazia); devolve o id usado.
+func legadoPreNotaDeBaixasTeste(t *testing.T, db *sql.DB, empresaID, decisorID, preNotaID string, pedidoIDs ...string) string {
+	t.Helper()
+	if preNotaID == "" {
+		var docnum int
+		if err := db.QueryRow(`UPDATE contadores_pre_nota SET ultimo_numero = ultimo_numero + 1 WHERE empresa_id = $1 RETURNING ultimo_numero`, empresaID).Scan(&docnum); err != nil {
+			t.Fatalf("avançar contador de pré-nota: %v", err)
+		}
+		if err := db.QueryRow(`INSERT INTO pre_notas (empresa_id, docnum, decidido_por) VALUES ($1, $2, $3) RETURNING id`, empresaID, docnum, decisorID).Scan(&preNotaID); err != nil {
+			t.Fatalf("inserir pré-nota legada: %v", err)
+		}
+	}
+	for _, id := range pedidoIDs {
+		if _, err := db.Exec(`UPDATE pedidos SET pre_nota_id = $1, termo_baixa_id = NULL WHERE id = $2 AND empresa_id = $3`, preNotaID, id, empresaID); err != nil {
+			t.Fatalf("vincular pedido %s à pré-nota legada: %v", id, err)
+		}
+	}
+	return preNotaID
+}
+
 type cenarioPreNotaMista struct {
 	preNotaID       string
 	docnum          int
@@ -100,11 +123,11 @@ func semearPreNotaMista(t *testing.T, db *sql.DB, prefixo string) cenarioPreNota
 	}
 
 	produtoBaixaID, estoqueBaixaID, _ := seedProdutoComSaldo(t, db, prefixo+" Baixa", 10)
-	pedidoBaixa, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Ana", "Obra Y", "", produtoBaixaID, estoqueBaixaID, 4)
+	pedidoBaixa, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Ana", "Obra Y", "justificativa de teste", produtoBaixaID, estoqueBaixaID, 4, "perda_roubo")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
 	}
-	pedidoBaixa2, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Ana", "Obra Y", "", produtoBaixaID, estoqueBaixaID, 1)
+	pedidoBaixa2, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Ana", "Obra Y", "justificativa de teste", produtoBaixaID, estoqueBaixaID, 1, "perda_roubo")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa 2: %v", err)
 	}
@@ -114,6 +137,8 @@ func semearPreNotaMista(t *testing.T, db *sql.DB, prefixo string) cenarioPreNota
 		t.Fatalf("DecidirLotePedidos: %v", err)
 	}
 	c.preNotaID = preNotaDoResultadoTeste(t, resultado, pedidoTransf.ID)
+	// Pré-Nota emitida antes do Termo de Baixa: as baixas dentro dela.
+	legadoPreNotaDeBaixasTeste(t, db, empresaTeste, gestorID, c.preNotaID, pedidoBaixa.ID, pedidoBaixa2.ID)
 	for _, det := range resultado {
 		if det.ID == pedidoTransf.ID && det.Docnum != nil {
 			c.docnum = *det.Docnum
@@ -188,7 +213,7 @@ func TestDecidirLotePedidos_RejeitadoNaoGravaSnapshotPreNota(t *testing.T) {
 	usuarioID := semearConta(t, db, "PreNota Rej Usuario", "prenota-rej-usuario@empresa.com", PapelUsuario, 1)
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "PreNota Rej", 10)
 	definirPrecoProduto(t, db, produtoID, "10.00")
-	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 2)
+	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "justificativa de teste", produtoID, estoqueID, 2, "perda_roubo")
 	if err != nil {
 		t.Fatalf("seed SubmeterPedidoBaixa: %v", err)
 	}
@@ -400,12 +425,12 @@ func TestMontarPreNotaConteudo_ItemZeradoNaoAparece(t *testing.T) {
 	usuarioID := semearConta(t, db, "PreNota Zero Usuario", "prenota-zero-usuario@empresa.com", PapelUsuario, 1)
 
 	produtoA, estoqueA, _ := seedProdutoComSaldo(t, db, "PreNota Zero A", 10)
-	pedidoA, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Zerado", "Obra X", "", produtoA, estoqueA, 5)
+	pedidoA, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Zerado", "Obra X", "justificativa de teste", produtoA, estoqueA, 5, "perda_roubo")
 	if err != nil {
 		t.Fatalf("seed A: %v", err)
 	}
 	produtoB, estoqueB, _ := seedProdutoComSaldo(t, db, "PreNota Zero B", 10)
-	pedidoB, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra Y", "", produtoB, estoqueB, 2)
+	pedidoB, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra Y", "justificativa de teste", produtoB, estoqueB, 2, "perda_roubo")
 	if err != nil {
 		t.Fatalf("seed B: %v", err)
 	}
@@ -423,7 +448,7 @@ func TestMontarPreNotaConteudo_ItemZeradoNaoAparece(t *testing.T) {
 		}
 	}
 
-	conteudo, err := MontarPreNotaConteudo(db, empresaTeste, preNotaDoResultadoTeste(t, resultado, pedidoB.ID))
+	conteudo, err := MontarPreNotaConteudo(db, empresaTeste, legadoPreNotaDeBaixasTeste(t, db, empresaTeste, gestorID, "", pedidoB.ID))
 	if err != nil {
 		t.Fatalf("MontarPreNotaConteudo: %v", err)
 	}
@@ -443,19 +468,19 @@ func TestMontarPreNotaConteudo_NenhumItemMovimentado(t *testing.T) {
 	gestorID := semearConta(t, db, "PreNota Vazia Gestor", "prenota-vazia-gestor@empresa.com", PapelGestor, 0)
 	usuarioID := semearConta(t, db, "PreNota Vazia Usuario", "prenota-vazia-usuario@empresa.com", PapelUsuario, 1)
 	produtoID, estoqueID, _ := seedProdutoComSaldo(t, db, "PreNota Vazia", 10)
-	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "", produtoID, estoqueID, 3)
+	pedido, err := SubmeterPedidoBaixa(db, empresaTeste, usuarioID, "Fulano", "Obra X", "justificativa de teste", produtoID, estoqueID, 3, "perda_roubo")
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	if _, err := db.Exec(`UPDATE produto_estoque SET quantidade = 0 WHERE produto_id = $1 AND estoque_id = $2`, produtoID, estoqueID); err != nil {
 		t.Fatalf("zerar saldo: %v", err)
 	}
-	resultado, err := DecidirLotePedidos(db, empresaTeste, gestorID, []string{pedido.ID}, true)
+	_, err = DecidirLotePedidos(db, empresaTeste, gestorID, []string{pedido.ID}, true)
 	if err != nil {
 		t.Fatalf("DecidirLotePedidos: %v", err)
 	}
 
-	conteudo, err := MontarPreNotaConteudo(db, empresaTeste, preNotaDoResultadoTeste(t, resultado, pedido.ID))
+	conteudo, err := MontarPreNotaConteudo(db, empresaTeste, legadoPreNotaDeBaixasTeste(t, db, empresaTeste, gestorID, "", pedido.ID))
 	if err != nil {
 		t.Fatalf("MontarPreNotaConteudo: %v", err)
 	}

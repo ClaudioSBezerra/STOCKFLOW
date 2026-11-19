@@ -33,7 +33,7 @@ function estiloDoTipo(tipo: TipoPedido): EstiloTipo | null {
       };
     case 'baixa':
       return {
-        rotulo: 'Baixa',
+        rotulo: 'Outras saídas',
         Icone: ArrowLeftRight,
         classe: 'bg-info/10 text-[color:var(--color-text-on-tint-info)]',
       };

@@ -29,6 +29,10 @@ import { rankPapel } from '@/components/shell/nav-items';
 import { conectarRealtime, type StatusRealtime } from '@/lib/realtime/client';
 import { deveRecarregarNaConexao } from '@/lib/realtime/recarregarNaConexao';
 import { apiUrl, authHeaders } from '@/lib/api';
+import { submeterPedidoBaixa } from '@/lib/pedidos';
+import { type MotivoSaida, MENSAGEM_JUSTIFICATIVA_LONGA } from '@/lib/motivosSaida';
+import { MotivoSaidaSelect } from '@/components/pedidos/MotivoSaidaSelect';
+import { JustificativaSaidaField, justificativaLonga } from '@/components/pedidos/JustificativaSaidaField';
 import {
   formatarQuantidade,
   IndicadorDisponibilidade,
@@ -89,14 +93,17 @@ import {
  * nunca guardado como um booleano solto que poderia dessincronizar.
  *
  * Registrar Baixa (Story 5.1, spec-5-1) e Transferir (Story 5.2, spec-5-2):
- * cada linha de "Quantidade por Estoque" ganha os botões "Registrar Baixa" e
+ * cada linha de "Quantidade por Estoque" ganha os botões "Solicitar baixa" e
  * "Transferir" (`variant="outline"`, `size="sm"`), visíveis só quando
  * `podeRegistrarMovimentacao` (`rankPapel(usuario?.papel ?? '') >=
  * rankPapel('almoxarife')`, molde de `podeCadastrar`/`podeExportar`,
  * `CatalogoPage.tsx`) — o servidor continua a autoridade real (403 para
  * `usuario` mesmo que o botão nunca apareça, `RequireRole` decide). "Registrar
- * Baixa" abre um `Dialog` (estado `baixaEstoque`) com um `Input type="number"`;
- * confirmar dispara `POST /api/produtos/{id}/estoques/{estoqueId}/baixa`.
+ * Baixa" abre um `Dialog` (estado `baixaEstoque`) com quantidade, motivo e
+ * justificativa obrigatórios e Obra opcional; confirmar envia um Pedido de
+ * Outras Saídas (`submeterPedidoBaixa`, POST /api/pedidos/baixa —
+ * spec-pedido-outras-saidas): NÃO debita saldo, só reserva até o Gestor
+ * aprovar (a baixa direta POST .../baixa responde 410 no servidor).
  * "Transferir" abre um `Dialog` (estado `transferenciaEstoque`) com um
  * `Select` de Estoque destino — a lista vem de `GET /api/estoques` buscada
  * LAZY quando o diálogo abre (só `almoxarife`+ vê o botão, e nem todo
@@ -276,7 +283,7 @@ const MENSAGEM_NAO_ENCONTRADO = 'Produto não encontrado.';
 const MENSAGEM_SEM_ESTOQUE_REGISTRADO = 'Sem quantidade registrada por estoque.';
 const MENSAGEM_ERRO_RESERVAS =
   'Não foi possível carregar os pedidos que reservaram este saldo. Feche e tente novamente.';
-const MENSAGEM_ERRO_BAIXA = 'Não foi possível registrar a baixa agora. Tente novamente em instantes.';
+const MENSAGEM_ERRO_BAIXA = 'Não foi possível solicitar a baixa agora. Tente novamente em instantes.';
 const MENSAGEM_ERRO_TRANSFERENCIA =
   'Não foi possível registrar a transferência agora. Tente novamente em instantes.';
 const MENSAGEM_ERRO_INATIVACAO =
@@ -339,6 +346,9 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
   // derivado de `fotoLightbox` abaixo (nenhum booleano solto separado).
   const [baixaEstoque, setBaixaEstoque] = useState<EstoqueQuantidade | null>(null);
   const [quantidadeBaixa, setQuantidadeBaixa] = useState('');
+  const [motivoBaixa, setMotivoBaixa] = useState<MotivoSaida | ''>('');
+  const [justificativaBaixa, setJustificativaBaixa] = useState('');
+  const [obraBaixa, setObraBaixa] = useState('');
   const [enviandoBaixa, setEnviandoBaixa] = useState(false);
   const [erroBaixa, setErroBaixa] = useState<string | null>(null);
 
@@ -564,47 +574,61 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
     setErroReservas(null);
   }
 
-  // confirmarBaixa envia POST /api/produtos/{id}/estoques/{estoqueId}/baixa
-  // para a linha guardada em `baixaEstoque` (molde exato do POST de
-  // CadastroProdutoSection.tsx: headers com authHeaders(), body JSON). Defesa
-  // em profundidade contra duplo-submit (`desabilitado`, mesmo padrão de
-  // CadastroProdutoSection): o `disabled` do botão só reflete `enviandoBaixa`
-  // após o próximo repaint. Sucesso -> toast + fecha o diálogo + refetch via
-  // carregarDetalhe (MESMA função do mount/reconexão/SSE, nunca um caminho
-  // de atualização de estado paralelo); falha mantém o diálogo aberto e
-  // mostra a mensagem do servidor (envelope AD-14, já cita a quantidade
-  // disponível no 409) — nunca uma string genérica fixa quando o servidor
-  // devolveu uma.
+  // confirmarBaixa envia um Pedido de Outras Saídas (POST /api/pedidos/baixa)
+  // para a linha guardada em `baixaEstoque`: reserva o saldo, NUNCA o debita
+  // (spec-pedido-outras-saidas). Motivo e justificativa são obrigatórios; a
+  // Obra / centro de custo é opcional. Defesa contra duplo-submit via
+  // `enviandoBaixa`. Falha mantém o diálogo aberto com a mensagem do servidor.
   async function confirmarBaixa() {
     if (!baixaEstoque || enviandoBaixa || quantidadeBaixa.trim() === '') {
       return;
     }
     const quantidade = Number(quantidadeBaixa);
-    if (!Number.isFinite(quantidade)) {
+    if (!Number.isFinite(quantidade) || quantidade <= 0) {
       setErroBaixa('Quantidade inválida.');
+      return;
+    }
+    if (motivoBaixa === '') {
+      setErroBaixa('Informe o motivo da saída.');
+      return;
+    }
+    if (justificativaBaixa.trim() === '') {
+      setErroBaixa('Informe a justificativa.');
+      return;
+    }
+    if (justificativaLonga(justificativaBaixa)) {
+      setErroBaixa(MENSAGEM_JUSTIFICATIVA_LONGA);
       return;
     }
     setEnviandoBaixa(true);
     setErroBaixa(null);
     try {
-      const res = await fetch(apiUrl(`/api/produtos/${id}/estoques/${baixaEstoque.estoqueId}/baixa`), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ quantidade }),
+      await submeterPedidoBaixa({
+        produtoId: id as string,
+        estoqueId: baixaEstoque.estoqueId,
+        quantidade,
+        motivo: motivoBaixa,
+        observacao: justificativaBaixa.trim(),
+        obraCentroCusto: obraBaixa.trim(),
       });
-      if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
-        setErroBaixa(body.error?.message ?? MENSAGEM_ERRO_BAIXA);
-        return;
-      }
-      toast.success('Baixa registrada.');
+      toast.success('Pedido de baixa enviado para aprovação do Gestor. O saldo ficou reservado.');
       setBaixaEstoque(null);
       setQuantidadeBaixa('');
-      await carregarDetalhe();
-    } catch {
-      setErroBaixa(MENSAGEM_ERRO_BAIXA);
+      setMotivoBaixa('');
+      setJustificativaBaixa('');
+      setObraBaixa('');
+    } catch (err) {
+      setErroBaixa(err instanceof Error ? err.message : MENSAGEM_ERRO_BAIXA);
+      return;
     } finally {
       setEnviandoBaixa(false);
+    }
+    // O pedido JÁ foi enviado: uma falha ao reler o detalhe nunca vira erro de
+    // envio nem reabre o diálogo para um reenvio duplicado.
+    try {
+      await carregarDetalhe();
+    } catch {
+      toast.info('Pedido enviado, mas não foi possível atualizar a tela agora. Recarregue a página.');
     }
   }
 
@@ -970,14 +994,17 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                aria-label={`Registrar Baixa em ${linha.estoqueNome}`}
+                                aria-label={`Solicitar baixa em ${linha.estoqueNome}`}
                                 onClick={() => {
                                   setBaixaEstoque(linha);
                                   setQuantidadeBaixa('');
+                                  setMotivoBaixa('');
+                                  setJustificativaBaixa('');
+                                  setObraBaixa('');
                                   setErroBaixa(null);
                                 }}
                               >
-                                Registrar Baixa
+                                Solicitar baixa
                               </Button>
                               <Button
                                 type="button"
@@ -1204,7 +1231,10 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Registrar Baixa — {baixaEstoque?.estoqueNome}</DialogTitle>
+            <DialogTitle>Solicitar baixa — {baixaEstoque?.estoqueNome}</DialogTitle>
+            <DialogDescription>
+              Envia um Pedido de Outras Saídas para aprovação do Gestor.
+            </DialogDescription>
           </DialogHeader>
           <form
             className="flex flex-col gap-4"
@@ -1219,7 +1249,8 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
                   Disponível para baixa: {formatarQuantidade(baixaEstoque.disponivel)}
                 </p>
                 <p className="text-label text-muted-foreground">
-                  O saldo reservado por Pedidos pendentes não pode ser baixado.
+                  O saldo reservado por Pedidos pendentes não pode ser baixado. O pedido fica
+                  reservado até o Gestor aprovar — nada é debitado agora.
                 </p>
               </div>
             )}
@@ -1233,6 +1264,20 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
                 onChange={(event) => setQuantidadeBaixa(event.target.value)}
               />
             </div>
+            <MotivoSaidaSelect idBase="detalhe-baixa" valor={motivoBaixa} onChange={setMotivoBaixa} />
+            <JustificativaSaidaField
+              id="baixa-justificativa"
+              valor={justificativaBaixa}
+              onChange={setJustificativaBaixa}
+            />
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="baixa-obra-detalhe">Obra / centro de custo (opcional)</Label>
+              <Input
+                id="baixa-obra-detalhe"
+                value={obraBaixa}
+                onChange={(event) => setObraBaixa(event.target.value)}
+              />
+            </div>
             {erroBaixa && (
               <p role="alert" className="text-body text-destructive">
                 {erroBaixa}
@@ -1241,9 +1286,15 @@ function ProdutoDetalheConteudo({ id }: { id: string }) {
             <DialogFooter>
               <Button
                 type="submit"
-                disabled={enviandoBaixa || quantidadeBaixa.trim() === ''}
+                disabled={
+                  enviandoBaixa ||
+                  quantidadeBaixa.trim() === '' ||
+                  motivoBaixa === '' ||
+                  justificativaBaixa.trim() === '' ||
+                  justificativaLonga(justificativaBaixa)
+                }
               >
-                Confirmar
+                Solicitar baixa
               </Button>
             </DialogFooter>
           </form>

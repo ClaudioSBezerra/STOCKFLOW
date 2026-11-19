@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { PedidoBaixaPage } from './PedidoBaixaPage';
+import { PedidoOutrasSaidasPage } from './PedidoOutrasSaidasPage';
 
 const toastSuccess = vi.hoisted(() => vi.fn());
 const toastError = vi.hoisted(() => vi.fn());
@@ -93,6 +93,13 @@ async function preencherFormularioCompleto(user: ReturnType<typeof userEvent.set
   await user.click(await screen.findByRole('option', { name: /Almoxarifado Central/ }));
 
   await user.type(screen.getByLabelText(/Quantidade/), '5');
+  await escolherMotivo(user, 'Produto Vencido ou Avariado');
+  await user.type(screen.getByLabelText('Justificativa'), 'Material molhado pela chuva');
+}
+
+async function escolherMotivo(user: ReturnType<typeof userEvent.setup>, rotulo: string) {
+  await user.click(screen.getByRole('combobox', { name: 'Motivo da saída' }));
+  await user.click(await screen.findByRole('option', { name: rotulo }));
 }
 
 afterEach(() => {
@@ -100,12 +107,12 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('PedidoBaixaPage', () => {
+describe('PedidoOutrasSaidasPage', () => {
   it('renderiza o formulário (sem campo Solicitante) e carrega a lista de Estoques', async () => {
     stubFetchPadrao();
-    render(<PedidoBaixaPage />);
+    render(<PedidoOutrasSaidasPage />);
 
-    expect(screen.getByRole('heading', { name: 'Pedido de Baixa de Estoque' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Pedido de Outras Saídas' })).toBeInTheDocument();
     expect(screen.queryByLabelText('Solicitante')).not.toBeInTheDocument();
     await aguardarEstoquesCarregados();
 
@@ -117,7 +124,7 @@ describe('PedidoBaixaPage', () => {
   it('busca Produto por nome e permite escolher um resultado', async () => {
     stubFetchPadrao();
     const user = userEvent.setup();
-    render(<PedidoBaixaPage />);
+    render(<PedidoOutrasSaidasPage />);
     await aguardarEstoquesCarregados();
 
     await preencherAteProduto(user);
@@ -132,7 +139,7 @@ describe('PedidoBaixaPage', () => {
   it('mostra o saldo disponível do Estoque escolhido assim que Produto e Estoque estão selecionados', async () => {
     stubFetchPadrao();
     const user = userEvent.setup();
-    render(<PedidoBaixaPage />);
+    render(<PedidoOutrasSaidasPage />);
     await aguardarEstoquesCarregados();
     await preencherAteProduto(user);
 
@@ -145,7 +152,7 @@ describe('PedidoBaixaPage', () => {
   it('Estoque sem nenhuma linha de saldo para o Produto mostra disponível 0', async () => {
     stubFetchPadrao();
     const user = userEvent.setup();
-    render(<PedidoBaixaPage />);
+    render(<PedidoOutrasSaidasPage />);
     await aguardarEstoquesCarregados();
     await preencherAteProduto(user);
 
@@ -163,7 +170,7 @@ describe('PedidoBaixaPage', () => {
       throw new Error(`URL inesperada: ${url}`);
     });
     const user = userEvent.setup();
-    render(<PedidoBaixaPage />);
+    render(<PedidoOutrasSaidasPage />);
     await aguardarEstoquesCarregados();
     await preencherAteProduto(user);
 
@@ -183,22 +190,23 @@ describe('PedidoBaixaPage', () => {
       tipo: 'baixa',
     });
     const user = userEvent.setup();
-    render(<PedidoBaixaPage />);
+    render(<PedidoOutrasSaidasPage />);
 
     await preencherFormularioCompleto(user);
-    await user.click(screen.getByRole('button', { name: 'Enviar pedido de baixa' }));
+    await user.click(screen.getByRole('button', { name: 'Enviar pedido de outras saídas' }));
 
     await waitFor(() => expect(submeterPedidoBaixaMock).toHaveBeenCalledTimes(1));
     expect(submeterPedidoBaixaMock).toHaveBeenCalledWith({
       obraCentroCusto: '',
-      observacao: '',
+      observacao: 'Material molhado pela chuva',
       produtoId: 'p-1',
       estoqueId: 'e-1',
       quantidade: 5,
+      motivo: 'vencido_avariado',
     });
     await waitFor(() =>
       expect(toastSuccess).toHaveBeenCalledWith(
-        'Pedido de Baixa enviado. O saldo ficou reservado até a decisão do gestor.',
+        'Pedido de Outras Saídas enviado. O saldo ficou reservado até a decisão do gestor.',
       ),
     );
     // Formulário limpo após o sucesso — o produto some, novo campo de busca volta.
@@ -211,10 +219,10 @@ describe('PedidoBaixaPage', () => {
       new Error('disponibilidade insuficiente para: Cimento CP-II 50kg'),
     );
     const user = userEvent.setup();
-    render(<PedidoBaixaPage />);
+    render(<PedidoOutrasSaidasPage />);
 
     await preencherFormularioCompleto(user);
-    await user.click(screen.getByRole('button', { name: 'Enviar pedido de baixa' }));
+    await user.click(screen.getByRole('button', { name: 'Enviar pedido de outras saídas' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'disponibilidade insuficiente para: Cimento CP-II 50kg',
@@ -229,7 +237,7 @@ describe('PedidoBaixaPage', () => {
       if (url === '/api/estoques') return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
       throw new Error(`URL inesperada: ${url}`);
     });
-    render(<PedidoBaixaPage />);
+    render(<PedidoOutrasSaidasPage />);
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Não foi possível carregar a lista de estoques.',
@@ -239,10 +247,10 @@ describe('PedidoBaixaPage', () => {
   it('botão de envio fica desabilitado até Produto, Estoque e quantidade > 0 estarem preenchidos — Obra/centro de custo NUNCA bloqueia', async () => {
     stubFetchPadrao();
     const user = userEvent.setup();
-    render(<PedidoBaixaPage />);
+    render(<PedidoOutrasSaidasPage />);
     await aguardarEstoquesCarregados();
 
-    const botao = screen.getByRole('button', { name: 'Enviar pedido de baixa' });
+    const botao = screen.getByRole('button', { name: 'Enviar pedido de outras saídas' });
     expect(botao).toBeDisabled();
 
     await preencherAteProduto(user);
@@ -253,22 +261,67 @@ describe('PedidoBaixaPage', () => {
     expect(botao).toBeDisabled();
 
     await user.type(screen.getByLabelText(/Quantidade/), '5');
+    // Motivo e justificativa são obrigatórios: sem eles continua desabilitado.
+    expect(botao).toBeDisabled();
+
+    await escolherMotivo(user, 'Baixa de Estoque por Perda ou Roubo');
+    expect(botao).toBeDisabled();
+
+    await user.type(screen.getByLabelText('Justificativa'), '   ');
+    expect(botao).toBeDisabled();
+
+    await user.type(screen.getByLabelText('Justificativa'), 'Furto no galpão 3, BO 123');
     expect(botao).toBeEnabled();
+  });
+
+  it('oferece os três motivos, com a ajuda sobre o Termo de Baixa', async () => {
+    stubFetchPadrao();
+    const user = userEvent.setup();
+    render(<PedidoOutrasSaidasPage />);
+    await aguardarEstoquesCarregados();
+
+    await user.click(screen.getByRole('combobox', { name: 'Motivo da saída' }));
+    for (const rotulo of [
+      'Baixa de Estoque por Perda ou Roubo',
+      'Produto Vencido ou Avariado',
+      'Por Utilização na Obra da Empresa',
+    ]) {
+      expect(await screen.findByRole('option', { name: rotulo })).toBeInTheDocument();
+    }
+    expect(screen.getByText(/Termo de Baixa/)).toBeInTheDocument();
   });
 
   it('envia com Obra/centro de custo preenchida quando o usuário escolhe preencher', async () => {
     stubFetchPadrao();
     submeterPedidoBaixaMock.mockResolvedValue({ id: 'ped-1', status: 'pendente', tipo: 'baixa' });
     const user = userEvent.setup();
-    render(<PedidoBaixaPage />);
+    render(<PedidoOutrasSaidasPage />);
 
     await preencherFormularioCompleto(user);
     await user.type(screen.getByLabelText('Obra / centro de custo (opcional)'), 'Obra Norte');
-    await user.click(screen.getByRole('button', { name: 'Enviar pedido de baixa' }));
+    await user.click(screen.getByRole('button', { name: 'Enviar pedido de outras saídas' }));
 
     await waitFor(() => expect(submeterPedidoBaixaMock).toHaveBeenCalledTimes(1));
     expect(submeterPedidoBaixaMock).toHaveBeenCalledWith(
       expect.objectContaining({ obraCentroCusto: 'Obra Norte' }),
     );
+  });
+
+  it('justificativa: maxLength 1000, contador N/1000 e envio bloqueado acima do limite', async () => {
+    stubFetchPadrao();
+    const user = userEvent.setup();
+    render(<PedidoOutrasSaidasPage />);
+    await preencherFormularioCompleto(user);
+
+    const campo = screen.getByLabelText('Justificativa') as HTMLTextAreaElement;
+    expect(campo.maxLength).toBe(1000);
+    expect(screen.getByTestId('baixa-observacao-contador')).toHaveTextContent('27/1000');
+    expect(screen.getByRole('button', { name: 'Enviar pedido de outras saídas' })).toBeEnabled();
+
+    // Colar além do limite é cortado pelo navegador (maxLength); simula o valor
+    // acima do limite direto para provar o bloqueio e a mensagem do servidor.
+    fireEvent.change(campo, { target: { value: 'x'.repeat(1001) } });
+    expect(screen.getByRole('alert')).toHaveTextContent('A justificativa deve ter no máximo 1000 caracteres.');
+    expect(screen.getByRole('button', { name: 'Enviar pedido de outras saídas' })).toBeDisabled();
   });
 });

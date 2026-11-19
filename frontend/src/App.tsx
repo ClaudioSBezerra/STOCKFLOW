@@ -9,7 +9,7 @@ import { ProdutoDetalhePage } from '@/pages/ProdutoDetalhePage';
 import { CarrinhoPage } from '@/pages/CarrinhoPage';
 import { PedidosPage } from '@/pages/PedidosPage';
 import { PedidoTransferenciaPage } from '@/pages/PedidoTransferenciaPage';
-import { PedidoBaixaPage } from '@/pages/PedidoBaixaPage';
+import { PedidoOutrasSaidasPage } from '@/pages/PedidoOutrasSaidasPage';
 import { CadastroPage } from '@/pages/CadastroPage';
 import { VerificarEmailPage } from '@/pages/VerificarEmailPage';
 import { LoginPage } from '@/pages/LoginPage';
@@ -151,7 +151,8 @@ export const router = createBrowserRouter(
         { path: 'carrinho', element: <CarrinhoPage /> },
         { path: 'pedidos', element: <PedidosPage /> },
         { path: 'pedidos/transferencia', element: <PedidoTransferenciaPage /> },
-        { path: 'pedidos/baixa', element: <PedidoBaixaPage /> },
+        { path: 'pedidos/outras-saidas', element: <PedidoOutrasSaidasPage /> },
+        { path: 'pedidos/baixa', element: <Navigate to="/pedidos/outras-saidas" replace /> },
         { path: 'pedidos/fila', element: <PedidosFilaPage /> },
         { path: 'pedidos/aprovacao-lote', element: <AprovacaoLotePage /> },
         { path: 'configuracoes', element: <ConfiguracoesPage /> },

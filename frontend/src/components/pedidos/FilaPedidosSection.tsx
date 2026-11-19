@@ -22,6 +22,9 @@ import { formatarQuantidade } from '@/components/catalogo/formatacao';
 import { StatusPedidoBadge } from '@/components/pedidos/StatusPedidoBadge';
 import { TipoPedidoBadge } from '@/components/pedidos/TipoPedidoBadge';
 import { BaixarPreNotaButton } from '@/components/pedidos/BaixarPreNotaButton';
+import { BaixarTermoBaixaButton } from '@/components/pedidos/BaixarTermoBaixaButton';
+import { rotuloCurtoMotivo } from '@/lib/motivosSaida';
+import { DetalheSaidaPedido } from '@/components/pedidos/DetalheSaidaPedido';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { FaixaIndicadores } from '@/components/lista/FaixaIndicadores';
 import {
@@ -373,8 +376,14 @@ export function FilaPedidosSection() {
               <div className="flex min-w-0 flex-1 flex-col">
                 <span className="text-body font-medium">{pedido.solicitante}</span>
                 <span className="text-label text-muted-foreground truncate">
+                  {pedido.tipo === 'baixa' && (
+                    <>
+                      {rotuloCurtoMotivo(pedido.motivoSaida)}
+                      {' · '}
+                    </>
+                  )}
                   {pedido.obraCentroCusto}
-                  {' · '}
+                  {pedido.obraCentroCusto && ' · '}
                   {pedido.qtdItens} {pedido.qtdItens === 1 ? 'item' : 'itens'}
                   {' · '}
                   {new Date(pedido.criadoEm).toLocaleDateString('pt-BR')}
@@ -385,6 +394,9 @@ export function FilaPedidosSection() {
                 <StatusPedidoBadge status={pedido.status} />
                 {pedido.preNotaId && (
                   <BaixarPreNotaButton preNotaId={pedido.preNotaId} docnum={pedido.docnum} compacto />
+                )}
+                {pedido.termoBaixaId && (
+                  <BaixarTermoBaixaButton termoBaixaId={pedido.termoBaixaId} numero={pedido.numeroTermo} compacto />
                 )}
                 <Button
                   type="button"
@@ -421,6 +433,13 @@ export function FilaPedidosSection() {
             <p className="text-body text-muted-foreground">
               Centro de custo: {detalheDe.centroCusto}
             </p>
+          )}
+          {detalheDe && (
+            <DetalheSaidaPedido
+              tipo={detalheDe.tipo}
+              motivoSaida={detalheDe.motivoSaida}
+              observacao={detalheDe.observacao}
+            />
           )}
           {carregandoItens && (
             <output className="text-body text-muted-foreground">Carregando itens...</output>
@@ -499,6 +518,9 @@ export function FilaPedidosSection() {
                   irmão, só para `gestor`+ (gate dentro do próprio botão). */}
               {detalheDe.preNotaId && (
                 <BaixarPreNotaButton preNotaId={detalheDe.preNotaId} docnum={detalheDe.docnum} />
+              )}
+              {detalheDe.termoBaixaId && (
+                <BaixarTermoBaixaButton termoBaixaId={detalheDe.termoBaixaId} numero={detalheDe.numeroTermo} />
               )}
               <Button
                 type="button"

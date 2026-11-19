@@ -32,59 +32,18 @@ import (
 	"stockflow/backend/services"
 )
 
-// registrarBaixaRequest é o corpo aceito por
-// POST /api/produtos/{id}/estoques/{estoqueId}/baixa.
-type registrarBaixaRequest struct {
-	Quantidade float64 `json:"quantidade"`
-}
+// MensagemBaixaDiretaDescontinuada é a resposta do POST
+// /api/produtos/{id}/estoques/{estoqueId}/baixa (spec-pedido-outras-saidas).
+const MensagemBaixaDiretaDescontinuada = "A baixa direta foi substituída pelo Pedido de Outras Saídas, que precisa da aprovação do Gestor."
 
-// RegistrarBaixaHandler expõe POST /api/produtos/{id}/estoques/{estoqueId}/baixa:
-// registra o consumo de `quantidade` unidades do Produto `{id}` no Estoque
-// `{estoqueId}`. `201 {"movimentacao": {...}}` no sucesso, publicando
-// `{"resource":"movimentacoes","id":<nova>,"change":"created"}` no canal
-// `movimentacoes` (AD-3 do epic-5-context.md — mesmo padrão de
-// CriarProdutoHandler para o canal `produtos`). `400 VALIDATION_ERROR` para
-// quantidade inválida; `409 CONFLICT` para quantidade indisponível
-// (incluindo par Produto/Estoque sem linha ou id malformado, ver Design
-// Notes de spec-5-1).
-func RegistrarBaixaHandler(db *sql.DB, registro *realtime.Registry) http.HandlerFunc {
+// BaixaDiretaDescontinuadaHandler responde `410 Gone` a
+// POST /api/produtos/{id}/estoques/{estoqueId}/baixa para QUALQUER papel
+// autenticado: a baixa direta nunca mais debita saldo (o fluxo agora é o
+// Pedido de Outras Saídas, aprovado por Gestor+). Não toca no banco.
+// services.RegistrarBaixa permanece no código (testes de serviço), sem rota.
+func BaixaDiretaDescontinuadaHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		usuario, ok := middleware.UsuarioDaSessao(r.Context())
-		if !ok {
-			slog.Error("RegistrarBaixaHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
-			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
-			return
-		}
-		empresa, ok := empresaDaRequisicao(w, r)
-		if !ok {
-			return
-		}
-
-		r.Body = http.MaxBytesReader(w, r.Body, authRequestMaxBytes)
-		var req registrarBaixaRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "payload inválido")
-			return
-		}
-
-		produtoID := r.PathValue("id")
-		estoqueID := r.PathValue("estoqueId")
-
-		mov, err := services.RegistrarBaixa(db, empresa.ID, produtoID, estoqueID, usuario.ID, req.Quantidade)
-		var erroValidacao *services.ErroMovimentacaoValidacao
-		var erroIndisponivel *services.ErroQuantidadeIndisponivel
-		switch {
-		case err == nil:
-			registro.Publish(empresa.ID, "movimentacoes", realtime.Evento{ID: mov.ID, Change: "created"})
-			escreverJSON(w, http.StatusCreated, map[string]any{"movimentacao": mov})
-		case errors.As(err, &erroValidacao):
-			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
-		case errors.As(err, &erroIndisponivel):
-			escreverErro(w, http.StatusConflict, "CONFLICT", erroIndisponivel.Error())
-		default:
-			slog.Error("falha ao registrar baixa", "error", err)
-			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao registrar baixa")
-		}
+		escreverErro(w, http.StatusGone, "GONE", MensagemBaixaDiretaDescontinuada)
 	}
 }
 

@@ -10,9 +10,9 @@ describe('TipoPedidoBadge', () => {
     expect(container.querySelector('svg')).toBeInTheDocument();
   });
 
-  it('tipo=baixa renderiza ícone + rótulo "Baixa"', () => {
+  it('tipo=baixa renderiza ícone + rótulo "Outras saídas"', () => {
     const { container } = render(<TipoPedidoBadge tipo="baixa" />);
-    expect(screen.getByText('Baixa')).toBeInTheDocument();
+    expect(screen.getByText('Outras saídas')).toBeInTheDocument();
     expect(container.querySelector('svg')).toBeInTheDocument();
   });
 
