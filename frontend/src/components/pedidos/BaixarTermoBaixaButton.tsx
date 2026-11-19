@@ -10,23 +10,26 @@ interface BaixarTermoBaixaButtonProps {
   numero?: number | null;
   /** Versão curta para a linha de uma lista: "Termo de Baixa nº N", tamanho `sm`. */
   compacto?: boolean;
+  /** Fila de aprovação: só Gestor+ vê (quem não é Solicitante do pedido receberia 404). */
+  somenteGestor?: boolean;
 }
 
 /**
  * Botão "Baixar Termo de Baixa" (spec-pedido-outras-saidas, molde de
  * BaixarPreNotaButton) — usado no resultado da
- * Aprovação em lote e no Dialog de detalhe da Fila/Meus Pedidos. Só aparece
- * para `gestor`+ (gate de experiência; o servidor é a autoridade real via
- * `RequireRole(PapelGestor)` em GET /api/termos-baixa/{id}/pdf). Download no
+ * Aprovação em lote e no Dialog de detalhe da Fila/Meus Pedidos. Aparece
+ * para quem vê o pedido (Gestor+ na Fila; o Solicitante em Meus Pedidos). O
+ * servidor é a autoridade real: GET /api/termos-baixa/{id}/pdf libera Gestor+
+ * e o Solicitante de pedido do Termo; outro caso -> 404. Download no
  * molde EXATO de "Baixar recibo": `Blob` -> `URL.createObjectURL` -> `<a
  * download>` criado, clicado e removido -> `URL.revokeObjectURL`, sem sair
  * da página. Falha -> `toast.error` com a mensagem do servidor.
  */
-export function BaixarTermoBaixaButton({ termoBaixaId, numero, compacto = false }: BaixarTermoBaixaButtonProps) {
+export function BaixarTermoBaixaButton({ termoBaixaId, numero, compacto = false, somenteGestor = false }: BaixarTermoBaixaButtonProps) {
   const { usuario } = useAuth();
   const [baixando, setBaixando] = useState(false);
 
-  if (rankPapel(usuario?.papel ?? '') < rankPapel('gestor')) {
+  if (somenteGestor && rankPapel(usuario?.papel ?? '') < rankPapel('gestor')) {
     return null;
   }
 

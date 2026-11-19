@@ -946,10 +946,10 @@ describe('MeusPedidosSection — Outras saídas', () => {
     expect((cliqueSpy.mock.contexts[0] as HTMLAnchorElement).download).toBe('termo-baixa-5.pdf');
   });
 
-  it('o Dialog não mostra o botão do Termo abaixo de gestor, nem sem termo', async () => {
-    authState.papel = 'almoxarife';
+  it('o Solicitante (usuario) baixa o Termo de Baixa dentro do Dialog', async () => {
+    authState.papel = 'usuario';
     await abrirDetalhe([SAIDA]);
-    expect(within(screen.getByRole('dialog')).queryByRole('button', { name: 'Baixar Termo de Baixa' })).not.toBeInTheDocument();
+    expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Baixar Termo de Baixa' })).toBeInTheDocument();
   });
 
   it('o Dialog de um pedido sem termo não mostra o botão do Termo, nem para gestor', async () => {
@@ -957,9 +957,9 @@ describe('MeusPedidosSection — Outras saídas', () => {
     expect(within(screen.getByRole('dialog')).queryByRole('button', { name: 'Baixar Termo de Baixa' })).not.toBeInTheDocument();
   });
 
-  it('papel abaixo de gestor não vê o botão do Termo de Baixa', async () => {
-    authState.papel = 'almoxarife';
+  it('o Solicitante (usuario) vê o botão do Termo de Baixa na linha do próprio pedido', async () => {
+    authState.papel = 'usuario';
     await renderizar([SAIDA]);
-    expect(screen.queryByRole('button', { name: /^Baixar Termo de Baixa/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Baixar Termo de Baixa/ })).toBeInTheDocument();
   });
 });

@@ -396,7 +396,7 @@ export function FilaPedidosSection() {
                   <BaixarPreNotaButton preNotaId={pedido.preNotaId} docnum={pedido.docnum} compacto />
                 )}
                 {pedido.termoBaixaId && (
-                  <BaixarTermoBaixaButton termoBaixaId={pedido.termoBaixaId} numero={pedido.numeroTermo} compacto />
+                  <BaixarTermoBaixaButton termoBaixaId={pedido.termoBaixaId} numero={pedido.numeroTermo} compacto somenteGestor />
                 )}
                 <Button
                   type="button"
@@ -520,7 +520,7 @@ export function FilaPedidosSection() {
                 <BaixarPreNotaButton preNotaId={detalheDe.preNotaId} docnum={detalheDe.docnum} />
               )}
               {detalheDe.termoBaixaId && (
-                <BaixarTermoBaixaButton termoBaixaId={detalheDe.termoBaixaId} numero={detalheDe.numeroTermo} />
+                <BaixarTermoBaixaButton termoBaixaId={detalheDe.termoBaixaId} numero={detalheDe.numeroTermo} somenteGestor />
               )}
               <Button
                 type="button"
