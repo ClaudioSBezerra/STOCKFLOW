@@ -136,11 +136,11 @@ var secoesManual = []SecaoManual{
 	},
 	{
 		ID:          "locais",
-		Titulo:      "Estoque — Locais",
+		Titulo:      "Estoque — Depósitos",
 		PapelMinimo: PapelAlmoxarife,
 		Paragrafos: []string{
-			"Cadastra e mantém os Estoques (locais físicos de armazenamento) da Empresa — cada um pertence a uma Filial.",
-			"Um Estoque só pode ser excluído se não tiver saldo nem pedido pendente vinculado a ele.",
+			"Consulta os Depósitos (locais físicos de armazenamento) da Empresa, agrupados por Filial, com o total de itens de cada um. É só consulta: para cadastrar ou excluir um Depósito, o Gestor ou Administrador usa Cadastros > Filiais.",
+			"Um Depósito só pode ser excluído se não tiver saldo nem pedido pendente vinculado a ele.",
 		},
 	},
 	{
@@ -200,9 +200,10 @@ var secoesManual = []SecaoManual{
 	{
 		ID:          "filiais",
 		Titulo:      "Cadastros — Filiais",
-		PapelMinimo: PapelAdm,
+		PapelMinimo: PapelGestor,
 		Paragrafos: []string{
-			"Cadastra as Filiais da Empresa — toda Empresa nasce com uma Filial padrão, e cada Estoque pertence a uma Filial.",
+			"Cadastra as Filiais da Empresa — toda Empresa nasce com uma Filial padrão, e cada Depósito pertence a uma Filial.",
+			"Dentro de cada Filial, a área \"Depósitos\" permite adicionar e excluir os depósitos daquela Filial (Gestor ou Administrador). A hierarquia é Empresa > Filial > Depósito.",
 		},
 	},
 	{

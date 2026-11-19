@@ -132,7 +132,7 @@ describe('AppShell — menu lateral', () => {
       'Carrinho',
       'Meus pedidos',
       'Fila de aprovação',
-      'Locais',
+      'Depósitos',
       'Lançar saldo',
       'Movimentações',
       'Inconsistências',
@@ -174,7 +174,7 @@ describe('AppShell — menu lateral', () => {
   it('papel almoxarife vê os grupos Estoque e Qualidade dos dados', () => {
     authState.papel = 'almoxarife';
     renderShell();
-    expect(link('Locais')).toBeInTheDocument();
+    expect(link('Depósitos')).toBeInTheDocument();
     expect(link('Inconsistências')).toBeInTheDocument();
   });
 
@@ -184,9 +184,9 @@ describe('AppShell — menu lateral', () => {
     const ativo = link('Movimentações');
     expect(ativo).toHaveAttribute('aria-current', 'page');
     expect(ativo.className).toMatch(ATIVO);
-    // Casamento exato: Locais (/estoques) não fica ativo em /estoques/movimentacoes.
-    expect(link('Locais')).not.toHaveAttribute('aria-current');
-    expect(link('Locais').className).not.toMatch(ATIVO);
+    // Casamento exato: Depósitos (/estoques) não fica ativo em /estoques/movimentacoes.
+    expect(link('Depósitos')).not.toHaveAttribute('aria-current');
+    expect(link('Depósitos').className).not.toMatch(ATIVO);
     expect(link('Produtos')).not.toHaveAttribute('aria-current');
     expect(within(menu()).getByRole('button', { name: 'Estoque' })).toHaveAttribute(
       'aria-expanded',
@@ -231,7 +231,7 @@ describe('AppShell — menu lateral', () => {
     // Navegar para um item fora do grupo e voltar: o grupo abre sozinho.
     await user.click(link('Meus pedidos'));
     await user.click(within(menu()).getByRole('button', { name: 'Estoque' }));
-    await user.click(link('Locais'));
+    await user.click(link('Depósitos'));
     expect(within(menu()).getByRole('button', { name: 'Estoque' })).toHaveAttribute(
       'aria-expanded',
       'true',
@@ -384,7 +384,7 @@ describe('AppShell — menu recolhido', () => {
 
     await user.click(within(menu()).getByRole('button', { name: 'Estoque' }));
     const painel = await screen.findByRole('menu');
-    expect(within(painel).getByRole('menuitem', { name: 'Locais' })).toBeInTheDocument();
+    expect(within(painel).getByRole('menuitem', { name: 'Depósitos' })).toBeInTheDocument();
     expect(within(painel).getByRole('menuitem', { name: 'Movimentações' })).toBeInTheDocument();
 
     await user.click(within(painel).getByRole('menuitem', { name: 'Movimentações' }));
@@ -455,7 +455,7 @@ describe('AppShell — gaveta no celular', () => {
 
     await user.click(screen.getByRole('button', { name: 'Abrir menu' }));
     const gaveta = await screen.findByRole('dialog');
-    await user.click(within(gaveta).getByRole('link', { name: 'Locais' }));
+    await user.click(within(gaveta).getByRole('link', { name: 'Depósitos' }));
 
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(screen.getByTestId('local')).toHaveTextContent('/estoques');

@@ -965,3 +965,19 @@ status: open
 - source_spec: `spec-pedido-outras-saidas.md`
   summary: Abas da Aprovação em lote sem `tabpanel`/`aria-controls`; os motivos de saída estão definidos em 4 lugares (Go, 2 CHECKs, `motivosSaida.ts`) sem teste de paridade; `RegistrarBaixa` ficou só no serviço (código sem rota); o 410 não aponta o endpoint novo; a página de Outras Saídas e o diálogo do Detalhe duplicam o formulário; quantidade acima do disponível só é recusada pelo servidor; banners de documento gerado persistem ao trocar de aba.
   evidence: Achados pela revisão (blind-hunter, edge-case-hunter). Acabamento e dívida técnica de baixo risco.
+
+- source_spec: `spec-depositos-na-filial.md`
+  summary: `estoques.filial_id` continua aceitando NULL no banco; um depósito antigo sem filial apareceria só no grupo "Sem filial" da consulta e não dentro de nenhuma Filial, então ninguém conseguiria excluí-lo pela tela nova.
+  evidence: Achado pela revisão (edge-case-hunter + blind-hunter). Verificado em 2026-11-19: 0 de 13 depósitos em produção e 0 de 3 no staging estão sem filial (a migração 12.2 os moveu para a filial padrão). Risco teórico; tratar se algum aparecer.
+
+- source_spec: `spec-depositos-na-filial.md`
+  summary: A consulta Depósitos não recarrega sozinha (sessão longa pode mostrar lista velha), não há renomear depósito, nem foco devolvido ao botão depois do diálogo de exclusão; identificadores internos (`locais`, `LocaisEstoqueSection`, id do manual, campo `locais` da API) mantêm o termo antigo.
+  evidence: Achados pela revisão (blind-hunter). Acabamento; a troca de nomes internos foi proibida de propósito pela spec (risco de links e testes).
+
+- source_spec: `spec-depositos-na-filial.md`
+  summary: A importação de planilha (`POST /api/importacoes`, aberta ao Almoxarife) cria depósito novo na filial padrão quando o nome da coluna "Estoque" não existe (`encontrarOuCriarEstoque`), contornando a regra "só Gestor+ cadastra depósito".
+  evidence: Achado pela revisão (verification-gap). DECISÃO DO USUÁRIO (2026-11-19): na hora da importação, a tela deve PERGUNTAR para qual depósito importar (sem criar depósito pela planilha). Fica como próxima entrega: o modelo de planilha tem 17 colunas fixas incluindo "Estoque" por linha, e a importação é retomável, então precisa guardar o depósito escolhido junto da importação (migration) e decidir o destino da coluna antiga.
+
+- source_spec: `spec-depositos-na-filial.md`
+  summary: Sem teste de que a seção `filiais` do manual aparece para o Gestor (`manual.go` passou de `PapelAdm` para `PapelGestor`) e de que `locais`/Depósitos mantém visibilidade almoxarife; sem teste do ramo 400 de "Adicionar depósito" mostrando a mensagem do servidor.
+  evidence: Achado pela revisão (verification-gap). Reverter o papel da seção não quebraria nenhum teste hoje (as checagens de contagem continuam passando).

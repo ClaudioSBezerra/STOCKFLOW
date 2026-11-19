@@ -564,7 +564,7 @@ describe('<App /> — rotas próprias do menu (Story 17.1)', () => {
   it.each([
     ['/produtos/novo', 'Cadastrar produto', 'Cadastrar produto'],
     ['/produtos/importar', 'Importar planilha', 'Importar planilha'],
-    ['/estoques', 'Locais', 'Locais'],
+    ['/estoques', 'Depósitos', 'Depósitos'],
     ['/estoques/lancar-saldo', 'Lançar saldo', 'Lançar saldo'],
     ['/estoques/movimentacoes', 'Movimentações', 'Movimentações'],
     ['/normalizacao', 'Inconsistências', 'Inconsistências'],

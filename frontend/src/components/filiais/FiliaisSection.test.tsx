@@ -34,8 +34,20 @@ function jsonErro(status: number, message: string) {
 }
 
 const FILIAIS = [
-  { id: 'f-1', nome: 'Matriz', cnpj: null, inscricaoEstadual: null, endereco: null },
-  { id: 'f-2', nome: 'Recife', cnpj: null, inscricaoEstadual: null, endereco: null },
+  {
+    id: 'f-1',
+    nome: 'Matriz',
+    cnpj: null,
+    inscricaoEstadual: null,
+    endereco: null,
+  },
+  {
+    id: 'f-2',
+    nome: 'Recife',
+    cnpj: null,
+    inscricaoEstadual: null,
+    endereco: null,
+  },
 ];
 
 const RECIFE_FISCAL = {
@@ -157,7 +169,9 @@ describe('FiliaisSection', () => {
     await user.type(input, 'matriz');
     await user.click(screen.getByRole('button', { name: 'Adicionar filial' }));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('já existe uma filial com esse nome');
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'já existe uma filial com esse nome',
+    );
     expect(toastSuccess).not.toHaveBeenCalled();
     expect(input).toHaveValue('matriz');
   });
@@ -189,7 +203,11 @@ describe('FiliaisSection', () => {
     const fetchMock = stubFetch((url, init) => {
       if (url === '/api/filiais' && metodo(init) === 'GET') return jsonOk({ filiais: [] });
       if (url === '/api/filiais' && init?.method === 'POST') {
-        return Promise.resolve({ ok: true, status: 201, json: async () => ({ filial: RECIFE_FISCAL }) });
+        return Promise.resolve({
+          ok: true,
+          status: 201,
+          json: async () => ({ filial: RECIFE_FISCAL }),
+        });
       }
       throw new Error(`URL inesperada: ${url}`);
     });
@@ -206,14 +224,20 @@ describe('FiliaisSection', () => {
 
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Filial criada.'));
     const post = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST');
-    expect(JSON.parse(String(post?.[1]?.body))).toMatchObject({ cnpj: '12.ABC.345/01DE-35' });
+    expect(JSON.parse(String(post?.[1]?.body))).toMatchObject({
+      cnpj: '12.ABC.345/01DE-35',
+    });
   });
 
   it('cadastro com dados fiscais envia CNPJ, IE e endereço no POST', async () => {
     const fetchMock = stubFetch((url, init) => {
       if (url === '/api/filiais' && metodo(init) === 'GET') return jsonOk({ filiais: [] });
       if (url === '/api/filiais' && init?.method === 'POST') {
-        return Promise.resolve({ ok: true, status: 201, json: async () => ({ filial: RECIFE_FISCAL }) });
+        return Promise.resolve({
+          ok: true,
+          status: 201,
+          json: async () => ({ filial: RECIFE_FISCAL }),
+        });
       }
       throw new Error(`URL inesperada: ${url}`);
     });
@@ -255,7 +279,9 @@ describe('FiliaisSection', () => {
     const fetchMock = stubFetch((url, init) => {
       if (url === '/api/filiais' && metodo(init) === 'GET') {
         gets += 1;
-        return jsonOk({ filiais: gets === 1 ? FILIAIS : [FILIAIS[0], RECIFE_FISCAL] });
+        return jsonOk({
+          filiais: gets === 1 ? FILIAIS : [FILIAIS[0], RECIFE_FISCAL],
+        });
       }
       if (url === '/api/filiais/f-2' && init?.method === 'PUT') {
         return jsonOk({ filial: RECIFE_FISCAL });
@@ -275,7 +301,10 @@ describe('FiliaisSection', () => {
 
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Filial atualizada.'));
     const put = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT');
-    expect(JSON.parse(String(put?.[1]?.body))).toMatchObject({ nome: 'Recife', cnpj: '11222333000181' });
+    expect(JSON.parse(String(put?.[1]?.body))).toMatchObject({
+      nome: 'Recife',
+      cnpj: '11222333000181',
+    });
     expect(await screen.findByText('11.222.333/0001-81')).toBeInTheDocument();
     // Volta para o modo de cadastro, com o formulário limpo.
     expect(screen.getByRole('button', { name: 'Adicionar filial' })).toBeInTheDocument();
@@ -304,7 +333,10 @@ describe('FiliaisSection', () => {
     stubFetch((url, init) => {
       if (url === '/api/filiais' && metodo(init) === 'GET') return jsonOk({ filiais: FILIAIS });
       if (url === '/api/filiais/f-1' && init?.method === 'PUT') {
-        return jsonErro(400, 'endereço incompleto: preencha também logradouro, número, bairro, CEP, UF');
+        return jsonErro(
+          400,
+          'endereço incompleto: preencha também logradouro, número, bairro, CEP, UF',
+        );
       }
       throw new Error(`URL inesperada: ${url}`);
     });
@@ -370,7 +402,12 @@ describe('FiliaisSection', () => {
       if (url === '/api/filiais' && metodo(init) === 'GET') return jsonOk({ filiais: FILIAIS });
       if (url === '/api/filiais' && init?.method === 'POST') {
         return new Promise((resolve) => {
-          liberar = () => resolve({ ok: true, status: 201, json: async () => ({ filial: FILIAIS[1] }) });
+          liberar = () =>
+            resolve({
+              ok: true,
+              status: 201,
+              json: async () => ({ filial: FILIAIS[1] }),
+            });
         });
       }
       throw new Error(`URL inesperada: ${url}`);
@@ -385,6 +422,130 @@ describe('FiliaisSection', () => {
     expect(screen.getByRole('button', { name: 'Editar Matriz' })).toBeDisabled();
 
     liberar?.(undefined);
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Editar Matriz' })).toBeEnabled());
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Editar Matriz' })).toBeEnabled(),
+    );
+  });
+
+  it('Depósitos (N): expande, mostra só os da Filial, adiciona e a contagem sobe', async () => {
+    let estoques = [
+      { id: 'e-1', nome: 'Central', filial_id: 'f-1' },
+      { id: 'e-2', nome: 'Canteiro Recife', filial_id: 'f-2' },
+      { id: 'e-3', nome: 'Legado', filial_id: null },
+    ];
+    const fetchMock = stubFetch((url, init) => {
+      if (url === '/api/filiais') return jsonOk({ filiais: FILIAIS });
+      if (url === '/api/estoques' && metodo(init) === 'GET') return jsonOk({ estoques });
+      if (url === '/api/estoques' && init?.method === 'POST') {
+        estoques = [...estoques, { id: 'e-4', nome: 'Novo', filial_id: 'f-2' }];
+        return Promise.resolve({
+          ok: true,
+          status: 201,
+          json: async () => ({}),
+        });
+      }
+      throw new Error(`URL inesperada: ${metodo(init)} ${url}`);
+    });
+    const user = userEvent.setup();
+    render(<FiliaisSection />);
+
+    await screen.findByText('Recife');
+    expect(screen.getAllByRole('button', { name: /^Depósitos da filial/ })).toHaveLength(2);
+    expect(screen.queryByText('Canteiro Recife')).not.toBeInTheDocument();
+
+    const botoes = screen.getAllByRole('button', { name: /^Depósitos da filial/ });
+    await user.click(botoes[1]);
+    expect(screen.getByText('Canteiro Recife')).toBeInTheDocument();
+    expect(screen.queryByText('Legado')).not.toBeInTheDocument();
+    expect(screen.queryByText('Central')).not.toBeInTheDocument();
+
+    await user.type(screen.getByLabelText('Nome do depósito em Recife'), 'Novo');
+    await user.click(screen.getByRole('button', { name: 'Adicionar depósito' }));
+
+    expect(
+      await screen.findByRole('button', { name: 'Depósitos da filial Recife, 2' }),
+    ).toBeInTheDocument();
+    const post = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST');
+    expect(JSON.parse(String(post?.[1]?.body))).toEqual({
+      nome: 'Novo',
+      filial_id: 'f-2',
+    });
+    expect(screen.getByText('Novo')).toBeInTheDocument();
+  });
+
+  it('falha em GET /api/estoques: "(—)", aviso na linha expandida e "Tentar de novo" recarrega', async () => {
+    let tentativas = 0;
+    stubFetch((url, init) => {
+      if (url === '/api/filiais') return jsonOk({ filiais: FILIAIS });
+      if (url === '/api/estoques' && metodo(init) === 'GET') {
+        tentativas += 1;
+        if (tentativas === 1) return jsonErro(500, 'x');
+        return jsonOk({ estoques: [{ id: 'e-2', nome: 'Canteiro Recife', filial_id: 'f-2' }] });
+      }
+      throw new Error(`URL inesperada: ${metodo(init)} ${url}`);
+    });
+    const user = userEvent.setup();
+    render(<FiliaisSection />);
+
+    const botao = await screen.findByRole('button', { name: 'Depósitos da filial Recife, —' });
+    expect(botao).toHaveTextContent('Depósitos (—)');
+    await user.click(botao);
+    expect(screen.getByText('Não foi possível carregar os depósitos.')).toBeInTheDocument();
+    expect(screen.queryByText('Nenhum depósito nesta filial ainda.')).not.toBeInTheDocument();
+    expect(botao).toHaveAttribute('aria-controls', 'depositos-filial-f-2');
+
+    await user.click(screen.getByRole('button', { name: 'Tentar de novo' }));
+    expect(await screen.findByText('Canteiro Recife')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Depósitos da filial Recife, 1' }),
+    ).toBeInTheDocument();
+  });
+
+  it('enquanto carrega mostra "(…)"; resposta antiga nunca sobrescreve a mais nova', async () => {
+    const pendentes: Array<(v: unknown) => void> = [];
+    stubFetch((url, init) => {
+      if (url === '/api/filiais') return jsonOk({ filiais: FILIAIS });
+      if (url === '/api/estoques' && metodo(init) === 'GET') {
+        return new Promise((resolve) => {
+          pendentes.push((estoques) =>
+            resolve({ ok: true, status: 200, json: async () => ({ estoques }) }),
+          );
+        });
+      }
+      if (url === '/api/estoques' && init?.method === 'POST') {
+        return Promise.resolve({ ok: true, status: 201, json: async () => ({}) });
+      }
+      throw new Error(`URL inesperada: ${metodo(init)} ${url}`);
+    });
+    const user = userEvent.setup();
+    render(<FiliaisSection />);
+
+    const botao = await screen.findByRole('button', { name: 'Depósitos da filial Recife, …' });
+    expect(botao).toHaveTextContent('Depósitos (…)');
+    await waitFor(() => expect(pendentes).toHaveLength(1));
+    pendentes[0]([]);
+    await screen.findByRole('button', { name: 'Depósitos da filial Recife, 0' });
+
+    // Adiciona (dispara o recarregamento nº 2) e, antes de responder, força o nº 3.
+    await user.click(screen.getByRole('button', { name: 'Depósitos da filial Recife, 0' }));
+    await user.type(screen.getByLabelText('Nome do depósito em Recife'), 'Novo');
+    await user.click(screen.getByRole('button', { name: 'Adicionar depósito' }));
+    await waitFor(() => expect(pendentes).toHaveLength(2));
+    // 2º cadastro antes de a resposta nº 2 chegar: dispara o recarregamento nº 3.
+    await user.type(screen.getByLabelText('Nome do depósito em Recife'), 'Outro');
+    await user.click(screen.getByRole('button', { name: 'Adicionar depósito' }));
+    await waitFor(() => expect(pendentes).toHaveLength(3));
+    const um = { id: 'e-9', nome: 'Novo', filial_id: 'f-2' };
+    const dois = { id: 'e-10', nome: 'Outro', filial_id: 'f-2' };
+    pendentes[2]([um, dois]);
+    expect(
+      await screen.findByRole('button', { name: 'Depósitos da filial Recife, 2' }),
+    ).toBeInTheDocument();
+    // a resposta nº 2 (antiga) chega por último e NÃO pode sobrescrever a nº 3.
+    pendentes[1]([um]);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(
+      screen.getByRole('button', { name: 'Depósitos da filial Recife, 2' }),
+    ).toBeInTheDocument();
   });
 });

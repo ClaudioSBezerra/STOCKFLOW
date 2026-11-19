@@ -95,7 +95,7 @@ export const navGrupos: NavGrupo[] = [
     label: 'Estoque',
     icon: Warehouse,
     itens: [
-      { id: 'locais', label: 'Locais', to: '/estoques', papelMinimo: 'almoxarife' },
+      { id: 'locais', label: 'Depósitos', to: '/estoques', papelMinimo: 'almoxarife' },
       { id: 'lancar-saldo', label: 'Lançar saldo', to: '/estoques/lancar-saldo', papelMinimo: 'almoxarife' },
       { id: 'movimentacoes', label: 'Movimentações', to: '/estoques/movimentacoes', papelMinimo: 'almoxarife' },
     ],
@@ -177,7 +177,7 @@ function semBarraFinal(caminho: string): string {
 
 /**
  * Item ativo para o `pathname` (já sem o basename da Empresa): casamento
- * exato — `/estoques` não marca Locais quando a rota é `/estoques/movimentacoes`.
+ * exato — `/estoques` não marca Depósitos quando a rota é `/estoques/movimentacoes`.
  */
 export function itemAtivo(
   grupos: NavGrupo[],

@@ -981,15 +981,15 @@ func TestNewMux_UsuariosRotaCarregaRequireRole(t *testing.T) {
 
 // TestNewMux_EstoquesRotaCarregaRequireRole prova, despachando pela mesma
 // instância de newMux usada por main() (Story 2.1), que:
-//   - POST /api/estoques está atrás de RequireRole(almoxarife): token
-//     `usuario` -> 403 FORBIDDEN; token `almoxarife`/`gestor`/`adm` passa do
+//   - POST /api/estoques está atrás de RequireRole(gestor): token
+//     `usuario`/`almoxarife` -> 403 FORBIDDEN; token `gestor`/`adm` passa do
 //     gate (201, ou 400 num payload inválido — nunca 403).
-//   - DELETE /api/estoques/{id} está atrás de RequireRole(almoxarife): token
-//     `usuario` -> 403 FORBIDDEN; token `almoxarife`/`gestor`/`adm` passa do
+//   - DELETE /api/estoques/{id} está atrás de RequireRole(gestor): token
+//     `usuario`/`almoxarife` -> 403 FORBIDDEN; token `gestor`/`adm` passa do
 //     gate (204 num Estoque criado, ou 404 num id aleatório — nunca 403).
 //   - GET /api/estoques NÃO leva RequireRole: um token `usuario` -> 200.
 //
-// Sem estes casos, remover `middleware.RequireRole(services.PapelAlmoxarife)`
+// Sem estes casos, remover `middleware.RequireRole(services.PapelGestor)`
 // do POST — ou adicioná-lo indevidamente ao GET — deixaria a suíte verde (o
 // único caso pré-existente em main_test.go, sem token -> 401, é produzido só
 // por RequireAuth).
@@ -1051,12 +1051,11 @@ func TestNewMux_EstoquesRotaCarregaRequireRole(t *testing.T) {
 		}
 	})
 
-	t.Run("POST e DELETE: almoxarife/gestor/adm passam do gate (nunca 403)", func(t *testing.T) {
+	t.Run("POST e DELETE: gestor/adm passam do gate (nunca 403)", func(t *testing.T) {
 		// Um único tokenDeMux por conta: gestor/adm exigem MFA e o segundo
 		// fator TOTP não pode ser reapresentado dentro da mesma janela de 30s,
 		// então POST e DELETE compartilham o mesmo token/subteste.
 		casos := []struct{ email, nome string }{
-			{"estq-mux-almox@empresa.com", "Canteiro Almox"},
 			{"estq-mux-gestor@empresa.com", "Canteiro Gestor"},
 			{"estq-mux-adm@empresa.com", "Canteiro Adm"},
 		}
@@ -1091,6 +1090,18 @@ func TestNewMux_EstoquesRotaCarregaRequireRole(t *testing.T) {
 			if wAusente.Code != http.StatusNotFound {
 				t.Errorf("%s (id ausente): status = %d, want %d (body=%s)", c.email, wAusente.Code, http.StatusNotFound, wAusente.Body.String())
 			}
+		}
+	})
+
+	t.Run("POST e DELETE: almoxarife -> 403 (Depósito é gestor+)", func(t *testing.T) {
+		token := tokenDeMux(t, mux, "estq-mux-almox@empresa.com", senha, segredos)
+		w := despachar(http.MethodPost, prefixoEmpresaTeste+"/api/estoques", token, `{"nome":"Canteiro Almox","filial_id":"`+filialTeste(t, db, empresaTeste)+`"}`)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("POST status = %d, want 403 (body=%s)", w.Code, w.Body.String())
+		}
+		wDel := despachar(http.MethodDelete, prefixoEmpresaTeste+"/api/estoques/00000000-0000-4000-8000-000000000000", token, "")
+		if wDel.Code != http.StatusForbidden {
+			t.Errorf("DELETE status = %d, want 403 (body=%s)", wDel.Code, wDel.Body.String())
 		}
 	})
 
@@ -1531,7 +1542,7 @@ func TestNewMux_TemplatesNomenclaturaEscritaCarregaRequireRoleAdm(t *testing.T) 
 //   - GET /api/categorias e GET /api/nomenclatura-templates NÃO levam
 //     RequireRole: um token `usuario` -> 200 nos dois.
 //
-// Sem estes casos, remover `middleware.RequireRole(services.PapelAlmoxarife)`
+// Sem estes casos, remover `middleware.RequireRole(services.PapelGestor)`
 // do POST — ou adicioná-lo indevidamente a qualquer um dos GETs — deixaria a
 // suíte verde (o único caso pré-existente em main_test.go, sem token -> 401,
 // é produzido só por RequireAuth).
@@ -1632,7 +1643,7 @@ func TestNewMux_ProdutosRotaCarregaRequireRole(t *testing.T) {
 // token `usuario` -> 403 FORBIDDEN; token `almoxarife` passa do gate (nunca
 // 403, ainda que o corpo devolva outro status por outro motivo de negócio).
 //
-// Sem este caso, remover `middleware.RequireRole(services.PapelAlmoxarife)`
+// Sem este caso, remover `middleware.RequireRole(services.PapelGestor)`
 // de POST /api/produtos/{id}/renomear deixaria a suíte verde (o único caso
 // pré-existente em main_test.go, sem token -> 401, é produzido só por
 // RequireAuth).
@@ -1724,7 +1735,7 @@ func TestNewMux_ProdutosRenomearRotaCarregaRequireRole(t *testing.T) {
 // PUT /api/produtos/{id} está atrás de RequireRole(almoxarife): token
 // `usuario` -> 403 FORBIDDEN; token `almoxarife` passa do gate (200).
 //
-// Sem este caso, remover `middleware.RequireRole(services.PapelAlmoxarife)`
+// Sem este caso, remover `middleware.RequireRole(services.PapelGestor)`
 // de PUT /api/produtos/{id} em main.go deixaria a suíte verde (o teste de
 // handler monta o próprio mux).
 func TestNewMux_ProdutosPutRotaCarregaRequireRole(t *testing.T) {
@@ -2124,7 +2135,7 @@ func TestNewMux_OutrasSaidasPapeis(t *testing.T) {
 // `almoxarife` passa do gate (201 de verdade, nunca 403). Molde de
 // TestNewMux_ProdutosBaixaRotaCarregaRequireRole.
 //
-// Sem este caso, remover `middleware.RequireRole(services.PapelAlmoxarife)`
+// Sem este caso, remover `middleware.RequireRole(services.PapelGestor)`
 // de POST /api/produtos/{id}/estoques/{estoqueId}/transferencia deixaria a
 // suíte verde (o único caso pré-existente em main_test.go, sem token ->
 // 401, é produzido só por RequireAuth).
@@ -2335,7 +2346,7 @@ func TestNewMux_PedidosDecisaoLoteRotaCarregaRequireRole(t *testing.T) {
 // gate (200 de verdade, nunca 403). Molde de
 // TestNewMux_EstoquesRotaCarregaRequireRole.
 //
-// Sem este caso, remover `middleware.RequireRole(services.PapelAlmoxarife)`
+// Sem este caso, remover `middleware.RequireRole(services.PapelGestor)`
 // de GET /api/movimentacoes deixaria a suíte verde (o único caso
 // pré-existente em main_test.go, sem token -> 401, é produzido só por
 // RequireAuth).
@@ -2444,7 +2455,7 @@ func construirXLSXMux(t *testing.T, linhas [][]string) []byte {
 //     token `almoxarife` passa do gate (404 para id inexistente é um motivo
 //     de negócio válido, mas nunca 403).
 //
-// Sem estes casos, remover `middleware.RequireRole(services.PapelAlmoxarife)`
+// Sem estes casos, remover `middleware.RequireRole(services.PapelGestor)`
 // de qualquer um dos 3 — ou registrá-los sem RequireAuth — deixaria a suíte
 // verde (o único caso pré-existente em main_test.go, sem token -> 401, é
 // produzido só por RequireAuth).

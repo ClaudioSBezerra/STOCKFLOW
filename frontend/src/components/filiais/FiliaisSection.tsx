@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { toast } from 'sonner';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { Button } from '@/components/ui/button';
@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { apiUrl, authHeaders } from '@/lib/api';
+import { DepositosDaFilial, type Deposito } from './DepositosDaFilial';
 import { formatarCEP, formatarCNPJ, maiusculasAscii } from '@/lib/formatacao';
 
 /**
@@ -26,6 +27,13 @@ import { formatarCEP, formatarCNPJ, maiusculasAscii } from '@/lib/formatacao';
  * (`ConfirmDialog`) antes de descartá-las; ao entrar em edição, rola até o
  * formulário e foca o primeiro campo. O PUT manda o formulário inteiro (o
  * servidor aceita parcial, mas a tela sempre conhece todos os campos).
+ *
+ * Depósitos (spec-depositos-na-filial): cada Filial tem a área expansível
+ * "Depósitos (N)" (`DepositosDaFilial`) com cadastro e exclusão dos depósitos
+ * DAQUELA Filial. `GET /api/estoques` é carregado uma vez e filtrado por
+ * `filial_id`; recarregado após criar/excluir. `seqDepRef` descarta respostas
+ * atrasadas; se a carga falhar, o botão mostra "(—)" e a área expandida avisa
+ * (com "Tentar de novo") em vez de fingir que a Filial está vazia.
  */
 
 interface EnderecoFilial {
@@ -77,6 +85,7 @@ const FORMULARIO_VAZIO: FormularioFilial = {
   endereco: ENDERECO_VAZIO,
 };
 
+const MENSAGEM_ERRO_DEPOSITOS = 'Não foi possível carregar os depósitos.';
 const MENSAGEM_ERRO_CARREGAR = 'Não foi possível carregar as filiais. Recarregue a página.';
 const MENSAGEM_ERRO_CADASTRO =
   'Não foi possível cadastrar a filial agora. Tente novamente em instantes.';
@@ -129,6 +138,11 @@ export function FiliaisSection() {
   const [erro, setErro] = useState<string | null>(null);
   const [erroCarregar, setErroCarregar] = useState<string | null>(null);
   const [carregou, setCarregou] = useState(false);
+  const [depositos, setDepositos] = useState<Deposito[]>([]);
+  const [depositosCarregados, setDepositosCarregados] = useState(false);
+  const [erroDepositos, setErroDepositos] = useState(false);
+  const [expandidas, setExpandidas] = useState<Set<string>>(new Set());
+  const seqDepRef = useRef(0);
 
   const carregar = useCallback(async () => {
     try {
@@ -146,11 +160,39 @@ export function FiliaisSection() {
     }
   }, []);
 
+  const carregarDepositos = useCallback(async () => {
+    const seq = ++seqDepRef.current;
+    try {
+      const res = await fetch(apiUrl('/api/estoques'), { headers: authHeaders() });
+      if (seq !== seqDepRef.current) return;
+      if (!res.ok) {
+        setErroDepositos(true);
+        return;
+      }
+      const body = (await res.json()) as { estoques?: Deposito[] };
+      if (seq !== seqDepRef.current) return;
+      setDepositos(body.estoques ?? []);
+      setErroDepositos(false);
+      setDepositosCarregados(true);
+    } catch {
+      if (seq === seqDepRef.current) setErroDepositos(true);
+    }
+  }, []);
+
   useEffect(() => {
     void (async () => {
-      await carregar();
+      await Promise.all([carregar(), carregarDepositos()]);
     })();
-  }, [carregar]);
+  }, [carregar, carregarDepositos]);
+
+  function alternarDepositos(id: string) {
+    setExpandidas((atual) => {
+      const novo = new Set(atual);
+      if (novo.has(id)) novo.delete(id);
+      else novo.add(id);
+      return novo;
+    });
+  }
 
   function campo<K extends keyof Omit<FormularioFilial, 'endereco'>>(chave: K, valor: string) {
     setForm((f) => ({ ...f, [chave]: valor }));
@@ -245,8 +287,8 @@ export function FiliaisSection() {
       <CardHeader>
         <h2 className="text-heading-md">Filiais</h2>
         <CardDescription>
-          Cadastre as filiais da sua empresa. Cada estoque é vinculado a uma filial e usa o
-          endereço dela. CNPJ, Inscrição Estadual e endereço são opcionais e aparecem na
+          Cadastre as filiais da sua empresa. Cada depósito pertence a uma filial e usa o
+          endereço dela (Empresa &gt; Filial &gt; Depósito). CNPJ, Inscrição Estadual e endereço são opcionais e aparecem na
           Pré-Nota.
         </CardDescription>
       </CardHeader>
@@ -421,8 +463,18 @@ export function FiliaisSection() {
                 </tr>
               </thead>
               <tbody>
-                {filiais.map((f) => (
-                  <tr key={f.id} className="border-b border-border last:border-b-0">
+                {filiais.map((f) => {
+                  const dosDepositos = depositos.filter((d) => d.filial_id === f.id);
+                  const aberta = expandidas.has(f.id);
+                  const idLinha = `depositos-filial-${f.id}`;
+                  const contagem = erroDepositos
+                    ? '—'
+                    : depositosCarregados
+                      ? String(dosDepositos.length)
+                      : '…';
+                  return (
+                  <Fragment key={f.id}>
+                  <tr className="border-b border-border last:border-b-0">
                     <td className="min-w-0 break-words py-2 pr-3">{f.nome}</td>
                     <td className="whitespace-nowrap py-2 pr-3">
                       {f.cnpj ? formatarCNPJ(f.cnpj) : '—'}
@@ -430,7 +482,18 @@ export function FiliaisSection() {
                     <td className="py-2 pr-3">
                       {f.endereco?.cidade ? `${f.endereco.cidade}/${f.endereco.uf}` : '—'}
                     </td>
-                    <td className="py-2 text-right">
+                    <td className="flex flex-wrap justify-end gap-2 py-2 text-right">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        aria-expanded={aberta}
+                        aria-controls={aberta ? idLinha : undefined}
+                        aria-label={`Depósitos da filial ${f.nome}, ${contagem}`}
+                        onClick={() => alternarDepositos(f.id)}
+                      >
+                        Depósitos ({contagem})
+                      </Button>
                       <Button
                         type="button"
                         variant="outline"
@@ -443,7 +506,39 @@ export function FiliaisSection() {
                       </Button>
                     </td>
                   </tr>
-                ))}
+                  {aberta && (
+                    <tr id={idLinha} className="border-b border-border">
+                      <td colSpan={4} className="bg-muted/30 px-3 py-3">
+                        {erroDepositos ? (
+                          <div className="flex flex-wrap items-center gap-3">
+                            <p role="alert" className="text-body text-destructive">
+                              {MENSAGEM_ERRO_DEPOSITOS}
+                            </p>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => void carregarDepositos()}
+                            >
+                              Tentar de novo
+                            </Button>
+                          </div>
+                        ) : !depositosCarregados ? (
+                          <p className="text-body text-muted-foreground">Carregando depósitos...</p>
+                        ) : (
+                          <DepositosDaFilial
+                            filialId={f.id}
+                            filialNome={f.nome}
+                            depositos={dosDepositos}
+                            onMudou={carregarDepositos}
+                          />
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>

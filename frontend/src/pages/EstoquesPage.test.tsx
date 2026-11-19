@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { EstoquesPage } from './EstoquesPage';
 import { LancarSaldoPage } from './LancarSaldoPage';
 import { MovimentacoesPage } from './MovimentacoesPage';
@@ -11,7 +12,12 @@ const authState = vi.hoisted(() => ({ papel: 'almoxarife' as string }));
 vi.mock('@/lib/auth', () => ({
   useAuth: () => ({
     estado: 'autenticado',
-    usuario: { id: '1', nome: 'Ator', email: 'ator@empresa.com', papel: authState.papel },
+    usuario: {
+      id: '1',
+      nome: 'Ator',
+      email: 'ator@empresa.com',
+      papel: authState.papel,
+    },
     definirSessao: vi.fn(),
     atualizarUsuario: vi.fn(),
     logout: vi.fn(),
@@ -50,7 +56,8 @@ beforeEach(() => {
     vi.fn((url: string) =>
       Promise.resolve({
         ok: true,
-        json: async () => (url.startsWith('/api/movimentacoes') ? { movimentacoes: [] } : { estoques: [] }),
+        json: async () =>
+          url.startsWith('/api/movimentacoes') ? { movimentacoes: [] } : { estoques: [] },
       }),
     ),
   );
@@ -61,26 +68,34 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('EstoquesPage — Locais (/estoques)', () => {
-  it.each(['almoxarife', 'gestor', 'adm'])('papel %s vê a tela Locais direto, sem abas', async (papel) => {
-    authState.papel = papel;
-    render(<EstoquesPage />);
+describe('EstoquesPage — Depósitos (/estoques)', () => {
+  it.each(['almoxarife', 'gestor', 'adm'])(
+    'papel %s vê a tela Depósitos direto, sem abas',
+    async (papel) => {
+      authState.papel = papel;
+      render(
+        <MemoryRouter>
+          <EstoquesPage />
+        </MemoryRouter>,
+      );
 
-    expect(await screen.findByRole('heading', { name: 'Locais' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Adicionar estoque' })).toBeInTheDocument();
-    expect(screen.queryByRole('tab')).not.toBeInTheDocument();
-    expect(
-      screen.queryByText('Você não tem acesso à área de Estoques.'),
-    ).not.toBeInTheDocument();
-  });
+      expect(await screen.findByRole('heading', { name: 'Depósitos' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Adicionar/ })).not.toBeInTheDocument();
+      expect(screen.queryByRole('tab')).not.toBeInTheDocument();
+      expect(screen.queryByText('Você não tem acesso à área de Estoques.')).not.toBeInTheDocument();
+    },
+  );
 
   it('papel usuario vê a mensagem de acesso restrito', () => {
     authState.papel = 'usuario';
-    render(<EstoquesPage />);
+    render(
+      <MemoryRouter>
+        <EstoquesPage />
+      </MemoryRouter>,
+    );
 
     expect(screen.getByText('Você não tem acesso à área de Estoques.')).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Locais' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Adicionar estoque' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Depósitos' })).not.toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalled();
   });
 });
@@ -113,7 +128,9 @@ describe('MovimentacoesPage (/estoques/movimentacoes)', () => {
       aoMudarStatus('conectado');
     });
 
-    expect(await screen.findByRole('heading', { level: 1, name: 'Movimentações' })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Movimentações' }),
+    ).toBeInTheDocument();
     expect(await screen.findByText('Nenhuma movimentação registrada.')).toBeInTheDocument();
     expect(fetch).toHaveBeenCalledWith(
       expect.stringMatching(/^\/api\/movimentacoes\?de=/),

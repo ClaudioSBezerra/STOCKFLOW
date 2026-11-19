@@ -14,7 +14,7 @@ import (
 
 // --- despacho pela MESMA composição de newMux (main.go) --------------------
 //
-// POST /api/estoques -> RequireAuth -> RequireRole(almoxarife) -> handler.
+// POST /api/estoques -> RequireAuth -> RequireRole(gestor) -> handler.
 // GET /api/estoques -> RequireAuth -> handler (SEM RequireRole).
 
 // limparEstoquesHandler trunca `importacao_linhas`/`produto_estoque`/
@@ -34,7 +34,7 @@ func postEstoques(db *sql.DB, authHeader, body string) *httptest.ResponseRecorde
 	mux.HandleFunc("POST /e/{slug}/api/estoques",
 		comEmpresa(db,
 			middleware.RequireAuth(db, testJWTSecret)(
-				middleware.RequireRole(services.PapelAlmoxarife)(
+				middleware.RequireRole(services.PapelGestor)(
 					CriarEstoqueHandler(db)))))
 	var r *http.Request
 	if body != "" {
@@ -67,13 +67,13 @@ func getEstoques(db *sql.DB, authHeader string) *httptest.ResponseRecorder {
 }
 
 // deleteEstoques despacha DELETE /api/estoques/{id} pela MESMA composição de
-// newMux (RequireAuth -> RequireRole(almoxarife) -> ExcluirEstoqueHandler).
+// newMux (RequireAuth -> RequireRole(gestor) -> ExcluirEstoqueHandler).
 func deleteEstoques(db *sql.DB, authHeader, id string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
 	mux.HandleFunc("DELETE /e/{slug}/api/estoques/{id}",
 		comEmpresa(db,
 			middleware.RequireAuth(db, testJWTSecret)(
-				middleware.RequireRole(services.PapelAlmoxarife)(
+				middleware.RequireRole(services.PapelGestor)(
 					ExcluirEstoqueHandler(db)))))
 	r := httptest.NewRequest(http.MethodDelete, prefixoEmpresaTeste+"/api/estoques/"+id, nil)
 	if authHeader != "" {
@@ -117,15 +117,14 @@ func chaves(m map[string]any) []string {
 	return ks
 }
 
-// TestCriarEstoqueHandler_201ParaAlmoxarifeGestorAdm prova a AC1 na fronteira
-// HTTP: uma sessão `almoxarife`+ com nome válido recebe 201 e o corpo
+// TestCriarEstoqueHandler_201ParaGestorAdm prova a AC1 na fronteira
+// HTTP: uma sessão `gestor`+ com nome válido recebe 201 e o corpo
 // `{"estoque":{"id","nome"}}`.
-func TestCriarEstoqueHandler_201ParaAlmoxarifeGestorAdm(t *testing.T) {
+func TestCriarEstoqueHandler_201ParaGestorAdm(t *testing.T) {
 	db := testDB(t)
 	limparEstoquesHandler(t, db)
 
 	casos := []struct{ papel, email, nome string }{
-		{"almoxarife", "cria-almox@empresa.com", "Canteiro Almox"},
 		{"gestor", "cria-gestor@empresa.com", "Canteiro Gestor"},
 		{"adm", "cria-adm@empresa.com", "Canteiro Adm"},
 	}
@@ -171,7 +170,7 @@ func TestCriarEstoqueHandler_201ParaAlmoxarifeGestorAdm(t *testing.T) {
 func TestCriarEstoqueHandler_409NomeDuplicado(t *testing.T) {
 	db := testDB(t)
 	limparEstoquesHandler(t, db)
-	criarContaComPapel(t, db, "Almox", "dup-almox@empresa.com", "senha-123456", "almoxarife")
+	criarContaComPapel(t, db, "Gestor", "dup-almox@empresa.com", "senha-123456", "gestor")
 	token := tokenDeLogin(t, db, "dup-almox@empresa.com", "senha-123456")
 
 	filial := filialTeste(t, db, empresaTeste)
@@ -194,7 +193,7 @@ func TestCriarEstoqueHandler_409NomeDuplicado(t *testing.T) {
 func TestCriarEstoqueHandler_400PayloadInvalido(t *testing.T) {
 	db := testDB(t)
 	limparEstoquesHandler(t, db)
-	criarContaComPapel(t, db, "Almox", "val-almox@empresa.com", "senha-123456", "almoxarife")
+	criarContaComPapel(t, db, "Gestor", "val-almox@empresa.com", "senha-123456", "gestor")
 	token := tokenDeLogin(t, db, "val-almox@empresa.com", "senha-123456")
 
 	// Corpo acima de authRequestMaxBytes (64KB): http.MaxBytesReader faz o
@@ -315,14 +314,13 @@ func TestListarEstoquesHandler_401SemToken(t *testing.T) {
 	}
 }
 
-// TestExcluirEstoqueHandler_204ParaAlmoxarifeGestorAdm prova a AC1 na fronteira
-// HTTP: uma sessão `almoxarife`+ excluindo um Estoque existente recebe 204 sem
+// TestExcluirEstoqueHandler_204ParaGestorAdm prova a AC1 na fronteira
+// HTTP: uma sessão `gestor`+ excluindo um Estoque existente recebe 204 sem
 // corpo e a linha some de `estoques`.
-func TestExcluirEstoqueHandler_204ParaAlmoxarifeGestorAdm(t *testing.T) {
+func TestExcluirEstoqueHandler_204ParaGestorAdm(t *testing.T) {
 	db := testDB(t)
 
 	casos := []struct{ papel, email string }{
-		{"almoxarife", "del-almox@empresa.com"},
 		{"gestor", "del-gestor@empresa.com"},
 		{"adm", "del-adm@empresa.com"},
 	}
@@ -361,7 +359,7 @@ func TestExcluirEstoqueHandler_204ParaAlmoxarifeGestorAdm(t *testing.T) {
 func TestExcluirEstoqueHandler_404IdDesconhecidoOuMalformado(t *testing.T) {
 	db := testDB(t)
 	limparEstoquesHandler(t, db)
-	criarContaComPapel(t, db, "Almox", "del404-almox@empresa.com", "senha-123456", "almoxarife")
+	criarContaComPapel(t, db, "Gestor", "del404-almox@empresa.com", "senha-123456", "gestor")
 	token := tokenDeLogin(t, db, "del404-almox@empresa.com", "senha-123456")
 
 	casos := map[string]string{
@@ -432,7 +430,7 @@ func TestExcluirEstoqueHandler_401SemToken(t *testing.T) {
 func TestExcluirEstoqueHandler_409ComResiduo(t *testing.T) {
 	db := testDB(t)
 	limparEstoquesHandler(t, db)
-	criarContaComPapel(t, db, "Almox", "del-residuo-almox@empresa.com", "senha-123456", "almoxarife")
+	criarContaComPapel(t, db, "Gestor", "del-residuo-almox@empresa.com", "senha-123456", "gestor")
 	token := tokenDeLogin(t, db, "del-residuo-almox@empresa.com", "senha-123456")
 
 	e, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Com Resíduo Handler")
@@ -479,7 +477,7 @@ func TestExcluirEstoqueHandler_409ComResiduo(t *testing.T) {
 func TestExcluirEstoqueHandler_409ComPedidoPendente(t *testing.T) {
 	db := testDB(t)
 	limparProdutosHandler(t, db)
-	criarContaComPapel(t, db, "Almox", "del-pedido-pendente-almox@empresa.com", "senha-123456", "almoxarife")
+	criarContaComPapel(t, db, "Gestor", "del-pedido-pendente-almox@empresa.com", "senha-123456", "gestor")
 	tokenAlmox := tokenDeLogin(t, db, "del-pedido-pendente-almox@empresa.com", "senha-123456")
 	_, tokenUsuario := seedContaComumECarrinho(t, db, "Usuario Del Pedido Pendente", "del-pedido-pendente-usuario@empresa.com")
 
@@ -527,7 +525,7 @@ func TestExcluirEstoqueHandler_409ComPedidoPendente(t *testing.T) {
 func TestEstoquesHandler_FilialEMesmoNomeEmFiliaisDistintas(t *testing.T) {
 	db := testDB(t)
 	limparEstoquesHandler(t, db)
-	criarContaComPapel(t, db, "Almox", "filial-almox@empresa.com", "senha-123456", "almoxarife")
+	criarContaComPapel(t, db, "Gestor", "filial-almox@empresa.com", "senha-123456", "gestor")
 	token := tokenDeLogin(t, db, "filial-almox@empresa.com", "senha-123456")
 
 	filialA := filialTeste(t, db, empresaTeste)
@@ -634,5 +632,30 @@ func TestIndicadoresEstoquesHandler_200Forma(t *testing.T) {
 	}
 	if len(cru) != 2 || cru["locais"] != float64(1) || cru["itensEmEstoque"] != float64(0) {
 		t.Errorf("corpo = %v, want exatamente {locais:1, itensEmEstoque:0}", cru)
+	}
+}
+
+// TestEstoquesHandler_403ParaAlmoxarife: criar e excluir Depósito é `gestor`+
+// (spec-depositos-na-filial); Almoxarife recebe 403 e nada muda no banco.
+func TestEstoquesHandler_403ParaAlmoxarife(t *testing.T) {
+	db := testDB(t)
+	limparEstoquesHandler(t, db)
+	criarContaComPapel(t, db, "Almox", "dep-403-almox@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "dep-403-almox@empresa.com", "senha-123456")
+	filial := filialTeste(t, db, empresaTeste)
+
+	if w := postEstoques(db, "Bearer "+token, `{"nome":"Depósito Vetado","filial_id":"`+filial+`"}`); w.Code != http.StatusForbidden {
+		t.Fatalf("POST status = %d, want 403 (body=%s)", w.Code, w.Body.String())
+	}
+	e, err := services.CriarEstoque(db, empresaTeste, filial, "Depósito Existente")
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if w := deleteEstoques(db, "Bearer "+token, e.ID); w.Code != http.StatusForbidden {
+		t.Fatalf("DELETE status = %d, want 403 (body=%s)", w.Code, w.Body.String())
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM estoques`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("estoques = %d (err=%v), want 1", n, err)
 	}
 }

@@ -53,8 +53,9 @@ import { TrialExpiradoPage } from '@/pages/TrialExpiradoPage';
  * (Story 1.9, retorno do login federado via Keycloak) são rotas públicas
  * irmãs da raiz, fora do `AppShell` e fora do
  * `RotaProtegida`. `/configuracoes` (Story 1.7, "Meu Perfil" + solicitação de
- * promoção de papel), `/estoques` (Story 2.1, tela "Locais": cadastro + lista
- * de locais de estoque, com gate de papel `almoxarife`+ na própria página),
+ * promoção de papel), `/estoques` (Story 2.1, tela "Depósitos", só consulta agrupada por Filial;
+ * o cadastro mora em Cadastros > Filiais
+ * (spec-depositos-na-filial), com gate de papel `almoxarife`+ na própria página),
  * `/produtos/:id` (Story 4.4, detalhe do Produto por Estoque com atualização
  * em tempo real, sem gate de papel próprio — `usuario`+), `/carrinho`
  * (Story 7.1, Carrinho de reserva — mesmo `usuario`+ sem gate de papel

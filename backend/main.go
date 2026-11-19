@@ -18,11 +18,11 @@
 // e auditoria — Story 1.12 (GET /api/logs-acesso, mínimo `adm`: toda tentativa
 // de login por senha ou SSO é registrada append-only em `logs_acesso`) e a
 // abertura do domínio de Estoques — Story 2.1 (POST /api/estoques, mínimo
-// `almoxarife`, e GET /api/estoques para qualquer conta autenticada: criar e
-// listar locais de estoque, com nome único — insensível a maiúsculas/minúsculas
+// `gestor` desde a spec-depositos-na-filial, e GET /api/estoques para qualquer
+// conta autenticada: criar e listar Depósitos (a tabela `estoques`), com nome único — insensível a maiúsculas/minúsculas
 // e a espaçamento — imposto pelo índice único sobre a coluna gerada
 // `nome_normalizado`) e a exclusão de Estoque — Story 2.2
-// (DELETE /api/estoques/{id}, mínimo `almoxarife`: 204 no sucesso, 404 para id
+// (DELETE /api/estoques/{id}, mínimo `gestor`: 204 no sucesso, 404 para id
 // inexistente ou malformado; o guard de estoque residual entra na Story 3.1 e
 // o de Pedido pendente na Story 7.2, sem reabrir a Story 2.2) e o cadastro
 // manual de Produto com dimensões estruturadas — Story 3.1 (POST /api/produtos,
@@ -525,18 +525,19 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 	// precisam listar nomes de Estoque para contas `usuario`); por isso NÃO
 	// leva RequireRole. Unicidade de nome — insensível a caixa e a espaçamento
 	// — é imposta pelo índice único sobre a coluna gerada `nome_normalizado`; a
-	// colisão vira 409 CONFLICT. O DELETE responde 204 sem corpo no sucesso e
+	// colisão vira 409 CONFLICT. Criar e excluir são `gestor`+ (Depósito vive
+	// dentro da Filial; spec-depositos-na-filial). O DELETE responde 204 sem corpo no sucesso e
 	// 404 para id inexistente ou malformado; os guards de estoque residual
 	// (Epic 3) e Pedido pendente (Epic 7) entram nas Stories 3.1 e 7.2.
 	registrar("POST /e/{slug}/api/estoques", middleware.RequireAuth(db, jwtSecret)(
-		middleware.RequireRole(services.PapelAlmoxarife)(
+		middleware.RequireRole(services.PapelGestor)(
 			handlers.CriarEstoqueHandler(db))))
 	registrar("GET /e/{slug}/api/estoques", middleware.RequireAuth(db, jwtSecret)(
 		handlers.ListarEstoquesHandler(db)))
 	registrar("GET /e/{slug}/api/estoques/indicadores", middleware.RequireAuth(db, jwtSecret)(
 		handlers.IndicadoresEstoquesHandler(db)))
 	registrar("DELETE /e/{slug}/api/estoques/{id}", middleware.RequireAuth(db, jwtSecret)(
-		middleware.RequireRole(services.PapelAlmoxarife)(
+		middleware.RequireRole(services.PapelGestor)(
 			handlers.ExcluirEstoqueHandler(db))))
 
 	// Filiais — Story 12.1 (FR-51, AD-27) + spec-filial-dados-fiscais.
