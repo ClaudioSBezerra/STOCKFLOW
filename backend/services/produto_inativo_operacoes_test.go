@@ -97,7 +97,7 @@ func TestImportacao_LinhaDeProdutoInativoRejeitada(t *testing.T) {
 		linhaBase("Produto Import Inativo", "FORN-IMPORT-INATIVO-162", catNome, "3", estoque.Nome),
 		linhaBase("Produto Import Ativo", "FORN-IMPORT-ATIVO-162", catNome, "4", estoque.Nome),
 	}
-	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", depositoImp(t, db, empresaTeste), linhas)
 	if err != nil {
 		t.Fatal(err)
 	}

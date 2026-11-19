@@ -88,7 +88,7 @@ const (
 	colEstoque
 	colObservacoes
 	// colPrecoUnitario (feedback Ferreira Costa, direção, 2026-11-11): 17ª
-	// coluna, sempre opcional — célula vazia grava NULL, mesma regra de
+	// coluna, sempre opcional — célula vazia vale 0 (novo) ou mantém o preço atual (atualização).
 	// validarPrecoUnitario (produtos.go). Acrescentada ao FINAL da planilha
 	// padronizada para não reordenar nenhuma coluna já documentada.
 	colPrecoUnitario
@@ -133,6 +133,13 @@ type Importacao struct {
 	Status               string `json:"status"`
 	TotalLinhas          int    `json:"total_linhas"`
 	ProximaLinhaPendente *int   `json:"proxima_linha_pendente"`
+	// EstoqueID/EstoqueNome/FilialNome: depósito de destino escolhido na tela
+	// (spec-importacao-por-deposito). Nulos em importação legada, ou quando o
+	// depósito foi excluído depois (PorDeposito continua true).
+	EstoqueID   *string `json:"estoque_id"`
+	EstoqueNome *string `json:"estoque_nome"`
+	FilialNome  *string `json:"filial_nome"`
+	PorDeposito bool    `json:"por_deposito"`
 }
 
 // LinhaRejeitada é um item de `RelatorioImportacao.LinhasRejeitadas`: o
@@ -153,9 +160,16 @@ type RelatorioImportacao struct {
 	// da linha, nunca duplicado. NUNCA soma em Criados, mesmo quando o
 	// `UPDATE` não muda nenhum valor observável (roda de qualquer forma,
 	// sem diff prévio contra o estado anterior).
-	Atualizados      int              `json:"atualizados"`
-	Rejeitados       int              `json:"rejeitados"`
-	LinhasRejeitadas []LinhaRejeitada `json:"linhas_rejeitadas"`
+	Atualizados int `json:"atualizados"`
+	Rejeitados  int `json:"rejeitados"`
+	// PreenchidasComZero conta as linhas de Produto NOVO em que "Quantidade"
+	// ou "Preço Unitário" veio vazio/zero (inclusive o que arredonda para 0 na
+	// coluna) e foi gravado 0. MantiveramValorAtual conta as ATUALIZAÇÕES em
+	// que quantidade ou preço (qualquer um) foi mantido por vir vazio/zero.
+	// Ambos usam a MESMA decisão do processamento (validarLinhaImportacao).
+	PreenchidasComZero   int              `json:"preenchidas_com_zero"`
+	MantiveramValorAtual int              `json:"mantiveram_valor_atual"`
+	LinhasRejeitadas     []LinhaRejeitada `json:"linhas_rejeitadas"`
 }
 
 // ErroImportacaoValidacao é o erro de validação de UMA linha da planilha
@@ -174,6 +188,15 @@ func (e *ErroImportacaoValidacao) Error() string { return e.Mensagem }
 // ErrEstoqueNaoEncontrado/ErrProdutoNaoEncontrado. Mapeado para 404 NOT_FOUND
 // por ContinuarImportacaoHandler.
 var ErrImportacaoNaoEncontrada = errors.New("importação não encontrada")
+
+// ErrImportacaoSemDeposito indica `estoque_id` ausente ou mal formado em
+// CriarImportacao (400). Depósito inexistente/de outra Empresa ->
+// ErrEstoqueNaoEncontrado (404).
+var ErrImportacaoSemDeposito = errors.New("escolha o depósito de destino")
+
+// motivoDepositoExcluidoImportacao é o motivo das linhas restantes quando o
+// depósito escolhido foi excluído no meio de uma importação.
+const motivoDepositoExcluidoImportacao = "depósito de destino da importação não existe mais"
 
 // linhaBruta é uma linha de dado da planilha já normalizada para exatamente
 // numeroColunas células (preenchidas com "" além do que a linha realmente
@@ -220,7 +243,11 @@ func prepararLinhasDados(linhasDeDados [][]string) []linhaBruta {
 // handlers.CriarImportacaoHandler contra CabecalhoEsperado ANTES desta
 // função ser chamada — nenhuma validação de cabeçalho acontece aqui, e
 // `linhas[0]` nunca é lido por esta função (só `linhas[1:]`).
-func CriarImportacao(db *sql.DB, empresaID string, criadoPor, nomeArquivo string, linhas [][]string) (Importacao, RelatorioImportacao, error) {
+func CriarImportacao(db *sql.DB, empresaID string, criadoPor, nomeArquivo string, estoqueID string, linhas [][]string) (Importacao, RelatorioImportacao, error) {
+	estoqueID = strings.TrimSpace(estoqueID)
+	if estoqueID == "" {
+		return Importacao{}, RelatorioImportacao{}, ErrImportacaoSemDeposito
+	}
 	var linhasDeDados [][]string
 	if len(linhas) > 1 {
 		linhasDeDados = linhas[1:]
@@ -233,12 +260,28 @@ func CriarImportacao(db *sql.DB, empresaID string, criadoPor, nomeArquivo string
 	}
 	defer func() { _ = tx.Rollback() }() // no-op após Commit bem-sucedido
 
+	// O servidor é a autoridade: o depósito tem de existir NESTA Empresa
+	// (AD-20). Malformado (não-UUID) colapsa em "não encontrado". FOR SHARE
+	// impede a exclusão concorrente do depósito até o commit.
+	var achado string
+	if err := tx.QueryRow(`SELECT id FROM estoques WHERE id = $1 AND empresa_id = $2 FOR SHARE`, estoqueID, empresaID).Scan(&achado); err != nil {
+		var pqErr *pq.Error
+		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
+			return Importacao{}, RelatorioImportacao{}, ErrEstoqueNaoEncontrado
+		}
+		return Importacao{}, RelatorioImportacao{}, fmt.Errorf("falha ao validar depósito da importação: %w", err)
+	}
+
 	var importacaoID string
 	const insertImportacao = `
-		INSERT INTO importacoes (nome_arquivo, total_linhas, criado_por, empresa_id)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO importacoes (nome_arquivo, total_linhas, criado_por, empresa_id, estoque_id, por_deposito)
+		VALUES ($1, $2, $3, $4, $5, TRUE)
 		RETURNING id`
-	if err := tx.QueryRow(insertImportacao, nomeArquivo, len(preparadas), criadoPor, empresaID).Scan(&importacaoID); err != nil {
+	if err := tx.QueryRow(insertImportacao, nomeArquivo, len(preparadas), criadoPor, empresaID, estoqueID).Scan(&importacaoID); err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23503" { // FK: depósito sumiu
+			return Importacao{}, RelatorioImportacao{}, ErrEstoqueNaoEncontrado
+		}
 		return Importacao{}, RelatorioImportacao{}, fmt.Errorf("falha ao inserir importação: %w", err)
 	}
 
@@ -284,10 +327,13 @@ func ContinuarImportacao(db *sql.DB, empresaID string, id string) (Importacao, R
 func ObterUltimaImportacao(db *sql.DB, empresaID string) (*Importacao, RelatorioImportacao, error) {
 	var imp Importacao
 	const selectUltima = `
-		SELECT id, status, total_linhas FROM importacoes
-		WHERE empresa_id = $1
-		ORDER BY iniciado_em DESC LIMIT 1`
-	if err := db.QueryRow(selectUltima, empresaID).Scan(&imp.ID, &imp.Status, &imp.TotalLinhas); err != nil {
+		SELECT i.id, i.status, i.total_linhas, i.estoque_id, e.nome, f.nome, i.por_deposito
+		FROM importacoes i
+		LEFT JOIN estoques e ON e.id = i.estoque_id
+		LEFT JOIN filiais f ON f.id = e.filial_id
+		WHERE i.empresa_id = $1
+		ORDER BY i.iniciado_em DESC LIMIT 1`
+	if err := db.QueryRow(selectUltima, empresaID).Scan(&imp.ID, &imp.Status, &imp.TotalLinhas, &imp.EstoqueID, &imp.EstoqueNome, &imp.FilialNome, &imp.PorDeposito); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, RelatorioImportacao{}, nil
 		}
@@ -311,8 +357,13 @@ func ObterUltimaImportacao(db *sql.DB, empresaID string) (*Importacao, Relatorio
 // `pq` SQLSTATE 22P02) colapsam em ErrImportacaoNaoEncontrada.
 func buscarImportacao(db *sql.DB, empresaID string, id string) (Importacao, error) {
 	var imp Importacao
-	const selectImportacao = `SELECT id, status, total_linhas FROM importacoes WHERE id = $1 AND empresa_id = $2`
-	if err := db.QueryRow(selectImportacao, id, empresaID).Scan(&imp.ID, &imp.Status, &imp.TotalLinhas); err != nil {
+	const selectImportacao = `
+		SELECT i.id, i.status, i.total_linhas, i.estoque_id, e.nome, f.nome, i.por_deposito
+		FROM importacoes i
+		LEFT JOIN estoques e ON e.id = i.estoque_id
+		LEFT JOIN filiais f ON f.id = e.filial_id
+		WHERE i.id = $1 AND i.empresa_id = $2`
+	if err := db.QueryRow(selectImportacao, id, empresaID).Scan(&imp.ID, &imp.Status, &imp.TotalLinhas, &imp.EstoqueID, &imp.EstoqueNome, &imp.FilialNome, &imp.PorDeposito); err != nil {
 		var pqErr *pq.Error
 		if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pqErr) && pqErr.Code == pqInvalidTextRepresentation) {
 			return Importacao{}, ErrImportacaoNaoEncontrada
@@ -400,6 +451,43 @@ func montarRelatorio(db *sql.DB, importacaoID string) (RelatorioImportacao, erro
 		return RelatorioImportacao{}, fmt.Errorf("falha ao iterar contagens de status: %w", err)
 	}
 	rows.Close()
+
+	// Mesma decisão do processamento: revalida cada linha já resolvida com
+	// validarLinhaImportacao e olha quantidadeZero/precoZero.
+	const selectResolvidas = `
+		SELECT status::text, dados FROM importacao_linhas
+		WHERE importacao_id = $1 AND status::text IN ('criado', 'atualizado')`
+	resolvidas, err := db.Query(selectResolvidas, importacaoID)
+	if err != nil {
+		return RelatorioImportacao{}, fmt.Errorf("falha ao listar linhas resolvidas: %w", err)
+	}
+	for resolvidas.Next() {
+		var status string
+		var dadosRaw []byte
+		if err := resolvidas.Scan(&status, &dadosRaw); err != nil {
+			resolvidas.Close()
+			return RelatorioImportacao{}, fmt.Errorf("falha ao ler linha resolvida: %w", err)
+		}
+		var dados []string
+		if err := json.Unmarshal(dadosRaw, &dados); err != nil {
+			resolvidas.Close()
+			return RelatorioImportacao{}, fmt.Errorf("falha ao decodificar linha resolvida: %w", err)
+		}
+		v, errVal := validarLinhaImportacao(dados)
+		if errVal != nil || !(v.quantidadeZero || v.precoZero) {
+			continue
+		}
+		if status == "criado" {
+			relatorio.PreenchidasComZero++
+		} else {
+			relatorio.MantiveramValorAtual++
+		}
+	}
+	if err := resolvidas.Err(); err != nil {
+		resolvidas.Close()
+		return RelatorioImportacao{}, fmt.Errorf("falha ao iterar linhas resolvidas: %w", err)
+	}
+	resolvidas.Close()
 
 	const selectRejeitadas = `
 		SELECT numero_linha, erro FROM importacao_linhas
@@ -531,6 +619,11 @@ func processarProximaLinha(db *sql.DB, empresaID string, importacaoID string) (b
 		return true, rejeitarECommitar(tx, linhaID, numeroLinha, erroValidacao.Error())
 	}
 
+	destino, err := carregarDestinoImportacao(tx, importacaoID)
+	if err != nil {
+		return false, fmt.Errorf("falha ao carregar destino da importação na linha %d: %w", numeroLinha, err)
+	}
+
 	var categoriaID string
 	const selectCategoria = `
 		SELECT id FROM categorias
@@ -577,16 +670,16 @@ func processarProximaLinha(db *sql.DB, empresaID string, importacaoID string) (b
 			if produtoInativo {
 				return true, rejeitarECommitar(tx, linhaID, numeroLinha, motivoProdutoInativoImportacao)
 			}
-			return processarLinhaDeAtualizacao(tx, empresaID, linhaID, numeroLinha, validada, categoriaID, produtoExistenteID, produtoExistenteTemplateID)
+			return processarLinhaDeAtualizacao(tx, empresaID, linhaID, numeroLinha, validada, destino, categoriaID, produtoExistenteID, produtoExistenteTemplateID)
 		}
 	}
 
-	estoque, err := encontrarOuCriarEstoque(tx, empresaID, validada.estoqueNome)
-	if errors.Is(err, ErrEstoqueValidacao) || errors.Is(err, ErrEmpresaSemFilial) {
-		return true, rejeitarECommitar(tx, linhaID, numeroLinha, err.Error())
-	}
+	estoque, motivoEstoque, err := resolverEstoqueDaLinha(tx, empresaID, destino, validada)
 	if err != nil {
-		return false, fmt.Errorf("falha ao encontrar/criar estoque da linha %d: %w", numeroLinha, err)
+		return false, fmt.Errorf("falha ao resolver estoque da linha %d: %w", numeroLinha, err)
+	}
+	if motivoEstoque != "" {
+		return true, rejeitarECommitar(tx, linhaID, numeroLinha, motivoEstoque)
 	}
 
 	templateID, err := buscarTemplateGenericoID(tx, empresaID)
@@ -765,7 +858,7 @@ const motivoProdutoInativoImportacao = "Produto inativo — reative antes de imp
 // rejeição). Mesma ordem do caminho de criação em processarProximaLinha, que
 // resolve o Estoque antes do `INSERT INTO produtos` pelo mesmo motivo.
 func processarLinhaDeAtualizacao(
-	tx *sql.Tx, empresaID string, linhaID string, numeroLinha int, validada linhaValidada,
+	tx *sql.Tx, empresaID string, linhaID string, numeroLinha int, validada linhaValidada, destino destinoImportacao,
 	categoriaID string, produtoExistenteID string, produtoExistenteTemplateID sql.NullString,
 ) (bool, error) {
 	if produtoExistenteTemplateID.Valid {
@@ -779,12 +872,18 @@ func processarLinhaDeAtualizacao(
 		}
 	}
 
-	estoque, err := encontrarOuCriarEstoque(tx, empresaID, validada.estoqueNome)
-	if errors.Is(err, ErrEstoqueValidacao) || errors.Is(err, ErrEmpresaSemFilial) {
-		return true, rejeitarECommitar(tx, linhaID, numeroLinha, err.Error())
-	}
+	estoque, motivoEstoque, err := resolverEstoqueDaLinha(tx, empresaID, destino, validada)
 	if err != nil {
-		return false, fmt.Errorf("falha ao encontrar/criar estoque da linha %d: %w", numeroLinha, err)
+		return false, fmt.Errorf("falha ao resolver estoque da linha %d: %w", numeroLinha, err)
+	}
+	if motivoEstoque != "" {
+		return true, rejeitarECommitar(tx, linhaID, numeroLinha, motivoEstoque)
+	}
+
+	// Atualização: preço vazio ou 0 mantém o preço atual (COALESCE com NULL).
+	var precoAtualizacao sql.NullFloat64
+	if !validada.precoZero {
+		precoAtualizacao = validada.precoUnitario
 	}
 
 	const updateProduto = `
@@ -795,7 +894,7 @@ func processarLinhaDeAtualizacao(
 			diametro_valor = $9, diametro_unidade = $10,
 			altura_valor = $11, altura_unidade = $12,
 			espessura_valor = $13, espessura_unidade = $14,
-			preco_unitario = $17
+			preco_unitario = COALESCE($17, preco_unitario)
 		WHERE id = $15 AND empresa_id = $16`
 	if _, err := tx.Exec(updateProduto,
 		validada.nome, validada.codigoFornecedor, categoriaID, validada.observacoes,
@@ -804,17 +903,21 @@ func processarLinhaDeAtualizacao(
 		validada.diametroValor, validada.diametroUnidade,
 		validada.alturaValor, validada.alturaUnidade,
 		validada.espessuraValor, validada.espessuraUnidade,
-		produtoExistenteID, empresaID, validada.precoUnitario,
+		produtoExistenteID, empresaID, precoAtualizacao,
 	); err != nil {
 		return false, fmt.Errorf("falha ao atualizar produto da linha %d: %w", numeroLinha, err)
 	}
 
-	const upsertProdutoEstoque = `
-		INSERT INTO produto_estoque (produto_id, estoque_id, quantidade)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (produto_id, estoque_id) DO UPDATE SET quantidade = EXCLUDED.quantidade`
-	if _, err := tx.Exec(upsertProdutoEstoque, produtoExistenteID, estoque.ID, validada.quantidade); err != nil {
-		return false, fmt.Errorf("falha ao upsert produto_estoque da linha %d: %w", numeroLinha, err)
+	// Quantidade vazia/zero numa atualização MANTÉM o saldo atual: nada a
+	// fazer (nem cria par Produto/depósito com 0).
+	if !validada.quantidadeZero {
+		const upsertProdutoEstoque = `
+			INSERT INTO produto_estoque (produto_id, estoque_id, quantidade)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (produto_id, estoque_id) DO UPDATE SET quantidade = EXCLUDED.quantidade`
+		if _, err := tx.Exec(upsertProdutoEstoque, produtoExistenteID, estoque.ID, validada.quantidade); err != nil {
+			return false, fmt.Errorf("falha ao upsert produto_estoque da linha %d: %w", numeroLinha, err)
+		}
 	}
 
 	const marcarAtualizada = `UPDATE importacao_linhas SET status = 'atualizado', produto_id = $1 WHERE id = $2`
@@ -826,6 +929,44 @@ func processarLinhaDeAtualizacao(
 		return false, fmt.Errorf("falha ao commitar atualização da linha %d: %w", numeroLinha, err)
 	}
 	return true, nil
+}
+
+// destinoImportacao é o depósito de destino gravado na importação.
+// porDeposito=false -> importação legada (depósito vem da coluna "Estoque").
+type destinoImportacao struct {
+	estoqueID   sql.NullString
+	porDeposito bool
+}
+
+func carregarDestinoImportacao(tx *sql.Tx, importacaoID string) (destinoImportacao, error) {
+	var d destinoImportacao
+	err := tx.QueryRow(`SELECT estoque_id, por_deposito FROM importacoes WHERE id = $1`, importacaoID).
+		Scan(&d.estoqueID, &d.porDeposito)
+	return d, err
+}
+
+// resolverEstoqueDaLinha devolve o depósito onde a linha grava saldo. Importação
+// com depósito escolhido NUNCA cria depósito: se ele foi excluído, devolve um
+// motivo de rejeição (o FOR SHARE impede a exclusão concorrente até o commit da
+// linha). Importação legada segue por encontrarOuCriarEstoque.
+func resolverEstoqueDaLinha(tx *sql.Tx, empresaID string, destino destinoImportacao, validada linhaValidada) (Estoque, string, error) {
+	if !destino.porDeposito {
+		e, err := encontrarOuCriarEstoque(tx, empresaID, validada.estoqueNome)
+		if errors.Is(err, ErrEstoqueValidacao) || errors.Is(err, ErrEmpresaSemFilial) {
+			return Estoque{}, err.Error(), nil
+		}
+		return e, "", err
+	}
+	if !destino.estoqueID.Valid {
+		return Estoque{}, motivoDepositoExcluidoImportacao, nil
+	}
+	var e Estoque
+	err := tx.QueryRow(`SELECT id, nome FROM estoques WHERE id = $1 AND empresa_id = $2 FOR SHARE`,
+		destino.estoqueID.String, empresaID).Scan(&e.ID, &e.Nome)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Estoque{}, motivoDepositoExcluidoImportacao, nil
+	}
+	return e, "", err
 }
 
 // rejeitarECommitar marca `linhaID` como `rejeitada` com `motivo` e commita a
@@ -852,6 +993,10 @@ type linhaValidada struct {
 	codigoFornecedor sql.NullString
 	observacoes      sql.NullString
 	quantidade       float64
+	// quantidadeZero/precoZero: vazio OU zero na precisão da coluna (ver
+	// ehZeroNaColuna) — novo grava 0, existente mantém o valor atual.
+	quantidadeZero bool
+	precoZero      bool
 
 	comprimentoValor, larguraValor, diametroValor, alturaValor, espessuraValor           sql.NullFloat64
 	comprimentoUnidade, larguraUnidade, diametroUnidade, alturaUnidade, espessuraUnidade sql.NullString
@@ -902,9 +1047,11 @@ func validarLinhaImportacao(dados []string) (linhaValidada, error) {
 		observacoes = sql.NullString{String: observacoesTrimadas, Valid: true}
 	}
 
+	// Vazio vira zero (decisão do usuário, 2026-11-19), tanto aqui quanto no
+	// preço unitário abaixo.
 	quantidadeTexto := strings.TrimSpace(dados[colQuantidade])
 	if quantidadeTexto == "" {
-		return linhaValidada{}, &ErroImportacaoValidacao{Mensagem: "quantidade é obrigatória"}
+		quantidadeTexto = "0"
 	}
 	// Parsing só aceita ponto decimal — mesma convenção do resto do sistema
 	// (a API JSON e os `<input type="number">` do formulário de cadastro
@@ -925,6 +1072,10 @@ func validarLinhaImportacao(dados []string) (linhaValidada, error) {
 		return linhaValidada{}, &ErroImportacaoValidacao{
 			Mensagem: "quantidade deve ser maior ou igual a zero",
 		}
+	}
+	quantidadeZero := ehZeroNaColuna(quantidade, casasQuantidade)
+	if quantidadeZero {
+		quantidade = 0
 	}
 	if quantidade > limiteNumeric103 {
 		return linhaValidada{}, &ErroImportacaoValidacao{
@@ -954,10 +1105,11 @@ func validarLinhaImportacao(dados []string) (linhaValidada, error) {
 	}
 
 	// Preço Unitário (feedback Ferreira Costa, direção, 2026-11-11): célula
-	// vazia -> NULL, sem erro (sempre opcional). Mesma convenção de
+	// vazio -> 0, sem erro (sempre opcional). Mesma convenção de
 	// quantidade: só ponto decimal, validado por validarPrecoUnitario
 	// (produtos.go) — >= 0 e dentro do limite da coluna.
-	var precoUnitario sql.NullFloat64
+	precoUnitario := sql.NullFloat64{Float64: 0, Valid: true}
+	precoZero := true
 	if precoTexto := strings.TrimSpace(dados[colPrecoUnitario]); precoTexto != "" {
 		preco, err := strconv.ParseFloat(precoTexto, 64)
 		if err != nil || math.IsNaN(preco) || math.IsInf(preco, 0) {
@@ -974,6 +1126,11 @@ func validarLinhaImportacao(dados []string) (linhaValidada, error) {
 			return linhaValidada{}, err
 		}
 		precoUnitario = precoValidado
+		if ehZeroNaColuna(precoValidado.Float64, casasPreco) {
+			precoUnitario = sql.NullFloat64{Float64: 0, Valid: true}
+		} else {
+			precoZero = false
+		}
 	}
 
 	return linhaValidada{
@@ -981,6 +1138,8 @@ func validarLinhaImportacao(dados []string) (linhaValidada, error) {
 		codigoFornecedor: codigoFornecedor,
 		observacoes:      observacoes,
 		quantidade:       quantidade,
+		quantidadeZero:   quantidadeZero,
+		precoZero:        precoZero,
 
 		comprimentoValor: comprimentoValor, comprimentoUnidade: comprimentoUnidade,
 		larguraValor: larguraValor, larguraUnidade: larguraUnidade,
@@ -993,6 +1152,21 @@ func validarLinhaImportacao(dados []string) (linhaValidada, error) {
 
 		precoUnitario: precoUnitario,
 	}, nil
+}
+
+// Casas decimais das colunas: produto_estoque.quantidade NUMERIC(10,3) e
+// produtos.preco_unitario NUMERIC(12,2).
+const (
+	casasQuantidade = 3
+	casasPreco      = 2
+)
+
+// ehZeroNaColuna diz se `v` vale zero na precisão da coluna (`casas` decimais):
+// "0", "-0", "0e0", "1e-400" e valores que o Postgres arredondaria para 0
+// (ex. 0.0004 em 3 casas). Usada pela validação/processamento E pelo relatório,
+// para nunca divergirem — e para nunca zerar saldo/preço por arredondamento.
+func ehZeroNaColuna(v float64, casas int) bool {
+	return math.Round(v*math.Pow10(casas)) == 0
 }
 
 // validarDimensaoLinha converte o par de células brutas (valor/unidade) de

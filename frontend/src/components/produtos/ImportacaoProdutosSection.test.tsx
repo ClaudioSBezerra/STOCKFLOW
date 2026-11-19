@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, afterEach } from 'vitest';
+import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
@@ -27,8 +27,17 @@ type FetchImpl = (
   init?: RequestInit,
 ) => Promise<{ ok: boolean; status?: number; json: () => Promise<unknown> }>;
 
+// Depósitos/Filiais servidos por padrão a todos os testes (a seção carrega os
+// dois no mount); testes específicos sobrescrevem estas variáveis.
+let estoquesDeTeste: unknown[] = [];
+let filiaisDeTeste: unknown[] = [];
+
 function stubFetch(impl: FetchImpl) {
-  const fn = vi.fn(impl);
+  const fn = vi.fn((url: string, init?: RequestInit) => {
+    if (url === '/api/estoques') return jsonOk({ estoques: estoquesDeTeste });
+    if (url === '/api/filiais') return jsonOk({ filiais: filiaisDeTeste });
+    return impl(url, init);
+  });
   vi.stubGlobal('fetch', fn);
   return fn;
 }
@@ -38,6 +47,22 @@ function jsonOk(body: unknown) {
 }
 
 const SEM_IMPORTACAO_ANTERIOR = { importacao: null };
+
+beforeEach(() => {
+  estoquesDeTeste = [
+    { id: 'est-1', nome: 'Almoxarifado Central', filial_id: 'fil-1' },
+    { id: 'est-2', nome: 'Canteiro Norte', filial_id: 'fil-2' },
+  ];
+  filiaisDeTeste = [
+    { id: 'fil-1', nome: 'Matriz' },
+    { id: 'fil-2', nome: 'Filial Norte' },
+  ];
+});
+
+async function escolherDeposito(user: ReturnType<typeof userEvent.setup>, nome = 'Almoxarifado Central') {
+  const seletor = await screen.findByLabelText('Depósito de destino');
+  await user.selectOptions(seletor, nome);
+}
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -177,6 +202,7 @@ describe('ImportacaoProdutosSection — botões mutuamente exclusivos', () => {
     const botaoImportar = screen.getByRole('button', { name: 'Importar planilha' });
     const arquivo = new File(['conteudo'], 'planilha.xlsx');
     await user.upload(screen.getByLabelText('Planilha (.xlsx)'), arquivo);
+    await escolherDeposito(user);
     expect(botaoImportar).toBeEnabled();
 
     await user.click(screen.getByRole('button', { name: 'Continuar importação' }));
@@ -219,7 +245,14 @@ describe('ImportacaoProdutosSection — upload da planilha', () => {
       if (url === '/api/importacoes/ultima') return jsonOk(SEM_IMPORTACAO_ANTERIOR);
       if (url === '/api/importacoes' && init?.method === 'POST') {
         return jsonOk({
-          importacao: { id: 'imp-2', status: 'concluida', total_linhas: 2 },
+          importacao: {
+            id: 'imp-2',
+            status: 'concluida',
+            total_linhas: 2,
+            estoque_id: 'est-1',
+            estoque_nome: 'Almoxarifado Central',
+            filial_nome: 'Matriz',
+          },
           relatorio: {
             criados: 1,
             atualizados: 0,
@@ -238,6 +271,7 @@ describe('ImportacaoProdutosSection — upload da planilha', () => {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     });
     await user.upload(screen.getByLabelText('Planilha (.xlsx)'), arquivo);
+    await escolherDeposito(user);
     expect(screen.getByRole('button', { name: 'Importar planilha' })).toBeEnabled();
     await user.click(screen.getByRole('button', { name: 'Importar planilha' }));
 
@@ -246,6 +280,7 @@ describe('ImportacaoProdutosSection — upload da planilha', () => {
         'Importação concluída: 1 criado(s), 0 atualizado(s), 1 rejeitado(s).',
       ),
     );
+    expect(screen.getByText('Depósito: Almoxarifado Central (Matriz)')).toBeInTheDocument();
     expect(screen.getByText('3')).toBeInTheDocument();
     expect(screen.getByText('categoria "Inexistente" não encontrada')).toBeInTheDocument();
     expect(screen.getByText(/1 criado\(s\), 0 atualizado\(s\), 1 rejeitado\(s\)\./)).toBeInTheDocument();
@@ -255,6 +290,7 @@ describe('ImportacaoProdutosSection — upload da planilha', () => {
     const init = chamadaPost![1];
     expect(init.body).toBeInstanceOf(FormData);
     expect((init.body as FormData).get('planilha')).toBeInstanceOf(File);
+    expect((init.body as FormData).get('estoque_id')).toBe('est-1');
     expect((init.headers as Record<string, string> | undefined)?.['Content-Type']).toBeUndefined();
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer token-de-teste');
   });
@@ -277,6 +313,7 @@ describe('ImportacaoProdutosSection — upload da planilha', () => {
 
     const arquivo = new File(['ruim'], 'ruim.xlsx');
     await user.upload(screen.getByLabelText('Planilha (.xlsx)'), arquivo);
+    await escolherDeposito(user);
     await user.click(screen.getByRole('button', { name: 'Importar planilha' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('cabeçalho da planilha inválido');
@@ -297,6 +334,7 @@ describe('ImportacaoProdutosSection — upload da planilha', () => {
 
     const arquivo = new File(['x'], 'planilha.xlsx');
     await user.upload(screen.getByLabelText('Planilha (.xlsx)'), arquivo);
+    await escolherDeposito(user);
     await user.click(screen.getByRole('button', { name: 'Importar planilha' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
@@ -334,11 +372,177 @@ describe('ImportacaoProdutosSection — relatório com atualizados e CTA de dupl
 
     const arquivo = new File(['conteudo'], 'planilha.xlsx');
     await user.upload(screen.getByLabelText('Planilha (.xlsx)'), arquivo);
+    await escolherDeposito(user);
     await user.click(screen.getByRole('button', { name: 'Importar planilha' }));
 
     expect(await screen.findByText('1 criado(s), 2 atualizado(s), 0 rejeitado(s).')).toBeInTheDocument();
     const cta = screen.getByRole('link', { name: 'Verificar duplicatas agora' });
     expect(cta).toBeInTheDocument();
     expect(cta).toHaveAttribute('href', '/normalizacao/duplicatas?verificarDuplicatas=1');
+  });
+});
+
+describe('ImportacaoProdutosSection — Depósito de destino (spec-importacao-por-deposito)', () => {
+  const semUltima = (url: string) => {
+    if (url === '/api/importacoes/ultima') return jsonOk(SEM_IMPORTACAO_ANTERIOR);
+    throw new Error(`URL inesperada: ${url}`);
+  };
+
+  it('lista os depósitos agrupados por Filial', async () => {
+    stubFetch(semUltima);
+    renderComponente();
+
+    const seletor = await screen.findByLabelText('Depósito de destino');
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Canteiro Norte' })).toBeInTheDocument());
+    const grupos = Array.from(seletor.querySelectorAll('optgroup')).map((g) => g.label);
+    expect(grupos).toEqual(['Matriz', 'Filial Norte']);
+  });
+
+  it('envio fica bloqueado até escolher o depósito, mesmo com arquivo', async () => {
+    stubFetch(semUltima);
+    const user = userEvent.setup();
+    renderComponente();
+    await screen.findByRole('option', { name: 'Canteiro Norte' });
+
+    await user.upload(screen.getByLabelText('Planilha (.xlsx)'), new File(['x'], 'planilha.xlsx'));
+    expect(screen.getByRole('button', { name: 'Importar planilha' })).toBeDisabled();
+    await escolherDeposito(user, 'Canteiro Norte');
+    expect(screen.getByRole('button', { name: 'Importar planilha' })).toBeEnabled();
+  });
+
+  it('sem depósitos: mostra a mensagem e bloqueia o envio', async () => {
+    estoquesDeTeste = [];
+    stubFetch(semUltima);
+    const user = userEvent.setup();
+    renderComponente();
+
+    expect(
+      await screen.findByText('Nenhum depósito cadastrado. Peça a um gestor para cadastrar em Cadastros > Filiais.'),
+    ).toBeInTheDocument();
+    await user.upload(screen.getByLabelText('Planilha (.xlsx)'), new File(['x'], 'planilha.xlsx'));
+    expect(screen.getByRole('button', { name: 'Importar planilha' })).toBeDisabled();
+  });
+
+  it('erro no envio preserva o arquivo e a escolha do depósito', async () => {
+    stubFetch((url, init) => {
+      if (url === '/api/importacoes/ultima') return jsonOk(SEM_IMPORTACAO_ANTERIOR);
+      if (url === '/api/importacoes' && init?.method === 'POST') {
+        return Promise.resolve({
+          ok: false,
+          status: 400,
+          json: async () => ({ error: { code: 'VALIDATION_ERROR', message: 'cabeçalho da planilha inválido' } }),
+        });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    const user = userEvent.setup();
+    renderComponente();
+    await user.upload(screen.getByLabelText('Planilha (.xlsx)'), new File(['x'], 'planilha.xlsx'));
+    await escolherDeposito(user, 'Canteiro Norte');
+    await user.click(screen.getByRole('button', { name: 'Importar planilha' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('cabeçalho da planilha inválido');
+    expect(screen.getByLabelText('Depósito de destino')).toHaveValue('est-2');
+    expect(screen.getByRole('button', { name: 'Importar planilha' })).toBeEnabled();
+  });
+
+  it('relatório mostra as linhas preenchidas com 0 e as que mantiveram o valor atual', async () => {
+    stubFetch((url, init) => {
+      if (url === '/api/importacoes/ultima') return jsonOk(SEM_IMPORTACAO_ANTERIOR);
+      if (url === '/api/importacoes' && init?.method === 'POST') {
+        return jsonOk({
+          importacao: { id: 'imp-9', status: 'concluida', total_linhas: 3, estoque_nome: 'Canteiro Norte', filial_nome: 'Filial Norte' },
+          relatorio: {
+            criados: 1,
+            atualizados: 2,
+            rejeitados: 0,
+            preenchidas_com_zero: 1,
+            mantiveram_valor_atual: 2,
+            linhas_rejeitadas: [],
+          },
+        });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    const user = userEvent.setup();
+    renderComponente();
+    await user.upload(screen.getByLabelText('Planilha (.xlsx)'), new File(['x'], 'planilha.xlsx'));
+    await escolherDeposito(user, 'Canteiro Norte');
+    await user.click(screen.getByRole('button', { name: 'Importar planilha' }));
+
+    expect(await screen.findByText(/1 linha\(s\) com quantidade ou preço vazio foram preenchidas com 0/)).toBeInTheDocument();
+    expect(screen.getByText(/2 linha\(s\) com quantidade ou preço mantidos/)).toBeInTheDocument();
+    expect(screen.getByText('Depósito: Canteiro Norte (Filial Norte)')).toBeInTheDocument();
+  });
+});
+
+describe('ImportacaoProdutosSection — depósitos: falha, agrupamento e depósito excluído', () => {
+  it('falha em GET /api/estoques: mostra erro e "Tentar de novo" recarrega', async () => {
+    let falhar = true;
+    const fetchMock = vi.fn((url: string) => {
+      if (url === '/api/importacoes/ultima') return jsonOk(SEM_IMPORTACAO_ANTERIOR);
+      if (url === '/api/filiais') return jsonOk({ filiais: filiaisDeTeste });
+      if (url === '/api/estoques') {
+        if (falhar) return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
+        return jsonOk({ estoques: estoquesDeTeste });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const user = userEvent.setup();
+    renderComponente();
+
+    expect(await screen.findByText('Não foi possível carregar os depósitos agora.')).toBeInTheDocument();
+    falhar = false;
+    await user.click(screen.getByRole('button', { name: 'Tentar de novo' }));
+    expect(await screen.findByRole('option', { name: 'Canteiro Norte' })).toBeInTheDocument();
+    expect(screen.queryByText('Não foi possível carregar os depósitos agora.')).not.toBeInTheDocument();
+  });
+
+  it('agrupamento: cada depósito sob a sua Filial e legado em "Sem filial"', async () => {
+    estoquesDeTeste = [
+      { id: 'est-1', nome: 'Almoxarifado Central', filial_id: 'fil-1' },
+      { id: 'est-2', nome: 'Canteiro Norte', filial_id: 'fil-2' },
+      { id: 'est-3', nome: 'Depósito Legado', filial_id: null },
+    ];
+    stubFetch((url) => {
+      if (url === '/api/importacoes/ultima') return jsonOk(SEM_IMPORTACAO_ANTERIOR);
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    renderComponente();
+
+    const seletor = await screen.findByLabelText('Depósito de destino');
+    await screen.findByRole('option', { name: 'Depósito Legado' });
+    const mapa = Object.fromEntries(
+      Array.from(seletor.querySelectorAll('optgroup')).map((g) => [
+        g.label,
+        Array.from(g.querySelectorAll('option')).map((o) => o.textContent),
+      ]),
+    );
+    expect(mapa).toEqual({
+      Matriz: ['Almoxarifado Central'],
+      'Filial Norte': ['Canteiro Norte'],
+      'Sem filial': ['Depósito Legado'],
+    });
+  });
+
+  it('por_deposito=true com depósito nulo: resumo mostra "Depósito: excluído"', async () => {
+    stubFetch((url, init) => {
+      if (url === '/api/importacoes/ultima') return jsonOk(SEM_IMPORTACAO_ANTERIOR);
+      if (url === '/api/importacoes' && init?.method === 'POST') {
+        return jsonOk({
+          importacao: { id: 'imp-x', status: 'concluida', total_linhas: 1, estoque_id: null, estoque_nome: null, por_deposito: true },
+          relatorio: { criados: 0, atualizados: 0, rejeitados: 1, linhas_rejeitadas: [{ linha: 2, erro: 'depósito de destino da importação não existe mais' }] },
+        });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    const user = userEvent.setup();
+    renderComponente();
+    await user.upload(screen.getByLabelText('Planilha (.xlsx)'), new File(['x'], 'planilha.xlsx'));
+    await escolherDeposito(user);
+    await user.click(screen.getByRole('button', { name: 'Importar planilha' }));
+
+    expect(await screen.findByText(/Depósito: excluído/)).toBeInTheDocument();
   });
 });

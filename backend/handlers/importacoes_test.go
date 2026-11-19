@@ -27,7 +27,7 @@ func limparImportacoesHandler(t *testing.T, db *sql.DB) {
 	// `usuarios CASCADE` (testDB) já esvazia `importacoes`/`importacao_linhas`
 	// (FK transitiva via criado_por) a cada teste — aqui só limpamos o que
 	// `testDB` não alcança: produtos/estoques criados pela própria importação.
-	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, normalizacao_ignoradas, mesclagem_produtos_removidos, produto_historico, mesclagens_duplicatas, carrinho_itens, pedido_itens, reservas_pedido_item, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
+	if _, err := db.Exec(`TRUNCATE TABLE importacao_linhas, importacoes, normalizacao_ignoradas, mesclagem_produtos_removidos, produto_historico, mesclagens_duplicatas, carrinho_itens, pedido_itens, reservas_pedido_item, pedidos, produto_estoque, lotes, produtos, estoques, movimentacoes`); err != nil {
 		t.Fatalf("falha ao limpar produtos/estoques: %v", err)
 	}
 }
@@ -62,7 +62,7 @@ func construirXLSX(t *testing.T, linhas [][]string) []byte {
 // postImportacoes despacha POST /api/importacoes pela MESMA composição de
 // newMux, com um corpo multipart real (campo `planilha`). `arquivo == nil`
 // omite o campo por completo (simula o cliente não anexar nenhum arquivo).
-func postImportacoes(db *sql.DB, authHeader string, arquivo []byte, nomeArquivo string) *httptest.ResponseRecorder {
+func postImportacoes(db *sql.DB, authHeader string, arquivo []byte, nomeArquivo, estoqueID string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /e/{slug}/api/importacoes",
 		comEmpresa(db,
@@ -72,6 +72,9 @@ func postImportacoes(db *sql.DB, authHeader string, arquivo []byte, nomeArquivo 
 
 	corpo := &bytes.Buffer{}
 	writer := multipart.NewWriter(corpo)
+	if estoqueID != "" {
+		_ = writer.WriteField("estoque_id", estoqueID)
+	}
 	if arquivo != nil {
 		part, _ := writer.CreateFormFile("planilha", nomeArquivo)
 		_, _ = part.Write(arquivo)
@@ -153,7 +156,7 @@ func TestCriarImportacaoHandler_201ParaAlmoxarife(t *testing.T) {
 	}
 	xlsx := construirXLSX(t, linhas)
 
-	w := postImportacoes(db, "Bearer "+token, xlsx, "planilha.xlsx")
+	w := postImportacoes(db, "Bearer "+token, xlsx, "planilha.xlsx", depositoImpHandler(t, db))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
 	}
@@ -217,7 +220,7 @@ func TestCriarImportacaoHandler_403ParaUsuario(t *testing.T) {
 	}
 	xlsx := construirXLSX(t, linhas)
 
-	w := postImportacoes(db, "Bearer "+token, xlsx, "planilha.xlsx")
+	w := postImportacoes(db, "Bearer "+token, xlsx, "planilha.xlsx", depositoImpHandler(t, db))
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusForbidden, w.Body.String())
 	}
@@ -254,7 +257,7 @@ func TestCriarImportacaoHandler_400CabecalhoInvalido(t *testing.T) {
 	}
 	xlsx := construirXLSX(t, linhas)
 
-	w := postImportacoes(db, "Bearer "+token, xlsx, "planilha.xlsx")
+	w := postImportacoes(db, "Bearer "+token, xlsx, "planilha.xlsx", depositoImpHandler(t, db))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
 	}
@@ -284,7 +287,7 @@ func TestCriarImportacaoHandler_400ArquivoNaoXLSX(t *testing.T) {
 	criarContaComPapel(t, db, "Almox Arquivo Ruim", "importacao-arquivoruim@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "importacao-arquivoruim@empresa.com", "senha-123456")
 
-	w := postImportacoes(db, "Bearer "+token, []byte("isto não é uma planilha"), "planilha.xlsx")
+	w := postImportacoes(db, "Bearer "+token, []byte("isto não é uma planilha"), "planilha.xlsx", depositoImpHandler(t, db))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
 	}
@@ -302,7 +305,7 @@ func TestCriarImportacaoHandler_400SemArquivo(t *testing.T) {
 	criarContaComPapel(t, db, "Almox Sem Arquivo", "importacao-semarquivo@empresa.com", "senha-123456", "almoxarife")
 	token := tokenDeLogin(t, db, "importacao-semarquivo@empresa.com", "senha-123456")
 
-	w := postImportacoes(db, "Bearer "+token, nil, "")
+	w := postImportacoes(db, "Bearer "+token, nil, "", depositoImpHandler(t, db))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
 	}
@@ -327,7 +330,7 @@ func TestCriarImportacaoHandler_400NomeArquivoMuitoLongo(t *testing.T) {
 	xlsx := construirXLSX(t, linhas)
 	nomeArquivoMuitoLongo := strings.Repeat("a", 256) + ".xlsx" // 261 runes, > 255
 
-	w := postImportacoes(db, "Bearer "+token, xlsx, nomeArquivoMuitoLongo)
+	w := postImportacoes(db, "Bearer "+token, xlsx, nomeArquivoMuitoLongo, depositoImpHandler(t, db))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
 	}
@@ -362,7 +365,7 @@ func TestCriarImportacaoHandler_400ArquivoMuitoGrande(t *testing.T) {
 	// + cabeçalhos) só soma bytes, garantindo estourar importacaoRequestMaxBytes.
 	arquivoGrande := bytes.Repeat([]byte("a"), importacaoRequestMaxBytes+1024)
 
-	w := postImportacoes(db, "Bearer "+token, arquivoGrande, "planilha-grande.xlsx")
+	w := postImportacoes(db, "Bearer "+token, arquivoGrande, "planilha-grande.xlsx", depositoImpHandler(t, db))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
 	}
@@ -392,7 +395,7 @@ func TestCriarImportacaoHandler_400ArquivoMuitoGrande(t *testing.T) {
 func TestCriarImportacaoHandler_401SemToken(t *testing.T) {
 	db := testDB(t)
 	limparImportacoesHandler(t, db)
-	w := postImportacoes(db, "", []byte("qualquer coisa"), "planilha.xlsx")
+	w := postImportacoes(db, "", []byte("qualquer coisa"), "planilha.xlsx", depositoImpHandler(t, db))
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusUnauthorized, w.Body.String())
 	}
@@ -408,7 +411,7 @@ func TestContinuarImportacaoHandler_200Sucesso(t *testing.T) {
 	categoria := categoriaNomePorCodigoHandler(t, db, "04.002")
 
 	usuarioID := usuarioIDPorEmail(t, db, "importacao-continuar-http@empresa.com")
-	importacao, _, err := services.CriarImportacao(db, empresaTeste, usuarioID, "planilha.xlsx", [][]string{
+	importacao, _, err := services.CriarImportacao(db, empresaTeste, usuarioID, "planilha.xlsx", depositoImpHandler(t, db), [][]string{
 		services.CabecalhoEsperado,
 		linhaImportacao("Produto Continuar HTTP", "SKU-CONT-HTTP", categoria, "1", "Canteiro Continuar HTTP"),
 	})
@@ -495,7 +498,7 @@ func TestUltimaImportacaoHandler_ProximaLinhaPendente(t *testing.T) {
 	categoria := categoriaNomePorCodigoHandler(t, db, "04.003")
 
 	usuarioID := usuarioIDPorEmail(t, db, "importacao-proximalinha-http@empresa.com")
-	importacao, _, err := services.CriarImportacao(db, empresaTeste, usuarioID, "planilha.xlsx", [][]string{
+	importacao, _, err := services.CriarImportacao(db, empresaTeste, usuarioID, "planilha.xlsx", depositoImpHandler(t, db), [][]string{
 		services.CabecalhoEsperado,
 		linhaImportacao("Produto Proxima Um", "SKU-PLH-1", categoria, "1", "Canteiro Proxima HTTP"),
 		linhaImportacao("Produto Proxima Dois", "SKU-PLH-2", categoria, "1", "Canteiro Proxima HTTP"),
@@ -569,4 +572,116 @@ func bytesContainsAll(s string, substrs ...string) bool {
 		}
 	}
 	return true
+}
+
+// depositoImpHandler devolve o id de um depósito da Empresa de teste
+// ("Depósito Importação HTTP"), criado sob demanda na Filial padrão.
+func depositoImpHandler(t *testing.T, db *sql.DB) string {
+	t.Helper()
+	var id string
+	err := db.QueryRow(`SELECT id FROM estoques WHERE empresa_id = $1 AND nome = 'Depósito Importação HTTP'`, empresaTeste).Scan(&id)
+	if err == nil {
+		return id
+	}
+	if err != sql.ErrNoRows {
+		t.Fatalf("buscar depósito: %v", err)
+	}
+	e, err := services.CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Depósito Importação HTTP")
+	if err != nil {
+		t.Fatalf("criar depósito: %v", err)
+	}
+	return e.ID
+}
+
+// TestCriarImportacaoHandler_400SemEstoqueID: sem o depósito de destino -> 400
+// "escolha o depósito de destino" e nada gravado.
+func TestCriarImportacaoHandler_400SemEstoqueID(t *testing.T) {
+	db := testDB(t)
+	limparImportacoesHandler(t, db)
+	criarContaComPapel(t, db, "Almox Sem Depósito", "importacao-sem-deposito@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "importacao-sem-deposito@empresa.com", "senha-123456")
+	categoria := categoriaNomePorCodigoHandler(t, db, "04.001")
+	xlsx := construirXLSX(t, [][]string{
+		services.CabecalhoEsperado,
+		linhaImportacao("Produto Sem Depósito", "SKU-SEMDEP", categoria, "1", ""),
+	})
+
+	w := postImportacoes(db, "Bearer "+token, xlsx, "planilha.xlsx", "")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%s)", w.Code, w.Body.String())
+	}
+	if env := decodeErro(t, w.Body.Bytes()); env.Error.Code != "VALIDATION_ERROR" || !strings.Contains(env.Error.Message, "escolha o depósito de destino") {
+		t.Errorf("erro = %+v", env.Error)
+	}
+	var n int
+	_ = db.QueryRow(`SELECT (SELECT count(*) FROM importacoes) + (SELECT count(*) FROM produtos)`).Scan(&n)
+	if n != 0 {
+		t.Errorf("gravou %d linhas, want 0", n)
+	}
+}
+
+// TestCriarImportacaoHandler_404DepositoInexistenteOuMalformado: depósito que
+// não existe na Empresa (inclui o de outra Empresa, mesmo caminho do serviço)
+// -> 404, nada gravado.
+func TestCriarImportacaoHandler_404DepositoInexistenteOuMalformado(t *testing.T) {
+	db := testDB(t)
+	limparImportacoesHandler(t, db)
+	criarContaComPapel(t, db, "Almox Depósito Alheio", "importacao-deposito-404@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "importacao-deposito-404@empresa.com", "senha-123456")
+	categoria := categoriaNomePorCodigoHandler(t, db, "04.001")
+	xlsx := construirXLSX(t, [][]string{
+		services.CabecalhoEsperado,
+		linhaImportacao("Produto 404", "SKU-404", categoria, "1", ""),
+	})
+
+	for _, id := range []string{"00000000-0000-0000-0000-000000000000", "nao-e-uuid"} {
+		w := postImportacoes(db, "Bearer "+token, xlsx, "planilha.xlsx", id)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("id %q: status = %d, want 404 (body=%s)", id, w.Code, w.Body.String())
+		}
+	}
+	var n int
+	_ = db.QueryRow(`SELECT (SELECT count(*) FROM importacoes) + (SELECT count(*) FROM produtos)`).Scan(&n)
+	if n != 0 {
+		t.Errorf("gravou %d linhas, want 0", n)
+	}
+}
+
+// TestCriarImportacaoHandler_201ExpoeDeposito: a resposta traz o depósito usado.
+func TestCriarImportacaoHandler_201ExpoeDeposito(t *testing.T) {
+	db := testDB(t)
+	limparImportacoesHandler(t, db)
+	criarContaComPapel(t, db, "Almox Expõe Depósito", "importacao-expoe-deposito@empresa.com", "senha-123456", "almoxarife")
+	token := tokenDeLogin(t, db, "importacao-expoe-deposito@empresa.com", "senha-123456")
+	categoria := categoriaNomePorCodigoHandler(t, db, "04.001")
+	xlsx := construirXLSX(t, [][]string{
+		services.CabecalhoEsperado,
+		linhaImportacao("Produto Expõe", "SKU-EXPOE", categoria, "", "Qualquer"),
+	})
+	destino := depositoImpHandler(t, db)
+
+	w := postImportacoes(db, "Bearer "+token, xlsx, "planilha.xlsx", destino)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Importacao struct {
+			EstoqueID   string `json:"estoque_id"`
+			EstoqueNome string `json:"estoque_nome"`
+			FilialNome  string `json:"filial_nome"`
+		} `json:"importacao"`
+		Relatorio struct {
+			Criados            int `json:"criados"`
+			PreenchidasComZero int `json:"preenchidas_com_zero"`
+		} `json:"relatorio"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Importacao.EstoqueID != destino || resp.Importacao.EstoqueNome != "Depósito Importação HTTP" || resp.Importacao.FilialNome == "" {
+		t.Errorf("importacao = %+v", resp.Importacao)
+	}
+	if resp.Relatorio.Criados != 1 || resp.Relatorio.PreenchidasComZero != 1 {
+		t.Errorf("relatorio = %+v", resp.Relatorio)
+	}
 }

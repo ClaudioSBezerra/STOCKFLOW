@@ -23,8 +23,12 @@ import { apiUrl, authHeaders } from '@/lib/api';
  *   tem gaps (linhas em branco descartadas antes de gravar), então uma
  *   contagem de processadas nunca aponta pra célula certa ao reabrir o
  *   arquivo original.
+ * - Seletor "Depósito de destino" (spec-importacao-por-deposito): UM depósito
+ *   por importação, obrigatório, agrupado por Filial (`GET /api/estoques` +
+ *   `GET /api/filiais`). A coluna "Estoque" da planilha é ignorada. Sem
+ *   depósitos cadastrados: mensagem orientando e envio bloqueado.
  * - Formulário de upload: `<input type="file" accept=".xlsx">` + submit
- *   envia `FormData` (campo `planilha`) para `POST /api/importacoes` com
+ *   envia `FormData` (campos `planilha` e `estoque_id`) para `POST /api/importacoes` com
  *   header `Authorization` — SEM `Content-Type` manual, o browser define o
  *   boundary do multipart sozinho.
  * - Relatório do envio mais recente: contagem de criados/atualizados/
@@ -54,6 +58,23 @@ interface ImportacaoResumo {
   // descartadas antes de gravar), então uma simples contagem de processadas
   // nunca aponta pra célula certa da planilha original.
   proxima_linha_pendente: number | null;
+  // Depósito de destino da importação (nulo em importação legada ou se o
+  // depósito foi excluído depois).
+  estoque_id?: string | null;
+  estoque_nome?: string | null;
+  filial_nome?: string | null;
+  por_deposito?: boolean;
+}
+
+interface Deposito {
+  id: string;
+  nome: string;
+  filial_id?: string | null;
+}
+
+interface Filial {
+  id: string;
+  nome: string;
 }
 
 interface LinhaRejeitada {
@@ -68,6 +89,10 @@ interface RelatorioImportacao {
   // `criados`.
   atualizados: number;
   rejeitados: number;
+  // Produto novo com quantidade/preço vazio ou 0 gravado como 0.
+  preenchidas_com_zero?: number;
+  // Atualização com quantidade/preço vazio ou 0: o valor atual foi mantido.
+  mantiveram_valor_atual?: number;
   linhas_rejeitadas: LinhaRejeitada[];
 }
 
@@ -78,6 +103,10 @@ interface RespostaImportacao {
 
 const MENSAGEM_ERRO_IMPORTAR =
   'Não foi possível importar a planilha agora. Tente novamente em instantes.';
+const MENSAGEM_SEM_DEPOSITOS =
+  'Nenhum depósito cadastrado. Peça a um gestor para cadastrar em Cadastros > Filiais.';
+const MENSAGEM_DEPOSITO_EXCLUIDO = 'Depósito: excluído (o depósito de destino não existe mais)';
+const MENSAGEM_ERRO_DEPOSITOS = 'Não foi possível carregar os depósitos agora.';
 const MENSAGEM_ERRO_CONTINUAR =
   'Não foi possível continuar a importação agora. Tente novamente em instantes.';
 
@@ -94,6 +123,57 @@ export function ImportacaoProdutosSection() {
   const [relatorio, setRelatorio] = useState<RelatorioImportacao | null>(null);
 
   const [ultima, setUltima] = useState<ImportacaoResumo | null>(null);
+  // Resumo (com o depósito usado) do envio/continuação mais recente.
+  const [resumo, setResumo] = useState<ImportacaoResumo | null>(null);
+
+  const [depositos, setDepositos] = useState<Deposito[]>([]);
+  const [filiais, setFiliais] = useState<Filial[]>([]);
+  const [carregouDepositos, setCarregouDepositos] = useState(false);
+  const [erroDepositos, setErroDepositos] = useState<string | null>(null);
+  const [estoqueId, setEstoqueId] = useState('');
+
+  const carregarDepositos = useCallback(async () => {
+    setErroDepositos(null);
+    try {
+      const [resEstoques, resFiliais] = await Promise.all([
+        fetch(apiUrl('/api/estoques'), { headers: authHeaders() }),
+        fetch(apiUrl('/api/filiais'), { headers: authHeaders() }),
+      ]);
+      if (!resEstoques.ok) {
+        setErroDepositos(MENSAGEM_ERRO_DEPOSITOS);
+        return;
+      }
+      const bodyEstoques = (await resEstoques.json()) as { estoques?: Deposito[] };
+      setDepositos(bodyEstoques.estoques ?? []);
+      if (resFiliais.ok) {
+        const bodyFiliais = (await resFiliais.json()) as { filiais?: Filial[] };
+        setFiliais(bodyFiliais.filiais ?? []);
+      }
+      setCarregouDepositos(true);
+    } catch {
+      setErroDepositos(MENSAGEM_ERRO_DEPOSITOS);
+    }
+  }, []);
+
+  useEffect(() => {
+    void carregarDepositos();
+  }, [carregarDepositos]);
+
+  // Grupos por Filial; depósito legado sem Filial conhecida cai em "Sem filial".
+  const idsFiliais = new Set(filiais.map((f) => f.id));
+  const grupos = [
+    ...filiais.map((f) => ({
+      chave: f.id,
+      titulo: f.nome,
+      itens: depositos.filter((d) => d.filial_id === f.id),
+    })),
+    {
+      chave: 'sem-filial',
+      titulo: 'Sem filial',
+      itens: depositos.filter((d) => !d.filial_id || !idsFiliais.has(d.filial_id)),
+    },
+  ].filter((g) => g.itens.length > 0);
+  const semDepositos = carregouDepositos && depositos.length === 0;
 
   const consultarUltima = useCallback(async () => {
     try {
@@ -128,7 +208,7 @@ export function ImportacaoProdutosSection() {
 
   async function enviar(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (operacaoEmAndamento || !arquivo) {
+    if (operacaoEmAndamento || !arquivo || !estoqueId) {
       return;
     }
     setErro(null);
@@ -136,6 +216,7 @@ export function ImportacaoProdutosSection() {
     try {
       const formData = new FormData();
       formData.append('planilha', arquivo);
+      formData.append('estoque_id', estoqueId);
       const res = await fetch(apiUrl('/api/importacoes'), {
         method: 'POST',
         headers: authHeaders(),
@@ -148,9 +229,11 @@ export function ImportacaoProdutosSection() {
       }
       const body = (await res.json()) as RespostaImportacao;
       setRelatorio(body.relatorio);
+      setResumo(body.importacao);
       toast.success(
         `Importação concluída: ${body.relatorio.criados} criado(s), ${body.relatorio.atualizados} atualizado(s), ${body.relatorio.rejeitados} rejeitado(s).`,
       );
+      // A escolha do depósito é preservada entre envios; só o arquivo é limpo.
       setArquivo(null);
       setInputKey((k) => k + 1);
       await consultarUltima();
@@ -179,6 +262,7 @@ export function ImportacaoProdutosSection() {
       }
       const body = (await res.json()) as RespostaImportacao;
       setRelatorio(body.relatorio);
+      setResumo(body.importacao);
       toast.success(
         `Importação concluída: ${body.relatorio.criados} criado(s), ${body.relatorio.atualizados} atualizado(s), ${body.relatorio.rejeitados} rejeitado(s).`,
       );
@@ -217,6 +301,46 @@ export function ImportacaoProdutosSection() {
 
         <form onSubmit={enviar} className="flex flex-col gap-4" noValidate>
           <div className="flex flex-col gap-2">
+            <Label htmlFor="importacao-deposito">Depósito de destino</Label>
+            {semDepositos ? (
+              <p className="text-body text-muted-foreground">{MENSAGEM_SEM_DEPOSITOS}</p>
+            ) : (
+              <select
+                id="importacao-deposito"
+                value={estoqueId}
+                onChange={(event) => setEstoqueId(event.target.value)}
+                className="text-body min-h-touch-target-min rounded-md border border-border bg-background px-3"
+              >
+                <option value="">Escolha o depósito</option>
+                {grupos.map((g) => (
+                  <optgroup key={g.chave} label={g.titulo}>
+                    {g.itens.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.nome}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            )}
+            {erroDepositos && (
+              <div className="flex flex-wrap items-center gap-2">
+                <p role="alert" className="text-body text-destructive">
+                  {erroDepositos}
+                </p>
+                <Button type="button" variant="outline" onClick={() => void carregarDepositos()}>
+                  Tentar de novo
+                </Button>
+              </div>
+            )}
+            <p className="text-body text-muted-foreground">
+              Toda a planilha entra neste depósito. A coluna "Estoque" da planilha é ignorada
+              (pode ficar vazia). Quantidade ou preço vazio vale 0; em produto que já existe,
+              vazio ou 0 mantém o valor atual.
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-2">
             <Label htmlFor="importacao-arquivo">Planilha (.xlsx)</Label>
             <Input
               key={inputKey}
@@ -233,17 +357,41 @@ export function ImportacaoProdutosSection() {
             </p>
           )}
 
-          <Button type="submit" disabled={operacaoEmAndamento || !arquivo} className="self-start">
+          <Button
+            type="submit"
+            disabled={operacaoEmAndamento || !arquivo || !estoqueId}
+            className="self-start"
+          >
             {enviando ? 'Importando...' : 'Importar planilha'}
           </Button>
         </form>
 
         {relatorio && (
           <div className="flex flex-col gap-2">
+            {resumo?.estoque_nome ? (
+              <p className="text-body">
+                Depósito: {resumo.estoque_nome}
+                {resumo.filial_nome ? ` (${resumo.filial_nome})` : ''}
+              </p>
+            ) : (
+              resumo?.por_deposito && <p className="text-body">{MENSAGEM_DEPOSITO_EXCLUIDO}</p>
+            )}
             <p className="text-body">
               {relatorio.criados} criado(s), {relatorio.atualizados} atualizado(s),{' '}
               {relatorio.rejeitados} rejeitado(s).
             </p>
+            {(relatorio.preenchidas_com_zero ?? 0) > 0 && (
+              <p className="text-body text-muted-foreground">
+                {relatorio.preenchidas_com_zero} linha(s) com quantidade ou preço vazio foram
+                preenchidas com 0.
+              </p>
+            )}
+            {(relatorio.mantiveram_valor_atual ?? 0) > 0 && (
+              <p className="text-body text-muted-foreground">
+                {relatorio.mantiveram_valor_atual} linha(s) com quantidade ou preço mantidos (vazio
+                ou 0 em produto existente mantém o valor atual).
+              </p>
+            )}
             {/*
               CTA "Verificar duplicatas agora" (Story 3.4, spec-3-4; ligado à
               Detecção de duplicatas pela Story 6.3, spec-6-3):

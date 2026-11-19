@@ -62,7 +62,7 @@ func TestCriarImportacao_SucessoCompleto(t *testing.T) {
 		linhaBase("Produto Importado Dois", "SKU-IMP-2", categoria, "3", "Canteiro Importação Sucesso"),
 	}
 
-	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
+	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", depositoImp(t, db, empresaTeste), linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestCriarImportacao_PrecoUnitario(t *testing.T) {
 	comPreco[colPrecoUnitario] = "1234.56"
 
 	linhas := [][]string{CabecalhoEsperado, semPreco, comPreco}
-	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", depositoImp(t, db, empresaTeste), linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -121,8 +121,8 @@ func TestCriarImportacao_PrecoUnitario(t *testing.T) {
 	if err := db.QueryRow(`SELECT preco_unitario FROM produtos WHERE codigo_fornecedor = 'SKU-PRECO-1'`).Scan(&precoSemID); err != nil {
 		t.Fatal(err)
 	}
-	if precoSemID.Valid {
-		t.Errorf("SKU-PRECO-1: preco_unitario = %v, want NULL", precoSemID)
+	if !precoSemID.Valid || precoSemID.Float64 != 0 {
+		t.Errorf("SKU-PRECO-1: preco_unitario = %v, want 0 (vazio vira zero em produto novo)", precoSemID)
 	}
 	if err := db.QueryRow(`SELECT preco_unitario FROM produtos WHERE codigo_fornecedor = 'SKU-PRECO-2'`).Scan(&precoComID); err != nil {
 		t.Fatal(err)
@@ -135,7 +135,7 @@ func TestCriarImportacao_PrecoUnitario(t *testing.T) {
 	// atualização, sobrescreve.
 	atualizacao := linhaBase("Produto Importado Com Preco", "SKU-PRECO-2", categoria, "1", "Canteiro Preço")
 	atualizacao[colPrecoUnitario] = "9999.00"
-	_, relatorioAtt, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha2.xlsx", [][]string{CabecalhoEsperado, atualizacao})
+	_, relatorioAtt, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha2.xlsx", depositoImp(t, db, empresaTeste), [][]string{CabecalhoEsperado, atualizacao})
 	if err != nil {
 		t.Fatalf("CriarImportacao (atualização) erro inesperado: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestCriarImportacao_PrecoUnitarioInvalidoRejeitaSoALinha(t *testing.T) {
 		linhaNegativa,
 		linhaBase("Produto Preco Valido Dois", "SKU-PRECO-OK", categoria, "1", "Canteiro Preço Inválido"),
 	}
-	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", depositoImp(t, db, empresaTeste), linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestCriarImportacao_LinhaComDimensaoIncompleta(t *testing.T) {
 		linhaBase("Produto Valido Dois", "SKU-V2", categoria, "1", "Canteiro Dimensao"),
 	}
 
-	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
+	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", depositoImp(t, db, empresaTeste), linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestCriarImportacao_CategoriaInexistente(t *testing.T) {
 		linhaBase("Produto Categoria Ruim", "SKU-CAT", "Categoria Totalmente Inexistente", "1", "Estoque Nao Deveria Existir"),
 	}
 
-	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
+	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", depositoImp(t, db, empresaTeste), linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -274,9 +274,9 @@ func TestCriarImportacao_CategoriaInexistente(t *testing.T) {
 	}
 }
 
-// TestCriarImportacao_EstoqueNovoReaproveitadoEntreLinhas prova a I/O Matrix
-// "Duas linhas com o mesmo Estoque novo": só 1 linha é gravada em
-// `estoques`, e a segunda linha reaproveita o mesmo `estoque_id`.
+// TestCriarImportacao_EstoqueNovoReaproveitadoEntreLinhas: a coluna "Estoque"
+// é ignorada (nomes distintos/preenchidos) — nenhum depósito é criado e todas
+// as linhas gravam no MESMO depósito escolhido.
 func TestCriarImportacao_EstoqueNovoReaproveitadoEntreLinhas(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
@@ -287,10 +287,10 @@ func TestCriarImportacao_EstoqueNovoReaproveitadoEntreLinhas(t *testing.T) {
 	linhas := [][]string{
 		CabecalhoEsperado,
 		linhaBase("Produto Deposito B Um", "SKU-DB1", categoria, "1", "  Depósito B  "),
-		linhaBase("Produto Deposito B Dois", "SKU-DB2", categoria, "1", "Depósito B"),
+		linhaBase("Produto Deposito B Dois", "SKU-DB2", categoria, "1", "Outro Nome Qualquer"),
 	}
 
-	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", depositoImp(t, db, empresaTeste), linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -350,7 +350,7 @@ func TestContinuarImportacao_SoProcessaLinhasPendentes(t *testing.T) {
 		linhaBase("Produto Continuar Tres", "SKU-CONT-3", categoria, "1", "Canteiro Continuar"),
 	}
 
-	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
+	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", depositoImp(t, db, empresaTeste), linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -486,7 +486,7 @@ func TestObterUltimaImportacao_DevolveAMaisRecente(t *testing.T) {
 		CabecalhoEsperado,
 		linhaBase("Produto Ultima A", "SKU-ULT-A", categoria, "1", "Canteiro Ultima"),
 	}
-	importacaoA, _, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha-a.xlsx", linhasA)
+	importacaoA, _, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha-a.xlsx", depositoImp(t, db, empresaTeste), linhasA)
 	if err != nil {
 		t.Fatalf("CriarImportacao A: %v", err)
 	}
@@ -495,7 +495,7 @@ func TestObterUltimaImportacao_DevolveAMaisRecente(t *testing.T) {
 		CabecalhoEsperado,
 		linhaBase("Produto Ultima B", "SKU-ULT-B", categoria, "1", "Canteiro Ultima"),
 	}
-	importacaoB, _, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha-b.xlsx", linhasB)
+	importacaoB, _, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha-b.xlsx", depositoImp(t, db, empresaTeste), linhasB)
 	if err != nil {
 		t.Fatalf("CriarImportacao B: %v", err)
 	}
@@ -542,7 +542,7 @@ func TestObterUltimaImportacao_ProximaLinhaPendente(t *testing.T) {
 		linhaBase("Produto Proxima Quatro", "SKU-PL-4", categoria, "1", "Canteiro Proxima Linha"), // numero_linha 5
 		linhaBase("Produto Proxima Cinco", "SKU-PL-5", categoria, "1", "Canteiro Proxima Linha"),  // numero_linha 6
 	}
-	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
+	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", depositoImp(t, db, empresaTeste), linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -656,7 +656,7 @@ func TestCriarImportacao_QuantidadeInvalidaOuNaoFinita(t *testing.T) {
 		linhaBase("Produto Quantidade Valida", "SKU-QOK", categoria, "2.5", "Canteiro Quantidade"),
 	}
 
-	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
+	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", depositoImp(t, db, empresaTeste), linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -904,7 +904,7 @@ func TestCriarImportacao_CodigoExistente_AtualizaEmVezDeCriar(t *testing.T) {
 		CabecalhoEsperado,
 		linhaBase("Produto Nome Novo", "FORN-ATUALIZA-1", categoriaNova, "3", estoque.Nome),
 	}
-	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
+	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", estoque.ID, linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -963,7 +963,7 @@ func TestCriarImportacao_ReimportacaoIdentica_NuncaContaComoCriado(t *testing.T)
 		linhaBase("Produto Reimportado", "SKU-REIMPORT-1", categoria, "5", "Canteiro Reimportacao"),
 	}
 
-	_, relatorioPrimeiraVez, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha-1.xlsx", linhas)
+	_, relatorioPrimeiraVez, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha-1.xlsx", depositoImp(t, db, empresaTeste), linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao (primeira vez) erro inesperado: %v", err)
 	}
@@ -972,7 +972,7 @@ func TestCriarImportacao_ReimportacaoIdentica_NuncaContaComoCriado(t *testing.T)
 	}
 	produtosAntes := contarProdutos(t, db)
 
-	_, relatorioSegundaVez, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha-2.xlsx", linhas)
+	_, relatorioSegundaVez, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha-2.xlsx", depositoImp(t, db, empresaTeste), linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao (segunda vez) erro inesperado: %v", err)
 	}
@@ -1020,7 +1020,7 @@ func TestCriarImportacao_CodigoExistente_TemplateNomeInvalido_Rejeitada(t *testi
 		CabecalhoEsperado,
 		linhaBase("Nome Fora Do Formato", "FORN-TEMPLATE-INVALIDO-1", categoriaNome, "1", estoque.Nome),
 	}
-	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", depositoImp(t, db, empresaTeste), linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -1074,7 +1074,7 @@ func TestCriarImportacao_LinhaSemCodigo_NomeParecidoAindaAssimCria(t *testing.T)
 		CabecalhoEsperado,
 		linhaBase("Produto Nome Igualzinho", "", categoriaNome, "1", estoque.Nome),
 	}
-	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", depositoImp(t, db, empresaTeste), linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -1106,7 +1106,7 @@ func TestCriarImportacao_DuasLinhasMesmoCodigoNovo_SegundaAtualizaAPrimeira(t *t
 		linhaBase("Produto Codigo Novo Primeira Vez", "SKU-DUPNOVO-1", categoria, "1", "Canteiro Codigo Novo"),
 		linhaBase("Produto Codigo Novo Segunda Vez", "SKU-DUPNOVO-1", categoria, "9", "Canteiro Codigo Novo"),
 	}
-	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
+	importacao, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", depositoImp(t, db, empresaTeste), linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -1177,11 +1177,15 @@ func TestCriarImportacao_CodigoExistente_NovoEstoque_ParExistenteIntacto(t *test
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
 
+	estoqueNovo, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Canteiro Estoque Novo")
+	if err != nil {
+		t.Fatalf("seed CriarEstoque novo: %v", err)
+	}
 	linhas := [][]string{
 		CabecalhoEsperado,
 		linhaBase("Produto Multi Estoque", "FORN-MULTI-ESTOQUE-1", categoriaNome, "7", "Canteiro Estoque Novo"),
 	}
-	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", estoqueNovo.ID, linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -1225,15 +1229,11 @@ func TestCriarImportacao_CodigoExistente_NovoEstoque_ParExistenteIntacto(t *test
 	}
 }
 
-// TestCriarImportacao_CodigoExistente_EstoqueInvalido_NaoAlteraProduto prova
-// a correção do Bug 1 (review pass pós-implementação, Story 3.4):
-// processarLinhaDeAtualizacao resolve o Estoque da linha ANTES do `UPDATE
-// produtos`, não depois — uma linha rejeitada por nome de Estoque inválido
-// (vazio) NUNCA deixa nenhuma escrita aplicada ao Produto, mesmo a rejeição
-// commitando a transação. Antes da correção, o `UPDATE produtos` rodava
-// primeiro e sobrevivia ao commit da rejeição, sobrescrevendo nome/categoria
-// silenciosamente numa linha reportada como `rejeitada`.
-func TestCriarImportacao_CodigoExistente_EstoqueInvalido_NaoAlteraProduto(t *testing.T) {
+// TestCriarImportacao_CodigoExistente_ColunaEstoqueIgnorada prova que a coluna
+// "Estoque" da planilha (mesmo vazia/em branco) é IGNORADA: a linha atualiza o
+// Produto existente no depósito escolhido, sem tocar o par do depósito original
+// e sem criar depósito (spec-importacao-por-deposito).
+func TestCriarImportacao_CodigoExistente_ColunaEstoqueIgnorada(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 
@@ -1244,6 +1244,7 @@ func TestCriarImportacao_CodigoExistente_EstoqueInvalido_NaoAlteraProduto(t *tes
 	if err != nil {
 		t.Fatalf("seed CriarEstoque: %v", err)
 	}
+	destino := depositoImp(t, db, empresaTeste)
 
 	produtoExistente, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
 		UnidadeMedida:    "un",
@@ -1256,43 +1257,29 @@ func TestCriarImportacao_CodigoExistente_EstoqueInvalido_NaoAlteraProduto(t *tes
 		t.Fatalf("seed CriarProduto: %v", err)
 	}
 
-	// Estoque vazio (após trim) -> ErrEstoqueValidacao dentro de
-	// processarLinhaDeAtualizacao — a linha deve ser rejeitada SEM alterar o
-	// Produto encontrado por código do fornecedor.
 	linhas := [][]string{
 		CabecalhoEsperado,
 		linhaBase("Produto Nome Diferente", "FORN-ESTOQUE-INVALIDO-1", categoriaNome, "9", "   "),
 	}
-	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", destino, linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
-	if relatorio.Criados != 0 || relatorio.Atualizados != 0 || relatorio.Rejeitados != 1 {
-		t.Errorf("relatorio = %+v, want Criados=0 Atualizados=0 Rejeitados=1", relatorio)
+	if relatorio.Atualizados != 1 || relatorio.Rejeitados != 0 {
+		t.Fatalf("relatorio = %+v, want Atualizados=1 Rejeitados=0", relatorio)
 	}
-
-	var nomeGravado, categoriaIDGravada string
-	if err := db.QueryRow(
-		`SELECT nome, categoria_id FROM produtos WHERE id = $1`, produtoExistente.ID,
-	).Scan(&nomeGravado, &categoriaIDGravada); err != nil {
-		t.Fatalf("buscar produto após rejeição: %v", err)
+	var nome string
+	if err := db.QueryRow(`SELECT nome FROM produtos WHERE id = $1`, produtoExistente.ID).Scan(&nome); err != nil || nome != "Produto Nome Diferente" {
+		t.Errorf("nome = %q (err=%v), want atualizado", nome, err)
 	}
-	if nomeGravado != "Produto Nome Original" {
-		t.Errorf("nome gravado = %q, want inalterado (%q) — UPDATE vazou apesar da linha rejeitada", nomeGravado, "Produto Nome Original")
+	if q := saldoProdutoEstoque(t, db, produtoExistente.ID, estoqueOriginal.ID); q != 4 {
+		t.Errorf("saldo no depósito original = %v, want 4 intacto", q)
 	}
-	if categoriaIDGravada != categoriaID {
-		t.Errorf("categoria_id gravada = %q, want inalterada (%q)", categoriaIDGravada, categoriaID)
+	if q := saldoProdutoEstoque(t, db, produtoExistente.ID, destino); q != 9 {
+		t.Errorf("saldo no depósito escolhido = %v, want 9", q)
 	}
-
-	var quantidadeOriginalIntacta float64
-	if err := db.QueryRow(
-		`SELECT quantidade FROM produto_estoque WHERE produto_id = $1 AND estoque_id = $2`,
-		produtoExistente.ID, estoqueOriginal.ID,
-	).Scan(&quantidadeOriginalIntacta); err != nil {
-		t.Fatalf("buscar quantidade original: %v", err)
-	}
-	if quantidadeOriginalIntacta != 4 {
-		t.Errorf("quantidade original = %v, want 4 intacta (linha rejeitada nunca deveria ter tocado produto_estoque)", quantidadeOriginalIntacta)
+	if n := contarEstoques(t, db); n != 2 {
+		t.Errorf("estoques = %d, want 2 (nenhum criado pela importação)", n)
 	}
 }
 
@@ -1407,10 +1394,10 @@ func TestContinuarImportacao_CorridaMesmoCodigoNovo_SemErroNemDuplicar(t *testin
 	}
 }
 
-// Story 12.1 (spec-12-1): importação numa Empresa SEM Filial com nome de
-// Estoque novo rejeita a linha com a mensagem de ErrEmpresaSemFilial (create
-// e update de Produto existente), termina a importação e não grava Estoque.
-func TestCriarImportacao_EmpresaSemFilial_EstoqueNovoRejeitado(t *testing.T) {
+// Empresa SEM Filial (legado) com depósito escolhido: a importação grava no
+// depósito legado escolhido (create e update de Produto existente) e nunca cria
+// depósito — o antigo erro ErrEmpresaSemFilial não se aplica mais.
+func TestCriarImportacao_EmpresaSemFilial_DepositoLegadoEscolhido(t *testing.T) {
 	db := testDB(t)
 	limparProdutos(t, db)
 	emp := empresaSemFilialDeTeste(t, db, "importacao-sem-filial-linha", "778889990109", "Importacao Sem Filial Linha")
@@ -1442,29 +1429,21 @@ func TestCriarImportacao_EmpresaSemFilial_EstoqueNovoRejeitado(t *testing.T) {
 		// update: Produto existente por código do fornecedor + Estoque novo.
 		linhaBase("Produto Existente Sem Filial", "FORN-SEM-FILIAL-1", categoria, "3", "Estoque Novo Sem Filial"),
 	}
-	importacao, relatorio, err := CriarImportacao(db, emp.ID, criadoPor, "planilha.xlsx", linhas)
+	importacao, relatorio, err := CriarImportacao(db, emp.ID, criadoPor, "planilha.xlsx", legadoID, linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
-	if relatorio.Criados != 0 || relatorio.Atualizados != 0 || relatorio.Rejeitados != 2 {
-		t.Fatalf("relatorio = %+v, want Criados=0 Atualizados=0 Rejeitados=2", relatorio)
-	}
-	if len(relatorio.LinhasRejeitadas) != 2 {
-		t.Fatalf("linhas rejeitadas = %d, want 2", len(relatorio.LinhasRejeitadas))
-	}
-	for _, l := range relatorio.LinhasRejeitadas {
-		if !strings.Contains(l.Erro, ErrEmpresaSemFilial.Error()) {
-			t.Errorf("linha %d: erro = %q, want a mensagem de ErrEmpresaSemFilial", l.Linha, l.Erro)
-		}
+	if relatorio.Criados != 1 || relatorio.Atualizados != 1 || relatorio.Rejeitados != 0 {
+		t.Fatalf("relatorio = %+v, want Criados=1 Atualizados=1 Rejeitados=0", relatorio)
 	}
 	if importacao.Status != "concluida" {
 		t.Errorf("status da importação = %q, want concluida", importacao.Status)
 	}
 	if n := contar(t, db, `SELECT count(*) FROM estoques WHERE empresa_id = $1`, emp.ID); n != 1 {
-		t.Errorf("estoques da Empresa = %d, want 1 (só o legado; nenhum gravado pela importação)", n)
+		t.Errorf("estoques da Empresa = %d, want 1 (só o legado; nenhum criado pela importação)", n)
 	}
-	if n := contar(t, db, `SELECT count(*) FROM produtos WHERE empresa_id = $1 AND codigo_fornecedor = 'SKU-SEM-FILIAL'`, emp.ID); n != 0 {
-		t.Errorf("produto da linha rejeitada gravado: %d", n)
+	if n := contar(t, db, `SELECT count(*) FROM produto_estoque WHERE estoque_id = $1 AND quantidade IN (2, 3)`, legadoID); n != 2 {
+		t.Errorf("saldos no depósito legado = %d, want 2", n)
 	}
 }
 
@@ -1485,7 +1464,7 @@ func TestCriarImportacao_GeraCodigoInternoETemplateGenerico(t *testing.T) {
 		CabecalhoEsperado,
 		linhaBase("Produto Codigo Interno Legado", "B.1.02.C009", categoria, "1", "Canteiro Codigo Interno"),
 	}
-	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", depositoImp(t, db, empresaTeste), linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -1532,7 +1511,7 @@ func TestCriarImportacao_CelulaCodigoVazia_GeraCodigoInternoSemCodigoFornecedor(
 		CabecalhoEsperado,
 		linhaBase("Produto Sem Codigo Planilha Nenhum", "", categoria, "1", "Canteiro Sem Codigo Fornecedor"),
 	}
-	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", linhas)
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", depositoImp(t, db, empresaTeste), linhas)
 	if err != nil {
 		t.Fatalf("CriarImportacao erro inesperado: %v", err)
 	}
@@ -1625,5 +1604,638 @@ func TestContinuarImportacao_CorridaCodigoFornecedorRepetido_UmaCriaDemaisAtuali
 	}
 	if nProdutos != 1 {
 		t.Errorf("produtos com código do fornecedor %q = %d, want 1 (nenhuma duplicata mesmo sob corrida concorrente, campo sem índice único)", codigoFornecedorDisputado, nProdutos)
+	}
+}
+
+// depositoImp devolve o id do depósito de destino usado pelos testes de
+// importação: "Depósito Importação Teste", criado na Filial padrão da Empresa
+// na primeira chamada do teste e reaproveitado nas seguintes.
+func depositoImp(t *testing.T, db *sql.DB, empresaID string) string {
+	t.Helper()
+	var id string
+	err := db.QueryRow(`SELECT id FROM estoques WHERE empresa_id = $1 AND nome = 'Depósito Importação Teste'`, empresaID).Scan(&id)
+	if err == nil {
+		return id
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("buscar depósito de importação: %v", err)
+	}
+	e, err := CriarEstoque(db, empresaID, filialTeste(t, db, empresaID), "Depósito Importação Teste")
+	if err != nil {
+		t.Fatalf("criar depósito de importação: %v", err)
+	}
+	return e.ID
+}
+
+// --- spec-importacao-por-deposito -----------------------------------------
+
+func TestCriarImportacao_SemEstoqueID_Recusa(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	criadoPor := criarUsuarioImportacao(t, db, "importacao-sem-estoque-id@empresa.com")
+	categoria := categoriaNomePorCodigo(t, db, "04.001")
+	linhas := [][]string{CabecalhoEsperado, linhaBase("Produto Sem Deposito", "SKU-SD", categoria, "1", "")}
+
+	for _, vazio := range []string{"", "   "} {
+		_, _, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", vazio, linhas)
+		if !errors.Is(err, ErrImportacaoSemDeposito) {
+			t.Fatalf("err = %v, want ErrImportacaoSemDeposito", err)
+		}
+	}
+	if n := contarProdutos(t, db); n != 0 {
+		t.Errorf("produtos = %d, want 0", n)
+	}
+	if n := contar(t, db, `SELECT count(*) FROM importacoes WHERE criado_por = $1`, criadoPor); n != 0 {
+		t.Errorf("importacoes = %d, want 0 (nada gravado)", n)
+	}
+}
+
+func TestCriarImportacao_DepositoDeOutraEmpresaOuInexistente_NaoEncontrado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	criadoPor := criarUsuarioImportacao(t, db, "importacao-outra-empresa@empresa.com")
+	categoria := categoriaNomePorCodigo(t, db, "04.001")
+	outra := empresaSemFilialDeTeste(t, db, "importacao-deposito-alheio", "778889990117", "Importacao Deposito Alheio")
+	var alheioID string
+	if err := db.QueryRow(`INSERT INTO estoques (nome, empresa_id) VALUES ('Deposito Alheio', $1) RETURNING id`, outra.ID).Scan(&alheioID); err != nil {
+		t.Fatalf("seed estoque alheio: %v", err)
+	}
+	linhas := [][]string{CabecalhoEsperado, linhaBase("Produto Alheio", "SKU-ALH", categoria, "1", "")}
+
+	for _, id := range []string{alheioID, "00000000-0000-0000-0000-000000000000", "nao-e-uuid"} {
+		_, _, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", id, linhas)
+		if !errors.Is(err, ErrEstoqueNaoEncontrado) {
+			t.Fatalf("id %q: err = %v, want ErrEstoqueNaoEncontrado", id, err)
+		}
+	}
+	if n := contarProdutos(t, db); n != 0 {
+		t.Errorf("produtos = %d, want 0", n)
+	}
+	if n := contar(t, db, `SELECT count(*) FROM importacoes WHERE criado_por = $1`, criadoPor); n != 0 {
+		t.Errorf("importacoes = %d, want 0", n)
+	}
+}
+
+func TestCriarImportacao_ColunaEstoquePreenchida_NaoCriaDeposito(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	criadoPor := criarUsuarioImportacao(t, db, "importacao-ignora-estoque@empresa.com")
+	categoria := categoriaNomePorCodigo(t, db, "04.001")
+	destino := depositoImp(t, db, empresaTeste)
+
+	linhas := [][]string{
+		CabecalhoEsperado,
+		linhaBase("Produto Ignora Um", "SKU-IGN-1", categoria, "4", "Depósito Fantasma"),
+		linhaBase("Produto Ignora Dois", "SKU-IGN-2", categoria, "6", ""),
+	}
+	imp, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", destino, linhas)
+	if err != nil {
+		t.Fatalf("erro: %v", err)
+	}
+	if relatorio.Criados != 2 || relatorio.Rejeitados != 0 {
+		t.Fatalf("relatorio = %+v", relatorio)
+	}
+	if n := contar(t, db, `SELECT count(*) FROM estoques WHERE nome = 'Depósito Fantasma'`); n != 0 {
+		t.Errorf("depósito fantasma criado")
+	}
+	if n := contarEstoques(t, db); n != 1 {
+		t.Errorf("estoques = %d, want 1", n)
+	}
+	if n := contar(t, db, `SELECT count(*) FROM produto_estoque WHERE estoque_id = $1`, destino); n != 2 {
+		t.Errorf("saldos no depósito escolhido = %d, want 2", n)
+	}
+	if imp.EstoqueID == nil || *imp.EstoqueID != destino || imp.EstoqueNome == nil || *imp.EstoqueNome != "Depósito Importação Teste" {
+		t.Errorf("importacao não expõe o depósito: %+v", imp)
+	}
+	if imp.FilialNome == nil || !imp.PorDeposito {
+		t.Errorf("filial/por_deposito ausentes: %+v", imp)
+	}
+}
+
+func TestCriarImportacao_VazioViraZero_ProdutoNovo(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	criadoPor := criarUsuarioImportacao(t, db, "importacao-vazio-zero@empresa.com")
+	categoria := categoriaNomePorCodigo(t, db, "04.001")
+	destino := depositoImp(t, db, empresaTeste)
+
+	vazio := linhaBase("Produto Novo Vazio", "SKU-NV-1", categoria, "", "")
+	zero := linhaBase("Produto Novo Zero", "SKU-NV-2", categoria, "0", "")
+	zero[colPrecoUnitario] = "0"
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", destino, [][]string{CabecalhoEsperado, vazio, zero})
+	if err != nil {
+		t.Fatalf("erro: %v", err)
+	}
+	if relatorio.Criados != 2 || relatorio.Rejeitados != 0 || relatorio.PreenchidasComZero != 2 || relatorio.MantiveramValorAtual != 0 {
+		t.Fatalf("relatorio = %+v", relatorio)
+	}
+	for _, cod := range []string{"SKU-NV-1", "SKU-NV-2"} {
+		var q, preco float64
+		if err := db.QueryRow(`SELECT pe.quantidade, p.preco_unitario FROM produto_estoque pe JOIN produtos p ON p.id = pe.produto_id WHERE p.codigo_fornecedor = $1`, cod).Scan(&q, &preco); err != nil {
+			t.Fatalf("%s: %v", cod, err)
+		}
+		if q != 0 || preco != 0 {
+			t.Errorf("%s: quantidade=%v preco=%v, want 0/0", cod, q, preco)
+		}
+	}
+}
+
+func TestCriarImportacao_VazioOuZero_ProdutoExistente_MantemSaldoEPreco(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	criadoPor := criarUsuarioImportacao(t, db, "importacao-mantem@empresa.com")
+	categoria := categoriaNomePorCodigo(t, db, "04.001")
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+	destino := depositoImp(t, db, empresaTeste)
+	preco := 12.5
+
+	casos := []struct {
+		cod, qtd, prc string
+		mantemQtd     bool
+		mantemPreco   bool
+	}{
+		{"EX-QVAZIO", "", "20", true, false},
+		{"EX-QZERO", "0", "20", true, false},
+		{"EX-PVAZIO", "8", "", false, true},
+		{"EX-PZERO", "8", "0", false, true},
+	}
+	ids := map[string]string{}
+	for _, c := range casos {
+		p, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+			UnidadeMedida: "un", Nome: "Produto " + c.cod, CategoriaID: categoriaID,
+			TemplateID: templateGenericoID(t, db, empresaTeste), CodigoFornecedor: c.cod, PrecoUnitario: &preco,
+		}, destino, 5)
+		if err != nil {
+			t.Fatalf("seed %s: %v", c.cod, err)
+		}
+		ids[c.cod] = p.ID
+	}
+	linhas := [][]string{CabecalhoEsperado}
+	for _, c := range casos {
+		l := linhaBase("Produto "+c.cod, c.cod, categoria, c.qtd, "")
+		l[colPrecoUnitario] = c.prc
+		linhas = append(linhas, l)
+	}
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", destino, linhas)
+	if err != nil {
+		t.Fatalf("erro: %v", err)
+	}
+	if relatorio.Atualizados != 4 || relatorio.Rejeitados != 0 || relatorio.MantiveramValorAtual != 4 || relatorio.PreenchidasComZero != 0 {
+		t.Fatalf("relatorio = %+v", relatorio)
+	}
+	for _, c := range casos {
+		q := saldoProdutoEstoque(t, db, ids[c.cod], destino)
+		var p float64
+		if err := db.QueryRow(`SELECT preco_unitario FROM produtos WHERE id = $1`, ids[c.cod]).Scan(&p); err != nil {
+			t.Fatal(err)
+		}
+		wantQ, wantP := 8.0, 20.0
+		if c.mantemQtd {
+			wantQ = 5
+		}
+		if c.mantemPreco {
+			wantP = 12.5
+		}
+		if q != wantQ || p != wantP {
+			t.Errorf("%s: saldo=%v preco=%v, want %v/%v", c.cod, q, p, wantQ, wantP)
+		}
+	}
+}
+
+func TestCriarImportacao_QuantidadeEPrecoInvalidos_Rejeitados(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	criadoPor := criarUsuarioImportacao(t, db, "importacao-invalidos@empresa.com")
+	categoria := categoriaNomePorCodigo(t, db, "04.001")
+	destino := depositoImp(t, db, empresaTeste)
+
+	l1 := linhaBase("Produto Qtd Texto", "SKU-INV-1", categoria, "abc", "")
+	l2 := linhaBase("Produto Qtd Negativa", "SKU-INV-2", categoria, "-3", "")
+	l3 := linhaBase("Produto Preco Texto", "SKU-INV-3", categoria, "1", "")
+	l3[colPrecoUnitario] = "xyz"
+	l4 := linhaBase("Produto Preco Negativo", "SKU-INV-4", categoria, "1", "")
+	l4[colPrecoUnitario] = "-2"
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", destino, [][]string{CabecalhoEsperado, l1, l2, l3, l4})
+	if err != nil {
+		t.Fatalf("erro: %v", err)
+	}
+	if relatorio.Criados != 0 || relatorio.Rejeitados != 4 {
+		t.Fatalf("relatorio = %+v, want 4 rejeitadas", relatorio)
+	}
+}
+
+func TestContinuarImportacao_MesmoDepositoEscolhido(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	criadoPor := criarUsuarioImportacao(t, db, "importacao-retomada-deposito@empresa.com")
+	categoria := categoriaNomePorCodigo(t, db, "04.001")
+	destino := depositoImp(t, db, empresaTeste)
+
+	imp, _, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", destino, [][]string{
+		CabecalhoEsperado,
+		linhaBase("Produto Retoma Um", "SKU-RET-1", categoria, "1", "Outro"),
+		linhaBase("Produto Retoma Dois", "SKU-RET-2", categoria, "2", "Outro"),
+	})
+	if err != nil {
+		t.Fatalf("erro: %v", err)
+	}
+	// Simula interrupção: a linha 3 volta a pendente e seu produto some.
+	if _, err := db.Exec(`UPDATE importacao_linhas SET status = 'pendente', produto_id = NULL WHERE importacao_id = $1 AND numero_linha = 3`, imp.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM produto_estoque WHERE produto_id IN (SELECT id FROM produtos WHERE codigo_fornecedor = 'SKU-RET-2')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE importacoes SET status = 'em_andamento' WHERE id = $1`, imp.ID); err != nil {
+		t.Fatal(err)
+	}
+	cont, _, err := ContinuarImportacao(db, empresaTeste, imp.ID)
+	if err != nil {
+		t.Fatalf("erro: %v", err)
+	}
+	if cont.EstoqueID == nil || *cont.EstoqueID != destino {
+		t.Errorf("estoque_id na retomada = %v, want %s", cont.EstoqueID, destino)
+	}
+	if n := contar(t, db, `SELECT count(*) FROM produto_estoque WHERE estoque_id = $1`, destino); n != 2 {
+		t.Errorf("saldos no depósito = %d, want 2", n)
+	}
+	if n := contarEstoques(t, db); n != 1 {
+		t.Errorf("estoques = %d, want 1", n)
+	}
+}
+
+func TestContinuarImportacao_DepositoExcluido_RejeitaRestantes(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	criadoPor := criarUsuarioImportacao(t, db, "importacao-deposito-excluido@empresa.com")
+	categoria := categoriaNomePorCodigo(t, db, "04.001")
+	destino := depositoImp(t, db, empresaTeste)
+
+	imp, _, err := CriarImportacao(db, empresaTeste, criadoPor, "planilha.xlsx", destino, [][]string{
+		CabecalhoEsperado, linhaBase("Produto Exc Um", "SKU-EXC-1", categoria, "1", ""),
+	})
+	if err != nil {
+		t.Fatalf("erro: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM produto_estoque WHERE estoque_id = $1`, destino); err != nil {
+		t.Fatal(err)
+	}
+	if err := ExcluirEstoque(db, empresaTeste, destino); err != nil {
+		t.Fatalf("ExcluirEstoque: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE importacao_linhas SET status = 'pendente', produto_id = NULL WHERE importacao_id = $1`, imp.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE importacoes SET status = 'em_andamento' WHERE id = $1`, imp.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Mesmo produto com outro código não existe: a linha casa por código com o
+	// produto criado antes; o depósito sumiu, então deve ser rejeitada.
+	_, relatorio, err := ContinuarImportacao(db, empresaTeste, imp.ID)
+	if err != nil {
+		t.Fatalf("erro: %v", err)
+	}
+	if relatorio.Rejeitados != 1 || !strings.Contains(relatorio.LinhasRejeitadas[0].Erro, "depósito de destino") {
+		t.Fatalf("relatorio = %+v", relatorio)
+	}
+	if n := contarEstoques(t, db); n != 0 {
+		t.Errorf("estoques = %d, want 0 (nada recriado)", n)
+	}
+}
+
+func TestContinuarImportacao_LegadaSemEstoqueID_SegueCaminhoLegado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	criadoPor := criarUsuarioImportacao(t, db, "importacao-legada@empresa.com")
+	categoria := categoriaNomePorCodigo(t, db, "04.001")
+	// Garante Filial padrão para o caminho legado criar o depósito.
+	filialTeste(t, db, empresaTeste)
+
+	var impID string
+	if err := db.QueryRow(`INSERT INTO importacoes (nome_arquivo, total_linhas, criado_por, empresa_id) VALUES ('legada.xlsx', 1, $1, $2) RETURNING id`, criadoPor, empresaTeste).Scan(&impID); err != nil {
+		t.Fatal(err)
+	}
+	dados, _ := json.Marshal(linhaBase("Produto Legado", "SKU-LEG-1", categoria, "3", "Depósito Legado Da Planilha"))
+	if _, err := db.Exec(`INSERT INTO importacao_linhas (importacao_id, numero_linha, dados) VALUES ($1, 2, $2)`, impID, dados); err != nil {
+		t.Fatal(err)
+	}
+	imp, relatorio, err := ContinuarImportacao(db, empresaTeste, impID)
+	if err != nil {
+		t.Fatalf("erro: %v", err)
+	}
+	if relatorio.Criados != 1 || imp.PorDeposito || imp.EstoqueID != nil {
+		t.Fatalf("imp=%+v relatorio=%+v", imp, relatorio)
+	}
+	if n := contar(t, db, `SELECT count(*) FROM estoques WHERE nome = 'Depósito Legado Da Planilha'`); n != 1 {
+		t.Errorf("caminho legado deveria criar o depósito da planilha")
+	}
+}
+
+// --- reforços da revisão (spec-importacao-por-deposito) ---------------------
+
+func TestEhZeroNaColuna(t *testing.T) {
+	casos := []struct {
+		v     float64
+		casas int
+		want  bool
+	}{
+		{0, 3, true}, {0.0004, 3, true}, {0.0005, 3, false}, {0.001, 3, false},
+		{0.004, 2, true}, {0.005, 2, false}, {1, 3, false},
+	}
+	for _, c := range casos {
+		if got := ehZeroNaColuna(c.v, c.casas); got != c.want {
+			t.Errorf("ehZeroNaColuna(%v, %d) = %v, want %v", c.v, c.casas, got, c.want)
+		}
+	}
+	for _, txt := range []string{"-0", "0e0", "1e-400", "0.0", "00"} {
+		linha := linhaBase("X", "", "Cat", txt, "")
+		v, err := validarLinhaImportacao(linha)
+		if err != nil || !v.quantidadeZero || v.quantidade != 0 {
+			t.Errorf("quantidade %q: %+v err=%v, want zero", txt, v, err)
+		}
+	}
+}
+
+func TestMigration000064_ColunasESetNullAoExcluirDeposito(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	for _, col := range []string{"estoque_id", "por_deposito"} {
+		if n := contar(t, db, `SELECT count(*) FROM information_schema.columns WHERE table_name = 'importacoes' AND column_name = $1`, col); n != 1 {
+			t.Errorf("coluna importacoes.%s ausente", col)
+		}
+	}
+	criadoPor := criarUsuarioImportacao(t, db, "importacao-set-null@empresa.com")
+	categoria := categoriaNomePorCodigo(t, db, "04.001")
+	destino := depositoImp(t, db, empresaTeste)
+	imp, _, err := CriarImportacao(db, empresaTeste, criadoPor, "p.xlsx", destino, [][]string{CabecalhoEsperado, linhaBase("Produto Null", "SKU-NULL", categoria, "", "")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ExcluirEstoque(db, empresaTeste, destino); err != nil {
+		t.Fatalf("excluir depósito usado por importação: %v", err)
+	}
+	var estoqueID sql.NullString
+	var por bool
+	if err := db.QueryRow(`SELECT estoque_id, por_deposito FROM importacoes WHERE id = $1`, imp.ID).Scan(&estoqueID, &por); err != nil {
+		t.Fatal(err)
+	}
+	if estoqueID.Valid || !por {
+		t.Errorf("estoque_id=%v por_deposito=%v, want NULL/true", estoqueID, por)
+	}
+}
+
+func TestCriarImportacao_CelulaEstoqueLongaOuEstranha_Ignorada(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	criadoPor := criarUsuarioImportacao(t, db, "importacao-estoque-longo@empresa.com")
+	categoria := categoriaNomePorCodigo(t, db, "04.001")
+	destino := depositoImp(t, db, empresaTeste)
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "p.xlsx", destino, [][]string{
+		CabecalhoEsperado,
+		linhaBase("Produto Estoque Longo", "SKU-LONGO", categoria, "1", strings.Repeat("x", 400)),
+		linhaBase("Produto Estoque Estranho", "SKU-ESTR", categoria, "1", "<script>\x01 ; DROP"),
+	})
+	if err != nil || relatorio.Criados != 2 || relatorio.Rejeitados != 0 {
+		t.Fatalf("relatorio=%+v err=%v", relatorio, err)
+	}
+	if n := contarEstoques(t, db); n != 1 {
+		t.Errorf("estoques = %d, want 1", n)
+	}
+}
+
+func TestContinuarImportacao_SegundoDepositoDaEmpresa(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	criadoPor := criarUsuarioImportacao(t, db, "importacao-segundo-deposito@empresa.com")
+	categoria := categoriaNomePorCodigo(t, db, "04.001")
+	primeiro := depositoImp(t, db, empresaTeste)
+	segundo, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Segundo Depósito Importação")
+	if err != nil {
+		t.Fatal(err)
+	}
+	imp, _, err := CriarImportacao(db, empresaTeste, criadoPor, "p.xlsx", segundo.ID, [][]string{
+		CabecalhoEsperado, linhaBase("Produto Segundo", "SKU-SEG-1", categoria, "3", ""),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE importacao_linhas SET status = 'pendente', produto_id = NULL WHERE importacao_id = $1`, imp.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM produto_estoque`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE importacoes SET status = 'em_andamento' WHERE id = $1`, imp.ID); err != nil {
+		t.Fatal(err)
+	}
+	cont, _, err := ContinuarImportacao(db, empresaTeste, imp.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cont.EstoqueID == nil || *cont.EstoqueID != segundo.ID {
+		t.Errorf("estoque_id = %v, want o segundo depósito", cont.EstoqueID)
+	}
+	if n := contar(t, db, `SELECT count(*) FROM produto_estoque WHERE estoque_id = $1`, segundo.ID); n != 1 {
+		t.Errorf("saldo no segundo depósito = %d, want 1", n)
+	}
+	if n := contar(t, db, `SELECT count(*) FROM produto_estoque WHERE estoque_id = $1`, primeiro); n != 0 {
+		t.Errorf("saldo no primeiro depósito = %d, want 0", n)
+	}
+}
+
+func TestContinuarImportacao_PorDepositoSemEstoque_ProdutoNovoRejeitado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	criadoPor := criarUsuarioImportacao(t, db, "importacao-deposito-excluido-novo@empresa.com")
+	categoria := categoriaNomePorCodigo(t, db, "04.001")
+	filialTeste(t, db, empresaTeste)
+
+	var impID string
+	if err := db.QueryRow(`INSERT INTO importacoes (nome_arquivo, total_linhas, criado_por, empresa_id, estoque_id, por_deposito) VALUES ('x.xlsx', 1, $1, $2, NULL, TRUE) RETURNING id`, criadoPor, empresaTeste).Scan(&impID); err != nil {
+		t.Fatal(err)
+	}
+	dados, _ := json.Marshal(linhaBase("Produto Novo Sem Deposito", "SKU-NSD", categoria, "2", "Nome Planilha"))
+	if _, err := db.Exec(`INSERT INTO importacao_linhas (importacao_id, numero_linha, dados) VALUES ($1, 2, $2)`, impID, dados); err != nil {
+		t.Fatal(err)
+	}
+	imp, relatorio, err := ContinuarImportacao(db, empresaTeste, impID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relatorio.Rejeitados != 1 || !strings.Contains(relatorio.LinhasRejeitadas[0].Erro, "depósito de destino") {
+		t.Fatalf("relatorio = %+v", relatorio)
+	}
+	if !imp.PorDeposito || imp.EstoqueID != nil {
+		t.Errorf("imp = %+v", imp)
+	}
+	if n := contarProdutos(t, db); n != 0 {
+		t.Errorf("produtos = %d, want 0 (produto novo não é criado sem depósito)", n)
+	}
+	if n := contarEstoques(t, db); n != 0 {
+		t.Errorf("estoques = %d, want 0 (nada recriado)", n)
+	}
+}
+
+func TestContinuarImportacao_LegadaComProdutoExistente_AtualizaPeloNomeDaPlanilha(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	criadoPor := criarUsuarioImportacao(t, db, "importacao-legada-existente@empresa.com")
+	categoria := categoriaNomePorCodigo(t, db, "04.001")
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+	filialTeste(t, db, empresaTeste)
+	legado, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Depósito Legado Existente")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un", Nome: "Produto Legado Existente", CategoriaID: categoriaID,
+		TemplateID: templateGenericoID(t, db, empresaTeste), CodigoFornecedor: "FORN-LEG-EX",
+	}, legado.ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var impID string
+	if err := db.QueryRow(`INSERT INTO importacoes (nome_arquivo, total_linhas, criado_por, empresa_id) VALUES ('legada.xlsx', 1, $1, $2) RETURNING id`, criadoPor, empresaTeste).Scan(&impID); err != nil {
+		t.Fatal(err)
+	}
+	dados, _ := json.Marshal(linhaBase("Produto Legado Existente", "FORN-LEG-EX", categoria, "7", "Depósito Legado Existente"))
+	if _, err := db.Exec(`INSERT INTO importacao_linhas (importacao_id, numero_linha, dados) VALUES ($1, 2, $2)`, impID, dados); err != nil {
+		t.Fatal(err)
+	}
+	_, relatorio, err := ContinuarImportacao(db, empresaTeste, impID)
+	if err != nil || relatorio.Atualizados != 1 {
+		t.Fatalf("relatorio=%+v err=%v", relatorio, err)
+	}
+	if q := saldoProdutoEstoque(t, db, p.ID, legado.ID); q != 7 {
+		t.Errorf("saldo = %v, want 7 (depósito pelo nome da planilha, caminho legado)", q)
+	}
+}
+
+func TestCriarImportacao_Invalidos_MotivoPorLinhaENadaGravado(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	criadoPor := criarUsuarioImportacao(t, db, "importacao-invalidos-motivo@empresa.com")
+	categoria := categoriaNomePorCodigo(t, db, "04.001")
+	destino := depositoImp(t, db, empresaTeste)
+
+	l1 := linhaBase("P Qtd Texto", "SKU-M-1", categoria, "abc", "")
+	l2 := linhaBase("P Qtd Negativa", "SKU-M-2", categoria, "-3", "")
+	l3 := linhaBase("P Preco Texto", "SKU-M-3", categoria, "1", "")
+	l3[colPrecoUnitario] = "xyz"
+	l4 := linhaBase("P Preco Negativo", "SKU-M-4", categoria, "1", "")
+	l4[colPrecoUnitario] = "-2"
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "p.xlsx", destino, [][]string{CabecalhoEsperado, l1, l2, l3, l4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	motivos := map[int]string{}
+	for _, l := range relatorio.LinhasRejeitadas {
+		motivos[l.Linha] = l.Erro
+	}
+	esperado := map[int]string{2: "quantidade: valor inválido", 3: "quantidade deve ser maior ou igual a zero", 4: "preço unitário: valor inválido", 5: "preço unitário deve ser maior ou igual a zero"}
+	for linha, trecho := range esperado {
+		if !strings.Contains(motivos[linha], trecho) {
+			t.Errorf("linha %d: erro = %q, want conter %q", linha, motivos[linha], trecho)
+		}
+	}
+	if n := contarProdutos(t, db); n != 0 {
+		t.Errorf("produtos = %d, want 0", n)
+	}
+	if n := contarProdutoEstoque(t, db); n != 0 {
+		t.Errorf("produto_estoque = %d, want 0", n)
+	}
+}
+
+func TestRelatorio_MantiveramValorAtual_CasosDeBorda(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	criadoPor := criarUsuarioImportacao(t, db, "importacao-relatorio-borda@empresa.com")
+	categoria := categoriaNomePorCodigo(t, db, "04.001")
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+	destino := depositoImp(t, db, empresaTeste)
+	preco := 12.5
+
+	casos := []struct {
+		cod, qtd, prc string
+		mantem        bool
+	}{
+		{"BD-OK", "8", "20", false},
+		{"BD-0.0", "0.0", "20", true},
+		{"BD-00", "00", "20", true},
+		{"BD-NEG0", "-0", "20", true},
+		{"BD-ARRED", "0.0004", "20", true},
+		{"BD-P-ARRED", "8", "0.004", true},
+	}
+	ids := map[string]string{}
+	linhas := [][]string{CabecalhoEsperado}
+	for _, c := range casos {
+		p, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+			UnidadeMedida: "un", Nome: "Produto " + c.cod, CategoriaID: categoriaID,
+			TemplateID: templateGenericoID(t, db, empresaTeste), CodigoFornecedor: c.cod, PrecoUnitario: &preco,
+		}, destino, 5)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[c.cod] = p.ID
+		l := linhaBase("Produto "+c.cod, c.cod, categoria, c.qtd, "")
+		l[colPrecoUnitario] = c.prc
+		linhas = append(linhas, l)
+	}
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "p.xlsx", destino, linhas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relatorio.Atualizados != 6 || relatorio.MantiveramValorAtual != 5 || relatorio.PreenchidasComZero != 0 {
+		t.Fatalf("relatorio = %+v, want 6 atualizados, 5 mantiveram", relatorio)
+	}
+	for _, c := range casos {
+		q := saldoProdutoEstoque(t, db, ids[c.cod], destino)
+		var p float64
+		_ = db.QueryRow(`SELECT preco_unitario FROM produtos WHERE id = $1`, ids[c.cod]).Scan(&p)
+		wantQ, wantP := 8.0, 20.0
+		if c.cod == "BD-0.0" || c.cod == "BD-00" || c.cod == "BD-NEG0" || c.cod == "BD-ARRED" {
+			wantQ = 5
+		}
+		if c.cod == "BD-P-ARRED" {
+			wantP = 12.5
+		}
+		if q != wantQ || p != wantP {
+			t.Errorf("%s: saldo=%v preco=%v, want %v/%v", c.cod, q, p, wantQ, wantP)
+		}
+	}
+	ultima, rel2, err := ObterUltimaImportacao(db, empresaTeste)
+	if err != nil || ultima == nil {
+		t.Fatalf("ultima=%v err=%v", ultima, err)
+	}
+	if rel2.MantiveramValorAtual != 5 || ultima.EstoqueNome == nil || *ultima.EstoqueNome != "Depósito Importação Teste" || !ultima.PorDeposito {
+		t.Errorf("ObterUltimaImportacao: rel=%+v ultima=%+v", rel2, ultima)
+	}
+}
+
+func TestCriarImportacao_ProdutoExistente_SemPar_QuantidadeZero_NaoCriaPar(t *testing.T) {
+	db := testDB(t)
+	limparProdutos(t, db)
+	criadoPor := criarUsuarioImportacao(t, db, "importacao-sem-par@empresa.com")
+	categoria := categoriaNomePorCodigo(t, db, "04.001")
+	categoriaID := categoriaIDPorCodigo(t, db, "04.001")
+	outro, err := CriarEstoque(db, empresaTeste, filialTeste(t, db, empresaTeste), "Outro Depósito Sem Par")
+	if err != nil {
+		t.Fatal(err)
+	}
+	destino := depositoImp(t, db, empresaTeste)
+	if _, err := criarProdutoComSaldo(db, empresaTeste, CriarProdutoInput{
+		UnidadeMedida: "un", Nome: "Produto Sem Par", CategoriaID: categoriaID,
+		TemplateID: templateGenericoID(t, db, empresaTeste), CodigoFornecedor: "FORN-SEM-PAR",
+	}, outro.ID, 3); err != nil {
+		t.Fatal(err)
+	}
+	_, relatorio, err := CriarImportacao(db, empresaTeste, criadoPor, "p.xlsx", destino, [][]string{
+		CabecalhoEsperado, linhaBase("Produto Sem Par", "FORN-SEM-PAR", categoria, "", ""),
+	})
+	if err != nil || relatorio.Atualizados != 1 {
+		t.Fatalf("relatorio=%+v err=%v", relatorio, err)
+	}
+	if n := contar(t, db, `SELECT count(*) FROM produto_estoque WHERE estoque_id = $1`, destino); n != 0 {
+		t.Errorf("par criado no depósito escolhido: %d, want 0", n)
 	}
 }

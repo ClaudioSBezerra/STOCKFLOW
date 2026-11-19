@@ -83,6 +83,9 @@ var secoesManual = []SecaoManual{
 		Paragrafos: []string{
 			"Cadastra vários produtos de uma vez a partir de uma planilha (.xlsx), em vez de um de cada vez pelo formulário.",
 			"O sistema valida cada linha antes de gravar e mostra um relatório de quais produtos foram criados e quais linhas tiveram erro, com o motivo de cada erro.",
+			"Antes de enviar, escolha o \"Depósito de destino\": toda a planilha entra em UM único depósito por importação (a lista vem agrupada por Filial). A importação nunca cria depósito — se ainda não houver nenhum, peça a um gestor para cadastrar em Cadastros → Filiais. Se a importação for interrompida e retomada, ela continua no mesmo depósito.",
+			"A coluna \"Estoque\" da planilha continua existindo no modelo, mas é ignorada (pode ficar vazia ou preenchida): o depósito é sempre o escolhido na tela.",
+			"Quantidade ou Preço Unitário em branco valem 0 num produto novo. Num produto que já existe (mesmo código), quantidade em branco ou 0 (inclusive valores que arredondam para 0) mantém o saldo atual do depósito escolhido, e preço em branco ou 0 mantém o preço atual — nada é zerado por engano. O relatório informa quantas linhas ficaram assim. Valores inválidos (texto ou negativos) continuam sendo recusados, linha a linha.",
 		},
 	},
 	{

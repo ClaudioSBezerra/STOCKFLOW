@@ -21,7 +21,8 @@ import (
 // handlers/produtos.go/estoques.go.
 //
 // Registro em newMux (main.go), os 3 atrás de RequireRole(almoxarife):
-//   - POST /api/importacoes -> multipart, campo `planilha`.
+//   - POST /api/importacoes -> multipart, campos `planilha` e `estoque_id`
+//     (depósito de destino, obrigatório).
 //   - POST /api/importacoes/{id}/continuar -> sem corpo.
 //   - GET /api/importacoes/ultima -> sem corpo.
 
@@ -154,8 +155,25 @@ func CriarImportacaoHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		importacao, relatorio, err := services.CriarImportacao(db, empresa.ID, usuario.ID, fileHeader.Filename, linhas)
-		if err != nil {
+		// Depósito de destino (spec-importacao-por-deposito): UM por importação,
+		// escolhido na tela. Ausente -> 400 antes de qualquer gravação; o serviço
+		// valida que pertence à Empresa (404).
+		estoqueID := strings.TrimSpace(r.FormValue("estoque_id"))
+		if estoqueID == "" {
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", services.ErrImportacaoSemDeposito.Error())
+			return
+		}
+
+		importacao, relatorio, err := services.CriarImportacao(db, empresa.ID, usuario.ID, fileHeader.Filename, estoqueID, linhas)
+		switch {
+		case err == nil:
+		case errors.Is(err, services.ErrImportacaoSemDeposito):
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", err.Error())
+			return
+		case errors.Is(err, services.ErrEstoqueNaoEncontrado):
+			escreverErro(w, http.StatusNotFound, "NOT_FOUND", "depósito não encontrado")
+			return
+		default:
 			slog.Error("falha ao criar importação", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao processar importação")
 			return
