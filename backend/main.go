@@ -959,12 +959,28 @@ func newMux(db *sql.DB, emailCfg services.EmailConfig, jwtSecret []byte, iamCfg 
 		middleware.RequireRole(services.PapelGestor)(
 			handlers.BaixarPreNotaPDFHandler(db))))
 
-	// Termo de Baixa em PDF (spec-pedido-outras-saidas): mesmo gate da
-	// Pré-Nota — RequireAuth + RequireRole(PapelGestor); outra Empresa/
-	// inexistente/malformado -> 404.
+	// Termo de Baixa em PDF e listagem (spec-pedido-outras-saidas,
+	// spec-termo-baixa-pendencias): RequireAuth + regra de acesso no handler
+	// (gestor+ qualquer Termo da Empresa; demais papéis só o Termo em que são o
+	// Solicitante). O gate de MFA de RequireRole é mantido por papel: gestor+
+	// passa por RequireRole(PapelGestor) (MFA por Empresa ou individual, como
+	// antes); os demais por RequireRole(PapelUsuario) (MFA individual).
+	// Outra Empresa/inexistente/malformado/alheio -> 404.
+	porPapelComMFA := func(h http.HandlerFunc) http.HandlerFunc {
+		gestor := middleware.RequireRole(services.PapelGestor)(h)
+		outros := middleware.RequireRole(services.PapelUsuario)(h)
+		return func(w http.ResponseWriter, r *http.Request) {
+			if u, ok := middleware.UsuarioDaSessao(r.Context()); ok && services.RankPapel(u.Papel) >= services.RankPapel(services.PapelGestor) {
+				gestor(w, r)
+				return
+			}
+			outros(w, r)
+		}
+	}
+	registrar("GET /e/{slug}/api/termos-baixa", middleware.RequireAuth(db, jwtSecret)(
+		porPapelComMFA(handlers.ListarTermosBaixaHandler(db))))
 	registrar("GET /e/{slug}/api/termos-baixa/{id}/pdf", middleware.RequireAuth(db, jwtSecret)(
-		middleware.RequireRole(services.PapelGestor)(
-			handlers.BaixarTermoBaixaPDFHandler(db))))
+		porPapelComMFA(handlers.BaixarTermoBaixaPDFHandler(db))))
 
 	// Exportação dos próprios dados pessoais — Story 8.1 (Epic 8,
 	// Privacidade/LGPD), spec-8-1. Atrás SÓ de RequireAuth — SEM

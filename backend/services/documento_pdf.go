@@ -57,6 +57,16 @@ type pintorPDF struct {
 	x, W   float64
 	topo   float64
 	y      float64
+	// colunas da tabela de produtos (padrão: as da Pré-Nota). `comSolicitada`
+	// liga a coluna da quantidade solicitada (só o Termo de Baixa).
+	colunas       []colunaProdutoPDF
+	comSolicitada bool
+}
+
+// usarColunasTermoBaixa troca a tabela de produtos para a do Termo de Baixa.
+func (p *pintorPDF) usarColunasTermoBaixa() {
+	p.colunas = colunasProdutosTermoBaixa
+	p.comSolicitada = true
 }
 
 // novoPintorPDF abre um A4 retrato com as fontes e o rodapé (textoRodape +
@@ -71,7 +81,7 @@ func novoPintorPDF(textoRodape, rotulo string) (*pintorPDF, error) {
 	if err := pdf.AddTTFFontData("gofont-negrito", gobold.TTF); err != nil {
 		return nil, fmt.Errorf("falha ao carregar fonte negrito %s: %w", rotulo, err)
 	}
-	p := &pintorPDF{pdf: pdf, rotulo: rotulo, x: margemPreNotaPT, W: larguraUtilPreNotaPT, topo: margemPreNotaPT, y: margemPreNotaPT}
+	p := &pintorPDF{pdf: pdf, rotulo: rotulo, x: margemPreNotaPT, W: larguraUtilPreNotaPT, topo: margemPreNotaPT, y: margemPreNotaPT, colunas: colunasProdutosPreNota}
 	pdf.AddFooter(func() {
 		yLinha := alturaPaginaPreNotaPT - margemPreNotaPT - 14
 		p.traco(0.4, 120)
@@ -285,10 +295,13 @@ func (p *pintorPDF) desenharParte(px, by, wParte float64, campos []campoDesenhad
 // alturasLinhaProduto quebra as células de um item e devolve a altura da linha.
 func (p *pintorPDF) alturasLinhaProduto(prod produtoPreNota) ([][]string, float64) {
 	valores := []string{prod.Codigo, prod.Descricao, prod.Unidade, prod.Quantidade, prod.ValorUnitario, prod.ValorTotal}
+	if p.comSolicitada {
+		valores = []string{prod.Codigo, prod.Descricao, prod.Unidade, prod.Solicitada, prod.Quantidade, prod.ValorUnitario, prod.ValorTotal}
+	}
 	celulas := make([][]string, len(valores))
 	maior := 1
 	for i, v := range valores {
-		celulas[i] = p.quebrar(v, colunasProdutosPreNota[i].Largura-2*paddingQuadroPT, false, tamanhoItemPreNotaPT)
+		celulas[i] = p.quebrar(v, p.colunas[i].Largura-2*paddingQuadroPT, false, tamanhoItemPreNotaPT)
 		if len(celulas[i]) > maior {
 			maior = len(celulas[i])
 		}
@@ -313,7 +326,7 @@ func (p *pintorPDF) tabelaProdutos(produtos []produtoPreNota, continuacao, rotul
 		pdf.RectFromUpperLeftWithStyle(x, p.y, W, alturaCabecalhoTabelaPT, "FD")
 		p.fonte(true, 6.5)
 		cx := x
-		for _, col := range colunasProdutosPreNota {
+		for _, col := range p.colunas {
 			p.escrever(cx+paddingQuadroPT, p.y, col.Largura-2*paddingQuadroPT, alturaCabecalhoTabelaPT, col.Titulo, col.Align|gopdf.Middle)
 			cx += col.Largura
 		}
@@ -323,7 +336,7 @@ func (p *pintorPDF) tabelaProdutos(produtos []produtoPreNota, continuacao, rotul
 		p.quadro(x, inicioSegmento, W, p.y-inicioSegmento)
 		p.traco(0.6, 0)
 		cx := x
-		for _, col := range colunasProdutosPreNota[:len(colunasProdutosPreNota)-1] {
+		for _, col := range p.colunas[:len(p.colunas)-1] {
 			cx += col.Largura
 			pdf.Line(cx, inicioSegmento, cx, p.y)
 		}
@@ -344,7 +357,7 @@ func (p *pintorPDF) tabelaProdutos(produtos []produtoPreNota, continuacao, rotul
 		}
 		p.fonte(false, tamanhoItemPreNotaPT)
 		cx := x
-		for i, col := range colunasProdutosPreNota {
+		for i, col := range p.colunas {
 			ly := p.y + 2.5
 			for _, l := range celulas[i] {
 				p.escrever(cx+paddingQuadroPT, ly, col.Largura-2*paddingQuadroPT, entrelinhaItemPreNotaPT, l, col.Align|gopdf.Middle)
@@ -358,7 +371,7 @@ func (p *pintorPDF) tabelaProdutos(produtos []produtoPreNota, continuacao, rotul
 	}
 	// Subtotal, colado no fim da tabela. Com item sem preço, o aviso vai no rótulo.
 	fecharSegmento()
-	wTotal := colunasProdutosPreNota[len(colunasProdutosPreNota)-1].Largura
+	wTotal := p.colunas[len(p.colunas)-1].Largura
 	valorSub := subtotal
 	if strings.HasSuffix(valorSub, avisoTotalSemValor) {
 		valorSub = strings.TrimSuffix(valorSub, avisoTotalSemValor)

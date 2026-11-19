@@ -368,7 +368,8 @@ export const MENSAGEM_ERRO_TERMO_BAIXA =
 
 /**
  * Baixa o PDF do Termo de Baixa `termoBaixaId` (spec-pedido-outras-saidas) —
- * GET /api/termos-baixa/{id}/pdf, só `gestor`+ (o servidor revalida o papel).
+ * GET /api/termos-baixa/{id}/pdf: `gestor`+ baixa qualquer Termo da Empresa; os
+ * demais papéis só o Termo em que são Solicitante (senão 404 — o servidor decide).
  * Molde de `baixarPreNotaPDF`: devolve o `Blob`, sem lógica de DOM.
  */
 export async function baixarTermoBaixaPDF(termoBaixaId: string): Promise<Blob> {
@@ -416,4 +417,64 @@ export async function buscarIndicadoresPedidos(
     throw new Error(body.error?.message ?? MENSAGEM_ERRO_INDICADORES);
   }
   return (await res.json()) as { pendentes: number; aprovadosMes: number; rejeitadosMes: number };
+}
+
+export interface TermoBaixaResumo {
+  id: string;
+  numero: number;
+  motivoSaida: MotivoSaida | null;
+  criadoEm: string;
+  aprovador: string;
+  solicitantes: string[];
+  quantidadeItens: number;
+}
+
+export interface FiltroTermosBaixa {
+  numero?: string;
+  motivo?: string;
+  de?: string;
+  ate?: string;
+  q?: string;
+  limite?: string;
+  offset?: string;
+}
+
+export interface ListaTermosBaixa {
+  termos: TermoBaixaResumo[];
+  /** Total que casa com os filtros (sem limite/offset). */
+  total: number;
+}
+
+export const MENSAGEM_ERRO_LISTAR_TERMOS =
+  'Não foi possível carregar os Termos de Baixa agora. Tente novamente em instantes.';
+
+/**
+ * Lista os Termos de Baixa (spec-termo-baixa-pendencias) — GET /api/termos-baixa.
+ * O servidor decide o escopo: gestor+ vê todos da Empresa; os demais papéis só
+ * os dos próprios Pedidos. Filtros vazios não vão na query.
+ */
+export async function listarTermosBaixa(filtro: FiltroTermosBaixa = {}): Promise<ListaTermosBaixa> {
+  const params = new URLSearchParams();
+  for (const [chave, valor] of Object.entries(filtro)) {
+    const v = (valor ?? '').trim();
+    if (v) params.set(chave, v);
+  }
+  const query = params.toString();
+  let res: Response;
+  try {
+    res = await fetch(apiUrl(`/api/termos-baixa${query ? `?${query}` : ''}`), { headers: authHeaders() });
+  } catch {
+    throw new Error(MENSAGEM_ERRO_LISTAR_TERMOS);
+  }
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+    throw new Error(body.error?.message ?? MENSAGEM_ERRO_LISTAR_TERMOS);
+  }
+  try {
+    const body = (await res.json()) as { termos?: TermoBaixaResumo[]; total?: number };
+    const termos = body.termos ?? [];
+    return { termos, total: body.total ?? termos.length };
+  } catch {
+    throw new Error(MENSAGEM_ERRO_LISTAR_TERMOS);
+  }
 }

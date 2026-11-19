@@ -125,7 +125,8 @@ var secoesManual = []SecaoManual{
 		Paragrafos: []string{
 			"Solicita a saída de saldo de um Estoque por perda ou roubo, produto vencido ou avariado, ou utilização na obra da Empresa. É o mesmo pedido do botão \"Registrar Baixa\" do Detalhe do Produto — a baixa direta não existe mais.",
 			"O motivo e a justificativa são obrigatórios (a obra / centro de custo é opcional). Nada é debitado ao enviar: o saldo fica reservado até um Gestor aprovar.",
-			"Quando o Gestor aprova, é gerado um Termo de Baixa em PDF por motivo, com numeração própria, o motivo em destaque e campos para assinatura de quem solicitou e de quem aprovou.",
+			"Quando o Gestor aprova, é gerado um Termo de Baixa em PDF por motivo, com numeração própria, o motivo em destaque e campos para assinatura de quem solicitou e de quem aprovou. Cada item aparece sob o seu pedido, com a quantidade solicitada, a aprovada e a justificativa.",
+			"Em \"Termos de Baixa\" (menu Pedidos) você consulta os Termos, filtra por número, motivo e período e baixa o PDF de novo. Quem solicitou vê e baixa os Termos dos seus pedidos; Gestores e Administradores veem todos da Empresa.",
 		},
 	},
 	{

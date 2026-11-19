@@ -81,6 +81,7 @@ export const navGrupos: NavGrupo[] = [
         to: '/pedidos/outras-saidas',
         papelMinimo: 'usuario',
       },
+      { id: 'termos-baixa', label: 'Termos de Baixa', to: '/termos-baixa', papelMinimo: 'usuario' },
       { id: 'fila-aprovacao', label: 'Fila de aprovação', to: '/pedidos/fila', papelMinimo: 'almoxarife' },
       {
         id: 'aprovacao-lote',

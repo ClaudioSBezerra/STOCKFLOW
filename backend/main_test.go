@@ -1981,9 +1981,10 @@ func TestNewMux_ProdutosBaixaDiretaDescontinuada(t *testing.T) {
 // TestNewMux_OutrasSaidasPapeis prova, pelo newMux REAL, as permissões do
 // Pedido de Outras Saídas (spec-pedido-outras-saidas): usuário e almoxarife
 // solicitam (POST /api/pedidos/baixa -> 201), mas NÃO decidem
-// (decisao-lote -> 403) nem baixam o Termo de Baixa (PDF -> 403); o gestor
-// decide e baixa o PDF (200, cabeçalhos de download); Termo de outra Empresa
-// ou inexistente -> 404.
+// (decisao-lote -> 403); o gestor decide e baixa o PDF (200, cabeçalhos de
+// download). Spec-termo-baixa-pendencias: o Solicitante baixa o PDF do SEU
+// Termo (200) mas não o de outro (404, sem vazar existência); a listagem
+// filtra por papel; sem token -> 401; Termo inexistente/malformado -> 404.
 func TestNewMux_OutrasSaidasPapeis(t *testing.T) {
 	db := testDB(t)
 	if _, err := db.Exec(`TRUNCATE TABLE usuarios CASCADE`); err != nil {
@@ -2000,8 +2001,15 @@ func TestNewMux_OutrasSaidasPapeis(t *testing.T) {
 	const senha = "senha-123456"
 	segredos := map[string]string{}
 	emails := map[string]string{"usuario": "saidas-usuario@empresa.com", "almoxarife": "saidas-almox@empresa.com", "gestor": "saidas-gestor@empresa.com"}
+	// Almoxarife que NÃO solicita nada: alheio aos Termos (spec-termo-baixa-pendencias).
+	const emailAlheio = "saidas-alheio@empresa.com"
+	emails["alheio"] = emailAlheio
 	for papel, email := range emails {
-		seedContaMux(t, db, email, papel, senha, segredos)
+		papelConta := papel
+		if papel == "alheio" {
+			papelConta = "almoxarife"
+		}
+		seedContaMux(t, db, email, papelConta, senha, segredos)
 	}
 
 	despachar := func(metodo, caminho, token, corpo string) *httptest.ResponseRecorder {
@@ -2059,8 +2067,8 @@ func TestNewMux_OutrasSaidasPapeis(t *testing.T) {
 				t.Fatalf("decisao-lote: status = %d, want 403", w.Code)
 			}
 			w = despachar(http.MethodGet, prefixoEmpresaTeste+"/api/termos-baixa/00000000-0000-0000-0000-000000000000/pdf", tokens[papel], "")
-			if w.Code != http.StatusForbidden {
-				t.Fatalf("PDF do termo: status = %d, want 403", w.Code)
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("PDF de Termo inexistente: status = %d, want 404", w.Code)
 			}
 		})
 	}
@@ -2124,6 +2132,73 @@ func TestNewMux_OutrasSaidasPapeis(t *testing.T) {
 			if w := despachar(http.MethodGet, prefixoEmpresaTeste+"/api/termos-baixa/"+id+"/pdf", tokens["gestor"], ""); w.Code != http.StatusNotFound {
 				t.Errorf("id %q: status = %d, want 404", id, w.Code)
 			}
+		}
+
+		// Solicitante baixa o SEU Termo; quem não pediu nada recebe 404; sem token 401.
+		urlPDF := prefixoEmpresaTeste + "/api/termos-baixa/" + *resp.Pedidos[0].TermoBaixaID + "/pdf"
+		for _, papel := range []string{"usuario", "almoxarife"} {
+			w := despachar(http.MethodGet, urlPDF, tokens[papel], "")
+			if w.Code != http.StatusOK || !strings.HasPrefix(w.Body.String(), "%PDF-") {
+				t.Errorf("%s (solicitante): PDF status = %d, want 200", papel, w.Code)
+			}
+		}
+		if w := despachar(http.MethodGet, urlPDF, tokens["alheio"], ""); w.Code != http.StatusNotFound {
+			t.Errorf("alheio: PDF status = %d, want 404", w.Code)
+		}
+		if w := despachar(http.MethodGet, urlPDF, "", ""); w.Code != http.StatusUnauthorized {
+			t.Errorf("sem token: PDF status = %d, want 401", w.Code)
+		}
+
+		// Listagem por papel.
+		listar := func(papel, query string) (int, []struct {
+			ID     string `json:"id"`
+			Numero int    `json:"numero"`
+		}) {
+			w := despachar(http.MethodGet, prefixoEmpresaTeste+"/api/termos-baixa"+query, tokens[papel], "")
+			var r struct {
+				Termos []struct {
+					ID     string `json:"id"`
+					Numero int    `json:"numero"`
+				} `json:"termos"`
+			}
+			_ = json.Unmarshal(w.Body.Bytes(), &r)
+			return w.Code, r.Termos
+		}
+		contem := func(ts []struct {
+			ID     string `json:"id"`
+			Numero int    `json:"numero"`
+		}, id string) bool {
+			for _, x := range ts {
+				if x.ID == id {
+					return true
+				}
+			}
+			return false
+		}
+		if c, ts := listar("gestor", ""); c != http.StatusOK || !contem(ts, *resp.Pedidos[0].TermoBaixaID) {
+			t.Errorf("lista gestor: %d %+v", c, ts)
+		}
+		if c, ts := listar("gestor", "?motivo=utilizacao_obra&numero="+strconv.Itoa(*resp.Pedidos[0].NumeroTermo)); c != http.StatusOK || len(ts) != 1 {
+			t.Errorf("lista gestor com filtros: %d %+v", c, ts)
+		}
+		for _, papel := range []string{"usuario", "almoxarife"} {
+			if c, ts := listar(papel, ""); c != http.StatusOK || len(ts) != 1 {
+				t.Errorf("lista %s: %d %+v, want só o dele", papel, c, ts)
+			}
+		}
+		if c, ts := listar("alheio", ""); c != http.StatusOK || len(ts) != 0 {
+			t.Errorf("lista alheio: %d %+v, want vazia", c, ts)
+		}
+		if c, ts := listar("gestor", "?motivo=perda_roubo"); c != http.StatusOK || contem(ts, *resp.Pedidos[0].TermoBaixaID) {
+			t.Errorf("lista com outro motivo não deveria trazer o Termo: %d %+v", c, ts)
+		}
+		for _, q := range []string{"?motivo=xx", "?de=ontem", "?numero=abc"} {
+			if c, _ := listar("gestor", q); c != http.StatusBadRequest {
+				t.Errorf("lista %s: status = %d, want 400", q, c)
+			}
+		}
+		if w := despachar(http.MethodGet, prefixoEmpresaTeste+"/api/termos-baixa", "", ""); w.Code != http.StatusUnauthorized {
+			t.Errorf("lista sem token: status = %d, want 401", w.Code)
 		}
 	})
 }

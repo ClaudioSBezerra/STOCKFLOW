@@ -48,6 +48,7 @@ describe('nav-items: grupos e papéis', () => {
       '/pedidos',
       '/pedidos/transferencia',
       '/pedidos/outras-saidas',
+      '/termos-baixa',
       '/pedidos/fila',
       '/pedidos/aprovacao-lote',
       '/estoques',
@@ -79,6 +80,7 @@ describe('nav-items: grupos e papéis', () => {
       'meus-pedidos',
       'pedido-transferencia',
       'pedido-baixa',
+      'termos-baixa',
     ]);
     expect(gruposVisiveis(navGrupos, 'usuario').map((g) => g.id)).toEqual(['catalogo', 'pedidos']);
   });
@@ -99,6 +101,7 @@ describe('nav-items: grupos e papéis', () => {
       'meus-pedidos',
       'pedido-transferencia',
       'pedido-baixa',
+      'termos-baixa',
       'fila-aprovacao',
       'aprovacao-lote',
     ]);

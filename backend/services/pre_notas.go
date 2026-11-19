@@ -92,6 +92,10 @@ type PreNotaItem struct {
 	// agrupamento cai no nome impresso.
 	EstoqueOrigemID  string
 	EstoqueDestinoID string
+	// PedidoID e QuantidadeSolicitadaMilesimos ligam o item ao Pedido de
+	// origem (spec-termo-baixa-pendencias); `pedido_itens.quantidade` × 1000.
+	PedidoID                      string
+	QuantidadeSolicitadaMilesimos int64
 }
 
 // DadosFiscaisFilialPreNota são CNPJ, Inscrição Estadual e endereço de uma
@@ -210,7 +214,8 @@ const sqlItensDocumento = `
 		       pi.estoque_nome, COALESCE(ed.nome, pi.estoque_destino_nome),
 		       pi.estoque_id::text, pi.estoque_destino_id::text,
 		       fo.cnpj, fo.inscricao_estadual, fo.logradouro, fo.numero, fo.complemento, fo.bairro, fo.cidade, fo.cep, fo.uf,
-		       fd.cnpj, fd.inscricao_estadual, fd.logradouro, fd.numero, fd.complemento, fd.bairro, fd.cidade, fd.cep, fd.uf
+		       fd.cnpj, fd.inscricao_estadual, fd.logradouro, fd.numero, fd.complemento, fd.bairro, fd.cidade, fd.cep, fd.uf,
+		       p.id::text, (pi.quantidade * 1000)::bigint
 		FROM pedido_itens pi
 		JOIN pedidos p ON p.id = pi.pedido_id AND p.empresa_id = pi.empresa_id
 		LEFT JOIN produtos pr ON pr.id = pi.produto_id AND pr.empresa_id = pi.empresa_id
@@ -227,7 +232,7 @@ const (
 	sqlItensPreNota = sqlItensDocumento + `WHERE p.pre_nota_id = $1 AND pi.empresa_id = $2 AND pi.quantidade_aprovada > 0
 		ORDER BY pi.produto_nome, p.id, pi.produto_id, pi.estoque_id`
 	sqlItensTermoBaixa = sqlItensDocumento + `WHERE p.termo_baixa_id = $1 AND pi.empresa_id = $2 AND pi.quantidade_aprovada > 0
-		ORDER BY pi.produto_nome, p.id, pi.produto_id, pi.estoque_id`
+		ORDER BY p.criado_em, p.id, pi.produto_nome, pi.produto_id, pi.estoque_id`
 )
 
 // vinculoDocumento identifica de qual documento se leem os itens: a consulta
@@ -264,6 +269,7 @@ func lerItensDocumentoTx(tx *sql.Tx, v vinculoDocumento, documentoID, empresaID 
 		for i := range fiscalD {
 			dest = append(dest, &fiscalD[i])
 		}
+		dest = append(dest, &it.PedidoID, &it.QuantidadeSolicitadaMilesimos)
 		if err := itensRows.Scan(dest...); err != nil {
 			return nil, fmt.Errorf("falha ao ler item %s: %w", v.rotulo, err)
 		}
@@ -506,6 +512,8 @@ type produtoPreNota struct {
 	Quantidade    string
 	ValorUnitario string
 	ValorTotal    string
+	// Solicitada: quantidade pedida (só o Termo de Baixa a imprime).
+	Solicitada string
 }
 
 // rotaPreNota agrupa os itens de um mesmo par Estoque origem -> Estoque
@@ -904,17 +912,31 @@ const (
 
 // colunasProdutosPreNota: Código | Descrição | Un. | Qtd. | Valor unit. |
 // Valor total — larguras somam larguraUtilPreNotaPT (539pt).
-var colunasProdutosPreNota = []struct {
+type colunaProdutoPDF struct {
 	Titulo  string
 	Largura float64
 	Align   int
-}{
+}
+
+var colunasProdutosPreNota = []colunaProdutoPDF{
 	{"CÓDIGO", 58, gopdf.Left},
 	{"DESCRIÇÃO DO PRODUTO", 232, gopdf.Left},
 	{"UN.", 34, gopdf.Center},
 	{"QTD.", 55, gopdf.Right},
 	{"VALOR UNIT.", 75, gopdf.Right},
 	{"VALOR TOTAL", 85, gopdf.Right},
+}
+
+// colunasProdutosTermoBaixa acrescenta a quantidade SOLICITADA (do Pedido) à
+// tabela do Termo; QTD. APROV. é a quantidade baixada. Somam 539pt.
+var colunasProdutosTermoBaixa = []colunaProdutoPDF{
+	{"CÓDIGO", 52, gopdf.Left},
+	{"DESCRIÇÃO DO PRODUTO", 190, gopdf.Left},
+	{"UN.", 30, gopdf.Center},
+	{"QTD. SOLIC.", 52, gopdf.Right},
+	{"QTD. APROV.", 52, gopdf.Right},
+	{"VALOR UNIT.", 75, gopdf.Right},
+	{"VALOR TOTAL", 88, gopdf.Right},
 }
 
 // RenderizarPreNotaPDF desenha a Pré-Nota a partir de um PreNotaConteudo JÁ

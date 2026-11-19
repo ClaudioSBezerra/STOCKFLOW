@@ -981,3 +981,15 @@ status: open
 - source_spec: `spec-depositos-na-filial.md`
   summary: Sem teste de que a seção `filiais` do manual aparece para o Gestor (`manual.go` passou de `PapelAdm` para `PapelGestor`) e de que `locais`/Depósitos mantém visibilidade almoxarife; sem teste do ramo 400 de "Adicionar depósito" mostrando a mensagem do servidor.
   evidence: Achado pela revisão (verification-gap). Reverter o papel da seção não quebraria nenhum teste hoje (as checagens de contagem continuam passando).
+
+- source_spec: `spec-termo-baixa-pendencias.md`
+  summary: Valores (valor unitário, valor total, subtotais) continuam impressos no PDF do Termo de Baixa também para o Solicitante não-gestor. Verificado em 2026-11-19: não existe hoje regra que esconda preço de papel `usuario` (o Recibo de Pedido não imprime preço; Catálogo, Detalhe do Produto e demais telas mostram `preco_unitario` sem gate por papel). Se a Ferreira Costa decidir que preço é restrito, ocultar as colunas VALOR UNIT./VALOR TOTAL, os subtotais e o CÁLCULO DO TOTAL no PDF quando o papel for abaixo de gestor (e decidir o mesmo para Catálogo).
+  evidence: Pedido do coordenador (item 2 da revisão). Decisão de produto pendente, sem impacto de segurança hoje.
+
+- source_spec: `spec-termo-baixa-pendencias.md`
+  summary: A listagem de Termos de Baixa mostra a um Solicitante os nomes dos demais solicitantes de um Termo misto (mesmo motivo, aprovado no mesmo lote). Aceito: o Termo é um documento único e o PDF dele já traz todos os solicitantes e justificativas.
+  evidence: Achado pela revisão. Decisão: manter.
+
+- source_spec: `spec-termo-baixa-pendencias.md`
+  summary: Se uma conta de usuário for removida por outro caminho com CASCADE, os pedidos dela somem do Termo (o PDF e a listagem deixam de mostrá-los e os totais mudam), embora o Termo já tenha sido emitido e baixado.
+  evidence: Achado pela revisão (edge-case). `pedidos.usuario_id` não tem CASCADE (migração 000026), então hoje só ocorre via TRUNCATE/remoção manual de dados; tratar se a anonimização (Epic 8) passar a apagar linhas em vez de anonimizar.

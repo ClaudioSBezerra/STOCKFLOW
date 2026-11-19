@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"stockflow/backend/middleware"
 	"stockflow/backend/realtime"
@@ -642,14 +643,34 @@ func BaixarPreNotaPDFHandler(db *sql.DB) http.HandlerFunc {
 }
 
 // BaixarTermoBaixaPDFHandler expõe GET /api/termos-baixa/{id}/pdf
-// (spec-pedido-outras-saidas), atrás de RequireAuth + RequireRole(PapelGestor).
-// Molde de BaixarPreNotaPDFHandler: Termo de outra Empresa, inexistente ou
-// malformado -> 404; sucesso -> PDF `termo-baixa-{numero}.pdf`.
+// (spec-pedido-outras-saidas / spec-termo-baixa-pendencias), atrás de
+// RequireAuth. Gestor+ baixa qualquer Termo da Empresa; os demais papéis só o
+// Termo em que são o Solicitante (`pedidos.usuario_id`) de ao menos um Pedido.
+// Termo de outra Empresa, inexistente, malformado ou alheio -> 404 (sem
+// vazar existência); sucesso -> PDF `termo-baixa-{numero}.pdf`.
 func BaixarTermoBaixaPDFHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		usuario, ok := middleware.UsuarioDaSessao(r.Context())
+		if !ok {
+			slog.Error("BaixarTermoBaixaPDFHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
 		empresa, ok := empresaDaRequisicao(w, r)
 		if !ok {
 			return
+		}
+		if services.RankPapel(usuario.Papel) < services.RankPapel(services.PapelGestor) {
+			dono, err := services.UsuarioSolicitouPedidoDoTermoBaixa(db, empresa.ID, r.PathValue("id"), usuario.ID)
+			if err != nil {
+				slog.Error("falha ao verificar solicitante do termo de baixa", "error", err)
+				escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao gerar PDF do termo de baixa")
+				return
+			}
+			if !dono {
+				escreverErro(w, http.StatusNotFound, "NOT_FOUND", "termo de baixa não encontrado")
+				return
+			}
 		}
 
 		pdf, numero, err := services.GerarTermoBaixaPDF(db, empresa.ID, r.PathValue("id"))
@@ -666,6 +687,71 @@ func BaixarTermoBaixaPDFHandler(db *sql.DB) http.HandlerFunc {
 		default:
 			slog.Error("falha ao gerar PDF do termo de baixa", "error", err)
 			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao gerar PDF do termo de baixa")
+		}
+	}
+}
+
+// ListarTermosBaixaHandler expõe GET /api/termos-baixa (spec-termo-baixa-pendencias),
+// atrás de RequireAuth. Gestor+ vê todos os Termos da Empresa; os demais
+// papéis só os dos próprios Pedidos. Filtros `numero`, `motivo`, `de`, `ate`,
+// `q`, `limite`, `offset`; filtro inválido -> 400. Sucesso -> `200 {"termos":[...],"total":N}` (total = sem limite/offset).
+func ListarTermosBaixaHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		usuario, ok := middleware.UsuarioDaSessao(r.Context())
+		if !ok {
+			slog.Error("ListarTermosBaixaHandler chamado sem UsuarioSessao no contexto — RequireAuth não foi aplicado")
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao resolver usuário")
+			return
+		}
+		empresa, ok := empresaDaRequisicao(w, r)
+		if !ok {
+			return
+		}
+		q := r.URL.Query()
+		f := services.FiltroTermosBaixa{Motivo: q.Get("motivo"), De: q.Get("de"), Ate: q.Get("ate"), Q: q.Get("q")}
+		inteiro := func(nome string) (*int, bool) {
+			v := strings.TrimSpace(q.Get(nome))
+			if v == "" {
+				return nil, true
+			}
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 0 {
+				escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", "\""+nome+"\" inválido")
+				return nil, false
+			}
+			return &n, true
+		}
+		numero, ok := inteiro("numero")
+		if !ok {
+			return
+		}
+		f.Numero = numero
+		limite, ok := inteiro("limite")
+		if !ok {
+			return
+		}
+		offset, ok := inteiro("offset")
+		if !ok {
+			return
+		}
+		if limite != nil {
+			f.Limite = *limite
+		}
+		if offset != nil {
+			f.Offset = *offset
+		}
+
+		soDoUsuario := services.RankPapel(usuario.Papel) < services.RankPapel(services.PapelGestor)
+		termos, total, err := services.ListarTermosBaixa(db, empresa.ID, usuario.ID, soDoUsuario, f)
+		var erroValidacao *services.ErroPedidoValidacao
+		switch {
+		case err == nil:
+			escreverJSON(w, http.StatusOK, map[string]any{"termos": termos, "total": total})
+		case errors.As(err, &erroValidacao):
+			escreverErro(w, http.StatusBadRequest, "VALIDATION_ERROR", erroValidacao.Mensagem)
+		default:
+			slog.Error("falha ao listar termos de baixa", "error", err)
+			escreverErro(w, http.StatusInternalServerError, "INTERNAL_ERROR", "falha ao listar termos de baixa")
 		}
 	}
 }

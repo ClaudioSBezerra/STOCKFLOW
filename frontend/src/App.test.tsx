@@ -603,6 +603,23 @@ describe('<App /> — rotas próprias do menu (Story 17.1)', () => {
     );
   });
 
+  it('/termos-baixa abre a tela de Termos de Baixa para usuario comum, com o item de menu ativo', async () => {
+    fetchMock.mockImplementation(
+      sessaoFetch('usuario', (url) =>
+        url.startsWith('/api/termos-baixa')
+          ? { ok: true, json: async () => ({ termos: [], total: 0 }) }
+          : undefined,
+      ),
+    );
+    await router.navigate('/termos-baixa');
+
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Termos de Baixa' })).toBeInTheDocument();
+    const menu = screen.getByRole('navigation', { name: 'Menu principal' });
+    expect(within(menu).getByRole('link', { name: 'Termos de Baixa' })).toHaveAttribute('aria-current', 'page');
+  });
+
   it.each([
     ['/pedidos/fila', 'Você não tem acesso à Fila de aprovação.'],
     ['/estoques/movimentacoes', 'Você não tem acesso à área de Estoques.'],

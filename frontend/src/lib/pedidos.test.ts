@@ -8,6 +8,7 @@ import {
   decidirPedido,
   listarFilaPedidos,
   listarPedidos,
+  listarTermosBaixa,
   submeterPedidoBaixa,
 } from './pedidos';
 
@@ -464,5 +465,30 @@ describe('submeterPedidoBaixa', () => {
     });
 
     await expect(submeterPedidoBaixa(INPUT)).rejects.toThrow(MENSAGEM_FALLBACK);
+  });
+});
+
+describe('listarTermosBaixa', () => {
+  it('GET /api/termos-baixa sem query quando não há filtro, com Authorization', async () => {
+    fetchMock.mockReturnValue(respostaOk({ termos: [{ id: 't-1', numero: 1 }], total: 7 }));
+    const { termos, total } = await listarTermosBaixa();
+    expect(total).toBe(7);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/termos-baixa');
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer token-de-teste' });
+    expect(termos).toHaveLength(1);
+  });
+
+  it('envia só os filtros preenchidos', async () => {
+    fetchMock.mockReturnValue(respostaOk({ termos: [] }));
+    await listarTermosBaixa({ numero: '5', motivo: '', de: '2026-11-01', q: ' ana ', limite: '50', offset: '100' });
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/termos-baixa?numero=5&de=2026-11-01&q=ana&limite=50&offset=100');
+  });
+
+  it('propaga a mensagem do servidor e cai no fallback em falha de rede', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 400, json: async () => ({ error: { message: 'motivo inválido' } }) });
+    await expect(listarTermosBaixa({ motivo: 'x' })).rejects.toThrow('motivo inválido');
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await expect(listarTermosBaixa()).rejects.toThrow('Não foi possível carregar os Termos de Baixa agora');
   });
 });
